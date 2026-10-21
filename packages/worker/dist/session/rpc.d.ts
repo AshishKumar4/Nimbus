@@ -538,8 +538,10 @@ interface OneShotRpcHost {
 export declare function _rpcOneShotSubmit(self: OneShotRpcHost, spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): Promise<{
     ok: false;
     message: string;
-    code?: string;
     unsettled: boolean;
+    code?: string | undefined;
+} | {
+    ok: "preamble missing";
 } | {
     ok: true;
     value: unknown;
@@ -550,6 +552,5 @@ export declare function _rpcOneShotWarm(self: OneShotRpcHost, spec: unknown, fn:
 export declare function _rpcOneShotCancel(self: OneShotRpcHost, callId: unknown): {
     cancelled: boolean;
 };
-export declare function _rpcOneShotDispose(self: OneShotRpcHost, key: unknown): void;
 export {};
 //# sourceMappingURL=rpc.d.ts.map

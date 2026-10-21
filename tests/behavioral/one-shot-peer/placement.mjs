@@ -21,13 +21,16 @@ if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit
 const a = makeAsserter('one-shot-peer/placement');
 const ROUNDS = 6;
 const PY_IMPORTS = 'import email.parser, http.client, json, decimal, asyncio, unittest, xml.dom.minidom, sqlite3, argparse, logging; print(1)';
+// Each kind with what it prints when it worked; clang's program is run after it, outside the measured run.
 const KINDS = [
-  { kind: 'python print', line: 'python3 -c "print(1)"', tags: ['cpython-runner@3'] },
-  { kind: 'python imports', line: `python3 -c "${PY_IMPORTS}"`, tags: ['cpython-runner@3'] },
-  { kind: 'ruby requires', line: `ruby -e "require 'json'; require 'set'; require 'time'; require 'fileutils'; require 'optparse'; puts 1"`, tags: ['ruby-runner'] },
-  { kind: 'clang', line: 'clang x.c -o x', tags: ['clang-runner-clang', 'clang-runner-wasm-ld'] },
-  { kind: 'tsc noEmit', line: 'cd ~/tsp && tsc -p . --noEmit; echo tsc=$?; cd ~', tags: ['tsrs'] },
+  { kind: 'python print', line: 'python3 -c "print(1)"', tags: ['cpython-runner@3'], expect: '1' },
+  { kind: 'python imports', line: `python3 -c "${PY_IMPORTS}"`, tags: ['cpython-runner@3'], expect: '1' },
+  { kind: 'ruby requires', line: `ruby -e "require 'json'; require 'set'; require 'time'; require 'fileutils'; require 'optparse'; puts 1"`, tags: ['ruby-runner'], expect: '1' },
+  { kind: 'clang', line: 'rm -f x && clang x.c -o x', tags: ['clang-runner-clang', 'clang-runner-wasm-ld'], then: { line: './x', expect: '42' } },
+  { kind: 'tsc noEmit', line: 'cd ~/tsp && tsc -p . --noEmit; echo tsc=$?; cd ~', tags: ['tsrs'], expect: 'tsc=0' },
 ];
+/** What a run printed, a line each, without the command's echo and the next prompt. */
+const printed = (output) => output.split('\n').slice(1).map((line) => line.trim()).filter((line) => line !== '' && !line.endsWith('$'));
 const PORT = 4391;
 const SERVER = `require('http').createServer((req, res) => res.end('ok ' + req.url)).listen(${PORT});\n`;
 const TS_FILES = Array.from({ length: 12 }, (_, i) => [`src/m${i}.ts`,
@@ -56,7 +59,7 @@ async function runOn(host, kind, line, tags, observe = () => diagLatency(sid)) {
   }
   const marked = await mark(sid);
   const w = await watched(() => t.run(line, 600_000), observe);
-  return { host, kind, ms: w.ms, worst: w.worst, exit: w.value.exitCode, output: w.value.output.split('\n').slice(1).join('\n').trim(), ranOn: await hostsSince(sid, marked) };
+  return { host, kind, ms: w.ms, worst: w.worst, exit: w.value.exitCode, printed: printed(w.value.output), ranOn: await hostsSince(sid, marked) };
 }
 
 try {
@@ -70,15 +73,20 @@ try {
   }
 
   // Each kind, paired. The first run of each warms the session's own worker.
-  for (const { kind, line, tags } of KINDS) {
+  for (const { kind, line, tags, expect, then } of KINDS) {
     await runOn('session', kind, line, tags);
     for (let i = 1; i <= ROUNDS; i++) {
-      for (const host of i % 2 ? ['session', 'peer'] : ['peer', 'session']) out({ round: i, ...(await runOn(host, kind, line, tags)) });
+      for (const host of i % 2 ? ['session', 'peer'] : ['peer', 'session']) {
+        const r = await runOn(host, kind, line, tags);
+        const after = then ? printed((await t.run(then.line, 60_000)).output) : null;
+        out({ round: i, ...r, after });
+      }
     }
     const runs = records.filter((r) => r.kind === kind && r.round !== undefined);
     a.check(`${kind}: each run ran where it was placed`, runs.every((r) => r.ranOn.length > 0 && r.ranOn.every((h) => h === r.host)), JSON.stringify(runs.map((r) => [r.host, r.ranOn])));
-    a.check(`${kind}: the same exit and output on both hosts`, runs.every((r) => r.exit === runs[0].exit && r.output === runs[0].output),
-      JSON.stringify(runs.map((r) => [r.host, r.exit, r.output.slice(-80)])));
+    a.check(`${kind}: it worked on both hosts (exit 0, ${expect ?? `then ${then.line} printed ${then.expect}`})`,
+      runs.every((r) => r.exit === 0 && (expect === undefined ? r.after?.at(-1) === then.expect : r.printed.at(-1) === expect)),
+      JSON.stringify(runs.map((r) => [r.host, r.exit, r.printed.slice(-3), r.after])));
   }
 
   // What the user waits for during a python one-shot importing ten stdlib modules.
@@ -90,15 +98,28 @@ try {
     ready = await fetchPort(sid, PORT, 'ready').catch(() => null);
     if (ready?.status !== 200) await sleep(200);
   }
+  // Each observer checks its own answer: the echoed word, the server's body, the saved bytes (read back after the rounds).
+  let lastSaved = null;
   const OBSERVERS = {
-    echo: async () => { const started = Date.now(); const r = await t2.run('echo x', 60_000); if (r.exitCode !== 0) throw new Error('echo'); return Date.now() - started; },
-    preview: async () => { const r = await fetchPort(sid, PORT, 'x'); if (r.status !== 200) throw new Error(`preview ${r.status}`); return r.elapsed; },
+    echo: async () => {
+      const started = Date.now();
+      const r = await t2.run('echo observed', 60_000);
+      if (r.exitCode !== 0 || !printed(r.output).includes('observed')) throw new Error(`echo: ${r.output.slice(-200)}`);
+      return Date.now() - started;
+    },
+    preview: async () => {
+      const r = await fetchPort(sid, PORT, 'x');
+      if (r.status !== 200 || r.body !== 'ok /x') throw new Error(`preview ${r.status} ${r.body.slice(0, 80)}`);
+      return r.elapsed;
+    },
     save: async () => {
       const started = Date.now();
+      const content = `saved ${started}\n`;
       const r = await fetch(`${BASE}/s/${sid}/api/write-file`, { method: 'POST', headers: requestHeaders({ 'content-type': 'application/json' }, sid),
-        body: JSON.stringify({ path: '/home/user/saved.txt', content: `saved ${started}\n` }), signal: AbortSignal.timeout(60_000) });
+        body: JSON.stringify({ path: '/home/user/saved.txt', content }), signal: AbortSignal.timeout(60_000) });
       await r.arrayBuffer();
       if (!r.ok) throw new Error(`save ${r.status}`);
+      lastSaved = content.trim();
       return Date.now() - started;
     },
   };
@@ -116,6 +137,8 @@ try {
     a.check(`${observer}: waits less while the run is on the peer (median of worst waits ${median(waits.peer)} ms, against ${median(waits.session)} ms in the session)`,
       median(waits.peer) < median(waits.session), JSON.stringify(waits));
   }
+  const saved = printed((await t.run('cat /home/user/saved.txt', 30_000)).output);
+  a.check('the saves landed: the file holds the last one', lastSaved !== null && saved.includes(lastSaved), JSON.stringify({ lastSaved, saved }));
 
   // Three at once.
   const three = `${heavy.line} & ${heavy.line} & ${heavy.line} & wait`;
@@ -135,7 +158,10 @@ try {
       const w = await watched(() => t.run(three, 600_000), () => diagLatency(sid));
       const ranOn = await hostsSince(sid, marked);
       out({ three: true, round: i, host, ms: w.ms, worst: w.worst, exit: w.value.exitCode, ranOn });
-      a.check(`three at once, round ${i}: all three ran where placed (${host})`, ranOn.length === 3 && ranOn.every((h) => h === host), JSON.stringify(ranOn));
+      // Three processes' output interleaves on one terminal ("111", "1" then "11"): count the 1s.
+      const ones = printed(w.value.output).filter((line) => /^1+$/.test(line)).join('').length;
+      a.check(`three at once, round ${i}: all three ran where placed (${host}) and each printed its 1`,
+        ranOn.length === 3 && ranOn.every((h) => h === host) && ones === 3 && w.value.exitCode === 0, JSON.stringify({ ranOn, printed: printed(w.value.output) }));
     }
   }
 } catch (error) {

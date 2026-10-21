@@ -118,7 +118,6 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly oneShotSubmit: null;
     readonly oneShotWarm: null;
     readonly oneShotCancel: null;
-    readonly oneShotDispose: null;
     readonly hmrRelay: null;
     readonly hmrNextEvent: null;
     readonly replayBoundary: null;

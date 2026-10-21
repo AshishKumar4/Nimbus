@@ -19,22 +19,26 @@
  *
  * The run is the session's wherever it runs. Its SUPERVISOR binding is the
  * one the session minted for it (its pid, and so its credential; its
- * delivery incarnation, way back and egress), so every syscall, stdio byte
- * and write reaches the session as that process, under the session's own
- * filesystem rules. The peer keeps nothing of a run but in memory, for as
- * long as the run's facet is open.
+ * delivery incarnation and way back), so every syscall, stdio byte and write
+ * reaches the session as that process, under the session's own filesystem
+ * rules. The peer keeps nothing of a call past it: each call builds its pool
+ * there from what it carries, and what a call receives ends with it. That is
+ * also why a one-shot whose network goes out through an egress stays in the
+ * session: a warm worker keeps the outbound it was loaded with, and on the
+ * peer that would be one call's capability, ended with that call.
  */
 import { z } from 'zod/v4';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
-import { ISOLATE_NETWORK, networkRef, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { facetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { facetTaskSource, requireFacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { acquireSupervisorLoad } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { IsolatePool } from './isolate-pool.js';
 import { HostRouteSchema, isolateToken, RESIDENT_READ_RANGE_BYTES, WorkspaceEgressSchema } from './peer-host.js';
+import { hashSource } from './vendor/serialize.js';
 import { PEER_PLACEMENT_MAX_ATTEMPTS } from './process-host.js';
 import { BindingError } from './vendor/errors.js';
 /**
@@ -63,6 +67,19 @@ export function oneShotPoolOptions(spec, network, images) {
         network,
     };
 }
+/** What the peer's side answers when the task failed: what the session's own pool would have thrown. */
+const OneShotFailureSchema = z.object({ ok: z.literal(false), message: z.string(), code: z.string().optional(), unsettled: z.boolean() });
+/** The peer's answer to a call that named a preamble it does not hold: the call is sent again carrying it. */
+const PreambleMissingSchema = z.object({ ok: z.literal('preamble missing') });
+/**
+ * A call's answer: the task's value, or what it failed with, which the peer
+ * caught. The value is the task's own, what its source returns
+ * (FacetTaskSource), which no RPC can check, as the session's own pool
+ * cannot.
+ */
+function answerSchema() {
+    return z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), value: z.custom(() => true) }), OneShotFailureSchema, PreambleMissingSchema]);
+}
 const SupervisorBindingPropsSchema = z.object({
     doId: z.string().min(1),
     pid: z.number().int().nonnegative(),
@@ -76,14 +93,14 @@ const SupervisorBindingPropsSchema = z.object({
     networkId: z.string().optional(),
 });
 const OneShotSpecSchema = z.object({
-    key: z.string().uuid(),
     tag: z.string().min(1),
     preamble: z.string().optional(),
+    /** The preamble's hash (preambleHash): a call carries the preamble only until the peer holds it. */
+    preambleHash: z.string().min(1),
     concurrency: z.number().int().positive().optional(),
     supervisor: SupervisorBindingPropsSchema.optional(),
     reuse: z.enum(['session', 'global']).optional(),
     scope: z.string().min(1).optional(),
-    network: z.object({ egress: WorkspaceEgressSchema, id: z.string().min(1) }).optional(),
 });
 const OneShotImagesSchema = z.record(z.string(), z.object({
     path: z.string(),
@@ -95,11 +112,6 @@ const OneShotImagesSchema = z.record(z.string(), z.object({
 const FacetTaskSchema = z.object({ kind: z.literal('nimbus-facet-task'), source: z.string().min(1) });
 const CallOptionsSchema = z.object({ timeoutMs: z.number().int().nonnegative().optional() });
 const ProbeAnswerSchema = z.object({ isolateToken: z.string().min(1) });
-function isAnswer(value) {
-    if (typeof value !== 'object' || value === null || !('ok' in value))
-        return false;
-    return value.ok === true ? 'value' in value : value.ok === false && 'message' in value && typeof value.message === 'string';
-}
 // ── The session's side ──────────────────────────────────────────────────────
 /** Warmth a peer has for any call: it answered one (its object is up). */
 const ANY_WORKER = '';
@@ -135,6 +147,13 @@ export class OneShotPlacement {
     #generation = 0;
     #calls = [];
     #warmFailure = null;
+    /**
+     * The preambles the peer holds, by hash. A runtime's preamble is some
+     * hundreds of KB (the WASI layer is ~600 KB), and carrying it costs a call
+     * ~27 ms (verdict 20261021T150831-0394183537ae), so a call carries it only
+     * until the peer has it.
+     */
+    #carried = new Set();
     constructor(ctx, env) {
         this.#ctx = ctx;
         this.#env = env;
@@ -142,47 +161,52 @@ export class OneShotPlacement {
     /**
      * A one-shot's facet: each call runs on the peer when the peer is warm for
      * its worker, else in this session. A local pool is opened either way: a
-     * call the peer refused before it took it runs there.
+     * call the peer refused before it took it runs there. One whose network
+     * goes out through an egress always runs here (the module's header says why).
      */
     facet(spec, images, network) {
         const local = new IsolatePool(this.#env, this.#ctx, oneShotPoolOptions(spec, network, images));
-        const wire = { ...spec, key: crypto.randomUUID(), network: networkRef(network.forProcess(spec.supervisor?.pid ?? 0)) };
-        const warmth = warmthOf(spec, images);
-        let opened = null;
+        if (network.forProcess(spec.supervisor?.pid ?? 0).egress !== undefined)
+            return local;
         return {
             submit: async (fn, args, options) => {
                 const began = Date.now();
-                const peer = this.#warmFor(warmth);
+                const callImages = imagesOfCall(images, options?.wasmModules);
+                const worker = workerOf(spec, callImages, fn);
+                const peer = this.#warmFor(worker);
                 if (peer === null || options?.signal?.aborted === true) {
                     if (peer === null)
-                        this.#warm(wire, images, fn, warmth);
+                        this.#warm(spec, images, fn, worker);
                     try {
                         return await local.submit(fn, args, options);
                     }
                     finally {
-                        this.#note(spec.tag, warmth, 'session', began);
+                        this.#note(spec.tag, worker, 'session', began);
                     }
                 }
-                opened = peer;
-                const answer = await this.#submit(peer, wire, callImages(images, options?.wasmModules), warmth, fn, args, options);
+                let answer;
+                try {
+                    answer = await this.#submit(peer, spec, callImages, worker, fn, args, options);
+                }
+                catch (error) {
+                    // Lost on the peer: it ran there.
+                    this.#note(spec.tag, worker, 'peer', began);
+                    throw error;
+                }
                 if (answer === null) {
                     try {
                         return await local.submit(fn, args, options);
                     }
                     finally {
-                        this.#note(spec.tag, warmth, 'session', began);
+                        this.#note(spec.tag, worker, 'session', began);
                     }
                 }
-                this.#note(spec.tag, warmth, 'peer', began);
-                if (answer.ok)
+                this.#note(spec.tag, worker, 'peer', began);
+                if (answer.ok === true)
                     return answer.value;
-                throw Object.assign(new Error(answer.message), answer.code === undefined ? {} : { code: answer.code }, answer.unsettled ? { unsettled: true } : {});
+                throw failedAs(answer);
             },
-            dispose: () => {
-                local.dispose();
-                if (opened !== null)
-                    this.#ctx.waitUntil(this.#call(opened, 'oneShotDispose', [wire.key]).catch(() => { }));
-            },
+            dispose: () => local.dispose(),
         };
     }
     /**
@@ -191,40 +215,69 @@ export class OneShotPlacement {
      * the call ends the run as a lost worker does: it may have done things,
      * so it is never run again, and its error says what may be lost.
      */
-    async #submit(peer, wire, images, warmth, fn, args, options) {
+    async #submit(peer, spec, images, worker, fn, args, options) {
         const callId = crypto.randomUUID();
-        // No signal crosses: a kill reaches the peer's call as its own.
-        const cancel = () => this.#ctx.waitUntil(this.#call(peer, 'oneShotCancel', [callId]).catch(() => { }));
-        options?.signal?.addEventListener('abort', cancel, { once: true });
         const generation = this.#generation;
-        let raw;
+        // One stub for the call and its kill: calls on one stub arrive in order, so the kill never overtakes the call.
+        const stub = this.#stub(peer);
+        const dispatch = hostOpDispatch(stub, `one-shot peer '${peer}'`);
+        // No signal crosses: a kill reaches the peer's call as its own.
+        const cancel = () => { this.#ctx.waitUntil(Promise.resolve(dispatch({ op: 'oneShotCancel', args: [callId] })).catch(() => { })); };
+        options?.signal?.addEventListener('abort', cancel, { once: true });
+        const hash = preambleHash(spec.preamble);
         try {
-            raw = await this.#call(peer, 'oneShotSubmit', [wire, callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(wire, images)]);
-        }
-        catch (error) {
-            this.forgetPeer();
-            if (classifyDoCall(error) === 'overloaded')
-                return null;
-            const lost = new Error(`the session's one-shot host was lost while it ran: ${errorText(error)}`, { cause: error });
-            throw wire.supervisor === undefined ? lost : unsettledEnd(lost);
+            // Sent again carrying the preamble when the peer no longer holds it (it was reset since it took it).
+            for (;;) {
+                const carries = !this.#carried.has(hash);
+                let raw;
+                try {
+                    raw = await dispatch({ op: 'oneShotSubmit', args: [this.#wire(spec, carries), callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(spec, images, options?.signal)] });
+                }
+                catch (error) {
+                    this.forgetPeer();
+                    if (classifyDoCall(error) === 'overloaded')
+                        return null;
+                    const lost = new Error(`the session's one-shot host was lost while it ran: ${errorText(error)}`, { cause: error });
+                    throw spec.supervisor === undefined ? lost : unsettledEnd(lost);
+                }
+                try {
+                    const answer = answerSchema().parse(raw);
+                    if (answer.ok === 'preamble missing') {
+                        if (carries)
+                            throw new BindingError(`one-shot peer '${peer}' did not hold the preamble the call carried`);
+                        this.#carried.delete(hash);
+                        continue;
+                    }
+                    if (generation === this.#generation)
+                        this.#carried.add(hash);
+                    this.#heard(generation, worker);
+                    return answer;
+                }
+                finally {
+                    disposeRpcResource(raw);
+                }
+            }
         }
         finally {
             options?.signal?.removeEventListener('abort', cancel);
-        }
-        try {
-            if (!isAnswer(raw))
-                throw new BindingError(`one-shot peer '${peer}' answered no result`);
-            this.#heard(generation, warmth);
-            return raw;
-        }
-        finally {
-            disposeRpcResource(raw);
+            disposeRpcResource(stub);
         }
     }
-    /** The peer when it is warm for `warmth`'s worker, else null. */
-    #warmFor(warmth) {
-        const at = this.#answered.get(warmth);
-        return this.#peer !== null && at !== undefined && Date.now() - at < ONE_SHOT_WARM_MS ? this.#peer : null;
+    /** `spec` as a call carries it: its preamble by hash, and the text too unless the peer holds it (`carries`). */
+    #wire(spec, carries) {
+        return { ...spec, preamble: carries ? spec.preamble : undefined, preambleHash: preambleHash(spec.preamble) };
+    }
+    /** The peer when it is warm for `worker`, else null. */
+    #warmFor(worker) {
+        this.#expire();
+        return this.#peer !== null && this.#answered.has(worker) ? this.#peer : null;
+    }
+    /** What the peer answered longer than ONE_SHOT_WARM_MS ago is no longer warm, and is forgotten. */
+    #expire() {
+        const now = Date.now();
+        for (const [worker, at] of this.#answered)
+            if (now - at >= ONE_SHOT_WARM_MS)
+                this.#answered.delete(worker);
     }
     /**
      * The peer warmed for `warmth`'s worker, beside the call that found it
@@ -232,21 +285,23 @@ export class OneShotPlacement {
      * images compiled (IsolatePool.warm), so the next call of it finds it
      * warm. One at a time per worker and peer.
      */
-    #warm(wire, images, fn, warmth) {
+    #warm(spec, images, fn, worker) {
         const generation = this.#generation;
-        const warming = `${generation}\n${warmth}`;
+        const warming = `${generation}\n${worker}`;
         if (this.#warming.has(warming))
             return;
         this.#warming.add(warming);
         this.#ctx.waitUntil((async () => {
             const peer = await this.#choose();
-            if (peer === null || wire.scope === undefined)
+            if (peer === null || spec.scope === undefined)
                 return;
-            await this.#call(peer, 'oneShotWarm', [{ ...wire, key: crypto.randomUUID() }, fn, this.#images(wire, images)]);
-            this.#heard(generation, warmth);
+            await this.#call(peer, 'oneShotWarm', [this.#wire(spec, true), fn, this.#images(spec, images, undefined)]);
+            if (generation === this.#generation)
+                this.#carried.add(preambleHash(spec.preamble));
+            this.#heard(generation, worker);
         })().catch((error) => {
             // The call that found the peer cold ran here; the next one finds it cold too, and warms it again.
-            this.#warmFailure = { worker: warmth, message: errorText(error), at: Date.now() };
+            this.#warmFailure = { worker, message: errorText(error), at: Date.now() };
         }).finally(() => { this.#warming.delete(warming); }));
     }
     /**
@@ -287,23 +342,28 @@ export class OneShotPlacement {
     forgetPeer() {
         this.#generation++;
         this.#answered.clear();
+        this.#carried.clear();
         this.#peer = null;
         this.#choosing = null;
     }
-    /** The peer answered a call of `warmth`'s worker, made in `generation`: warm for it, unless forgotten since. */
-    #heard(generation, warmth) {
+    /** The peer answered a call of `worker`, made in `generation`: warm for it, unless forgotten since. */
+    #heard(generation, worker) {
         if (generation !== this.#generation)
             return;
         const now = Date.now();
-        this.#answered.set(warmth, now).set(ANY_WORKER, now);
+        this.#answered.set(worker, now).set(ANY_WORKER, now);
     }
-    /** `images` as they cross: each read in this session, under its load admission, when the peer's load opens it. */
-    #images(wire, images) {
-        const owner = { owner: `facet '${wire.tag}' images for its peer`, pid: wire.supervisor?.pid, session: this.#ctx.id.toString() };
+    /**
+     * `images` as they cross: each read in this session, under its load
+     * admission, when the peer's load opens it; a call's kill (`signal`) ends
+     * its wait for admission, as it ends the session's own pool's.
+     */
+    #images(spec, images, signal) {
+        const owner = { owner: `facet '${spec.tag}' images for its peer`, pid: spec.supervisor?.pid, session: this.#ctx.id.toString() };
         return Object.fromEntries(Object.entries(images).map(([name, image]) => [name, {
                 path: image.path, identity: image.identity, size: image.size, peak: image.peak,
                 open: async () => {
-                    const lease = await acquireSupervisorLoad(owner.owner, image.peak, undefined, owner);
+                    const lease = await acquireSupervisorLoad(owner.owner, image.peak, signal, owner);
                     try {
                         return chunked(await image.read(), () => lease.release());
                     }
@@ -314,9 +374,12 @@ export class OneShotPlacement {
                 },
             }]));
     }
-    async #call(peer, op, args) {
+    #stub(peer) {
         this.#namespace ??= hostNamespaceBinding(this.#env, 'one-shot placement');
-        const stub = this.#namespace.get(this.#namespace.idFromName(peer));
+        return this.#namespace.get(this.#namespace.idFromName(peer));
+    }
+    async #call(peer, op, args) {
+        const stub = this.#stub(peer);
         try {
             return await hostOpDispatch(stub, `one-shot peer '${peer}'`)({ op, args });
         }
@@ -330,6 +393,7 @@ export class OneShotPlacement {
             this.#calls.shift();
     }
     diagnostics() {
+        this.#expire();
         const now = Date.now();
         return {
             peer: this.#peer,
@@ -340,23 +404,39 @@ export class OneShotPlacement {
     }
 }
 /**
- * Which of the peer's workers a facet's call runs on, as far as warmth
- * goes: a warm facet's is its scope's, the same for every call of it; any
- * other facet's worker is its own, cold on either host, so only the peer
- * object's warmth matters for it.
+ * The peer's worker a call runs on, as far as warmth goes: what its pool's
+ * loader id is made of on either host, but the host's own object (the tag,
+ * the reuse scope and warm scope, the preamble, the task and its images),
+ * since the peer's pool is the session's spec over the same task and images.
+ * A facet with no warm scope has a worker of its own, cold on either host,
+ * so only the peer object's warmth matters for it.
  */
-function warmthOf(spec, images) {
+function workerOf(spec, images, fn) {
     if (spec.scope === undefined)
         return ANY_WORKER;
     const identities = Object.entries(images).map(([name, image]) => `${name}=${image.identity}`).sort().join(',');
-    return `${spec.tag}\n${spec.scope}\n${identities}`;
+    return [spec.tag, spec.reuse ?? 'session', spec.scope, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
+}
+/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. */
+const preambleHashes = new Map();
+function preambleHash(preamble) {
+    if (preamble === undefined)
+        return '0';
+    let hash = preambleHashes.get(preamble);
+    if (hash === undefined)
+        preambleHashes.set(preamble, hash = hashSource(preamble));
+    return hash;
+}
+/** A failure the peer caught, thrown as the session's own pool throws it. */
+function failedAs(failure) {
+    return Object.assign(new Error(failure.message), failure.code === undefined ? {} : { code: failure.code }, failure.unsettled ? { unsettled: true } : {});
 }
 /**
  * A call's images on the peer: its facet's and its own, all carried by the
  * call, since what a call receives ends with it. A name of the facet's that
  * the call names again is refused, as the session's own pool refuses it.
  */
-function callImages(facet, call) {
+function imagesOfCall(facet, call) {
     for (const name of Object.keys(call ?? {})) {
         if (Object.hasOwn(facet, name))
             throw new BindingError(`per-call wasm module '${name}' is already the facet's`);
@@ -391,14 +471,16 @@ export function oneShotHost(ctx, env) {
 }
 /**
  * The one-shots this Durable Object runs for its session, as that session's
- * peer: one pool per open facet of the session's, its calls, and nothing
- * stored.
+ * peer: each call on a pool of its own, built from what the call carries
+ * and gone with it, so nothing a call received outlives it. Only the
+ * loader's warm workers stay, as they do for the session's own pools.
  */
 export class OneShotHost {
     ctx;
     env;
-    #pools = new Map();
     #calls = new Map();
+    /** The preambles calls carried, by hash: constants of the deploy, one per runtime that ran here. */
+    #preambles = new Map();
     constructor(ctx, env) {
         this.ctx = ctx;
         this.env = env;
@@ -406,13 +488,12 @@ export class OneShotHost {
     /** One call of a session's facet: its answer, whatever the task did. */
     async submit(spec, callId, fn, args, options, images) {
         const id = z.string().uuid().parse(callId);
+        const pool = this.#pool(spec);
+        if (pool === null)
+            return { ok: 'preamble missing' };
         const controller = new AbortController();
         this.#calls.set(id, controller);
         try {
-            const wire = OneShotSpecSchema.parse(spec);
-            let pool = this.#pools.get(wire.key);
-            if (pool === undefined)
-                this.#pools.set(wire.key, pool = new IsolatePool(this.env, this.ctx, oneShotPoolOptions(wire, networkOf(wire))));
             const value = await pool.submit(facetTaskSource(FacetTaskSchema.parse(fn).source), args, {
                 ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal,
             });
@@ -429,12 +510,14 @@ export class OneShotHost {
         }
         finally {
             this.#calls.delete(id);
+            pool.dispose();
         }
     }
     /** A facet's worker loaded here and left warm (IsolatePool.warm), running nothing. */
     async warm(spec, fn, images) {
-        const wire = OneShotSpecSchema.parse(spec);
-        const pool = new IsolatePool(this.env, this.ctx, oneShotPoolOptions(wire, networkOf(wire)));
+        const pool = this.#pool(spec);
+        if (pool === null)
+            throw new BindingError('a warming carries its preamble');
         try {
             await pool.warm(facetTaskSource(FacetTaskSchema.parse(fn).source), { wasmModules: facetImages(images) });
             return { warmed: true };
@@ -443,21 +526,28 @@ export class OneShotHost {
             pool.dispose();
         }
     }
+    /** A call's pool, its preamble the one it carried or one held by its hash; null when it is neither. */
+    #pool(spec) {
+        const wire = OneShotSpecSchema.parse(spec);
+        let preamble = wire.preamble;
+        if (preamble !== undefined) {
+            if (preambleHash(preamble) !== wire.preambleHash)
+                throw new BindingError('a call carried a preamble whose hash it misnamed');
+            this.#preambles.set(wire.preambleHash, preamble);
+        }
+        else if (wire.preambleHash !== preambleHash(undefined)) {
+            preamble = this.#preambles.get(wire.preambleHash);
+            if (preamble === undefined)
+                return null;
+        }
+        return new IsolatePool(this.env, this.ctx, oneShotPoolOptions({ ...wire, preamble }, ISOLATE_NETWORK));
+    }
     /** A call's kill: its wait for admission ends, as a session's own call's does. */
     cancel(callId) {
         const controller = this.#calls.get(z.string().uuid().parse(callId));
         controller?.abort(new Error('the process was killed'));
         return { cancelled: controller !== undefined };
     }
-    /** A session's facet closed: its pool goes. */
-    dispose(key) {
-        const id = z.string().uuid().parse(key);
-        this.#pools.get(id)?.dispose();
-        this.#pools.delete(id);
-    }
-}
-function networkOf(wire) {
-    return wire.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(wire.network.egress, wire.network.id);
 }
 /**
  * The images a call carries, each read through its session when the load

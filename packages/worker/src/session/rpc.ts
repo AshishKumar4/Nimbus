@@ -1760,6 +1760,3 @@ export function _rpcOneShotWarm(self: OneShotRpcHost, spec: unknown, fn: unknown
 export function _rpcOneShotCancel(self: OneShotRpcHost, callId: unknown): { cancelled: boolean } {
   return oneShotHost(self.ctx, self.env).cancel(callId);
 }
-export function _rpcOneShotDispose(self: OneShotRpcHost, key: unknown): void {
-  oneShotHost(self.ctx, self.env).dispose(key);
-}

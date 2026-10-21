@@ -31,7 +31,7 @@ export async function warmFor(sid, tag) {
   for (;;) {
     const record = await placement(sid);
     if (record?.peer && Object.keys(record.warm ?? {}).some((key) => key.startsWith(`${tag}\n`))) return;
-    if (Date.now() > until) throw new Error(`the peer was not warm for ${tag} within 35 s: ${JSON.stringify(record)}`);
+    if (Date.now() > until) throw new Error(`the peer was not warm for ${tag} within 35 s; its last failed warming: ${JSON.stringify(record?.warmFailure)}; peer ${record?.peer}`);
     await sleep(250);
   }
 }
@@ -47,7 +47,7 @@ export async function warmForWorker(sid, worker) {
   for (;;) {
     const record = await placement(sid);
     if (record?.peer && Object.hasOwn(record.warm ?? {}, worker)) return;
-    if (Date.now() > until) throw new Error(`the peer was not warm for ${JSON.stringify(worker)} within 35 s: ${JSON.stringify(record)}`);
+    if (Date.now() > until) throw new Error(`the peer was not warm for ${JSON.stringify(worker)} within 35 s; its last failed warming: ${JSON.stringify(record?.warmFailure)}; peer ${record?.peer}`);
     await sleep(250);
   }
 }
@@ -70,7 +70,11 @@ export async function diagLatency(sid) {
   return Date.now() - started;
 }
 
-/** `call`, while `observe` repeats beside it every 100 ms; its value, wall, and the observer's worst latency. */
+/**
+ * `call`, while `observe` repeats beside it every 100 ms; its value, wall,
+ * and the observer's worst latency, counted once the observation in flight
+ * when the call ended has ended too: that one waited longest.
+ */
 export async function watched(call, observe) {
   let running = true;
   const samples = [];
@@ -81,13 +85,16 @@ export async function watched(call, observe) {
     }
   })();
   const started = Date.now();
+  let value, ms;
   try {
-    const value = await call();
-    return { value, ms: Date.now() - started, worst: Math.max(0, ...samples), samples: samples.length };
+    value = await call();
+    ms = Date.now() - started;
   } finally {
     running = false;
     await observer;
   }
+  if (samples.length === 0) throw new Error('the session was never observed during the call');
+  return { value, ms, worst: Math.max(...samples), samples: samples.length };
 }
 
 export const median = (values) => {

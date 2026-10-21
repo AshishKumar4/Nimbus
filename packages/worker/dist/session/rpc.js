@@ -1516,6 +1516,3 @@ export function _rpcOneShotWarm(self, spec, fn, images) {
 export function _rpcOneShotCancel(self, callId) {
     return oneShotHost(self.ctx, self.env).cancel(callId);
 }
-export function _rpcOneShotDispose(self, key) {
-    oneShotHost(self.ctx, self.env).dispose(key);
-}
