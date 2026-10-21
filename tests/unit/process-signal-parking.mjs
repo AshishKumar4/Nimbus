@@ -79,8 +79,9 @@ await check('parked, a signal waits in the box: not in the input', async () => {
 
 await check('a signal given back when data won is queued once', async () => {
   const { processes, pid } = running();
-  const reading = processes.readInput(pid, 1000);
+  // Its data already there as it reads, and the signal the moment after: both answer, and the data's first.
   processes.writeInput(pid, 'data');
+  const reading = processes.readInput(pid, 1000);
   processes.signal(pid, 'SIGTERM');
   const packet = await within(1000, reading);
   assert.equal(packet.signal, undefined, `data won: ${JSON.stringify(packet)}`);
