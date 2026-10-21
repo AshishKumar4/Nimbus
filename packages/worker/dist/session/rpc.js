@@ -21,7 +21,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 import { enc, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
-import { sessionFileStatOf } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { RuntimeStatSchema, sessionFileStatOf } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
@@ -330,11 +330,49 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
     fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
     fs.chmod(protectedPath, 0o444);
 }
+const NullableStat = RuntimeStatSchema.nullable();
+/** An open file's answer (RuntimeOpenedFile): its descriptor is its id. */
+const Opened = z.object({ id: z.number().int().nonnegative() });
+const Written = z.number().int().nonnegative();
 export async function _rpcStat(self, path, pid, cred) {
-    return sessionFileStatOf(await self.supervisorOp({ op: 'stat', args: [path], pid, cred }));
+    return sessionFileStatOf(NullableStat.parse(await self.supervisorOp({ op: 'stat', args: [path], pid, cred })));
 }
 export async function _rpcLstat(self, path, pid, cred) {
-    return sessionFileStatOf(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred }));
+    return sessionFileStatOf(NullableStat.parse(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred })));
+}
+export async function _rpcUnlink(self, path, pid, cred) {
+    await self.supervisorOp({ op: 'unlink', args: [path], pid, cred });
+}
+export async function _rpcRmdir(self, path, pid, cred) {
+    await self.supervisorOp({ op: 'rmdir', args: [path], pid, cred });
+}
+/** Opened O_APPEND (made when absent), written to its end, closed: every byte at the file's end however it grows meanwhile. */
+export async function _rpcAppendFile(self, path, content, pid, cred) {
+    const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+    const fd = Opened.parse(await self.supervisorOp({ op: 'fsOpen', args: [path, { write: true, append: true, create: true }], pid, cred })).id;
+    try {
+        for (let at = 0; at < bytes.byteLength;) {
+            at += Written.parse(await self.supervisorOp({ op: 'fsWrite', args: [fd, null, bytes.subarray(at)], pid, cred }));
+        }
+    }
+    finally {
+        await self.supervisorOp({ op: 'fsClose', args: [fd], pid, cred });
+    }
+}
+export async function _rpcSymlink(self, target, path, pid, cred) {
+    await self.supervisorOp({ op: 'symlink', args: [target, path], pid, cred });
+}
+export async function _rpcRealpath(self, path, pid, cred) {
+    return z.string().parse(await self.supervisorOp({ op: 'fsRealpath', args: [path], pid, cred }));
+}
+export async function _rpcTruncate(self, path, size, pid, cred) {
+    await self.supervisorOp({ op: 'fsTruncate', args: [path, size], pid, cred });
+}
+export async function _rpcUtimes(self, path, atime, mtime, pid, cred, options) {
+    await self.supervisorOp({ op: 'utimes', args: [path, atime, mtime, options], pid, cred });
+}
+export async function _rpcChown(self, path, uid, gid, pid, cred, options) {
+    await self.supervisorOp({ op: 'chown', args: [path, uid, gid, options], pid, cred });
 }
 export async function _rpcReadlink(self, path, pid, cred) {
     return self.supervisorOp({ op: 'readlink', args: [path], pid, cred });
@@ -351,8 +389,8 @@ export async function _rpcReaddir(self, path, pid, cred) {
 export async function _rpcExists(self, path, pid, cred) {
     return self.supervisorOp({ op: 'exists', args: [path], pid, cred });
 }
-export async function _rpcMkdir(self, path, pid, cred) {
-    await self.supervisorOp({ op: 'mkdir', args: [path], pid, cred });
+export async function _rpcMkdir(self, path, pid, cred, options) {
+    await self.supervisorOp({ op: 'mkdir', args: options === undefined ? [path] : [path, options], pid, cred });
 }
 export async function _rpcRename(self, from, to, pid, cred) {
     await self.supervisorOp({ op: 'rename', args: [from, to], pid, cred });

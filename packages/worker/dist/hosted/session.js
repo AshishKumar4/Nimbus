@@ -103,7 +103,21 @@ export class HostedSession extends RpcTarget {
         return rpc._rpcFsReadRange(this.#client(), path, offset, length, undefined, this.#cred(cred));
     }
     async _rpcExists(path, _pid, cred) { return rpc._rpcExists(this.#client(), path, undefined, this.#cred(cred)); }
-    async _rpcMkdir(path, _pid, cred) { return rpc._rpcMkdir(this.#client(), path, undefined, this.#cred(cred)); }
+    async _rpcMkdir(path, _pid, cred, options) { return rpc._rpcMkdir(this.#client(), path, undefined, this.#cred(cred), options); }
+    async _rpcUnlink(path, _pid, cred) { return rpc._rpcUnlink(this.#client(), path, undefined, this.#cred(cred)); }
+    async _rpcRmdir(path, _pid, cred) { return rpc._rpcRmdir(this.#client(), path, undefined, this.#cred(cred)); }
+    async _rpcAppendFile(path, content, _pid, cred) {
+        return rpc._rpcAppendFile(this.#client(), path, content, undefined, this.#cred(cred));
+    }
+    async _rpcSymlink(target, path, _pid, cred) { return rpc._rpcSymlink(this.#client(), target, path, undefined, this.#cred(cred)); }
+    async _rpcRealpath(path, _pid, cred) { return rpc._rpcRealpath(this.#client(), path, undefined, this.#cred(cred)); }
+    async _rpcTruncate(path, size, _pid, cred) { return rpc._rpcTruncate(this.#client(), path, size, undefined, this.#cred(cred)); }
+    async _rpcUtimes(path, atime, mtime, _pid, cred, options) {
+        return rpc._rpcUtimes(this.#client(), path, atime, mtime, undefined, this.#cred(cred), options);
+    }
+    async _rpcChown(path, uid, gid, _pid, cred, options) {
+        return rpc._rpcChown(this.#client(), path, uid, gid, undefined, this.#cred(cred), options);
+    }
     async _rpcDeleteFile(path, options, cred) {
         return operations.rpcDeleteFile(this.#client(), path, options, this.#cred(cred));
     }

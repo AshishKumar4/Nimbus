@@ -28,12 +28,21 @@ export class NimbusRemoteError extends Error {
     status;
     code;
     body;
+    /** A failed system call's, as Node's error carries them (ENOENT's -2, `syscall: 'unlink'`, the path). */
+    errno;
+    syscall;
+    path;
+    dest;
     constructor(message, options) {
         super(message);
         this.name = 'NimbusRemoteError';
         this.status = options.status;
         this.code = options.code;
         this.body = options.body;
+        this.errno = options.errno;
+        this.syscall = options.syscall;
+        this.path = options.path;
+        this.dest = options.dest;
     }
 }
 async function remotePayload(response) {
@@ -53,11 +62,10 @@ async function remotePayload(response) {
 function remoteFailure(response, payload) {
     const failure = SessionFailureSchema.safeParse(payload);
     const fallback = `Nimbus remote API request failed (${response.status})`;
-    return new NimbusRemoteError(failure.success ? failure.data.error ?? failure.data.message ?? fallback : fallback, {
-        status: response.status,
-        code: failure.success ? failure.data.code : undefined,
-        body: payload,
-    });
+    if (!failure.success)
+        return new NimbusRemoteError(fallback, { status: response.status, body: payload });
+    const { error, message, code, errno, syscall, path, dest } = failure.data;
+    return new NimbusRemoteError(error ?? message ?? fallback, { status: response.status, code, body: payload, errno, syscall, path, dest });
 }
 const ToolPathInputSchema = z.object({
     path: z.string().optional(),
@@ -190,7 +198,17 @@ export class NimbusSandbox {
             _rpcFsReadRange: (path, offset, length, _pid, cred) => this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)]),
             _rpcReaddir: (path, _pid, cred) => this.remoteRpc('readdir', [path, ...fileWireOptions(cred)]),
             _rpcExists: (path, _pid, cred) => this.remoteRpc('exists', [path, ...fileWireOptions(cred)]),
-            _rpcMkdir: (path, _pid, cred) => this.remoteRpc('mkdir', [path, ...fileWireOptions(cred)]),
+            _rpcMkdir: (path, _pid, cred, options) => this.remoteRpc('mkdir', options === undefined && cred === undefined
+                ? [path]
+                : [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
+            _rpcUnlink: (path, _pid, cred) => this.remoteRpc('unlink', [path, ...fileWireOptions(cred)]),
+            _rpcRmdir: (path, _pid, cred) => this.remoteRpc('rmdir', [path, ...fileWireOptions(cred)]),
+            _rpcAppendFile: (path, content, _pid, cred) => this.remoteRpc('appendFile', [path, content, ...fileWireOptions(cred)]),
+            _rpcSymlink: (target, path, _pid, cred) => this.remoteRpc('symlink', [target, path, ...fileWireOptions(cred)]),
+            _rpcRealpath: (path, _pid, cred) => this.remoteRpc('realpath', [path, ...fileWireOptions(cred)]),
+            _rpcTruncate: (path, size, _pid, cred) => this.remoteRpc('truncate', [path, size, ...fileWireOptions(cred)]),
+            _rpcUtimes: (path, atime, mtime, _pid, cred, options) => this.remoteRpc('utimes', [path, atime, mtime, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
+            _rpcChown: (path, uid, gid, _pid, cred, options) => this.remoteRpc('chown', [path, uid, gid, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
             _rpcDeleteFile: (path, options, cred) => this.remoteRpc('deleteFile', [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
             _rpcInstallRuntime: (spec, options) => this.remoteRpc('installRuntime', [spec, options]),
             _rpcEnsureRuntimes: (specs, options) => this.remoteRpc('ensureRuntimes', [specs, options]),
@@ -434,9 +452,10 @@ export class NimbusSandbox {
                 await this.ready();
                 return this.rpc(this.stub()._rpcReaddir(path, undefined, cred));
             },
-            mkdir: async (path) => {
+            mkdir: async (path, options) => {
                 await this.ready();
-                return this.rpc(this.stub()._rpcMkdir(path, undefined, cred));
+                const stub = this.stub();
+                return this.rpc(options === undefined ? stub._rpcMkdir(path, undefined, cred) : stub._rpcMkdir(path, undefined, cred, options));
             },
             exists: async (path) => {
                 await this.ready();
@@ -445,6 +464,38 @@ export class NimbusSandbox {
             delete: async (path, options = {}) => {
                 await this.ready();
                 return this.rpc(this.stub()._rpcDeleteFile(path, options, cred));
+            },
+            unlink: async (path) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcUnlink(path, undefined, cred));
+            },
+            rmdir: async (path) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcRmdir(path, undefined, cred));
+            },
+            appendFile: async (path, content) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcAppendFile(path, content, undefined, cred));
+            },
+            symlink: async (target, path) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcSymlink(target, path, undefined, cred));
+            },
+            realpath: async (path) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcRealpath(path, undefined, cred));
+            },
+            truncate: async (path, size) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcTruncate(path, size, undefined, cred));
+            },
+            utimes: async (path, atime, mtime, options) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcUtimes(path, atime, mtime, undefined, cred, options));
+            },
+            chown: async (path, uid, gid, options) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcChown(path, uid, gid, undefined, cred, options));
             },
         };
     }

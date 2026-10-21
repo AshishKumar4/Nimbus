@@ -5,6 +5,8 @@ import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js'
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { errnoOf } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { z } from 'zod/v4';
 import { NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
@@ -138,6 +140,7 @@ export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
             ok: false,
             error: err.message,
             code: err.code,
+            ...syscallFieldsOf(e),
         }, err.httpStatus);
     }
 }
@@ -274,9 +277,33 @@ async function dispatchRemoteRpc(ctx) {
         case 'exists':
             fileOptions(args[1]);
             return ctx.stub._rpcExists(stringArg(args[0], 'path'));
-        case 'mkdir':
+        case 'mkdir': {
+            // No options is `mkdir -p`, as it has always been; options are mkdir(2)'s.
+            const options = args[1] === undefined ? undefined : MkdirOptions.parse(fileOptions(args[1]));
+            return ctx.stub._rpcMkdir(stringArg(args[0], 'path'), undefined, undefined, options);
+        }
+        case 'unlink':
             fileOptions(args[1]);
-            return ctx.stub._rpcMkdir(stringArg(args[0], 'path'));
+            return ctx.stub._rpcUnlink(stringArg(args[0], 'path'));
+        case 'rmdir':
+            fileOptions(args[1]);
+            return ctx.stub._rpcRmdir(stringArg(args[0], 'path'));
+        case 'appendFile':
+            fileOptions(args[2]);
+            return ctx.stub._rpcAppendFile(stringArg(args[0], 'path'), fileContentArg(args[1]));
+        case 'symlink':
+            fileOptions(args[2]);
+            return ctx.stub._rpcSymlink(stringArg(args[0], 'target'), stringArg(args[1], 'path'));
+        case 'realpath':
+            fileOptions(args[1]);
+            return ctx.stub._rpcRealpath(stringArg(args[0], 'path'));
+        case 'truncate':
+            fileOptions(args[2]);
+            return ctx.stub._rpcTruncate(stringArg(args[0], 'path'), numberArg(args[1], 'size'));
+        case 'utimes':
+            return ctx.stub._rpcUtimes(stringArg(args[0], 'path'), numberArg(args[1], 'atime'), numberArg(args[2], 'mtime'), undefined, undefined, FollowOptions.parse(fileOptions(args[3])));
+        case 'chown':
+            return ctx.stub._rpcChown(stringArg(args[0], 'path'), nullableNumberArg(args[1], 'uid'), nullableNumberArg(args[2], 'gid'), undefined, undefined, FollowOptions.parse(fileOptions(args[3])));
         case 'deleteFile':
             // A remote token is the session's user: its deletion acts as that user,
             // as every file operation does. Named here so that no default, now or
@@ -529,6 +556,12 @@ function startProgramOptions(value) {
     }
     return options;
 }
+function nullableNumberArg(value, name) {
+    return value === null ? null : numberArg(value, name);
+}
+/** A call's own options beside its credential: mkdir(2)'s, and whether a link's own times or owner change. */
+const MkdirOptions = z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().max(0o7777).optional() });
+const FollowOptions = z.object({ followSymlinks: z.boolean().optional() });
 function fileContentArg(value) {
     if (typeof value === 'string' || value instanceof Uint8Array)
         return value;
@@ -548,11 +581,44 @@ function isApiError(value) {
 function remoteError(value) {
     if (isApiError(value))
         return value;
-    // The session holds what it cannot let go of (a destroy that stopped its
-    // work and still found a lease): the request conflicts with its state.
-    if (value instanceof Error && Reflect.get(value, 'code') === 'EBUSY')
-        return apiError(errorMessage(value), 'EBUSY', 409);
+    // A failed system call keeps its errno: the session holding what it cannot
+    // let go of (a destroy that stopped its work and still found a lease) is
+    // EBUSY, a conflict with its state, as EEXIST is.
+    const code = value instanceof Error ? Reflect.get(value, 'code') : undefined;
+    if (typeof code === 'string' && errnoOf(code) !== undefined)
+        return apiError(errorMessage(value), code, errnoStatus(code));
     return apiError(errorMessage(value), 'E_NIMBUS_REMOTE_RPC', 500);
+}
+/** An errno is the operation's answer, not the server failing, but where the machine itself failed (EIO, an absent mount's EHOSTDOWN). */
+function errnoStatus(code) {
+    switch (code) {
+        case 'ENOENT': return 404;
+        case 'EACCES':
+        case 'EPERM':
+        case 'EROFS': return 403;
+        case 'EEXIST':
+        case 'ENOTEMPTY':
+        case 'EBUSY': return 409;
+        case 'EIO': return 500;
+        case 'EHOSTDOWN': return 503;
+        default: return 400;
+    }
+}
+/** A failed system call's own fields, as Node's error carries them, for the client to rebuild it with. */
+function syscallFieldsOf(value) {
+    if (!(value instanceof Error))
+        return {};
+    const code = Reflect.get(value, 'code');
+    const errno = Reflect.get(value, 'errno') ?? (typeof code === 'string' ? errnoOf(code) : undefined);
+    const syscall = Reflect.get(value, 'syscall');
+    const path = Reflect.get(value, 'path');
+    const dest = Reflect.get(value, 'dest');
+    return {
+        ...(typeof errno === 'number' ? { errno } : {}),
+        ...(typeof syscall === 'string' ? { syscall } : {}),
+        ...(typeof path === 'string' ? { path } : {}),
+        ...(typeof dest === 'string' ? { dest } : {}),
+    };
 }
 function errorMessage(value) {
     return value instanceof Error ? value.message : String(value);
