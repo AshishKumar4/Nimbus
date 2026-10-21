@@ -55,6 +55,29 @@ async function create(fs, path, text) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/out/f3.txt')), 'file 3\n');
 }
 
+// ── The output gate is the client's effect: what was decided reaches the session, and the client stays live ──
+// Red before: the resident filesystem exposed no client, and its only drain
+// for output, logHeld, seals the client, so a live process's later writes
+// would never be sent.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/gate', { mode: 0o755 });
+  for (let index = 0; index < 20 && s.filesystem.delegations.size === 0; index++) await create(s.fs, `/home/user/proj/gate/warm${index}`, 'w');
+  assert.equal(s.filesystem.delegations.size, 1, 'no grant taken');
+  const client = s.fs.client;
+  assert.ok(client, 'the resident filesystem exposes no client');
+  for (const [name, text] of [['first', 'ONE'], ['second', 'TWO']]) {
+    await create(s.fs, `/home/user/proj/gate/${name}.txt`, text);
+    assert.equal(s.kernel.exists(`home/user/proj/gate/${name}.txt`), false, `${name}: not decided under the grant`);
+    const gate = client.effect();
+    assert.ok(gate instanceof Promise, `${name}: the gate had nothing to wait for`);
+    await gate;
+    assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/gate/${name}.txt`)), text, `${name}: not in the session once the gate opened`);
+  }
+  assert.equal(client.effect(), null, 'a gate with nothing decided since still waits');
+  await s.fs.settle();
+}
+
 // ── A write that makes its parents is decided here where its directory is ──
 {
   const s = session();
