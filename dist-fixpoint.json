@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a4526deee9008bd550f22d07af86f2e62030677494854952d6fbbbb94c427a2b",
+  "fingerprint": "3070c10c9cdc5b9b796ab25cf65675af8d88539dd22f49b1e11c05b4e0d5a01b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2748,7 +2748,7 @@
     "packages/worker/dist/router/public-directory.js": "5e15bfc10484d3d8d43d826f8dc8b2ae09d3edfeb869471df89cc85156cf9d29",
     "packages/worker/dist/router/remote-api.d.ts": "a4e31aa6df7c3b211a1d57181f28f40666faa8515fc61f5f37d9ae24e07bfdfc",
     "packages/worker/dist/router/remote-api.d.ts.map": "0846d9acb2e32973539d2da198d7e56ef9b17d99b31d4bd21b1a8f25889d7318",
-    "packages/worker/dist/router/remote-api.js": "c918ed75b3fc439f925d3d58168505b18c1d8542d4113c8f41f108a43c355336",
+    "packages/worker/dist/router/remote-api.js": "224cd7e96b7e8c7911ae1576cef84cc6ace572e53d06519441cee8756158ffe1",
     "packages/worker/dist/runtime/barrel-synthesizer.d.ts": "c28ae2a7c293f954c6098e7296685294b699e307cb96a76cc51bdbd8e427dac4",
     "packages/worker/dist/runtime/barrel-synthesizer.d.ts.map": "b56e50a5b8f3b98f2e3715b29f4c25cf61c150d9203885ccc0eeb0c86a93e2b0",
     "packages/worker/dist/runtime/barrel-synthesizer.js": "0757053f404142690d63dee3debadf2e12c7e52bc7399cacb0a7852d705b0f49",
@@ -3427,7 +3427,7 @@
     "packages/worker/src/router/index.ts": "638dd1242cb6cd1ddb7a45c58f68bcb43b213122c14333efd4e04c74417db4c5",
     "packages/worker/src/router/public-directory-do.ts": "f9a2d68ceb8c4bf27cb7c14764d110afb019b2ba00d3bdb77e83eda70cd7b50a",
     "packages/worker/src/router/public-directory.ts": "89a7d529059fc90848e84ec40bfa69d52a9f7e0de7c79fc095cfee5e02e5d419",
-    "packages/worker/src/router/remote-api.ts": "c25196c4c1bc35a86a7cc024c7b5369b6d0e2f7c49c2f19b5b57e70ed0c926c3",
+    "packages/worker/src/router/remote-api.ts": "ddcc33fc1069399ecdf836ee4b031c2237aa9f57466b8f77b0e2b6012ad49ddb",
     "packages/worker/src/runtime/barrel-synthesizer.ts": "c226f8adc904282cb113816ef1f9fd5fe076b01b8982b172fdd725307c4852ca",
     "packages/worker/src/runtime/bash-repl.ts": "23c9a00cd8020c0196fc968da3f6ed6b3e7e35caca512c40e362d2738011c096",
     "packages/worker/src/runtime/bun-file.ts": "85fd507a6882f0c33264f57a6259d0be506cccdd7b034ae6022759fae71a92bc",

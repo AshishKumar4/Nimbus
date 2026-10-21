@@ -279,7 +279,7 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcExists(stringArg(args[0], 'path'));
         case 'mkdir': {
             // No options is `mkdir -p`, as it has always been; options are mkdir(2)'s.
-            const options = args[1] === undefined ? undefined : MkdirOptions.parse(fileOptions(args[1]));
+            const options = args[1] === undefined ? undefined : optionsArg(MkdirOptions, fileOptions(args[1]), 'mkdir options');
             return ctx.stub._rpcMkdir(stringArg(args[0], 'path'), undefined, undefined, options);
         }
         case 'unlink':
@@ -301,9 +301,9 @@ async function dispatchRemoteRpc(ctx) {
             fileOptions(args[2]);
             return ctx.stub._rpcTruncate(stringArg(args[0], 'path'), numberArg(args[1], 'size'));
         case 'utimes':
-            return ctx.stub._rpcUtimes(stringArg(args[0], 'path'), numberArg(args[1], 'atime'), numberArg(args[2], 'mtime'), undefined, undefined, FollowOptions.parse(fileOptions(args[3])));
+            return ctx.stub._rpcUtimes(stringArg(args[0], 'path'), numberArg(args[1], 'atime'), numberArg(args[2], 'mtime'), undefined, undefined, optionsArg(FollowOptions, fileOptions(args[3]), 'utimes options'));
         case 'chown':
-            return ctx.stub._rpcChown(stringArg(args[0], 'path'), nullableNumberArg(args[1], 'uid'), nullableNumberArg(args[2], 'gid'), undefined, undefined, FollowOptions.parse(fileOptions(args[3])));
+            return ctx.stub._rpcChown(stringArg(args[0], 'path'), nullableNumberArg(args[1], 'uid'), nullableNumberArg(args[2], 'gid'), undefined, undefined, optionsArg(FollowOptions, fileOptions(args[3]), 'chown options'));
         case 'deleteFile':
             // A remote token is the session's user: its deletion acts as that user,
             // as every file operation does. Named here so that no default, now or
@@ -559,9 +559,19 @@ function startProgramOptions(value) {
 function nullableNumberArg(value, name) {
     return value === null ? null : numberArg(value, name);
 }
-/** A call's own options beside its credential: mkdir(2)'s, and whether a link's own times or owner change. */
-const MkdirOptions = z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().max(0o7777).optional() });
+/**
+ * A call's own options beside its credential: mkdir(2)'s (a mode is Node's
+ * uint32, a stat's type bits and all; the filesystem keeps its permission
+ * bits), and whether a link's own times or owner change.
+ */
+const MkdirOptions = z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().max(0xffffffff).optional() });
 const FollowOptions = z.object({ followSymlinks: z.boolean().optional() });
+function optionsArg(schema, value, name) {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success)
+        throw apiError(`${name}: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || 'value'} ${issue.message}`).join('; ')}`, 'E_ARG_SHAPE', 400);
+    return parsed.data;
+}
 function fileContentArg(value) {
     if (typeof value === 'string' || value instanceof Uint8Array)
         return value;
