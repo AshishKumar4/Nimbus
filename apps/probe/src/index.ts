@@ -292,7 +292,7 @@ export class NimbusSession extends SdkNimbusSession {
   /** Experiment: this object's last facet calls (fabric isolate-pool recentFacetCalls): a peer's own times for the calls it ran. */
   _rpcProbeFacetCalls() {
     this.requireProbeDiagnostics();
-    return recentFacetCalls(this.ctx);
+    return { calls: recentFacetCalls(this.ctx), spans: (globalThis as unknown as { __d1Spans?: object[] }).__d1Spans ?? [] };
   }
   async _rpcProbeStores(needle: string): Promise<boolean> {
     this.requireProbeDiagnostics();
@@ -522,7 +522,7 @@ async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: stri
     if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });
     peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(name));
     if (action === 'stored') return Response.json({ peer: name, stored: await peer._rpcProbeStores(needle) });
-    if (action === 'facet-calls') return Response.json({ peer: name, calls: await peer._rpcProbeFacetCalls() });
+    if (action === 'facet-calls') return Response.json({ peer: name, ...(await peer._rpcProbeFacetCalls()) });
     await peer._rpcProbeCoordinatorReset().catch(() => {});
     return Response.json({ reset: name });
   } catch (error) {
