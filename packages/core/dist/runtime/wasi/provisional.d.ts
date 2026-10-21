@@ -308,12 +308,17 @@ export interface Provisional {
         entry: ResidentEntry;
     } | undefined;
     keyOf(handleId: number): string;
-    mkdir(key: string, path: string, mode: number, row: ResidentEntry | null | undefined, umask: number | undefined): boolean;
-    unlink(key: string, path: string, row: ResidentEntry | null | undefined): boolean;
-    rmdir(key: string, path: string, row: ResidentEntry | null | undefined): boolean;
-    symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined): boolean;
-    rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined): boolean;
-    setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined): boolean;
+    /**
+     * A change by name: false where it is not made here. `awaited`: its
+     * caller waits for the session's answer, which it is given (rejected with
+     * the session's refusal, the change undone by then), as an awaited open's.
+     */
+    mkdir(key: string, path: string, mode: number, row: ResidentEntry | null | undefined, umask: number | undefined, awaited?: boolean): boolean | Promise<unknown>;
+    unlink(key: string, path: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+    rmdir(key: string, path: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+    symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+    rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+    setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
     /**
      * Copy the file `source` names at `from` to `to`, its bytes read only as
      * these decisions read any (bytesOf for a file they hold, else the store's

@@ -55,6 +55,32 @@ async function create(fs, path, text) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/out/f3.txt')), 'file 3\n');
 }
 
+// ── The output gate is the client's effect: what was decided reaches the session, and the client stays live ──
+// Red before: the resident filesystem exposed no client, and its only drain
+// for output, logHeld, seals the client, so a live process's later writes
+// would never be sent.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/gate', { mode: 0o755 });
+  for (let index = 0; index < 20 && s.filesystem.delegations.size === 0; index++) await create(s.fs, `/home/user/proj/gate/warm${index}`, 'w');
+  assert.equal(s.filesystem.delegations.size, 1, 'no grant taken');
+  const client = s.fs.client;
+  assert.ok(client, 'the resident filesystem exposes no client');
+  for (const [name, text] of [['first', 'ONE'], ['second', 'TWO']]) {
+    await create(s.fs, `/home/user/proj/gate/${name}.txt`, text);
+    assert.equal(s.fs.holding(), true, `${name}: not decided under the grant`);
+    const waves = s.waves.length;
+    const gate = client.effect();
+    assert.ok(gate instanceof Promise, `${name}: the gate had nothing to wait for`);
+    await gate;
+    assert.equal(s.fs.holding(), false, `${name}: held still once the gate opened`);
+    assert.ok(s.waves.length > waves && s.waves.every((wave) => wave.ok), `${name}: no wave sent, or one refused`);
+  }
+  assert.equal(client.effect(), null, 'a gate with nothing decided since still waits');
+  await s.fs.settle();
+  for (const [name, text] of [['first', 'ONE'], ['second', 'TWO']]) assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/gate/${name}.txt`)), text);
+}
+
 // ── A write that makes its parents is decided here where its directory is ──
 {
   const s = session();
@@ -197,6 +223,8 @@ async function until(ready, what) {
     await until(() => s.filesystem.delegations.size === 1, 'the grant');
     await new Promise((resolve) => setTimeout(resolve, 10));
   };
+  // Input arrives: the next copy's walk takes the barrier it owes.
+  s.fs.inbound();
   await s.fs.copyFile('/home/user/proj/d3/src.txt', '/home/user/proj/d3/second.txt');
   await s.fs.settle();
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d3/first.txt')), 'OLD');

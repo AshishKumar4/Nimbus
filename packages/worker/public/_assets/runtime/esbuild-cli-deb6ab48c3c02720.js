@@ -818,8 +818,7 @@ return globalThis.Go;
       get(target, name) {
         if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
         return async (...args) => {
-          const asked = stub.answer(name, args);
-          if (live !== void 0 && WAITS[name] !== true) live(Promise.resolve(asked));
+          const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
           const answer = await asked;
           try {
             if ("refusal" in answer) throw supervisorRefusalError(answer.refusal);
@@ -831,14 +830,19 @@ return globalThis.Go;
       }
     });
   }
-  function supervisorFilesystem(remote, local) {
-    return bridgeOverSupervisor(answeringSupervisor(remote), {
+  function supervisorFilesystem(remote, local, live) {
+    return bridgeOverSupervisor(answeringSupervisor(remote, live), {
       synchronous: local,
       writeFileFrom: async (path) => {
         const name = typeof path === "string" ? path : path.path;
         throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: "ENOTSUP" });
       }
     });
+  }
+  function toldLive(call, live) {
+    const native = Promise.resolve(call);
+    live?.(native);
+    return native;
   }
 
   function rootClampedSegments(path, base = []) {

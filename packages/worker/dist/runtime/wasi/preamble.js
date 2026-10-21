@@ -1,6 +1,6 @@
 import { NIMBUS_ERESTART } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
-import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -201,7 +201,7 @@ function __wasiStartResident(sup, cred) {
     // A kept store answers as it stood at its cursor: the process's first
     // answer takes the barrier from there (inbound, below), so it reads
     // everything that happened since, as a barrier inside one process does.
-    let view = kept === null ? null : store.view.namespaceView(supervisor, kept.device, cred);
+    let view = kept === null ? null : store.view.namespaceView(supervisor, kept.root, cred);
     if (view !== null && !view.ready())
         view = null;
     /** The process's admission listener, given to the view once there is one (ResidentNamespace.onAdmitted). */
@@ -209,11 +209,14 @@ function __wasiStartResident(sup, cred) {
     if (view === null)
         store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
     const ready = view !== null ? Promise.resolve(view) : (async () => {
-        // The session's own filesystem is the one the store answers for: its root reports its device.
-        const root = await authority.stat('/');
-        if (root === null || !(await store.view.bootLazy(supervisor)))
+        // The session's own filesystem is the one the store answers for: its root reports its device. Asked once the
+        // store has its cursor, so the root is as of it or after (a delta that names it after moves it again).
+        if (!(await store.view.bootLazy(supervisor)))
             return null;
-        view = store.view.namespaceView(supervisor, root.dev, cred);
+        const root = await authority.stat('/');
+        if (root === null)
+            return null;
+        view = store.view.namespaceView(supervisor, root, cred);
         if (admitted !== null)
             view.onAdmitted?.(admitted);
         return view;
@@ -245,19 +248,7 @@ function __wasiStartResident(sup, cred) {
     // The process holds the subtrees it writes (delegation-holder.ts): its
     // creates, writes, mkdirs, unlinks and renames there are decided here and
     // logged into its filesystem client, which sends them as numbered waves.
-    const waves = sup;
-    const session = {
-        // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
-        openWriter: (first) => waves.openWaveWriter(first),
-        writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
-        retireWriter: async (writer) => { await waves.retireWaveWriter(writer); },
-        grants: {
-            acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-            release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-            awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-            recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-        },
-    };
+    const session = supervisorSession(sup, authority);
     // A resident's facet keeps the log of what it sends in its own store
     // (process-fs-journal.ts), drained by the session once the process is gone.
     const journalSql = Reflect.get(globalThis, '__nimbusFsJournalSql');
@@ -334,8 +325,9 @@ export async function __wasiSettleWrites() {
             // A run that ended with its store answering, and everything it wrote
             // answered, leaves the store to the next process in this facet.
             const view = await resident.ready;
-            if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready()) {
-                __wasiKept = { who: resident.who, store: resident.store, device: view.device, walked: resident.fs.walked() };
+            const root = view?.entry('');
+            if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready() && root) {
+                __wasiKept = { who: resident.who, store: resident.store, root, walked: resident.fs.walked() };
             }
         }
     }

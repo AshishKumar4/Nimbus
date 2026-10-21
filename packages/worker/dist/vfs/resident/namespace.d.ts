@@ -41,7 +41,7 @@ export type Resolved = {
 } | 'ELOOP';
 /** A lookup or listing asked of the session, until its answer is installed or dropped (Namespace.learning). */
 export interface Learning {
-    /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at or above `k`, and the table was not replaced. */
+    /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at `k`, or above it with what is beneath it moved, and the table was not replaced. */
     installs(k: string): boolean;
     /** Whether the answer's listing of `dir` may be installed: as `installs`, and nothing admitted beneath it either. */
     lists(dir: string): boolean;
@@ -66,6 +66,14 @@ export interface Namespace {
     overlayDelta(bytes: number): void;
     /** The row at exactly `k` (no symlink resolution), or undefined; refused while sealed. */
     rowAt(k: string): NsRow | undefined;
+    /**
+     * The root's own row, as the session last said it: given as a view starts
+     * (the stat it was started with) and moved by each delta that names the
+     * root. Undefined from a reset until one does: the table holds no row for
+     * the root, which has no parent.
+     */
+    root(): NsRow | undefined;
+    setRoot(stat: NsStat, rev: unknown): void;
     /** Why the namespace is not answering (meaningful only while ready() is false). */
     notReadyCause(): string;
     put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;

@@ -1,4 +1,5 @@
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
+import type { ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WasiSupervisorStub } from './wasi/types.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS } from './filesystem-mirrors.generated.js';
 import { type SupervisorRefusal } from './filesystem-methods.js';
@@ -55,7 +56,15 @@ export declare function installAnsweringSupervisor(): void;
  * is a same-isolate capability: an RPC stub answers every property with a
  * callable, so it is never read from the stub, only carried by a local
  * supervisor whose view really is in this isolate. A remote supervisor's
- * refusals arrive as answers (answeringSupervisor).
+ * refusals arrive as answers (answeringSupervisor), each call told to
+ * `live` as it is made.
  */
-export declare function supervisorFilesystem(remote: WasiSupervisorStub, local?: RuntimeSynchronousFs): RuntimeFsBridge;
+export declare function supervisorFilesystem(remote: WasiSupervisorStub, local?: RuntimeSynchronousFs, live?: (call: Promise<unknown>) => unknown): RuntimeFsBridge;
+/**
+ * The session a process's filesystem client sends its waves to and takes its
+ * grants from, over `stub`: waves on the stub, grants through `authority`
+ * (supervisorFilesystem over the same stub). Each wave call is told to `live`
+ * as it is made, as the authority tells its own.
+ */
+export declare function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown): ProcessFsSession;
 //# sourceMappingURL=vfs-supervisor.d.ts.map

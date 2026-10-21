@@ -29,7 +29,8 @@
  * most one per link record in flight (a known leak, by that name pattern).
  */
 import { VFS_DESCRIPTION, VfsError } from '../vfs/vfs-error.js';
-import { openFollows, openOnMount } from '../vfs/mounted-description.js';
+import { openOnMount } from '../vfs/mounted-description.js';
+import { openFollows } from '../vfs/open-rules.js';
 import { openFlags } from './descriptors.js';
 import { openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */

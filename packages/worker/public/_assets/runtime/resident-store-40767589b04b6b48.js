@@ -1049,6 +1049,7 @@ var __nimbusResidentModule = (() => {
     let lazy = false;
     const listed = new SafeSet();
     let generation = 0;
+    let root;
     const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
     let relisting = new SafeMap();
@@ -1108,6 +1109,23 @@ var __nimbusResidentModule = (() => {
         if (row && row.kind === NS_DIR) return null;
       }
       return null;
+    };
+    const setRoot = (stat, rev) => {
+      root = {
+        kind: NS_DIR,
+        size: NumberOf(stat.size) || 0,
+        mode: NumberOf(stat.mode) || 0,
+        uid: NumberOf(stat.uid) || 0,
+        gid: NumberOf(stat.gid) || 0,
+        atime: NumberOf(stat.atime) || 0,
+        mtime: NumberOf(stat.mtime) || 0,
+        ctime: NumberOf(stat.ctime) || 0,
+        ino: NumberOf(stat.ino) || 0,
+        rev: NumberOf(rev) || 0,
+        target: null,
+        dev: NumberOf(ownValue(stat, "dev")) || 0,
+        nlink: NumberOf(ownValue(stat, "nlink")) || 1
+      };
     };
     const put = (t, k, stat, rev, target, unlistedAt) => {
       const parent = nsParent(k);
@@ -1246,6 +1264,8 @@ var __nimbusResidentModule = (() => {
         admission.addOverlay(bytes);
       },
       rowAt: (k) => nsRowAt(coherence.require(), k),
+      root: () => root,
+      setRoot,
       notReadyCause() {
         if (!coherence.bound()) return "the process's store is not bound";
         const sealed = coherence.sealed();
@@ -1296,24 +1316,37 @@ var __nimbusResidentModule = (() => {
        */
       applyEntry(t, entry) {
         const k = nsKey(entry.path);
-        learnings.forEach((asked) => {
-          asked.reported[asked.reported.length] = k;
-        });
-        if (k === "") return null;
+        const moved2 = (beneath) => {
+          learnings.forEach((asked) => {
+            asked.reported[asked.reported.length] = { at: k, beneath };
+          });
+        };
+        if (k === "") {
+          moved2(true);
+          const stat2 = ownValue(entry, "stat");
+          if (stat2) setRoot(stat2, entry.rev);
+          return null;
+        }
         const stat = ownValue(entry, "stat");
         if (stat === null) {
+          moved2(true);
           deleteTree(t, k, true);
           return null;
         }
         const before = nsRowAt(t, k);
-        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue(entry, "linkTarget"))) return null;
+        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue(entry, "linkTarget"))) {
+          moved2(true);
+          return null;
+        }
         const after = nsRowAt(t, k);
         if (after === void 0 || after.kind !== NS_DIR) {
+          moved2(true);
           deleteTree(t, k, false);
           return null;
         }
         const was = before !== void 0 && traversable(before);
         const now = traversable(after);
+        moved2(!(before !== void 0 && before.kind === NS_DIR && before.ino === after.ino && before.dev === after.dev && was === now && !ownValue(entry, "structural") && !ownValue(entry, "subtree")));
         if (lazy) {
           if (ownValue(entry, "structural") || ownValue(entry, "subtree") || was !== now) deleteTree(t, k, false);
           return null;
@@ -1433,6 +1466,7 @@ var __nimbusResidentModule = (() => {
       },
       clear() {
         generation++;
+        root = void 0;
         relisting = new SafeMap();
         links = new SafeSet();
         unlisted = new SafeMap();
@@ -1443,6 +1477,7 @@ var __nimbusResidentModule = (() => {
       },
       beginLazy() {
         generation++;
+        root = void 0;
         relisting = new SafeMap();
         lazy = true;
         listed.clear();
@@ -1479,8 +1514,8 @@ var __nimbusResidentModule = (() => {
         learnings.add(asked);
         const named = (k, beneath) => {
           for (let i = 0; i < asked.reported.length; i++) {
-            const at = asked.reported[i];
-            if (at === "" || at === k || stringStartsWith(k, at + "/") || beneath && (k === "" || stringStartsWith(at, k + "/"))) return true;
+            const { at, beneath: under } = asked.reported[i];
+            if (at === k || under && (at === "" || stringStartsWith(k, at + "/")) || beneath && (k === "" || stringStartsWith(at, k + "/"))) return true;
           }
           return false;
         };
@@ -2197,10 +2232,14 @@ var __nimbusResidentModule = (() => {
       bootLazy,
       /**
        * The store as a process's filesystem adapter reads it: names as lstats,
-       * file bytes held or fetched, and the barrier. `device` is the session's
-       * SQLite device, the only one the adapter answers for.
+       * file bytes held or fetched, and the barrier. `root` is the session's
+       * root as of the store's cursor or after it (a delta that names it moves
+       * it): its device is the session's SQLite device, the only one the
+       * adapter answers for.
        */
-      namespaceView(supervisor, device, cred) {
+      namespaceView(supervisor, root, cred) {
+        const device = root.dev;
+        namespace.setRoot(root, root.revision);
         namespace.setCred(cred);
         const encoder3 = new TextEncoder();
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
@@ -2340,8 +2379,8 @@ var __nimbusResidentModule = (() => {
           ready: () => namespace.ready(),
           entry(k) {
             if (namespace.fenced(k)) return void 0;
-            const row = nsRowAt(coherence.require(), k);
-            if (row === void 0) return namespace.listedAt(k) ? null : void 0;
+            const row = k === "" ? namespace.root() : nsRowAt(coherence.require(), k);
+            if (row === void 0) return k !== "" && namespace.listedAt(k) ? null : void 0;
             return {
               type: typeOf(row.kind),
               dev: row.dev || 0,
