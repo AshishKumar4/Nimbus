@@ -8,24 +8,42 @@
  * kv.list (prefix, start/end, reverse with limit) see unconfirmed puts,
  * overwrites and deletes made earlier in the same turn and after a yield, and
  * a key deleted and put again in one turn reads and lists as the last put.
+ *
+ * `bytes` is what the rows take (each key's UTF-8 and its value serialized),
+ * the share of the database's size they are on the platform. `meter`, when
+ * given, counts each read call and the file content (a string or bytes value)
+ * the reads hand back.
  */
+import { serialize } from 'bun:jsc';
+
+const utf8 = new TextEncoder();
 const utf8Order = (a, b) => {
-  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);
+  const x = utf8.encode(a), y = utf8.encode(b);
   const n = Math.min(x.length, y.length);
   for (let i = 0; i < n; i++) if (x[i] !== y[i]) return x[i] - y[i];
   return x.length - y.length;
 };
+const sizeOf = (key, value) => utf8.encode(key).byteLength + serialize(value).byteLength;
 
-export function fakeDoKv() {
+/** @param {{ meter?: { reads: number, contentBytes: number } }} [options] */
+export function fakeDoKv({ meter } = {}) {
   const rows = new Map();
+  const sizes = new Map();
   let sorted = null;
   const keys = () => (sorted ??= [...rows.keys()].sort(utf8Order));
+  const read = (value) => {
+    if (meter && (typeof value === 'string' || value instanceof Uint8Array)) meter.contentBytes += typeof value === 'string' ? value.length : value.byteLength;
+    return structuredClone(value);
+  };
   const storage = {
     writes: 0,
+    bytes: 0,
     put(key, value, options) {
       if (options?.allowUnconfirmed !== true) throw new Error('fake: the store writes unconfirmed');
-        if (!rows.has(key)) sorted = null;
+      if (!rows.has(key)) sorted = null;
       rows.set(key, structuredClone(value));
+      storage.bytes += sizeOf(key, value) - (sizes.get(key) ?? 0);
+      sizes.set(key, sizeOf(key, value));
       storage.writes++;
     },
     delete(key, options) {
@@ -33,14 +51,23 @@ export function fakeDoKv() {
       const list = Array.isArray(key) ? key : [key];
       if (list.length > 128) throw new Error('fake: at most 128 keys a delete');
       let any = false;
-      for (const k of list) if (rows.delete(k)) any = true;
+      for (const k of list) {
+        if (!rows.delete(k)) continue;
+        any = true;
+        storage.bytes -= sizes.get(k);
+        sizes.delete(k);
+      }
       if (any) sorted = null;
       storage.writes++;
     },
     kv: {
-      get(key) { return rows.has(key) ? structuredClone(rows.get(key)) : undefined; },
+      get(key) {
+        if (meter) meter.reads++;
+        return rows.has(key) ? read(rows.get(key)) : undefined;
+      },
       /** @param {{ start?: string, end?: string, prefix?: string, reverse?: boolean, limit?: number }} [options] */
       *list(options = {}) {
+        if (meter) meter.reads++;
         const { start, end, prefix, reverse = false, limit = Infinity } = options;
         const all = keys().filter((key) => (prefix === undefined || key.startsWith(prefix))
           && (start === undefined || utf8Order(key, start) >= 0)
@@ -49,11 +76,30 @@ export function fakeDoKv() {
         let n = 0;
         for (const key of all) {
           if (n++ >= limit) return;
-          if (rows.has(key)) yield [key, structuredClone(rows.get(key))];
+          if (rows.has(key)) yield [key, read(rows.get(key))];
         }
       },
     },
-    sql: { databaseSize: 0 },
+    sql: { get databaseSize() { return storage.bytes; } },
   };
   return storage;
+}
+
+/**
+ * A process facet's `ctx.storage`: its key-value storage (fakeDoKv) and its
+ * SQL (`sql`, a facetSql-shaped shim: the write journal's) over one database,
+ * as on the platform, whose `databaseSize` is what both hold.
+ * @param {any} sql
+ * @param {{ meter?: { reads: number, contentBytes: number } }} [options]
+ */
+export function facetStorage(sql, options = {}) {
+  const storage = fakeDoKv(options);
+  const pages = () => {
+    for (const row of sql.exec('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()')) return Number(row.n);
+    return 0;
+  };
+  const shared = new Proxy(sql, {
+    get: (target, name) => (name === 'databaseSize' ? pages() + storage.bytes : Reflect.get(target, name)),
+  });
+  return Object.assign(storage, { sql: shared });
 }
