@@ -18,7 +18,6 @@ import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
-import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
  * session, composed the way the supervisor's are: transforms in the object's
@@ -30,7 +29,8 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 // Experiment (D1, not for landing): a session's one-shots of these runtimes run
 // on another session Durable Object (by name, set per session from the probe
 // app), its own IsolatePool over the same spec, its syscalls routed back here.
-// On globalThis: the probe app's copy of this module is not the SDK's.
+// On globalThis: the probe app's copy of this module is not the SDK's. The
+// probe app hands the peer's stub over: this host's env names no namespace.
 export function d1OneShotPeer() {
     const shared = globalThis;
     return shared.__nimbusD1OneShotPeer ??= new Map();
@@ -43,10 +43,6 @@ function d1Images(images) {
             path: image.path, identity: image.identity, size: image.size, peak: image.peak,
             stream: async () => new Blob([await image.read()]).stream(),
         }]));
-}
-function d1Peer(env, name) {
-    const sessions = hostNamespaceBinding(env, 'd1 one-shot peer');
-    return sessions.get(sessions.idFromName(name));
 }
 /**
  * Facets as dynamic workers over `env` and `ctx`, each going out through
@@ -86,16 +82,16 @@ export function loaderFacetHost(env, ctx, network) {
             return {
                 submit(fn, args, options) {
                     const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-                    const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer().get(ctx.id.toString()) : undefined;
-                    if (peerName === undefined)
+                    const peer = D1_MOVED.test(spec.tag) ? d1OneShotPeer().get(ctx.id.toString()) : undefined;
+                    if (peer === undefined)
                         return pool.submit(fn, args, options).finally(watched);
-                    peerUsed = peerName;
-                    return d1Peer(env, peerName)._rpcD1PeerSubmit(shape, fn, args, { timeoutMs: options?.timeoutMs, wasmModules: d1Images(options?.wasmModules) }).finally(watched);
+                    peerUsed = peer;
+                    return peer()._rpcD1PeerSubmit(shape, fn, args, { timeoutMs: options?.timeoutMs, wasmModules: d1Images(options?.wasmModules) }).finally(watched);
                 },
                 dispose: () => {
                     pool.dispose();
                     if (peerUsed !== undefined)
-                        ctx.waitUntil(d1Peer(env, peerUsed)._rpcD1PeerDispose(shape.key).catch(() => { }));
+                        ctx.waitUntil(peerUsed()._rpcD1PeerDispose(shape.key).catch(() => { }));
                 },
             };
         },

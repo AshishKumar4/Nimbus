@@ -15,6 +15,7 @@
  */
 import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import type { SupervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import type { FacetManager } from '../facets/manager.js';
 /**
@@ -25,7 +26,7 @@ import type { FacetManager } from '../facets/manager.js';
  * grow.
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
-export declare function d1OneShotPeer(): Map<string, string>;
+export declare function d1OneShotPeer(): Map<string, () => D1Peer>;
 export interface D1PeerImage {
     path: string;
     identity: string;
@@ -46,6 +47,13 @@ export interface D1PeerShape {
     scope?: string;
     supervisorPerCall: boolean;
     network?: WorkspaceNetworkRef;
+}
+export interface D1Peer {
+    _rpcD1PeerSubmit(shape: D1PeerShape, fn: FacetTaskSource<unknown, unknown>, args: unknown, options: {
+        timeoutMs?: number;
+        wasmModules?: Record<string, D1PeerImage>;
+    }): Promise<unknown>;
+    _rpcD1PeerDispose(key: string): Promise<void>;
 }
 /**
  * Facets as dynamic workers over `env` and `ctx`, each going out through
