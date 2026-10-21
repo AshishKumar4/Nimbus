@@ -16317,13 +16317,6 @@ ${suffix}`;
   ERR_OPERATION_FAILED: { message: "Operation failed: %s", bases: [ErrorConstructor, TypeErrorConstructor] },
   ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeErrorConstructor] },
   ERR_SOCKET_BAD_PORT: { message: (name50, port, allowZero = true) => `${name50} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeErrorConstructor] },
-  ERR_TLS_CERT_ALTNAME_FORMAT: { message: "Invalid subject alternative name string", bases: [SyntaxError] },
-  ERR_TLS_CERT_ALTNAME_INVALID: { message: function(reason, host, cert) {
-    this.reason = reason;
-    this.host = host;
-    this.cert = cert;
-    return `Hostname/IP does not match certificate's altnames: ${reason}`;
-  }, bases: [ErrorConstructor] },
   ERR_UNAVAILABLE_DURING_EXIT: { message: "Cannot call function in process exit handler", bases: [ErrorConstructor] },
   ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", bases: [ErrorConstructor] },
   ERR_UNKNOWN_SIGNAL: { message: "Unknown signal: %s", bases: [TypeErrorConstructor] },

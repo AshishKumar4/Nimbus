@@ -15,7 +15,7 @@
  * and `__nimbusNodeSystemError`, and the module resolver throws its errors
  * after a program may have replaced built-ins.
  */
-import { arrayIncludes, arrayJoin, captureStackTraceOf, dataDescriptor, Error, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError, } from './primordials.js';
+import { arrayIncludes, arrayJoin, captureStackTraceOf, dataDescriptor, Error, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, SyntaxError, TypeError, URIError, } from './primordials.js';
 /** One class per base and code, as Node makes one per code. */
 const nodeErrorClasses = new SafeMap();
 /** Each class's code, by its prototype. */
@@ -180,6 +180,14 @@ function invalidArgValueMessage(name, value, reason = 'is invalid') {
         inspected = `${stringSlice(inspected, 0, 128)}...`;
     return `The ${stringIncludes(name, '.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
 }
+/** Node's ERR_TLS_CERT_ALTNAME_INVALID: `cert` does not name `host`, for `reason`. */
+export function tlsCertAltnameInvalid(reason, host, cert) {
+    return made(Error, 'ERR_TLS_CERT_ALTNAME_INVALID', `Hostname/IP does not match certificate's altnames: ${reason}`, { reason, host, cert }, tlsCertAltnameInvalid);
+}
+/** Node's ERR_TLS_CERT_ALTNAME_FORMAT: a quoted subject alternative name is not a JSON string. */
+export function tlsCertAltnameFormat() {
+    return made(SyntaxError, 'ERR_TLS_CERT_ALTNAME_FORMAT', 'Invalid subject alternative name string', undefined, tlsCertAltnameFormat);
+}
 /** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
 export function outOfRange(name, range, input) {
     return made(RangeError, 'ERR_OUT_OF_RANGE', outOfRangeMessage(name, range, input), undefined, outOfRange);
@@ -321,13 +329,6 @@ const nodeErrorMessages = {
     ERR_OPERATION_FAILED: { message: 'Operation failed: %s', bases: [Error, TypeError] },
     ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
     ERR_SOCKET_BAD_PORT: { message: (name, port, allowZero = true) => `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
-    ERR_TLS_CERT_ALTNAME_FORMAT: { message: 'Invalid subject alternative name string', bases: [SyntaxError] },
-    ERR_TLS_CERT_ALTNAME_INVALID: { message: function (reason, host, cert) {
-            this.reason = reason;
-            this.host = host;
-            this.cert = cert;
-            return `Hostname/IP does not match certificate's altnames: ${reason}`;
-        }, bases: [Error] },
     ERR_UNAVAILABLE_DURING_EXIT: { message: 'Cannot call function in process exit handler', bases: [Error] },
     ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: '`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', bases: [Error] },
     ERR_UNKNOWN_SIGNAL: { message: 'Unknown signal: %s', bases: [TypeError] },

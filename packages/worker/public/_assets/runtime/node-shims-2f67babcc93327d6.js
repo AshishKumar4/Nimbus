@@ -320,8 +320,8 @@ function setFind(set, test) {
 return { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: ProxyConstructor, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathFloor, mathMax, mathMin, newTextEncoder, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, useCaptureStackTrace };
 })();
 
-var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
-const { arrayIncludes, arrayJoin, captureStackTraceOf, dataDescriptor, Error, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError } = __nimbusPrimordials;
+var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, tlsCertAltnameFormat, tlsCertAltnameInvalid, useNodeErrorInspect } = (() => {
+const { arrayIncludes, arrayJoin, captureStackTraceOf, dataDescriptor, Error, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, SyntaxError, TypeError, URIError } = __nimbusPrimordials;
 var nodeErrorClasses = new SafeMap();
 var classCodes = new SafeWeakMap();
 function accessorDescriptor(get, set, enumerable, configurable) {
@@ -444,6 +444,12 @@ function invalidArgValueMessage(name, value, reason = "is invalid") {
   if (inspected.length > 128) inspected = `${stringSlice(inspected, 0, 128)}...`;
   return `The ${stringIncludes(name, ".") ? "property" : "argument"} '${name}' ${reason}. Received ${inspected}`;
 }
+function tlsCertAltnameInvalid(reason, host, cert) {
+  return made(Error, "ERR_TLS_CERT_ALTNAME_INVALID", `Hostname/IP does not match certificate's altnames: ${reason}`, { reason, host, cert }, tlsCertAltnameInvalid);
+}
+function tlsCertAltnameFormat() {
+  return made(SyntaxError, "ERR_TLS_CERT_ALTNAME_FORMAT", "Invalid subject alternative name string", void 0, tlsCertAltnameFormat);
+}
 function outOfRange(name, range, input) {
   return made(RangeError, "ERR_OUT_OF_RANGE", outOfRangeMessage(name, range, input), void 0, outOfRange);
 }
@@ -560,13 +566,6 @@ ${suffix}`;
   ERR_OPERATION_FAILED: { message: "Operation failed: %s", bases: [Error, TypeError] },
   ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
   ERR_SOCKET_BAD_PORT: { message: (name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
-  ERR_TLS_CERT_ALTNAME_FORMAT: { message: "Invalid subject alternative name string", bases: [SyntaxError] },
-  ERR_TLS_CERT_ALTNAME_INVALID: { message: function(reason, host, cert) {
-    this.reason = reason;
-    this.host = host;
-    this.cert = cert;
-    return `Hostname/IP does not match certificate's altnames: ${reason}`;
-  }, bases: [Error] },
   ERR_UNAVAILABLE_DURING_EXIT: { message: "Cannot call function in process exit handler", bases: [Error] },
   ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", bases: [Error] },
   ERR_UNKNOWN_SIGNAL: { message: "Unknown signal: %s", bases: [TypeError] },
@@ -691,7 +690,7 @@ function captureStack(error, above) {
   const capture = captureStackTraceOf();
   if (typeof capture === "function") reflectApply(capture, Error, [error, above]);
 }
-return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect };
+return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, tlsCertAltnameFormat, tlsCertAltnameInvalid, useNodeErrorInspect };
 })();
 
 var { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags, validateInt32, validateUint32 } = (() => {
@@ -1200,6 +1199,263 @@ function createPosixPath(cwd) {
   return posix;
 }
 return { createPosixPath };
+})();
+
+var { createCheckServerIdentity } = (() => {
+const { arrayIsArray, arrayJoin, JSONParse, NumberPrototypeToString, reflectApply, stringCharCodeAt, StringFromCharCode, stringIndexOf, stringSlice } = __nimbusPrimordials;
+function unfqdn(host) {
+  return host.replace(/[.]$/, "");
+}
+function splitHost(host) {
+  return unfqdn(host).replace(/[A-Z]/g, (c) => StringFromCharCode(32 + c.charCodeAt(0))).split(".");
+}
+function check(hostParts, pattern, wildcards) {
+  if (!pattern) return false;
+  const patternParts = splitHost(pattern);
+  if (hostParts.length !== patternParts.length) return false;
+  if (patternParts.includes("")) return false;
+  if (patternParts.some((s) => /[^\u0021-\u007F]/u.test(s))) return false;
+  for (let i = hostParts.length - 1; i > 0; i -= 1) {
+    if (hostParts[i] !== patternParts[i]) return false;
+  }
+  const hostSubdomain = hostParts[0];
+  const patternSubdomain = patternParts[0];
+  const patternSubdomainParts = patternSubdomain.split("*", 3);
+  if (patternSubdomainParts.length === 1 || patternSubdomain.includes("xn--")) return hostSubdomain === patternSubdomain;
+  if (!wildcards) return false;
+  if (patternSubdomainParts.length > 2) return false;
+  if (patternParts.length <= 2) return false;
+  const { 0: prefix, 1: suffix } = patternSubdomainParts;
+  if (prefix.length + suffix.length > hostSubdomain.length) return false;
+  if (!hostSubdomain.startsWith(prefix)) return false;
+  if (!hostSubdomain.endsWith(suffix)) return false;
+  return true;
+}
+var jsonStringPattern = /^"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/;
+function splitEscapedAltNames(altNames) {
+  const result = [];
+  let currentToken = "";
+  let offset = 0;
+  while (offset !== altNames.length) {
+    const nextSep = altNames.indexOf(",", offset);
+    const nextQuote = altNames.indexOf('"', offset);
+    if (nextQuote !== -1 && (nextSep === -1 || nextQuote < nextSep)) {
+      currentToken += altNames.substring(offset, nextQuote);
+      const match = jsonStringPattern.exec(altNames.substring(nextQuote));
+      if (!match) throw tlsCertAltnameFormat();
+      currentToken += JSONParse(match[0]);
+      offset = nextQuote + match[0].length;
+    } else if (nextSep !== -1) {
+      currentToken += altNames.substring(offset, nextSep);
+      result.push(currentToken);
+      currentToken = "";
+      offset = nextSep + 2;
+    } else {
+      currentToken += altNames.substring(offset);
+      offset = altNames.length;
+    }
+  }
+  result.push(currentToken);
+  return result;
+}
+var CHAR_0 = 48;
+var CHAR_9 = 57;
+var CHAR_DOT = 46;
+var CHAR_COLON = 58;
+var CHAR_PERCENT = 37;
+var INET6_ADDRESS_MAX = 45;
+function inetPton4(text) {
+  const bytes = [0, 0, 0, 0];
+  let sawDigit = false;
+  let octets = 0;
+  let at = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = stringCharCodeAt(text, i);
+    if (ch >= CHAR_0 && ch <= CHAR_9) {
+      const next = bytes[at] * 10 + (ch - CHAR_0);
+      if (sawDigit && bytes[at] === 0) return null;
+      if (next > 255) return null;
+      bytes[at] = next;
+      if (!sawDigit) {
+        if (++octets > 4) return null;
+        sawDigit = true;
+      }
+    } else if (ch === CHAR_DOT && sawDigit) {
+      if (octets === 4) return null;
+      at++;
+      sawDigit = false;
+    } else {
+      return null;
+    }
+  }
+  return octets < 4 ? null : bytes;
+}
+function hexValue(ch) {
+  if (ch >= CHAR_0 && ch <= CHAR_9) return ch - CHAR_0;
+  if (ch >= 97 && ch <= 102) return ch - 87;
+  if (ch >= 65 && ch <= 70) return ch - 55;
+  return -1;
+}
+function inetPton6(text) {
+  const bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  let tp = 0;
+  let colon = -1;
+  let i = 0;
+  if (stringCharCodeAt(text, 0) === CHAR_COLON && stringCharCodeAt(text, ++i) !== CHAR_COLON) return null;
+  let token = i;
+  let digits = 0;
+  let value = 0;
+  while (i < text.length) {
+    const ch = stringCharCodeAt(text, i++);
+    const hex = hexValue(ch);
+    if (hex !== -1) {
+      value = value << 4 | hex;
+      if (++digits > 4) return null;
+      continue;
+    }
+    if (ch === CHAR_COLON) {
+      token = i;
+      if (digits === 0) {
+        if (colon !== -1) return null;
+        colon = tp;
+        continue;
+      }
+      if (i === text.length || tp + 2 > 16) return null;
+      bytes[tp++] = value >> 8 & 255;
+      bytes[tp++] = value & 255;
+      digits = 0;
+      value = 0;
+      continue;
+    }
+    const ipv4 = ch === CHAR_DOT && tp + 4 <= 16 ? inetPton4(stringSlice(text, token)) : null;
+    if (ipv4 === null) return null;
+    for (let k = 0; k < 4; k++) bytes[tp++] = ipv4[k];
+    digits = 0;
+    break;
+  }
+  if (digits !== 0) {
+    if (tp + 2 > 16) return null;
+    bytes[tp++] = value >> 8 & 255;
+    bytes[tp++] = value & 255;
+  }
+  if (colon !== -1) {
+    if (tp === 16) return null;
+    const n = tp - colon;
+    for (let k = 1; k <= n; k++) {
+      bytes[16 - k] = bytes[colon + n - k];
+      bytes[colon + n - k] = 0;
+    }
+    tp = 16;
+  }
+  return tp === 16 ? bytes : null;
+}
+function inetNtop4(bytes, from) {
+  return arrayJoin([`${bytes[from]}`, `${bytes[from + 1]}`, `${bytes[from + 2]}`, `${bytes[from + 3]}`], ".");
+}
+function inetNtop6(bytes) {
+  const words = [0, 0, 0, 0, 0, 0, 0, 0];
+  for (let k = 0; k < 8; k++) words[k] = bytes[2 * k] << 8 | bytes[2 * k + 1];
+  let bestBase = -1;
+  let bestLen = 0;
+  let curBase = -1;
+  let curLen = 0;
+  for (let k = 0; k < 8; k++) {
+    if (words[k] === 0) {
+      if (curBase === -1) {
+        curBase = k;
+        curLen = 1;
+      } else {
+        curLen++;
+      }
+    } else if (curBase !== -1) {
+      if (bestBase === -1 || curLen > bestLen) {
+        bestBase = curBase;
+        bestLen = curLen;
+      }
+      curBase = -1;
+    }
+  }
+  if (curBase !== -1 && (bestBase === -1 || curLen > bestLen)) {
+    bestBase = curBase;
+    bestLen = curLen;
+  }
+  if (bestBase !== -1 && bestLen < 2) bestBase = -1;
+  let out = "";
+  for (let k = 0; k < 8; k++) {
+    if (bestBase !== -1 && k >= bestBase && k < bestBase + bestLen) {
+      if (k === bestBase) out += ":";
+      continue;
+    }
+    if (k !== 0) out += ":";
+    if (k === 6 && bestBase === 0 && (bestLen === 6 || bestLen === 7 && words[7] !== 1 || bestLen === 5 && words[5] === 65535)) {
+      out += inetNtop4(bytes, 12);
+      break;
+    }
+    out += reflectApply(NumberPrototypeToString, words[k], [16]);
+  }
+  if (bestBase !== -1 && bestBase + bestLen === 8) out += ":";
+  return out;
+}
+function canonicalizeIP(ip) {
+  const nul = stringIndexOf(ip, "\0");
+  const text = nul === -1 ? ip : stringSlice(ip, 0, nul);
+  const ipv4 = inetPton4(text);
+  if (ipv4 !== null) return inetNtop4(ipv4, 0);
+  const zone = stringIndexOf(text, StringFromCharCode(CHAR_PERCENT));
+  if (zone > INET6_ADDRESS_MAX) return void 0;
+  const ipv6 = inetPton6(zone === -1 ? text : stringSlice(text, 0, zone));
+  return ipv6 === null ? void 0 : inetNtop6(ipv6);
+}
+function createCheckServerIdentity(host) {
+  return function checkServerIdentity(hostname, cert) {
+    const subject = cert.subject;
+    const altNames = cert.subjectaltname;
+    const dnsNames = [];
+    const ips = [];
+    hostname = "" + hostname;
+    const hostnameASCII = host.domainToASCII(hostname);
+    hostname = unfqdn(hostname);
+    const hostnameASCIIWithoutFQDN = unfqdn(hostnameASCII);
+    const hostnameIsIP = host.isIP(hostname);
+    const hostnameASCIIIsIP = host.isIP(hostnameASCIIWithoutFQDN);
+    if (altNames) {
+      const splitAltNames = altNames.includes('"') ? splitEscapedAltNames(altNames) : altNames.split(", ");
+      splitAltNames.forEach((name) => {
+        if (name.startsWith("DNS:")) {
+          dnsNames.push(name.slice(4));
+        } else if (name.startsWith("IP Address:")) {
+          ips.push(canonicalizeIP(name.slice(11)));
+        }
+      });
+    }
+    if (!hostnameIsIP && hostnameASCIIIsIP) {
+      return tlsCertAltnameInvalid("Host is a non-canonical IP address", hostname, cert);
+    }
+    let valid = false;
+    let reason = "Unknown reason";
+    if (hostnameIsIP) {
+      valid = ips.includes(canonicalizeIP(hostname));
+      if (!valid) reason = `IP: ${hostname} is not in the cert's list: ${ips.join(", ")}`;
+    } else if (dnsNames.length > 0 || subject?.CN) {
+      const hostParts = splitHost(hostnameASCIIWithoutFQDN);
+      const wildcard = (pattern) => check(hostParts, pattern, true);
+      if (dnsNames.length > 0) {
+        valid = dnsNames.some(wildcard);
+        if (!valid) reason = `Host: ${hostname}. is not in the cert's altnames: ${altNames}`;
+      } else {
+        const cn = subject?.CN;
+        if (arrayIsArray(cn)) valid = cn.some(wildcard);
+        else if (cn) valid = wildcard(cn);
+        if (!valid) reason = `Host: ${hostname}. is not cert's CN: ${cn}`;
+      }
+    } else {
+      reason = "Cert does not contain a DNS name";
+    }
+    if (!valid) return tlsCertAltnameInvalid(reason, hostname, cert);
+    return void 0;
+  };
+}
+return { createCheckServerIdentity };
 })();
 
 Object.defineProperties(globalThis, {
@@ -13250,239 +13506,15 @@ const __tlsMod = (() => {
     };
     return socket;
   };
-  // tls.checkServerIdentity is Node's (lib/tls.js and its helpers, and
-  // src/cares_wrap.cc CanonicalizeIP over libuv's inet_pton and inet_ntop,
-  // deps/uv/src/inet.c). workerd's is an older Node's: it matched a host that
-  // is an IP address only once IDNA maps it ('127.1', '0x7f.0.0.1') against
-  // the certificate's DNS names, and a DNS name as written rather than in its
-  // ASCII form ('foo\u3002bar.example.com' against '*.example.com').
-  const unfqdn = (host) => host.replace(/[.]$/, "");
-  // String#toLowerCase is locale-sensitive: only A-Z are lowered.
-  const splitHost = (host) => unfqdn(host).replace(/[A-Z]/g, (c) => String.fromCharCode(32 + c.charCodeAt(0))).split(".");
-  function check(hostParts, pattern, wildcards) {
-    if (!pattern) return false;
-    const patternParts = splitHost(pattern);
-    if (hostParts.length !== patternParts.length) return false;
-    // A pattern with an empty label, or with a U-label, control or blank, never matches.
-    if (patternParts.includes("")) return false;
-    if (patternParts.some((s) => /[^\u0021-\u007F]/u.test(s))) return false;
-    for (let i = hostParts.length - 1; i > 0; i -= 1) {
-      if (hostParts[i] !== patternParts[i]) return false;
-    }
-    const hostSubdomain = hostParts[0];
-    const patternSubdomain = patternParts[0];
-    const patternSubdomainParts = patternSubdomain.split("*", 3);
-    // No wildcard, or an A-label, which RFC 6125 matches verbatim.
-    if (patternSubdomainParts.length === 1 || patternSubdomain.includes("xn--")) return hostSubdomain === patternSubdomain;
-    // One wildcard, and never in a *.tld.
-    if (!wildcards || patternSubdomainParts.length > 2 || patternParts.length <= 2) return false;
-    const { 0: prefix, 1: suffix } = patternSubdomainParts;
-    return prefix.length + suffix.length <= hostSubdomain.length && hostSubdomain.startsWith(prefix) && hostSubdomain.endsWith(suffix);
-  }
-  // A JSON string literal, exactly (ECMA-404): how far a quoted name runs.
-  const jsonStringPattern = /^"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/;
-  function splitEscapedAltNames(altNames) {
-    const result = [];
-    let currentToken = "";
-    let offset = 0;
-    while (offset !== altNames.length) {
-      const nextSep = altNames.indexOf(",", offset);
-      const nextQuote = altNames.indexOf('"', offset);
-      if (nextQuote !== -1 && (nextSep === -1 || nextQuote < nextSep)) {
-        currentToken += altNames.substring(offset, nextQuote);
-        const match = jsonStringPattern.exec(altNames.substring(nextQuote));
-        if (!match) throw new nodeErrorCodes.ERR_TLS_CERT_ALTNAME_FORMAT();
-        currentToken += JSON.parse(match[0]);
-        offset = nextQuote + match[0].length;
-      } else if (nextSep !== -1) {
-        currentToken += altNames.substring(offset, nextSep);
-        result.push(currentToken);
-        currentToken = "";
-        offset = nextSep + 2;
-      } else {
-        currentToken += altNames.substring(offset);
-        offset = altNames.length;
-      }
-    }
-    result.push(currentToken);
-    return result;
-  }
-  // inet_pton4: four decimal octets, none above 255 or with a leading zero.
-  function inetPton4(text) {
-    const bytes = [0];
-    let sawDigit = false;
-    let octets = 0;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      if (ch >= "0" && ch <= "9") {
-        const last = bytes[bytes.length - 1];
-        if (sawDigit && last === 0) return null;
-        const next = last * 10 + (ch.charCodeAt(0) - 48);
-        if (next > 255) return null;
-        bytes[bytes.length - 1] = next;
-        if (!sawDigit) {
-          if (++octets > 4) return null;
-          sawDigit = true;
-        }
-      } else if (ch === "." && sawDigit) {
-        if (octets === 4) return null;
-        bytes.push(0);
-        sawDigit = false;
-      } else return null;
-    }
-    return octets < 4 ? null : bytes;
-  }
-  // inet_pton6: groups of one to four hex digits, one "::" for a run of
-  // zeros, and an IPv4 address as the last 32 bits.
-  function inetPton6(text) {
-    const bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let tp = 0;
-    let colon = -1;
-    let i = 0;
-    if (text[0] === ":" && text[++i] !== ":") return null;
-    let token = i;
-    let digits = 0;
-    let value = 0;
-    while (i < text.length) {
-      const ch = text[i++];
-      let hex = "0123456789abcdef".indexOf(ch);
-      if (hex === -1) hex = "0123456789ABCDEF".indexOf(ch);
-      if (hex !== -1) {
-        value = (value << 4) | hex;
-        if (++digits > 4) return null;
-        continue;
-      }
-      if (ch === ":") {
-        token = i;
-        if (digits === 0) {
-          if (colon !== -1) return null;
-          colon = tp;
-          continue;
-        }
-        if (i === text.length || tp + 2 > 16) return null;
-        bytes[tp++] = (value >> 8) & 0xff;
-        bytes[tp++] = value & 0xff;
-        digits = 0;
-        value = 0;
-        continue;
-      }
-      const ipv4 = ch === "." && tp + 4 <= 16 ? inetPton4(text.slice(token)) : null;
-      if (ipv4 === null) return null;
-      for (const byte of ipv4) bytes[tp++] = byte;
-      digits = 0;
-      break;
-    }
-    if (digits !== 0) {
-      if (tp + 2 > 16) return null;
-      bytes[tp++] = (value >> 8) & 0xff;
-      bytes[tp++] = value & 0xff;
-    }
-    if (colon !== -1) {
-      if (tp === 16) return null;
-      const n = tp - colon;
-      for (let k = 1; k <= n; k++) {
-        bytes[16 - k] = bytes[colon + n - k];
-        bytes[colon + n - k] = 0;
-      }
-      tp = 16;
-    }
-    return tp === 16 ? bytes : null;
-  }
-  // inet_ntop6: lowercase hex, the first longest run of two or more zero
-  // groups as "::", and a mapped or compatible IPv4 address dotted.
-  function inetNtop6(bytes) {
-    const words = [];
-    for (let k = 0; k < 8; k++) words.push((bytes[2 * k] << 8) | bytes[2 * k + 1]);
-    let best = { base: -1, len: 0 };
-    let cur = { base: -1, len: 0 };
-    for (let k = 0; k < 8; k++) {
-      if (words[k] === 0) {
-        if (cur.base === -1) cur = { base: k, len: 1 };
-        else cur.len++;
-      } else if (cur.base !== -1) {
-        if (best.base === -1 || cur.len > best.len) best = cur;
-        cur = { base: -1, len: 0 };
-      }
-    }
-    if (cur.base !== -1 && (best.base === -1 || cur.len > best.len)) best = cur;
-    if (best.base !== -1 && best.len < 2) best = { base: -1, len: 0 };
-    let out = "";
-    for (let k = 0; k < 8; k++) {
-      if (best.base !== -1 && k >= best.base && k < best.base + best.len) {
-        if (k === best.base) out += ":";
-        continue;
-      }
-      if (k !== 0) out += ":";
-      if (k === 6 && best.base === 0 && (best.len === 6 || (best.len === 7 && words[7] !== 1) || (best.len === 5 && words[5] === 0xffff))) {
-        out += bytes.slice(12).join(".");
-        break;
-      }
-      out += words[k].toString(16);
-    }
-    if (best.base !== -1 && best.base + best.len === 8) out += ":";
-    return out;
-  }
-  // CanonicalizeIP: the address as libuv prints it, or undefined. The
-  // binding reads a C string, so a NUL ends it; uv_inet_pton drops an
-  // IPv6 zone ("%eth0") first.
-  function canonicalizeIP(ip) {
-    let text = String(ip);
-    const nul = text.indexOf("\u0000");
-    if (nul !== -1) text = text.slice(0, nul);
-    const ipv4 = inetPton4(text);
-    if (ipv4 !== null) return ipv4.join(".");
-    const zone = text.indexOf("%");
-    if (zone > 45) return undefined;
-    const ipv6 = inetPton6(zone === -1 ? text : text.slice(0, zone));
-    return ipv6 === null ? undefined : inetNtop6(ipv6);
-  }
-  function checkServerIdentity(hostname, cert) {
-    const subject = cert.subject;
-    const altNames = cert.subjectaltname;
-    const dnsNames = [];
-    const ips = [];
-    const { isIP } = __nimbusNodeLib().require("internal/net");
-    hostname = "" + hostname;
-    const hostnameASCII = __urlMod.domainToASCII(hostname);
-    hostname = unfqdn(hostname);
-    const hostnameASCIIWithoutFQDN = unfqdn(hostnameASCII);
-    const hostnameIsIP = isIP(hostname);
-    const hostnameASCIIIsIP = isIP(hostnameASCIIWithoutFQDN);
-    if (altNames) {
-      const splitAltNames = altNames.includes('"') ? splitEscapedAltNames(altNames) : altNames.split(", ");
-      splitAltNames.forEach((name) => {
-        if (name.startsWith("DNS:")) dnsNames.push(name.slice(4));
-        else if (name.startsWith("IP Address:")) ips.push(canonicalizeIP(name.slice(11)));
-      });
-    }
-    // A spelling that the resolver may read as another address is refused.
-    if (!hostnameIsIP && hostnameASCIIIsIP) {
-      return new nodeErrorCodes.ERR_TLS_CERT_ALTNAME_INVALID("Host is a non-canonical IP address", hostname, cert);
-    }
-    let valid = false;
-    let reason = "Unknown reason";
-    if (hostnameIsIP) {
-      // An IP host is matched as written: domainToASCII answers '' for IPv6.
-      valid = ips.includes(canonicalizeIP(hostname));
-      if (!valid) reason = "IP: " + hostname + " is not in the cert's list: " + ips.join(", ");
-    } else if (dnsNames.length > 0 || subject?.CN) {
-      const hostParts = splitHost(hostnameASCIIWithoutFQDN);
-      const wildcard = (pattern) => check(hostParts, pattern, true);
-      if (dnsNames.length > 0) {
-        valid = dnsNames.some(wildcard);
-        if (!valid) reason = "Host: " + hostname + ". is not in the cert's altnames: " + String(altNames);
-      } else {
-        // The Common Name only when the certificate names no DNS name.
-        const cn = subject.CN;
-        if (Array.isArray(cn)) valid = cn.some(wildcard);
-        else if (cn) valid = wildcard(cn);
-        if (!valid) reason = "Host: " + hostname + ". is not cert's CN: " + String(cn);
-      }
-    } else {
-      reason = "Cert does not contain a DNS name";
-    }
-    if (!valid) return new nodeErrorCodes.ERR_TLS_CERT_ALTNAME_INVALID(reason, hostname, cert);
-  }
+  // tls.checkServerIdentity is Node's (core _shared/tls-identity.ts):
+  // workerd's is an older Node's, which matched '127.1' against a
+  // certificate for 127.0.0.1. isIP is Node's own (the vendored
+  // lib/internal/net.js), and domainToASCII is workerd's, which runs the
+  // algorithm Node's binding runs.
+  const checkServerIdentity = createCheckServerIdentity({
+    isIP: (input) => __nimbusNodeLib().require("internal/net").isIP(input),
+    domainToASCII: (domain) => __urlMod.domainToASCII(domain),
+  });
   // Anything else node:tls exports that is called or constructed (a
   // TLSSocket, a server) may open a connection: counted too, all but the
   // helpers that only compute.
