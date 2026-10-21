@@ -154,6 +154,7 @@ export async function createBashFacetSession(deps: {
 
   const facet: Facet = deps.facets.open({
     tag: BASH_RUNNER,
+    stateful: true,
     concurrency: 1,
     syscalls: { vfs: deps.filesystem, pid: deps.pid, processes: deps.processes },
     preamble: BASH_RUNNER_PREAMBLE,

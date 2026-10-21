@@ -293,6 +293,13 @@ export interface IsolateMapOptions extends IsolateCallOptions {
 /** One item's outcome: its value, or what it failed with. */
 export type Settled<R> = { readonly ok: true; readonly value: R } | { readonly ok: false; readonly error: Error };
 
+/** What a pool calls on its worker's entrypoint (assembleLoaderWorkerModuleSource). */
+interface PoolEntrypoint {
+  execute(...args: unknown[]): Promise<unknown>;
+  fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+  warm(): Promise<void>;
+}
+
 interface ResolvedResilience {
   timeoutMs: number;
   retries: number;
@@ -374,6 +381,9 @@ export function assembleLoaderWorkerModuleSource(
     '  execute(...args) {',
     `    return ${callExpr};`,
     '  }',
+    '',
+    '  // Loads the worker and runs nothing (IsolatePool.warm).',
+    '  warm() {}',
     '',
     '  // Request/Response transport: the ONE dispatch path whose abort is',
     '  // real. workerd cancels the inner execution context when the request',
@@ -829,7 +839,7 @@ export class IsolatePool {
     fnSource: string,
     fnHash: string,
     slotIndex: number,
-    invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
+    invoke: (entrypoint: PoolEntrypoint, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, FacetImage>,
     signal?: AbortSignal,
@@ -867,7 +877,7 @@ export class IsolatePool {
     fnSource: string,
     fnHash: string,
     slotIndex: number,
-    invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
+    invoke: (entrypoint: PoolEntrypoint, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm: Record<string, FacetImage> | undefined,
     inFlight: Promise<unknown>[],
@@ -1188,6 +1198,16 @@ export class IsolatePool {
     } catch (error) {
       throw this.#ended(error);
     }
+  }
+
+  /**
+   * The worker `fn` is submitted to, loaded and left warm without running
+   * `fn`: its images read and compiled and its preamble evaluated, as the
+   * first submit of `fn` would, so that submit finds it warm.
+   */
+  async warm<A, R>(fn: FacetTaskSource<A, R>, opts?: IsolateCallOptions): Promise<void> {
+    const { fnSource, fnHash } = this.#prepare(fn);
+    await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.warm(), this.#resolve(opts), opts?.wasmModules, opts?.signal);
   }
 
   /**

@@ -1037,6 +1037,23 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return _rpc._rpcCancelHostProcess(this, workerKey);
   }
 
+  // One-shots: the peer leg, for a sibling session running a one-shot on THIS object (fabric one-shot-peer.ts).
+  private oneShotLeg(): { ctx: DurableObjectState; env: SessionEnv } {
+    return { ctx: this.ctx, env: this.env };
+  }
+  async _rpcOneShotSubmit(spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): ReturnType<typeof _rpc._rpcOneShotSubmit> {
+    return _rpc._rpcOneShotSubmit(this.oneShotLeg(), spec, callId, fn, args, options, images);
+  }
+  async _rpcOneShotWarm(spec: unknown, fn: unknown, images: unknown): Promise<{ warmed: true }> {
+    return _rpc._rpcOneShotWarm(this.oneShotLeg(), spec, fn, images);
+  }
+  _rpcOneShotCancel(callId: unknown): { cancelled: boolean } {
+    return _rpc._rpcOneShotCancel(this.oneShotLeg(), callId);
+  }
+  _rpcOneShotDispose(key: unknown): void {
+    _rpc._rpcOneShotDispose(this.oneShotLeg(), key);
+  }
+
   // W8 child_process RPC
   async _rpcCpSpawn(req: any, parentPid?: number): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req, parentPid); }
   async _rpcCpStdinWrite(childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean; signal?: string }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data, pid); }

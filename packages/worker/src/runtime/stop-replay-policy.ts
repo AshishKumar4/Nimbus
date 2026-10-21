@@ -112,6 +112,7 @@ export const REPLAY_OPERATION_POLICY = {
   fanoutExecute: effect, processHostProbe: effect, loaderCodeStore: mutation,
   hostProcess: effect, awaitHostedBoot: effect,
   routeHostedHttp: effect, abandonHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,
+  oneShotSubmit: effect, oneShotWarm: effect, oneShotCancel: effect, oneShotDispose: effect,
   hmrNextEvent: effect, replayBoundary: control, netTls: effect, outbound: control,
 } satisfies Record<SupervisorOpName, ReplayPolicy>;
 
