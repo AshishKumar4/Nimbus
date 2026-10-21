@@ -1,0 +1,55 @@
+# The daily upstream canary (scripts/ci/upstream-canary.mjs): the staged
+# bindings npm's latest releases demand, and the real-framework probes
+# against production as an anonymous visitor. It needs no secret: the npm
+# registry is public, and the demo hands out anonymous sessions. This
+# repository is public, so its log and artifact must not hold one either;
+# the canary redacts every credential-shaped value it prints or keeps.
+#
+# A red or ungraded run fails the workflow, and GitHub notifies the user who
+# created it (or last changed its schedule). Nothing is posted anywhere
+# else. Each run keeps its record as the artifact upstream-canary; a red
+# run compares its installs with the last green run's record on main and
+# names each package that changed.
+name: upstream-canary
+
+on:
+  schedule:
+    # 11:00 UTC: early morning in US Central time, before the working day there.
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: upstream-canary
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: versions
+        run: sed -n 's/^BUN_VERSION=/bun=/p' scripts/ci/recipe/setup.sh >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.versions.outputs.bun }}
+      - run: bun scripts/install-deps.mjs
+      # With no green run whose record is still kept, there is nothing to
+      # compare with, and the canary says so.
+      - name: the last green run's record
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow upstream-canary.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$run" ]; then gh run download "$run" --repo "$GITHUB_REPOSITORY" --name upstream-canary --dir "$RUNNER_TEMP/last-green"; fi
+      - run: bun scripts/ci/upstream-canary.mjs --base https://nimbus-os.dev --out "$RUNNER_TEMP/canary/upstream.json" --last-green "$RUNNER_TEMP/last-green/upstream.json"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-canary
+          path: ${{ runner.temp }}/canary/upstream.json

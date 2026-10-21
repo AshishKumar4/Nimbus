@@ -500,6 +500,21 @@ again.
   (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_CONNECTION`
   overrides the connection file. Never print its token.
 
+**The upstream canary.** An upstream release can break new projects with
+no change on our side (2026-10-21: vite 8.3.5 needed rolldown 1.2.14, which
+had no staged build, and astro 7.4.2 raised its Node floor). So every day
+at 11:00 UTC, `.github/workflows/upstream-canary.yml` runs
+`scripts/ci/upstream-canary.mjs` on GitHub's runner. It runs the binding
+demand check, then the probes in `UPSTREAM_PROBES` (`scripts/ci/lib/upstream.mjs`)
+against `https://nimbus-os.dev` as an anonymous visitor, less the
+exclusions in `_deferred.mjs`. It needs no secret, and its log and
+artifact are public, so it redacts every credential it prints. A red run
+fails the workflow, and GitHub notifies the user who created it. Nothing
+opens an issue. The run names each package whose version changed since
+the last green run, read from that run's artifact. When nothing upstream
+changed, the cause is on our side. Run it now with
+`gh workflow run upstream-canary.yml`.
+
 **Tiers.** A file's leading comment block may carry one marker:
 
 - `// @tier slow — <reason>`: drives a local workerd, has a CI median of
