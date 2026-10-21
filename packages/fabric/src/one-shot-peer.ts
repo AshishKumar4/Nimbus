@@ -11,7 +11,7 @@
  * on that object's thread (verdict 20261021T111038-40692a3b802a).
  *
  * So a session keeps one sibling, its peer, and runs a one-shot there while
- * something besides the run wants the session's thread (#threadWanted) and
+ * something besides the run wants the session's thread (SessionDemand) and
  * the peer is warm for it: when the
  * peer answered a call of the same worker within ONE_SHOT_WARM_MS. A wanted
  * thread and a cold peer run the call in the session as before, and warm the
@@ -163,12 +163,13 @@ const ProbeAnswerSchema = z.object({ isolateToken: z.string().min(1) });
 /** Warmth a peer has for any call: it answered one (its object is up). */
 const ANY_WORKER = '';
 
-/** What may want a session's thread besides a run, as the session reads it (OneShotPlacement.wantedBy). */
+/**
+ * What may want a session's thread while the run `pid` computes there, as the
+ * session reads it at the run's start (OneShotPlacement.wantedBy; the
+ * worker's session/thread-demand.ts says what each source is and why).
+ */
 export interface SessionDemand {
-  /** Terminals with an open socket: the session's own and each named one. */
-  terminals(): number;
-  /** Ports a process of the session listens on. */
-  ports(): number;
+  wants(pid: number | undefined): ThreadWant[];
 }
 
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
@@ -177,13 +178,13 @@ export interface OneShotPlacementCall {
   /** Its worker, as warmth knows it (workerOf): '' for one only the peer object's warmth decides. */
   worker: string;
   host: 'session' | 'peer';
-  /** What wanted the session's thread as it started (#threadWanted): none, and it ran in the session. */
+  /** What wanted the session's thread as it started (SessionDemand): none, and it ran in the session. */
   wants: ThreadWant[];
   at: number;
 }
 
-/** What may want a session's thread while a one-shot computes there (OneShotPlacement #threadWanted). */
-export type ThreadWant = 'terminal' | 'port' | 'run';
+/** What may want a session's thread while a one-shot computes there (SessionDemand). */
+export type ThreadWant = 'terminal' | 'process' | 'request';
 const PLACEMENT_CALLS_KEPT = 16;
 
 const placements = new WeakMap<object, OneShotPlacement>();
@@ -230,8 +231,6 @@ export class OneShotPlacement {
   readonly #calls: OneShotPlacementCall[] = [];
   /** What its session says may want its thread (wantedBy); none until it does. */
   #demand: SessionDemand | null = null;
-  /** One-shot calls in flight, on either host. */
-  #inFlight = 0;
   #warmFailure: { worker: string; message: string; at: number } | null = null;
   /**
    * The preambles the peer holds, by hash. A runtime's preamble is some
@@ -252,33 +251,6 @@ export class OneShotPlacement {
   }
 
   /**
-   * Whether anything besides a run starting now may ask the session's thread
-   * for work while the run computes there. Each source was measured waiting
-   * during a python run in the session against on the peer (2026-10-21,
-   * verdict 20261021T153907-db2aae8dc079):
-   * 1. another terminal attached, even idle: a keystroke may come (a second
-   *    terminal's echo waited 4.5 s against 0.15 s);
-   * 2. a process listening on a port: a request may come (5.2 s against
-   *    0.08 s);
-   * 3. another one-shot in flight: runs in the session take its thread in
-   *    turn (three at once held it 6.7-10.6 s against 0.06-0.12 s).
-   * Not one: the run's own terminal, whose user waits for the run on either
-   * host; and an HTTP request in flight, since a run the API started is in
-   * its own. When nothing wants the thread, a run is no faster on the peer:
-   * idle, python with ten imports took 4253 ms in the session and 4197 on the
-   * peer, ruby 455 and 453, clang 619 and 680 (design-d1-placement-b.md).
-   */
-  #threadWanted(): ThreadWant[] {
-    const demand = this.#demand;
-    if (demand === null) return [];
-    const wants: ThreadWant[] = [];
-    if (demand.terminals() > 1) wants.push('terminal');
-    if (demand.ports() > 0) wants.push('port');
-    if (this.#inFlight > 0) wants.push('run');
-    return wants;
-  }
-
-  /**
    * A one-shot's facet: each call runs on the peer when the peer is warm for
    * its worker, else in this session. A local pool is opened either way: a
    * call the peer refused before it took it runs there. One whose network
@@ -292,13 +264,10 @@ export class OneShotPlacement {
         const began = Date.now();
         const callImages = imagesOfCall(images, options?.wasmModules);
         const worker = workerOf(spec, callImages, fn);
-        const wants = this.#threadWanted();
-        this.#inFlight++;
-        try {
-          return await this.#place(wants, spec, callImages, worker, fn, args, options, local, began);
-        } finally {
-          this.#inFlight--;
-        }
+        // Idle, a run is no faster on the peer: python with ten imports took 4253 ms in the session and 4197 on the
+        // peer, ruby 455 and 453, clang 619 and 680 (design-d1-placement-b.md). So only demand sends it there.
+        const wants = this.#demand?.wants(spec.supervisor?.pid) ?? [];
+        return await this.#place(wants, spec, callImages, worker, fn, args, options, local, began);
       },
       dispose: () => local.dispose(),
     };

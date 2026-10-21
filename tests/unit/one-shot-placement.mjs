@@ -2,8 +2,7 @@
 // one-shot-placement — where a session's one-shot runs (fabric one-shot-peer.ts).
 //
 // A call runs on the session's peer when something besides it wants the
-// session's thread (another terminal, a listening port, another one-shot in
-// flight) and the peer answered a call of the same worker within
+// session's thread (its SessionDemand says what) and the peer answered a call of the same worker within
 // ONE_SHOT_WARM_MS. Wanted and cold, it runs in the session and the peer is
 // warmed beside it; not wanted, it runs in the session and nothing is warmed. Asserted through the real loader host, the real
 // placement and the real peer leg (the session's op routes and rpc.ts), with
@@ -28,7 +27,7 @@
 //      when the peer no longer does; a kill between the two ends the call;
 //  14. a call with images of its own warms, then runs on, the worker with them;
 //  15. nothing wanting the thread: the call runs in the session, nothing warmed,
-//      even with the peer warm; a listening port, or a one-shot in flight, wants it.
+//      even with the peer warm; the run's own pid is what the demand is asked about.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
@@ -107,8 +106,8 @@ function world({ colocated = false } = {}) {
   };
   const session = object('session-0123456789', objects);
   // A second terminal attached: the session's thread is wanted (case 15 varies it).
-  const demand = { terminals: 2, ports: 0 };
-  oneShotPlacement(session.ctx, session.env).wantedBy({ terminals: () => demand.terminals, ports: () => demand.ports });
+  const demand = { wants: ['terminal'], asked: [] };
+  oneShotPlacement(session.ctx, session.env).wantedBy({ wants: (pid) => { demand.asked.push(pid); return [...demand.wants]; } });
   const host = loaderFacetHost(session.env, session.ctx, ISOLATE_NETWORK);
   const image = () => ({
     path: '/usr/lib/probe.wasm', identity: 'content:probe:4', size: 4, peak: 4,
@@ -369,28 +368,21 @@ function world({ colocated = false } = {}) {
 // ── 15: what wants the thread ───────────────────────────────────────────────
 {
   const w = world();
-  w.demand.terminals = 1;
-  assert.equal((await w.oneShot('idle')).ranOn, 'session-0123456789', 'only its own terminal: the call runs in the session');
+  w.demand.wants = [];
+  assert.equal((await w.oneShot('idle')).ranOn, 'session-0123456789', 'nothing wants the thread: the call runs in the session');
   await w.settled();
   assert.equal(oneShotPlacementDiagnostics(w.session.ctx).peer, null, 'and nothing is warmed');
   assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, []);
-  w.demand.terminals = 2;
+  assert.equal(w.demand.asked.at(-1), 4242, 'the demand is asked about the run\'s own process');
+  w.demand.wants = ['process'];
   await w.oneShot('warm it');
   await w.settled();
   const peer = w.peerOf();
-  w.demand.terminals = 1;
+  w.demand.wants = [];
   assert.equal((await w.oneShot('idle, peer warm')).ranOn, 'session-0123456789', 'idle, even with the peer warm, the call runs in the session');
-  w.demand.ports = 1;
-  assert.equal((await w.oneShot('a port')).ranOn, peer.name, 'a listening port wants the thread: the call runs on the peer');
-  assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, ['port'], 'and says why');
-  w.demand.ports = 0;
-  let release;
-  w.session.run = (arg) => (arg === 'first' ? new Promise((resolve) => { release = () => resolve({ ranOn: 'session-0123456789', arg }); }) : Promise.resolve({ ranOn: 'session-0123456789', arg }));
-  const first = w.oneShot('first');
-  while (release === undefined) await new Promise((r) => setTimeout(r, 1));
-  assert.equal((await w.oneShot('second')).ranOn, peer.name, 'a one-shot in flight wants the thread: the next runs on the peer');
-  release();
-  assert.equal((await first).ranOn, 'session-0123456789', 'the first, started idle, stays in the session');
+  w.demand.wants = ['request'];
+  assert.equal((await w.oneShot('a request')).ranOn, peer.name, 'demand sends the call to the warm peer');
+  assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, ['request'], 'and says why');
   console.log('  ok  only what wants the session\'s thread sends a call to the peer');
 }
 

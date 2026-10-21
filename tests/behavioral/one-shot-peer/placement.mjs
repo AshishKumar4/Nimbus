@@ -181,26 +181,57 @@ try {
     if (Date.now() > until) throw new Error(`the server never stopped: ${(await t.run('ps', 30_000)).output.split('\n').filter((line) => /node/.test(line)).join('\n')}`);
     await sleep(500);
   }
-  let marked = await mark(sid);
-  const idle = await t.run(heavy.line, 600_000);
-  const idleOn = ((await placement(sid))?.calls ?? []).filter((call) => call.at > marked);
+  // Each source alone, the others absent: the run goes to the warm peer, and says which wanted the thread.
+  // (The first run of each warms the peer: wanted and cold, it runs in the session.)
+  const PY_PRINT = 'python3 -c "print(1)"';
+  const runAndPlace = async (line) => {
+    const marked = await mark(sid);
+    const r = await t.run(line, 600_000);
+    return { r, calls: ((await placement(sid))?.calls ?? []).filter((call) => call.at > marked) };
+  };
+  const idle = await runAndPlace(heavy.line);
   a.check('idle, a one-shot runs in the session and says nothing wanted the thread',
-    idle.exitCode === 0 && idleOn.length > 0 && idleOn.every((call) => call.host === 'session' && call.wants.length === 0), JSON.stringify(idleOn));
-  // Mid-run: a terminal attaches 1 s into an idle run, and its echo waits for the run.
-  marked = await mark(sid);
+    idle.r.exitCode === 0 && printed(idle.r.output).includes('1') && idle.calls.length > 0 && idle.calls.every((call) => call.host === 'session' && call.wants.length === 0),
+    JSON.stringify(idle.calls));
+  const SOURCES = {
+    terminal: { start: async () => { const other = new Terminal(sid, { terminal: 'source' }); await other.connect(); await other.waitForPrompt(60_000); return () => other.close(); } },
+    process: { start: async () => { await t.run('sleep 600 & echo $! > sleeper.pid', 60_000); return () => t.run('kill "$(cat sleeper.pid)"; true', 60_000); } },
+  };
+  for (const [source, { start }] of Object.entries(SOURCES)) {
+    const stop = await start();
+    await t.run(PY_PRINT, 600_000);
+    await warmFor(sid, 'cpython-runner@3');
+    const placed = await runAndPlace(PY_PRINT);
+    await stop();
+    out({ source, placed: placed.calls.map((call) => ({ host: call.host, wants: call.wants })) });
+    a.check(`${source} alone wants the thread: the run goes to the warm peer and says so`,
+      placed.r.exitCode === 0 && printed(placed.r.output).includes('1') && placed.calls.length > 0
+        && placed.calls.every((call) => call.host === 'peer' && call.wants.length === 1 && call.wants[0] === source),
+      JSON.stringify(placed.calls));
+  }
+  await peer(sid, 'forget');
+  // Mid-run: a terminal attaches while an idle run is still running, and its echo waits for the run.
+  // The run says it started before its imports, the work that holds the thread.
+  const marked = await mark(sid);
   const late = new Terminal(sid, { terminal: 'late' });
-  const running = t.run(heavy.line, 600_000);
-  await sleep(1_000);
+  t.reset();
+  t.cmd(`python3 -c "print('STARTED', flush=True); ${PY_IMPORTS}"`);
+  const submission = t.submission;
+  await t.waitFor(() => t.stream.slice(submission.start).includes('STARTED'), 60_000, 'the run to start');
+  const attachedDuringRun = submission.end === null;
   const attachStarted = Date.now();
   await late.connect();
   await late.waitForPrompt(60_000);
   const echo = await late.run('echo late', 60_000);
   const lateWait = Date.now() - attachStarted;
-  const midRun = await running;
+  await t.waitFor(() => submission.end !== null, 600_000, 'the run to end');
+  const midOutput = printed(t.stream.slice(submission.start, submission.end));
   const midOn = ((await placement(sid))?.calls ?? []).filter((call) => call.at > marked);
-  out({ midRun: true, lateWaitMs: lateWait, exit: midRun.exitCode, placed: midOn });
+  out({ midRun: true, lateWaitMs: lateWait, attachedDuringRun, exit: submission.exitCode, placed: midOn.map((call) => ({ host: call.host, wants: call.wants })) });
   a.check(`a terminal that attaches mid-run waits for the run (${lateWait} ms to attach and echo): the run stays where it started`,
-    echo.exitCode === 0 && midOn.length > 0 && midOn.every((call) => call.host === 'session'), JSON.stringify({ lateWait, midOn }));
+    attachedDuringRun && submission.exitCode === 0 && midOutput.includes('1') && echo.exitCode === 0 && printed(echo.output).includes('late')
+      && midOn.length > 0 && midOn.every((call) => call.host === 'session'),
+    JSON.stringify({ lateWait, attachedDuringRun, exit: submission.exitCode, midOutput, midOn }));
   await late.close();
 } catch (error) {
   a.check('the probe ran to its end', false, String(error?.stack ?? error).slice(0, 2000));
