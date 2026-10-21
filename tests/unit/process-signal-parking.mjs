@@ -105,5 +105,19 @@ await check('parked with its stopped run\'s word of what it catches, it stays pa
   assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGTERM');
 });
 
+await check('a park before the data-won read goes on: given back once', async () => {
+  const { processes, pid } = running();
+  processes.writeInput(pid, 'data');
+  const reading = processes.readInput(pid, 1000);
+  processes.signal(pid, 'SIGTERM');
+  // The stop comes before the read's continuation puts the signal back.
+  processes.parkSignals(pid);
+  const packet = await within(1000, reading);
+  assert.equal(packet.signal, undefined, `data won: ${JSON.stringify(packet)}`);
+  processes.takeSignalsBack?.(pid);
+  assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGTERM');
+  assert.equal(await within(1000, processes.nextSignal(pid, 50)), null, 'once');
+});
+
 assert.deepEqual(failures, []);
 console.log('process-signal-parking: a stopped run\'s signals wait for the run that comes next');

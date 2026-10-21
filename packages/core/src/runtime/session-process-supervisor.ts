@@ -96,8 +96,12 @@ interface SignalBox {
    * (parkSignals): what it catches waits here, for the run that comes next.
    */
   parked: boolean;
-  /** The last signal its program was given, until it asks again: a run that stopped before it acted on it gives it back. */
-  handed: ProcessSignalName | null;
+  /**
+   * The last signal its program was given, until it asks again: a run that
+   * stopped before it acted on it gives it back. Each giving its own: who
+   * gives one back takes it from here, and a later hand cannot give it again.
+   */
+  handed: { readonly signal: ProcessSignalName } | null;
 }
 
 /** Whether `a` and `b` are one identity: uid, gid and supplementary groups (as a set); a umask is not one. */
@@ -876,7 +880,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     box.handed = null;
     const queued = box.queued.shift();
     if (queued !== undefined) {
-      box.handed = queued;
+      box.handed = { signal: queued };
       return { data: '', ended: false, signal: queued };
     }
     const withdraw = new AbortController();
@@ -887,9 +891,10 @@ export class SessionProcessSupervisor implements ProcessOutput {
       // A signal that came with it is the next wait's.
       wait.cancel();
       const late = await wait.signal;
-      if (late !== null) {
-        // Back to the queue, the queue's alone: not also the one it was given.
-        if (box.handed === late) box.handed = null;
+      // Back to the queue, unless a park has given it back already.
+      const given = wait.given();
+      if (late !== null && given !== null && box.handed === given) {
+        box.handed = null;
         box.queued.unshift(late);
       }
       return first.packet;
@@ -972,7 +977,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     if (box === undefined) return;
     box.parked = true;
     if (box.handed !== null) {
-      box.queued.unshift(box.handed);
+      box.queued.unshift(box.handed.signal);
       box.handed = null;
     }
     box.taker?.(null);
@@ -997,25 +1002,30 @@ export class SessionProcessSupervisor implements ProcessOutput {
   }
 
   /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */
-  private waitSignal(box: SignalBox, waitMs: number): { signal: Promise<ProcessSignalName | null>; cancel(): void } {
+  private waitSignal(box: SignalBox, waitMs: number): { signal: Promise<ProcessSignalName | null>; cancel(): void; given(): { readonly signal: ProcessSignalName } | null } {
     const queued = box.queued.shift();
     if (queued !== undefined) {
-      box.handed = queued;
-      return { signal: Promise.resolve(queued), cancel: () => {} };
+      const handed = { signal: queued };
+      box.handed = handed;
+      return { signal: Promise.resolve(queued), cancel: () => {}, given: () => handed };
     }
     box.taker?.(null);
     let take: (signal: ProcessSignalName | null) => void = () => {};
+    let handed: { readonly signal: ProcessSignalName } | null = null;
     const signal = new Promise<ProcessSignalName | null>((resolve) => {
       const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
       take = (sent) => {
         clearTimeout(timer);
         if (box.taker === take) box.taker = null;
-        if (sent !== null) box.handed = sent;
+        if (sent !== null) {
+          handed = { signal: sent };
+          box.handed = handed;
+        }
         resolve(sent);
       };
       box.taker = take;
     });
-    return { signal, cancel: () => { if (box.taker === take) take(null); } };
+    return { signal, cancel: () => { if (box.taker === take) take(null); }, given: () => handed };
   }
 
   /**
