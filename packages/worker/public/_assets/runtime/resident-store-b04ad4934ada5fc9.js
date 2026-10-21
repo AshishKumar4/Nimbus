@@ -83,7 +83,7 @@ var __nimbusResidentModule = (() => {
   var FACET_PROVIDED_PACKAGES = Object.freeze(Object.keys(FACET_PROVIDED_PACKAGE_ENTRYPOINTS));
 
   // src/vfs/facet-resident-limits.ts
-  var RESIDENT_CHUNK_BYTES = 1048576;
+  var RESIDENT_CHUNK_BYTES = 65536;
   var ONE_SHOT_STORE_MEMORY_BYTES = VFS_BUNDLE_MAX_BYTES + 16 * 1024 * 1024;
 
   // ../platform/dist/utf8.js
@@ -403,255 +403,6 @@ var __nimbusResidentModule = (() => {
   var NS_FILE = 0;
   var NS_DIR = 1;
   var NS_LINK = 2;
-  var num = (value) => Number(value);
-  var rowOf = (rows) => {
-    for (const row of rows) return row;
-    return void 0;
-  };
-  var rowsOf = (rows) => [...rows];
-  function sqlTables(sql, rowsChanged = () => {
-  }) {
-    const writeRows = (path, write) => {
-      rowsChanged(path);
-      write();
-    };
-    let schema = null;
-    for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
-    if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
-    if (schema !== RESIDENT_SCHEMA) {
-      for (const table of ["chunk", "file", "ns", "meta", "page"]) sql.exec("DROP TABLE IF EXISTS " + table);
-    }
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS file (path TEXT PRIMARY KEY, kind INTEGER NOT NULL, size INTEGER NOT NULL, chunks INTEGER NOT NULL, rev INTEGER NOT NULL CHECK (rev >= -1), ckey TEXT)"
-    );
-    sql.exec("CREATE INDEX IF NOT EXISTS file_ckey ON file (ckey) WHERE ckey IS NOT NULL");
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS chunk (path TEXT NOT NULL, part INTEGER NOT NULL, txt TEXT, bin BLOB, PRIMARY KEY (path, part))"
-    );
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS page (path TEXT NOT NULL, rev INTEGER NOT NULL, part INTEGER NOT NULL, bin BLOB NOT NULL, used INTEGER NOT NULL, PRIMARY KEY (path, rev, part)) WITHOUT ROWID"
-    );
-    sql.exec("CREATE INDEX IF NOT EXISTS page_used ON page (used)");
-    sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
-    sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", RESIDENT_SCHEMA);
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS ns (parent TEXT NOT NULL, name TEXT NOT NULL, kind INTEGER NOT NULL, size INTEGER NOT NULL, mode INTEGER NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL, atime REAL NOT NULL, mtime REAL NOT NULL, ctime REAL NOT NULL, ino INTEGER NOT NULL, rev INTEGER NOT NULL, target TEXT, dev INTEGER NOT NULL DEFAULT 0, nlink INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (parent, name)) WITHOUT ROWID"
-    );
-    const first = (rows) => {
-      for (const row of rows) return row;
-      return void 0;
-    };
-    const ranged = (select, from, to, tail = "") => to === null ? sql.exec(select + " WHERE path >= ?" + tail, from) : sql.exec(select + " WHERE path >= ? AND path < ?" + tail, from, to);
-    return {
-      bytes() {
-        const size = sql.databaseSize;
-        if (typeof size === "number" && size > 0) return size;
-        for (const row of sql.exec("SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()")) return num(row.n);
-        return 0;
-      },
-      databaseSize() {
-        return num(sql.databaseSize ?? 0);
-      },
-      metaGet(k) {
-        const row = first(sql.exec("SELECT v FROM meta WHERE k = ?", k));
-        return row === void 0 ? void 0 : String(row.v);
-      },
-      metaSet(k, v) {
-        sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", k, v);
-      },
-      fileHead(path) {
-        return rowOf(sql.exec("SELECT kind, size, chunks FROM file WHERE path = ?", path));
-      },
-      fileRev(path) {
-        const row = first(sql.exec("SELECT rev FROM file WHERE path = ?", path));
-        return row === void 0 ? void 0 : num(row.rev);
-      },
-      fileRevKey(path) {
-        return rowOf(sql.exec("SELECT rev, ckey FROM file WHERE path = ?", path));
-      },
-      fileOwnSize(path) {
-        const row = first(sql.exec("SELECT size FROM file WHERE path = ? AND rev = ?", path, RK_OWN_WRITE));
-        return row === void 0 ? void 0 : num(row.size);
-      },
-      filePut(path, kind, size, chunks, rev, ckey) {
-        writeRows(path, () => {
-          sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
-        });
-      },
-      fileSetRev(path, rev) {
-        writeRows(path, () => {
-          sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
-        });
-      },
-      fileStampOwn(path, rev) {
-        writeRows(path, () => {
-          sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
-        });
-      },
-      fileDelete(path) {
-        writeRows(path, () => {
-          sql.exec("DELETE FROM file WHERE path = ?", path);
-        });
-      },
-      fileByKey(ckey, notPath) {
-        return rowOf(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
-      },
-      filePaths(from, to) {
-        return [...ranged("SELECT path FROM file", from, to)].map((row) => String(row.path));
-      },
-      fileAny(from, to) {
-        return first(ranged("SELECT path FROM file", from, to, " LIMIT 1")) !== void 0;
-      },
-      fileRevsIn(from, to) {
-        return rowsOf(ranged("SELECT path, rev FROM file", from, to));
-      },
-      // In key order, as every other scan here is: the primary key's index
-      // serves it, and both backings then answer in one order.
-      fileAllPaths() {
-        return [...sql.exec("SELECT path FROM file ORDER BY path")].map((row) => String(row.path));
-      },
-      fileRows() {
-        return rowsOf(sql.exec("SELECT path, rev, ckey FROM file ORDER BY path"));
-      },
-      fileOwnPaths() {
-        return [...sql.exec("SELECT path FROM file WHERE rev = ? ORDER BY path", RK_OWN_WRITE)].map((row) => String(row.path));
-      },
-      fileStats() {
-        return rowOf(sql.exec("SELECT count(*) AS n, coalesce(sum(size), 0) AS b FROM file"));
-      },
-      chunkFirst(path) {
-        return rowOf(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? AND part = 0", path));
-      },
-      chunkParts(path) {
-        return rowsOf(sql.exec("SELECT txt, bin FROM chunk WHERE path = ? ORDER BY part", path));
-      },
-      chunkAddText(path, part, txt) {
-        sql.exec("INSERT INTO chunk (path, part, txt) VALUES (?, ?, ?)", path, part, txt);
-      },
-      chunkAddBin(path, part, bin) {
-        sql.exec("INSERT INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bin);
-      },
-      chunkSetBin(path, part, bin) {
-        sql.exec("INSERT OR REPLACE INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bin);
-      },
-      chunkCopy(to, from) {
-        sql.exec("INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?", to, from);
-      },
-      chunkDelete(path) {
-        writeRows(path, () => {
-          sql.exec("DELETE FROM chunk WHERE path = ?", path);
-        });
-      },
-      dropOwn() {
-        writeRows(void 0, () => {
-          sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-          sql.exec("DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
-        });
-      },
-      dropDated() {
-        writeRows(void 0, () => {
-          sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-          sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
-        });
-      },
-      dropDatedFiles() {
-        writeRows(void 0, () => {
-          sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
-          sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
-        });
-      },
-      clear() {
-        writeRows(void 0, () => {
-          sql.exec("DELETE FROM chunk");
-          sql.exec("DELETE FROM file");
-        });
-        sql.exec("DELETE FROM ns");
-        sql.exec("DELETE FROM meta WHERE k <> 'schema'");
-        sql.exec("DELETE FROM page");
-      },
-      pageGet(path, rev, part) {
-        return rowOf(sql.exec("SELECT bin FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part))?.bin;
-      },
-      pageUse(path, rev, part, used) {
-        sql.exec("UPDATE page SET used = ? WHERE path = ? AND rev = ? AND part = ?", used, path, rev, part);
-      },
-      pagePut(path, rev, part, bin, used) {
-        const had = first(sql.exec("SELECT length(bin) AS n FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part));
-        sql.exec("INSERT OR REPLACE INTO page (path, rev, part, bin, used) VALUES (?, ?, ?, ?, ?)", path, rev, part, bin, used);
-        return had === void 0 ? 0 : num(had.n);
-      },
-      pageDelete(path, rev, part) {
-        sql.exec("DELETE FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part);
-      },
-      pageOldest(limit) {
-        return rowsOf(sql.exec("SELECT path, rev, part, length(bin) AS size FROM page ORDER BY used, path, rev, part LIMIT ?", limit));
-      },
-      pageBytes() {
-        const row = first(sql.exec("SELECT coalesce(sum(length(bin)), 0) AS n FROM page"));
-        return row === void 0 ? 0 : num(row.n);
-      },
-      pageMaxUsed() {
-        const row = first(sql.exec("SELECT coalesce(max(used), 0) AS n FROM page"));
-        return row === void 0 ? 0 : num(row.n);
-      },
-      nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
-        sql.exec(
-          "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          parent,
-          name,
-          kind,
-          size,
-          mode,
-          uid,
-          gid,
-          atime,
-          mtime,
-          ctime,
-          ino,
-          rev,
-          target,
-          Number(dev) || 0,
-          Number(nlink) || 1
-        );
-      },
-      nsGet(parent, name) {
-        return rowOf(sql.exec(
-          "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink FROM ns WHERE parent = ? AND name = ?",
-          parent,
-          name
-        ));
-      },
-      nsDelete(parent, name) {
-        sql.exec("DELETE FROM ns WHERE parent = ? AND name = ?", parent, name);
-      },
-      nsDeleteChildren(parent) {
-        sql.exec("DELETE FROM ns WHERE parent = ?", parent);
-      },
-      nsDeleteParents(from, to) {
-        if (to === null) sql.exec("DELETE FROM ns WHERE parent >= ?", from);
-        else sql.exec("DELETE FROM ns WHERE parent >= ? AND parent < ?", from, to);
-      },
-      nsClear() {
-        sql.exec("DELETE FROM ns");
-      },
-      nsKeys() {
-        return rowsOf(sql.exec("SELECT parent, name FROM ns"));
-      },
-      nsOfKind(kind) {
-        return rowsOf(sql.exec("SELECT parent, name FROM ns WHERE kind = ?", kind));
-      },
-      nsUnlisted() {
-        return rowsOf(sql.exec("SELECT parent, name, target FROM ns WHERE kind = ? AND target IS NOT NULL", NS_DIR));
-      },
-      nsChildren(parent) {
-        return rowsOf(sql.exec("SELECT name, kind, mode FROM ns WHERE parent = ?", parent));
-      },
-      nsCount() {
-        const row = first(sql.exec("SELECT count(*) AS n FROM ns"));
-        return row === void 0 ? 0 : num(row.n);
-      }
-    };
-  }
   function heapTables(rowsChanged = () => {
   }) {
     const writeRows = (path, write) => {
@@ -2362,7 +2113,7 @@ var __nimbusResidentModule = (() => {
       require() {
         if (t === null) {
           throw new Error(
-            "Nimbus: the resident store was read before its facet bound its SQLite. store.bind(ctx) must run in the process DO constructor, ahead of the program."
+            "Nimbus: the resident store was read before its facet bound its storage. store.bind(ctx) must run in the process DO constructor, ahead of the program."
           );
         }
         if (isSealed) {
@@ -3569,11 +3320,432 @@ var __nimbusResidentModule = (() => {
     return { dev: row.dev, ino: row.ino, size: row.size, mtime: row.mtime, ctime: row.ctime, revision: row.rev };
   }
 
+  // src/vfs/resident/kv-tables.ts
+  var UNCONFIRMED = { allowUnconfirmed: true };
+  var DELETE_BATCH = 128;
+  var SEP = "";
+  var pad = (n) => stringOf(NumberOf(n)).padStart(17, "0");
+  var FILE = "F";
+  var CHUNK = "C";
+  var CHUNK_KEYS = "X";
+  var BY_CKEY = "K";
+  var NS = "N";
+  var PAGE = "P";
+  var PAGE_ROWS = "Q";
+  var PAGE_USED = "U";
+  var META = "M";
+  var SEQ = META + "seq";
+  var END = { [FILE]: StringFromCharCode(71), [NS]: StringFromCharCode(79) };
+  function kvTables(storage, rowsChanged = () => {
+  }) {
+    const writeRows = (path, write) => {
+      rowsChanged(path);
+      write();
+    };
+    const kv = storage.kv;
+    const put = (key, value) => {
+      storage.put(key, value, UNCONFIRMED);
+    };
+    const drop = (keys) => {
+      let batch = new SafeList();
+      for (let i = 0; i < keys.length; i++) {
+        batch[batch.length] = keys[i];
+        if (batch.length === DELETE_BATCH) {
+          storage.delete(arrayCopy(batch), UNCONFIRMED);
+          batch = new SafeList();
+        }
+      }
+      if (batch.length > 0) storage.delete(arrayCopy(batch), UNCONFIRMED);
+    };
+    const dropOne = (key) => {
+      storage.delete(key, UNCONFIRMED);
+    };
+    const keysOf = (options) => {
+      const out = new SafeList();
+      for (const [key] of kv.list(options)) out[out.length] = key;
+      return out;
+    };
+    const rangeOf = (tag, from, to) => ({
+      start: tag + from,
+      end: to === null ? END[tag] : tag + to
+    });
+    const fileKey = (path) => FILE + path;
+    const fileOf = (path) => kv.get(fileKey(path));
+    const chunkKey = (path, part) => CHUNK + path + SEP + pad(part);
+    const chunkIndex = (path, part) => CHUNK_KEYS + path + SEP + pad(part);
+    const byKey = (row, path) => BY_CKEY + row[4] + SEP + pad(row[5]) + SEP + path;
+    const nsKey2 = (parent, name) => NS + parent + SEP + name;
+    const pageTail = (path, rev, part) => path + SEP + pad(rev) + SEP + pad(part);
+    const unpage = (tail) => {
+      const at = tail.length - 2 * 18;
+      return { path: tail.slice(0, at), rev: NumberOf(tail.slice(at + 1, at + 18)), part: NumberOf(tail.slice(at + 19)) };
+    };
+    const chunkRow = (value) => typeof value === "string" ? { txt: value, bin: null } : { txt: null, bin: value };
+    const setFile = (path, kind, size, chunks, rev, ckey) => {
+      const had = fileOf(path);
+      if (had !== void 0 && had[4] !== null) dropOne(byKey(had, path));
+      const seq = NumberOf(kv.get(SEQ) ?? 0) + 1;
+      put(SEQ, seq);
+      const row = [kind, size, chunks, rev, ckey, seq];
+      put(fileKey(path), row);
+      if (ckey !== null) put(byKey(row, path), 1);
+    };
+    const setRev = (path, row, rev) => {
+      put(fileKey(path), [row[0], row[1], row[2], NumberOf(rev), row[4], row[5]]);
+    };
+    const deleteFile = (path) => {
+      const had = fileOf(path);
+      if (had === void 0) return;
+      if (had[4] !== null) dropOne(byKey(had, path));
+      dropOne(fileKey(path));
+    };
+    const deleteChunks = (path) => {
+      const parts = keysOf({ prefix: CHUNK_KEYS + path + SEP });
+      const keys = new SafeList();
+      for (let i = 0; i < parts.length; i++) {
+        keys[keys.length] = parts[i];
+        keys[keys.length] = CHUNK + parts[i].slice(1);
+      }
+      drop(keys);
+    };
+    const addChunk = (path, part, value, replace) => {
+      const index = chunkIndex(path, part);
+      if (!replace && kv.get(index) !== void 0) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
+      put(chunkKey(path, part), value);
+      put(index, 1);
+    };
+    const files = () => {
+      const out = new SafeList();
+      for (const [key, value] of kv.list({ prefix: FILE })) out[out.length] = [key.slice(1), value];
+      return out;
+    };
+    const chunkPaths = () => {
+      const out = new SafeList();
+      let last = null;
+      for (const [key] of kv.list({ prefix: CHUNK_KEYS })) {
+        const path = key.slice(1, key.lastIndexOf(SEP));
+        if (path !== last) {
+          out[out.length] = path;
+          last = path;
+        }
+      }
+      return out;
+    };
+    const dropWhere = (keepFile, keepChunkPath) => writeRows(void 0, () => {
+      const paths = chunkPaths();
+      for (let i = 0; i < paths.length; i++) if (!keepChunkPath(paths[i])) deleteChunks(paths[i]);
+      const rows = files();
+      for (let i = 0; i < rows.length; i++) if (!keepFile(rows[i][1])) deleteFile(rows[i][0]);
+    });
+    const ownPaths = () => {
+      const own = new SafeSet();
+      const rows = files();
+      for (let i = 0; i < rows.length; i++) if (rows[i][1][3] === RK_OWN_WRITE) own.add(rows[i][0]);
+      return own;
+    };
+    const nsRows = (options) => {
+      const out = new SafeList();
+      for (const [key, value] of kv.list(options)) {
+        const at = key.indexOf(SEP);
+        out[out.length] = [{ parent: key.slice(1, at), name: key.slice(at + 1) }, value];
+      }
+      return out;
+    };
+    const deleteKeys = (options) => drop(keysOf(options));
+    if (kv.get(META + "schema") !== RESIDENT_SCHEMA) {
+      for (const tag of [FILE, CHUNK, CHUNK_KEYS, BY_CKEY, NS, PAGE, PAGE_ROWS, PAGE_USED, META]) deleteKeys({ prefix: tag });
+      put(META + "schema", RESIDENT_SCHEMA);
+    }
+    return {
+      bytes() {
+        return NumberOf(storage.sql?.databaseSize ?? 0);
+      },
+      databaseSize() {
+        return NumberOf(storage.sql?.databaseSize ?? 0);
+      },
+      metaGet(k) {
+        const v = kv.get(META + k);
+        return v === void 0 ? void 0 : stringOf(v);
+      },
+      metaSet(k, v) {
+        put(META + k, stringOf(v));
+      },
+      fileHead(path) {
+        const row = fileOf(path);
+        return row === void 0 ? void 0 : { kind: row[0], size: row[1], chunks: row[2] };
+      },
+      fileRev(path) {
+        return fileOf(path)?.[3];
+      },
+      fileRevKey(path) {
+        const row = fileOf(path);
+        return row === void 0 ? void 0 : { rev: row[3], ckey: row[4] };
+      },
+      fileOwnSize(path) {
+        const row = fileOf(path);
+        return row !== void 0 && row[3] === RK_OWN_WRITE ? row[1] : void 0;
+      },
+      filePut(path, kind, size, chunks, rev, ckey) {
+        if (!(rev >= -1)) throw new Error2("CHECK constraint failed: rev >= -1");
+        writeRows(path, () => {
+          setFile(path, NumberOf(kind), NumberOf(size), NumberOf(chunks), NumberOf(rev), ckey == null ? null : stringOf(ckey));
+        });
+      },
+      fileSetRev(path, rev) {
+        writeRows(path, () => {
+          const row = fileOf(path);
+          if (row !== void 0) setRev(path, row, rev);
+        });
+      },
+      fileStampOwn(path, rev) {
+        writeRows(path, () => {
+          const row = fileOf(path);
+          if (row !== void 0 && row[3] === RK_OWN_WRITE) setRev(path, row, rev);
+        });
+      },
+      fileDelete(path) {
+        writeRows(path, () => {
+          deleteFile(path);
+        });
+      },
+      fileByKey(ckey, notPath) {
+        for (const [key] of kv.list({ prefix: BY_CKEY + stringOf(ckey) + SEP })) {
+          const path = key.slice(key.indexOf(SEP) + 1 + 17 + 1);
+          if (path === notPath) continue;
+          const row = fileOf(path);
+          if (row !== void 0 && row[3] >= 0) return { path, kind: row[0], size: row[1], chunks: row[2] };
+        }
+        return void 0;
+      },
+      filePaths(from, to) {
+        const out = new SafeList();
+        for (const [key] of kv.list(rangeOf(FILE, from, to))) out[out.length] = key.slice(1);
+        return arrayCopy(out);
+      },
+      fileAny(from, to) {
+        for (const _entry of kv.list({ ...rangeOf(FILE, from, to), limit: 1 })) return true;
+        return false;
+      },
+      fileRevsIn(from, to) {
+        const out = new SafeList();
+        for (const [key, value] of kv.list(rangeOf(FILE, from, to))) out[out.length] = { path: key.slice(1), rev: value[3] };
+        return arrayCopy(out);
+      },
+      fileAllPaths() {
+        const rows = files();
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) out[out.length] = rows[i][0];
+        return arrayCopy(out);
+      },
+      fileRows() {
+        const rows = files();
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) out[out.length] = { path: rows[i][0], rev: rows[i][1][3], ckey: rows[i][1][4] };
+        return arrayCopy(out);
+      },
+      fileOwnPaths() {
+        const rows = files();
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) if (rows[i][1][3] === RK_OWN_WRITE) out[out.length] = rows[i][0];
+        return arrayCopy(out);
+      },
+      fileStats() {
+        const rows = files();
+        let b = 0;
+        for (let i = 0; i < rows.length; i++) b += rows[i][1][1];
+        return { n: rows.length, b };
+      },
+      chunkFirst(path) {
+        const value = kv.get(chunkKey(path, 0));
+        return value === void 0 ? void 0 : chunkRow(value);
+      },
+      chunkParts(path) {
+        const out = new SafeList();
+        for (const [, value] of kv.list({ prefix: CHUNK + path + SEP })) out[out.length] = chunkRow(value);
+        return arrayCopy(out);
+      },
+      chunkAddText(path, part, txt) {
+        addChunk(path, NumberOf(part), stringOf(txt), false);
+      },
+      chunkAddBin(path, part, bin) {
+        addChunk(path, NumberOf(part), residentBytes(bin).slice(), false);
+      },
+      chunkSetBin(path, part, bin) {
+        addChunk(path, NumberOf(part), residentBytes(bin).slice(), true);
+      },
+      chunkCopy(to, from) {
+        const parts = new SafeList();
+        for (const [key, value] of kv.list({ prefix: CHUNK + from + SEP })) parts[parts.length] = [key.slice(key.lastIndexOf(SEP) + 1), value];
+        for (let i = 0; i < parts.length; i++) {
+          if (kv.get(CHUNK_KEYS + to + SEP + parts[i][0]) !== void 0) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
+        }
+        for (let i = 0; i < parts.length; i++) {
+          put(CHUNK + to + SEP + parts[i][0], parts[i][1]);
+          put(CHUNK_KEYS + to + SEP + parts[i][0], 1);
+        }
+      },
+      chunkDelete(path) {
+        writeRows(path, () => {
+          deleteChunks(path);
+        });
+      },
+      dropOwn() {
+        const own = ownPaths();
+        dropWhere((row) => row[3] !== RK_OWN_WRITE, (path) => !own.has(path));
+      },
+      dropDated() {
+        const own = ownPaths();
+        dropWhere((row) => row[3] === RK_OWN_WRITE, (path) => own.has(path));
+      },
+      dropDatedFiles() {
+        const dated = new SafeSet();
+        const rows = files();
+        for (let i = 0; i < rows.length; i++) if (rows[i][1][3] !== RK_OWN_WRITE) dated.add(rows[i][0]);
+        dropWhere((row) => row[3] === RK_OWN_WRITE, (path) => !dated.has(path));
+      },
+      clear() {
+        writeRows(void 0, () => {
+          for (const tag of [CHUNK, CHUNK_KEYS, FILE, BY_CKEY]) deleteKeys({ prefix: tag });
+        });
+        for (const tag of [NS, PAGE, PAGE_ROWS, PAGE_USED]) deleteKeys({ prefix: tag });
+        const meta = keysOf({ prefix: META });
+        const keep = new SafeList();
+        for (let i = 0; i < meta.length; i++) if (meta[i] !== META + "schema") keep[keep.length] = meta[i];
+        drop(keep);
+      },
+      pageGet(path, rev, part) {
+        const value = kv.get(PAGE + pageTail(path, rev, part));
+        return value === void 0 ? void 0 : value;
+      },
+      pageUse(path, rev, part, used) {
+        const tail = pageTail(path, rev, part);
+        const row = kv.get(PAGE_ROWS + tail);
+        if (row === void 0) return;
+        dropOne(PAGE_USED + pad(row[0]) + SEP + tail);
+        put(PAGE_USED + pad(used) + SEP + tail, row[1]);
+        put(PAGE_ROWS + tail, [NumberOf(used), row[1]]);
+      },
+      pagePut(path, rev, part, bin, used) {
+        const tail = pageTail(path, rev, part);
+        const had = kv.get(PAGE_ROWS + tail);
+        const bytes = residentBytes(bin).slice();
+        if (had !== void 0) dropOne(PAGE_USED + pad(had[0]) + SEP + tail);
+        put(PAGE + tail, bytes);
+        put(PAGE_ROWS + tail, [NumberOf(used), bytes.byteLength]);
+        put(PAGE_USED + pad(used) + SEP + tail, bytes.byteLength);
+        return had === void 0 ? 0 : had[1];
+      },
+      pageDelete(path, rev, part) {
+        const tail = pageTail(path, rev, part);
+        const had = kv.get(PAGE_ROWS + tail);
+        if (had === void 0) return;
+        const keys = new SafeList();
+        keys[0] = PAGE + tail;
+        keys[1] = PAGE_ROWS + tail;
+        keys[2] = PAGE_USED + pad(had[0]) + SEP + tail;
+        drop(keys);
+      },
+      pageOldest(limit) {
+        const out = new SafeList();
+        for (const [key, value] of kv.list({ prefix: PAGE_USED, limit })) {
+          const { path, rev, part } = unpage(key.slice(1 + 17 + 1));
+          out[out.length] = { path, rev, part, size: value };
+        }
+        return arrayCopy(out);
+      },
+      pageBytes() {
+        let n = 0;
+        for (const [, value] of kv.list({ prefix: PAGE_ROWS })) n += value[1];
+        return n;
+      },
+      pageMaxUsed() {
+        for (const [key] of kv.list({ prefix: PAGE_USED, reverse: true, limit: 1 })) return NumberOf(key.slice(1, 18));
+        return 0;
+      },
+      nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
+        put(nsKey2(parent, name), {
+          kind: NumberOf(kind),
+          size: NumberOf(size),
+          mode: NumberOf(mode),
+          uid: NumberOf(uid),
+          gid: NumberOf(gid),
+          atime: NumberOf(atime),
+          mtime: NumberOf(mtime),
+          ctime: NumberOf(ctime),
+          ino: NumberOf(ino),
+          rev: NumberOf(rev),
+          target: target == null ? null : stringOf(target),
+          dev: NumberOf(dev) || 0,
+          nlink: NumberOf(nlink) || 1
+        });
+      },
+      nsGet(parent, name) {
+        return kv.get(nsKey2(parent, name));
+      },
+      nsDelete(parent, name) {
+        dropOne(nsKey2(parent, name));
+      },
+      nsDeleteChildren(parent) {
+        deleteKeys({ prefix: NS + parent + SEP });
+      },
+      nsDeleteParents(from, to) {
+        deleteKeys(rangeOf(NS, from, to));
+      },
+      nsClear() {
+        deleteKeys({ prefix: NS });
+      },
+      nsKeys() {
+        const rows = nsRows({ prefix: NS });
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) out[out.length] = rows[i][0];
+        return arrayCopy(out);
+      },
+      nsOfKind(kind) {
+        const rows = nsRows({ prefix: NS });
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) if (rows[i][1].kind === NumberOf(kind)) out[out.length] = rows[i][0];
+        return arrayCopy(out);
+      },
+      nsUnlisted() {
+        const rows = nsRows({ prefix: NS });
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) {
+          const [key, row] = rows[i];
+          if (row.kind === NS_DIR && row.target !== null) out[out.length] = { parent: key.parent, name: key.name, target: row.target };
+        }
+        return arrayCopy(out);
+      },
+      nsChildren(parent) {
+        const out = new SafeList();
+        for (const [key, value] of kv.list({ prefix: NS + parent + SEP })) {
+          const row = value;
+          out[out.length] = { name: key.slice(key.indexOf(SEP) + 1), kind: row.kind, mode: row.mode };
+        }
+        return arrayCopy(out);
+      },
+      nsCount() {
+        let n = 0;
+        for (const _entry of kv.list({ prefix: NS })) n++;
+        return n;
+      }
+    };
+  }
+
   // ../core/dist/vfs/composite.js
   var ANONYMOUS_DEV = 65536;
   var utf8 = new TextEncoder();
 
   // src/vfs/resident/index.ts
+  function dropSqlStore(storage) {
+    const exec = storage.sql?.exec;
+    if (typeof exec !== "function") return;
+    const sql = storage.sql;
+    const held = new SafeList();
+    for (const row of exec.call(sql, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')")) {
+      held[held.length] = stringOf(row.name);
+    }
+    for (let i = 0; i < held.length; i++) exec.call(sql, "DROP TABLE IF EXISTS " + held[i]);
+  }
   function createResidentStore(options = {}) {
     const coherence = createCoherence();
     const admission = createAdmission(coherence);
@@ -3593,13 +3765,14 @@ var __nimbusResidentModule = (() => {
     return {
       bundle: cells.bundle,
       bind(ctx) {
-        const sql = ctx?.storage?.sql;
-        if (!sql || typeof sql.exec !== "function") {
+        const storage = ctx?.storage;
+        if (!storage || typeof storage.kv?.get !== "function" || typeof storage.put !== "function") {
           throw new Error(
-            "Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); the resident set cannot be served and every sync read would raise EAGAIN"
+            "Nimbus: this facet has no synchronous key-value storage (ctx.storage.kv); the resident set cannot be served and every sync read would raise EAGAIN"
           );
         }
-        bindTables(sqlTables(sql, cells.rowsChanged), null);
+        dropSqlStore(storage);
+        bindTables(kvTables(storage, cells.rowsChanged), null);
       },
       bindInMemory(budget) {
         const t = heapTables(cells.rowsChanged);
