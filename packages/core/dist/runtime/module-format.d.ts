@@ -11,7 +11,7 @@ export declare function declaredPackageType(packageJson: string): PackageType;
  * (containsModuleSyntax), in node_modules as anywhere.
  */
 export declare function isEsModuleFile(path: string, source: string, packageType: () => PackageType): boolean;
-/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+/** Node 22.23.4's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
 export declare function typeScriptFormat(path: string, packageType: () => PackageType, stripped: () => string): 'module' | 'commonjs' | null;
 /**
  * TypeScript Node does not strip (`--no-experimental-strip-types`) run as the

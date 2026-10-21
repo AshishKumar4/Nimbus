@@ -6,9 +6,15 @@ let nextId = 0;
 export function makeAsserter(label, { write = console.log, emit = (result) => process.send?.({ type: 'nimbus-probe-assertions', result }) } = {}) {
   const id = ++nextId;
   const checks = [];
-  const result = (complete) => ({ id, label, complete, checks: checks.map(check => ({ ...check })) });
+  const records = {};
+  const result = (complete) => ({ id, label, complete, checks: checks.map(check => ({ ...check })), ...(Object.keys(records).length > 0 ? { records: { ...records } } : {}) });
   emit(result(false));
   return {
+    /** Keep `value` under `name` in the result: data for the runner (the upstream canary reads `manifest`), never a check. */
+    record(name, value) {
+      records[name] = value;
+      emit(result(false));
+    },
     check(name, ok, detail = '') {
       const shown = ok ? '' : redactCredentials(String(detail));
       checks.push({ name, ok: Boolean(ok), detail: shown });

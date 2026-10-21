@@ -229,7 +229,7 @@ cases.readReceiptOwner = async () => {
   const replay = new ReplaySessions(), ctx = {};
   const j = replay.open(7, () => {}).journal;
   const owner = { ctx, replay, stdinTaken: new Map(), outputGates: new Map(),
-    processes: { get: () => ({ state: 'running' }) } };
+    processes: { get: () => ({ state: 'running' }), parkSignals() {} } };
   // The actual manager activation/retirement methods, not a test-owned
   // retention registration, connect the receipt lifetime to the writer.
   FacetManager.prototype._activateProcessVfsWriter.call(owner, 7, 'a');

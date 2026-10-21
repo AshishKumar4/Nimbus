@@ -24,6 +24,7 @@ import { enc, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { RuntimeStatSchema, sessionFileStatOf } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
+import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { getInnerDoClass, innerDoFacetName, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { KvEmulator, serveKvCall } from '../bindings/kv.js';
@@ -1426,6 +1427,30 @@ export async function _rpcCpNextSignal(self, pid, waitMs) {
     if (pid === undefined || isPriorGenerationPid(self, pid))
         return null;
     return self.processes.nextSignal(pid, Number(waitMs) || 0);
+}
+/**
+ * The next signal sent to `pid`'s Node program, which takes its own: its
+ * box taken back from a stop (SessionProcessSupervisor.takeSignalsBack), then
+ * cpNextSignal's wait. Its own op: a Node run asks only past a replay's
+ * boundary, so none of its waits is a replayed observation.
+ */
+export async function _rpcCpTakeSignal(self, pid, waitMs) {
+    if (pid === undefined || isPriorGenerationPid(self, pid))
+        return null;
+    self.processes.takeSignalsBack(pid);
+    return self.processes.nextSignal(pid, Number(waitMs) || 0);
+}
+/** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
+export async function _rpcCpCatchSignals(self, pid, catches) {
+    if (pid === undefined || isPriorGenerationPid(self, pid) || !Array.isArray(catches))
+        return;
+    const names = [];
+    for (const catching of catches) {
+        const name = typeof catching === 'string' ? parseProcessSignalName(catching) : null;
+        if (name !== null)
+            names.push(name);
+    }
+    self.processes.catchSignals(pid, names);
 }
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
     childOf(self, childPid, pid);

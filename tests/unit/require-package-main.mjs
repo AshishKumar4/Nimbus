@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// One fixture and Node 22.22.3 oracle for the core sync/async algorithm,
+// One fixture and Node 22.23.4 oracle for the core sync/async algorithm,
 // lifo loader and emitted guest. Covers selection, exact map targets,
 // main/index/extensions, scope boundaries and canonical symlink identity.
 // Nimbus's intentional policies are asserted separately below.

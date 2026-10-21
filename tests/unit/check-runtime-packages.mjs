@@ -5,7 +5,7 @@
 // it; otherwise core does not publish.
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,8 +69,10 @@ try {
   assert.deepEqual(await packedCheck(pack(good), fakeRegistry(null)), [], 'a packed version npm lacks is published with the release');
   assert.deepEqual(await packedCheck(pack(good), fakeRegistry({ '1.0.0-2': builtSha }, '1.0.0-2')), [], 'a packed version npm has as latest');
   assert.match((await packedCheck(pack(good), fakeRegistry({ '1.0.0-2': 'f'.repeat(64) }, '1.0.0-2')))[0]?.problem ?? '', /on the registry carries manifest.json sha256 f{64}/, 'npm holds that version with other bytes');
-  // clang's compiler is 31 MB and Ruby's interpreter 34 MB.
-  const big = packageDir('big', BASH_RUNNER, Buffer.alloc(32_000_000, 7));
+  // clang's compiler is 31 MB and Ruby's interpreter 34 MB, and neither
+  // compresses much. npm's tar (7.5.22, npm 10.9.9) refuses a pack that
+  // inflates more than 1000 times, as 32 MB of one byte does.
+  const big = packageDir('big', BASH_RUNNER, randomBytes(32_000_000));
   assert.deepEqual(await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: big, registry: fakeRegistry(null), runThroughCore, tarball: pack(big) }), [], 'a packed runtime with a blob past 20 MB installs whole');
   const wrong = packageDir('wrong-archive', 'bash-runner');
   const wrongProblems = await packedCheck(pack(wrong), fakeRegistry(null));

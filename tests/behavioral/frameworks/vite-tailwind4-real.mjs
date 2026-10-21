@@ -13,7 +13,7 @@
 //   - `vite build` writes a stylesheet with all of them.
 // Tailwind is pinned to the version of the staged oxide build: a launch
 // carries the exact build a package's installed version names.
-import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, heredocCommand, BASE, requestHeaders, sleep } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, heredocCommand, BASE, requestHeaders, sleep, projectPackageJson } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('vite-tailwind4-real');
@@ -48,6 +48,8 @@ try {
   const create = await t.run('npm create vite@latest app -- --template react-ts --no-interactive 2>&1', 240_000);
   a.check('create-vite creates the React/TS project', create.exitCode === 0, tail(create.output));
   if (create.exitCode !== 0) throw new Error('scaffold failed');
+  // Before Tailwind is added: the probe pins it to the staged oxide build, so it is not upstream's latest.
+  a.record('package.json', await projectPackageJson(t, APP));
   const installed = await t.run(`cd ${APP} && npm install 2>&1 && npm install -D tailwindcss@${TAILWIND} @tailwindcss/vite@${TAILWIND} 2>&1`, 600_000);
   a.check('npm install adds Tailwind v4 without an unsupported-build note', installed.exitCode === 0 && !/note:\s*@tailwindcss\/oxide has no Workers-compatible build/.test(installed.output), tail(installed.output));
   if (installed.exitCode !== 0) throw new Error('install failed');

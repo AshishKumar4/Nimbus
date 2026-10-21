@@ -40,12 +40,19 @@
 //
 // The paired perf probes (tests/behavioral/_paired.mjs PAIRED_PROBES) are
 // graded against a baseline measured in the same run, not a fixed bound.
-// When the selection has one, this builds the baseline (--baseline, default
-// the commit's merge-base with origin/main) beside the candidate, stands up
+// When the selection has one, this takes the baseline (--baseline, default
+// the commit's merge-base with origin/main) as staging sealed it here, or
+// builds it beside the candidate when no sealed release of it is here; the
+// verdict says which (`baseline`). Then it stands up
 // four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends. A paired probe red
 // there is run again on a fresh set of four, and is red only if red on both.
+// When the baseline's release and the candidate's deploy the same bytes
+// (lib/release.mjs deployedDigest), the timing would measure nothing: a
+// selection that took the paired probes by default skips them, and the
+// verdict says so (`pairedSkipped`). A run that names one (--only, --repeat)
+// runs it whatever the bytes, as a check of the probe or of the grader does.
 //
 // A red row whose session socket closed 1006 (the run's session ledger) or
 // that shows E_NIMBUS_DO_OVERLOADED is attributed from the platform's own
@@ -67,6 +74,7 @@ import { PAIRED_ENV, PAIRED_PROBES } from '../../tests/behavioral/_paired.mjs';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { namesProbe, selectionNames, selects } from '../../tests/behavioral/_selection.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
+import { causeOf } from './lib/cli-failure.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 import { defaultBaseline, pairedPreviews } from './lib/paired-previews.mjs';
 import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, regradable, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
@@ -94,7 +102,17 @@ const TASK_TIMEOUT_S = 30 * 60;
  * starts again later (its container lost), runs once more with fresh
  * credentials (runTasks).
  */
-const PREPARE_S = Math.ceil(35 + 331.4 + 61);
+const JOB_START_S = 331.4 + 61;
+const PREPARE_S = Math.ceil(35 + JOB_START_S);
+/**
+ * How long a deployment read may wait out a resolver that cannot answer
+ * (TransientTransportError): the part of PREPARE_S before the job's creation,
+ * 35.6 s. The read before a job waits until its tokens' start-by less the
+ * job's measured start (JOB_START_S), which leaves the pack's upload none of
+ * that part; a task that then starts late runs once more with fresh
+ * credentials (runTasks). Any other read waits as long from its start.
+ */
+const READ_RETRY_MS = (PREPARE_S - JOB_START_S) * 1000;
 const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 /** Workers Logs can trail a reset by minutes: how often, and how many times, a session no log names yet is looked up again. */
 const ATTRIBUTION_WAIT_MS = 45_000;
@@ -146,11 +164,13 @@ try {
 const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
 const throwaway = flags.deploy ?? target[2];
 const repeats = (flags.repeat ?? '').split(',').filter(Boolean);
+const repeated = (probe) => repeats.some((name) => namesProbe(selectionNames(name), `${probe}.mjs`));
 // The paired probes the suite selects, and those it repeats, need the arms;
 // a hosted demo's checks are named, and none is paired.
 const pairedInSuite = hosted ? [] : PAIRED_PROBES.filter((probe) => selects({ only: flags.only, skip }, `${probe}.mjs`));
-const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => pairedInSuite.includes(probe)
-  || repeats.some((name) => namesProbe(selectionNames(name), `${probe}.mjs`)));
+const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => pairedInSuite.includes(probe) || repeated(probe));
+// A paired probe this run names runs even on equal bytes; only the suite's default selection skips them.
+const pairedNamed = paired.some((probe) => repeated(probe) || namesProbe(selectionNames(flags.only), `${probe}.mjs`));
 // An --only that names nothing but paired probes needs no parts.
 const suite = !flags.only || selectionNames(flags.only).some((name) => !PAIRED_PROBES.some((probe) => namesProbe([name], `${probe}.mjs`)));
 
@@ -178,6 +198,10 @@ const onArmada = async (job) => {
 let arms = null;
 /** This run's own directory (lib/run-dir.mjs), opened when it fetches a release. */
 let runDir = null;
+/** Where the paired baseline's release came from: { commit, release, digest } when staging sealed it, { commit, built: job } when built now. */
+let baselineSource = null;
+/** { baseline, digest } when the paired probes are skipped: the baseline deploys the candidate's bytes. */
+let pairedSkipped = null;
 /** The deployment each throwaway this run grades must serve throughout: its upload's, or the target's when this run did not upload it. */
 const expected = {};
 let status = 0;
@@ -203,12 +227,29 @@ try {
       for (const line of [...left, ...(left.length > 0 ? runDir.keep() : runDir.close())]) console.error(`remote-probes: LEFT BEHIND ${line}`);
     });
   }
-  const { fetchRelease } = await import('./lib/release.mjs');
-  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
+  const { deployedDigest, fetchRelease, recordedRelease } = await import('./lib/release.mjs');
+  // A baseline staging sealed here is uploaded as staging verified it, not
+  // built again (lib/release.mjs recordedRelease); any other is built.
+  const recorded = baseline && baseline !== sha ? recordedRelease({ sha: baseline, target: 'apps/probe', into: join(runDir.dir, 'releases') }) : null;
+  const toBuild = commits.filter((commit) => !(recorded && commit === baseline));
+  const built = await Promise.allSettled(toBuild.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
   const releases = {};
+  const jobs = {};
   for (const [i, outcome] of built.entries()) {
     if (outcome.status === 'rejected') throw outcome.reason;
-    releases[commits[i]] = outcome.value.dir;
+    releases[toBuild[i]] = outcome.value.dir;
+    jobs[toBuild[i]] = outcome.value.release.job;
+  }
+  if (recorded) releases[baseline] = recorded.dir;
+  // What the a-arms run, kept in the verdict: the sealed release (its directory and digest), or the job that built it now.
+  baselineSource = !baseline ? null : recorded ? { commit: baseline, release: recorded.sealed, digest: recorded.digest }
+    : { commit: baseline, built: jobs[baseline] };
+  if (baseline && !pairedNamed) {
+    const digest = deployedDigest(repo, releases[sha], 'apps/probe');
+    if (deployedDigest(repo, releases[baseline], 'apps/probe') === digest) {
+      pairedSkipped = { baseline, digest };
+      console.log(`paired perf: skipped, deployed bytes equal to ${baseline.slice(0, 12)} (digest ${digest})`);
+    }
   }
   signals(true);
   if (flags.deploy) {
@@ -221,8 +262,9 @@ try {
     const { readState, throwawayStatePath } = await import('../../tests/behavioral/_deploy-target.mjs');
     expected[`target ${throwaway}`] = flags.deploy ? readState(throwawayStatePath(repo, throwaway))?.versionId : (await deployments())[`target ${throwaway}`];
   }
-  if (baseline) {
-    console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
+  if (baseline && !pairedSkipped) {
+    console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}, ${baselineSource.release
+      ? `the release staging sealed (${baselineSource.release}, digest ${baselineSource.digest})` : `built now (job ${baselineSource.built})`}`);
     arms = pairedPreviews({ repo, runDir });
     await arms.standUp({ baseline, candidate: sha, releases });
     for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
@@ -235,18 +277,19 @@ try {
 process.exit(status);
 
 /**
- * The deployments this run grades, by id: the throwaway target's and each
+ * The deployments this run grades, by id, each read waiting out a resolver
+ * that cannot answer until `until` (READ_RETRY_MS): the throwaway target's and each
  * paired arm's once stood up. Staging's are release.mjs's to bracket; a
  * hosted demo has none.
  */
-async function deployments() {
+async function deployments(until = Date.now() + READ_RETRY_MS) {
   const ids = {};
   if (throwaway !== undefined) {
-    const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway], { cwd: repo, encoding: 'utf8' });
-    if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment:\n${read.stderr}`);
+    const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway, '--until', String(until)], { cwd: repo, encoding: 'utf8' });
+    if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment: ${causeOf(read)}\n${read.stderr ?? ''}`);
     ids[`target ${throwaway}`] = read.stdout.trim();
   }
-  if (arms) for (const [arm, id] of Object.entries(await arms.versions())) ids[`arm ${arm}`] = id;
+  if (arms) for (const [arm, id] of Object.entries(await arms.versions(String(until)))) ids[`arm ${arm}`] = id;
   return ids;
 }
 
@@ -262,7 +305,7 @@ async function credentials() {
     ? ['tests/behavioral/_staging-target.mjs', 'token']
     : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway];
   const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
-  if (minted.status !== 0) throw new Error(`could not mint a token for ${throwaway ?? 'staging'}:\n${minted.stderr}`);
+  if (minted.status !== 0) throw new Error(`could not mint a token for ${throwaway ?? 'staging'}: ${causeOf(minted)}\n${minted.stderr ?? ''}`);
   const { base, token } = JSON.parse(minted.stdout);
   return { base, token, arms: arms ? await arms.credentials(TOKEN_TTL_MS) : null, startBy };
 }
@@ -281,7 +324,7 @@ async function probeRun({ baseline, releases }) {
     const { base, token, arms: armTargets, startBy } = await credentials();
     secrets.push(...[token, ...Object.values(armTargets ?? {}).map((arm) => arm.token)].filter(Boolean));
     const env = { ...(token ? { NIMBUS_PROBE_TOKEN: token } : {}), ...(armTargets ? { [PAIRED_ENV]: JSON.stringify(armTargets) } : {}) };
-    const before = await deployments();
+    const before = await deployments(startBy - JOB_START_S * 1000);
     console.error(`remote-probes: ${list.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
     const mapped = await onArmada(() => mapOnArmada({
       repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs', 'tests/behavioral/_selection.mjs', 'tests/behavioral/_ledger.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
@@ -323,7 +366,7 @@ async function probeRun({ baseline, releases }) {
   const partSkip = [skip, ...PAIRED_PROBES].filter(Boolean).join(',');
   const items = [
     ...(suite ? Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', skip: partSkip, jobs })) : []),
-    ...(pairedInSuite.length > 0 ? [{ task: 'paired perf', part: '1/1', only: pairedInSuite.join(','), skip, jobs: 1 }] : []),
+    ...(pairedInSuite.length > 0 && !pairedSkipped ? [{ task: 'paired perf', part: '1/1', only: pairedInSuite.join(','), skip, jobs: 1 }] : []),
     ...repeats.flatMap((probe) => Array.from({ length: times }, (_, i) => ({ task: `${probe} #${i + 1}`, part: '1/1', only: probe, skip, jobs: 1 }))),
   ];
   let run;
@@ -425,7 +468,7 @@ async function probeRun({ baseline, releases }) {
     mkdirSync(state, { recursive: true });
     const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${jobId}.json`);
     writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: jobId,
-      ...(paired.length > 0 ? { paired } : {}), problems, tasks }, null, 2))}\n`);
+      ...(paired.length > 0 ? { paired } : {}), ...(baselineSource ? { baseline: baselineSource } : {}), ...(pairedSkipped ? { pairedSkipped: { why: 'deployed bytes equal', ...pairedSkipped } } : {}), problems, tasks }, null, 2))}\n`);
     console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${jobId})`);
     return status;
   } catch (error) {

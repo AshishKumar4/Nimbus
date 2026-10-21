@@ -1,5 +1,5 @@
 /**
- * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.22.3)
+ * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.23.4)
  * makes them, for every error the runtime gives a code: the guest's shims and
  * module resolver, the shell's own Node compatibility, and the host code that
  * shares them. A NodeError reads `Name [CODE]: message` in its stack and its
@@ -21,7 +21,7 @@ import {
   objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply,
   reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas,
   reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf,
-  stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError,
+  stringSlice, stringEndsWith, stringToLowerCase, symbolFor, SyntaxError, TypeError, URIError,
 } from './primordials.js';
 
 type ErrorClass = new (message?: string) => Error;
@@ -190,6 +190,16 @@ function invalidArgValueMessage(name: string, value: unknown, reason = 'is inval
   let inspected = inspectValue(value, {});
   if (inspected.length > 128) inspected = `${stringSlice(inspected, 0, 128)}...`;
   return `The ${stringIncludes(name, '.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
+}
+
+/** Node's ERR_TLS_CERT_ALTNAME_INVALID: `cert` does not name `host`, for `reason`. */
+export function tlsCertAltnameInvalid(reason: string, host: string, cert: object): Error {
+  return made(Error, 'ERR_TLS_CERT_ALTNAME_INVALID', `Hostname/IP does not match certificate's altnames: ${reason}`, { reason, host, cert }, tlsCertAltnameInvalid);
+}
+
+/** Node's ERR_TLS_CERT_ALTNAME_FORMAT: a quoted subject alternative name is not a JSON string. */
+export function tlsCertAltnameFormat(): Error {
+  return made(SyntaxError, 'ERR_TLS_CERT_ALTNAME_FORMAT', 'Invalid subject alternative name string', undefined, tlsCertAltnameFormat);
 }
 
 /** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */

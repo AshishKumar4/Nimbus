@@ -1,6 +1,6 @@
 /**
  * cjs-module-exports.ts — the names an ES module may import from a CommonJS
- * module, as Node 22.22.3 names them before the module runs
+ * module, as Node 22.23.4 names them before the module runs
  * (lib/internal/modules/esm/translators.js cjsPreparseModuleExports): what
  * cjs-module-lexer, at Node's own version, finds in its source, `default`
  * first, and the names of every module it re-exports (`module.exports =

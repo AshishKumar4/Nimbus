@@ -1,7 +1,7 @@
 // @serial
 // @tier slow — drives a local workerd
 // The global object a session's `node` program sees, against host Node
-// 22.22.3's (also under --experimental-eventsource, which adds a global), and
+// 22.23.4's (also under --experimental-eventsource, which adds a global), and
 // a `bun` program's against host Bun's: every name globalThis
 // answers (its own and its prototypes', not Object.prototype's) and its
 // typeof. A difference is a workerd-only global a

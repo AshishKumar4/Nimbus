@@ -48,7 +48,8 @@ import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
-  NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
+  NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, TLS_IDENTITY_PREAMBLE,
+  WASM_IMAGE_KEY_PREAMBLE,
 } from '../loaders/workers.generated.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -151,6 +152,7 @@ ${NODE_ERROR_PREAMBLE}
 ${NODE_ARGUMENTS_PREAMBLE}
 ${NODE_WARNING_PREAMBLE}
 ${POSIX_PATH_PREAMBLE}
+${TLS_IDENTITY_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -6446,7 +6448,7 @@ const __fsMod = (() => {
   realpath.native = realpath;
 
   // ── fs.glob ── Node 22's fs.glob, fs.globSync and fs.promises.glob: its
-  // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
+  // Glob, ported from lib/internal/fs/glob.js (v22.23.4; the Linux paths),
   // matching with the minimatch Node vendors (node-minimatch-source.ts),
   // which is evaluated the first time a program globs.
   const _Glob = (() => {
@@ -7879,7 +7881,7 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// util.inspect, format and formatWithOptions are Node v22.23.4's own
 // lib/internal/util/inspect.js (node-lib-source.ts), evaluated the first
 // time a program formats a value, over what node-lib-host.ts gives it in
 // place of Node's internals: what a program prints of a value, through util
@@ -8137,7 +8139,7 @@ Object.defineProperties(__nimbusInspect, {
         throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
       }
     }
-    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // Node's (lib/internal/url.js, v22.23.4), but for showHidden's internal
     // context, which workerd's URL has none of.
     [inspectCustom](depth, opts) {
       if (typeof depth === "number" && depth < 0) return this;
@@ -8175,7 +8177,7 @@ Object.defineProperties(__nimbusInspect, {
   // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
   globalThis.URL = __nimbusFronted(URL, _Orig);
-  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.23.4).
   Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
     value: function (recurseTimes, ctx) {
       if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
@@ -8722,16 +8724,26 @@ const __tlsMod = (() => {
     };
     return socket;
   };
+  // tls.checkServerIdentity is Node's (core _shared/tls-identity.ts):
+  // workerd's is an older Node's, which matched '127.1' against a
+  // certificate for 127.0.0.1. isIP is Node's own (the vendored
+  // lib/internal/net.js), and domainToASCII is workerd's, which runs the
+  // algorithm Node's binding runs.
+  const checkServerIdentity = createCheckServerIdentity({
+    isIP: (input) => __nimbusNodeLib().require("internal/net").isIP(input),
+    domainToASCII: (domain) => __urlMod.domainToASCII(domain),
+  });
   // Anything else node:tls exports that is called or constructed (a
   // TLSSocket, a server) may open a connection: counted too, all but the
   // helpers that only compute.
-  const pure = { createSecureContext: true, getCiphers: true, checkServerIdentity: true, convertALPNProtocols: true };
+  const pure = { createSecureContext: true, getCiphers: true, convertALPNProtocols: true };
   const counted = new Map();
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
       if (p === 'connect') return connect;
+      if (p === 'checkServerIdentity') return checkServerIdentity;
       if (p === 'createServer') {
         return () => {
           throw nodeError(Error, 'ERR_NET_SERVER_NOT_AVAILABLE', 'tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
@@ -9813,7 +9825,7 @@ const __childProcessMod = (() => {
 // constructor ("The Console method is not implemented"), which OpenTUI's
 // console capture calls over streams of its own.
 // Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
-// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// lib/internal/util/colors.js shouldColorize, v22.23.4), for its platform
 // (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
 // TERM=dumb, then the CI and terminal variables. Each stream decides for
 // itself: a terminal's getColorDepth reads the env it is given.
@@ -10546,6 +10558,16 @@ function __makeStdinSource() {
   function end() { ended = true; deliver(); }
   function fail(error) { failure = error; deliver(); }
   async function pumpLiveStdin() {
+    __nimbusStdinPumping = true;
+    try {
+      await pumpLiveStdinPackets();
+    } finally {
+      __nimbusStdinPumping = false;
+      // Its signals are the signal taker's again once its input has ended.
+      if (!__nimbusProgramStopped) __nimbusTakeSignals();
+    }
+  }
+  async function pumpLiveStdinPackets() {
     let readFailures = 0;
     // What fd 0's follower took after process.stdin took the channel over
     // comes first (__nimbusFollowStdin).
@@ -10822,11 +10844,27 @@ function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
   return ready;
 }
 
+// What output must wait for besides the filesystem's gate: what this process
+// says it catches (__nimbusSayCaught), so a "ready" it prints after
+// process.on() leaves only once a signal sent then finds it caught. Null when
+// nothing is held.
+let __nimbusOutputHold = null;
+function __nimbusHoldOutput(promise) {
+  const held = Promise.all([__nimbusOutputHold, promise]).then(() => {}, () => {});
+  __nimbusOutputHold = held;
+  held.then(() => { if (__nimbusOutputHold === held) __nimbusOutputHold = null; });
+}
+
 // The gate an output or exit leaving the process is released at, taken when
 // it is made (ProcessFsClient.effect): null when nothing it logged waits.
+// What is held (__nimbusOutputHold) is waited for too; the output is written
+// meanwhile, so a run that stops carries it (runtime/stop-replay.ts).
 function __nimbusOutputGate() {
   const client = globalThis.__nimbusProcessFs;
-  return client ? client.effect() : null;
+  const gate = client ? client.effect() : null;
+  const hold = __nimbusOutputHold;
+  if (hold === null) return gate;
+  return gate === null ? hold : Promise.all([gate, hold]);
 }
 
 // Send a line to the session's stderr for this process, at its gate: every
@@ -11092,6 +11130,109 @@ Object.defineProperty(__processMod, "allowedNodeEnvironmentFlags", {
 });
 // The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
 if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWarning);
+// The signals this process catches, as its listeners come and go: the
+// session queues each one sent to it (a parent's kill, the shell's, a
+// client's) for it to take, where it would otherwise take the signal's
+// default action (cpCatchSignals), and this process takes them
+// (cpTakeSignal), its handlers deciding what it does, as Node's do. While its
+// stdin pump runs, the pump takes them with its input (one waits at a time).
+// What it catches is said again until the session has it, and its output
+// waits for that: a "ready" it prints after process.on() is seen only once a
+// signal sent then finds it caught.
+const __nimbusCatchable = ["SIGHUP", "SIGINT", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM"];
+let __nimbusCaughtWanted = "";
+let __nimbusCaughtSaid = "";
+let __nimbusCaughtSaying = null;
+let __nimbusSignalTaker = null;
+let __nimbusStdinPumping = false;
+// A pause no program waits on: the facet's own timer, not the program's.
+function __nimbusPause(ms) {
+  const schedule = globalThis.__nimbusRawSetTimeout || setTimeout;
+  return new Promise((resolve) => { schedule(resolve, ms); });
+}
+function __nimbusCatchSignals(adding) {
+  if (!__supervisor || typeof __supervisor.cpCatchSignals !== "function") return;
+  __nimbusCaughtWanted = __nimbusCatchable.filter((sig) => sig === adding || __processMod.listenerCount(sig) > 0).join(",");
+  // A run that stops carries them, as its word may not have reached the session.
+  if (__nimbusReplay && typeof __nimbusReplay.catches === "function") __nimbusReplay.catches(__nimbusCaughtWanted);
+  __nimbusSayCaught();
+  __nimbusTakeSignals();
+}
+function __nimbusSayCaught() {
+  if (__nimbusCaughtSaying !== null || __nimbusCaughtWanted === __nimbusCaughtSaid) return;
+  const saying = (async () => {
+    let failures = 0;
+    try {
+      while (__nimbusCaughtWanted !== __nimbusCaughtSaid && !__nimbusProgramStopped) {
+        const wanted = __nimbusCaughtWanted;
+        try {
+          await __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(wanted === "" ? [] : wanted.split(",")), () => undefined);
+          __nimbusCaughtSaid = wanted;
+          failures = 0;
+        } catch (error) {
+          if (++failures >= 5) {
+            __nimbusReleaseStderr("[nimbus] the session did not take this process's signal handlers (" + ((error && error.message) || String(error))
+              + "): a signal sent to it takes its default action\\n");
+            return;
+          }
+          await __nimbusPause(200 * failures);
+        }
+      }
+    } finally {
+      // Let go in the same turn as the last look at what is wanted: a listener added after says it afresh.
+      __nimbusCaughtSaying = null;
+    }
+  })();
+  __nimbusCaughtSaying = saying;
+  __nimbusHoldOutput(saying);
+}
+// Whether this run has taken back what a stop parked (cpTakeSignal): once, past a replay's boundary, whether its
+// signals then come by its own waits or with its stdin.
+let __nimbusSignalsTakenBack = false;
+function __nimbusTakeSignals() {
+  if (__nimbusSignalTaker !== null || __nimbusCaughtWanted === "" || typeof __supervisor.cpTakeSignal !== "function") return;
+  if (__nimbusStdinPumping && __nimbusSignalsTakenBack) return;
+  __nimbusSignalTaker = (async () => {
+    let failures = 0;
+    while (__nimbusCaughtWanted !== "" && !__nimbusProgramStopped && !(__nimbusStdinPumping && __nimbusSignalsTakenBack)) {
+      // A run after a stop takes no signal before the read the run before it stopped at: that run had none there.
+      const crossing = __nimbusReplay && typeof __nimbusReplay.untilBoundary === "function" ? __nimbusReplay.untilBoundary() : null;
+      if (crossing) await crossing;
+      let sig = null;
+      const asked = Date.now();
+      try {
+        // Unref'd, as the stdin pump's poll: waiting for a signal is no reason to keep the program alive. While the
+        // pump reads, it takes them with its input: this asks once, to take back what a stop parked, and is done.
+        sig = await __nimbusUseRpcResultUnref(__supervisor.cpTakeSignal(__nimbusStdinPumping ? 0 : 5000), (result) => result);
+        __nimbusSignalsTakenBack = true;
+        failures = 0;
+      } catch {
+        if (++failures > 10) return;
+        sig = null;
+      }
+      if (__nimbusProgramStopped) return;
+      if (sig === null) {
+        if (__nimbusStdinPumping) continue;
+        // An answer of none that came at once (the session holds no catches for it, or failed) is asked again a second later, not at once.
+        if (Date.now() - asked < 1000) await __nimbusPause(1000);
+        continue;
+      }
+      // Whatever sent it may have written files first, as for a signal the stdin pump delivers.
+      await __nimbusInboundBarrier(undefined, true);
+      if (__nimbusReplay) __nimbusReplay.unreplayable("took " + sig + ", sent from outside it, which a second run would not be sent again");
+      __nimbusSignalSelf(String(sig));
+    }
+  })().catch((e) => {
+    if (e instanceof __ProcessExit) return;
+    try { queueMicrotask(() => { throw e; }); } catch {}
+  }).finally(() => {
+    __nimbusSignalTaker = null;
+    // Listeners added while it ended are taken by the next.
+    if (!__nimbusProgramStopped) __nimbusTakeSignals();
+  });
+}
+__processMod.on("newListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(event); });
+__processMod.on("removeListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(null); });
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines
@@ -11133,7 +11274,7 @@ function __nimbusExitAtEnd() {
 }
 
 // ── What nothing caught ──
-// Node 22.22.3's fatal exception (lib/internal/process/execution.js
+// Node 22.23.4's fatal exception (lib/internal/process/execution.js
 // createOnGlobalUncaughtException; lib/internal/process/promises.js
 // throwUnhandledRejectionsMode; src/node_errors.cc TriggerUncaughtException,
 // ReportFatalException, GetErrorSource): 'uncaughtExceptionMonitor' sees it,
@@ -12003,7 +12144,10 @@ builtins.zlib = (() => {
   // \`default\`. workerd exports every constant by name, enumerable, and two
   // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
   // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
-  // Z_MAX_CHUNK are the engine's values, not Node's.
+  // Z_MAX_CHUNK are the engine's values, not Node's, and the Brotli decoder
+  // is the engine's: Node 22.23.4's has a fix (CVE-2026-111497) and its error
+  // code, BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH, which workerd's
+  // constants lack.
   const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
   const constants = Object.create(null);
   for (const [name, value] of Object.entries(__real.constants)) {
@@ -12580,7 +12724,7 @@ function __nimbusIsCommonJSGlobalLikeError(e) {
 }
 
 // Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
-// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// module_job.js, v22.23.4): what a ReferenceError for a CommonJS name says
 // once it escapes the evaluation of an ES module job the loader ran: a
 // program's ES entry, an import(), a require() of an ES module. \`url\` and
 // \`hasTopLevelAwait\` are the job's module's. Thrown anywhere else (in a

@@ -88,9 +88,20 @@ const NOTHING_REAPED: Promise<number> = Promise.resolve(0);
 
 /** A process whose program takes its own signals: those it catches, those sent and not taken, and its one wait for the next. */
 interface SignalBox {
-  readonly catches: ReadonlySet<ProcessSignalName>;
+  catches: ReadonlySet<ProcessSignalName>;
   readonly queued: ProcessSignalName[];
   taker: ((signal: ProcessSignalName | null) => void) | null;
+  /**
+   * Its program's run has stopped and the next has not taken over
+   * (parkSignals): what it catches waits here, for the run that comes next.
+   */
+  parked: boolean;
+  /**
+   * The last signal its program was given, until it asks again: a run that
+   * stopped before it acted on it gives it back. Each giving its own: who
+   * gives one back takes it from here, and a later hand cannot give it again.
+   */
+  handed: { readonly signal: ProcessSignalName } | null;
 }
 
 /** Whether `a` and `b` are one identity: uid, gid and supplementary groups (as a set); a umask is not one. */
@@ -864,9 +875,14 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   async readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket> {
     const box = this.signalBoxes.get(pid);
-    if (box === undefined) return this.input.read(pid, waitMs, maxBytes);
+    // Parked, its signals wait for the run that comes next: its input does not carry them.
+    if (box === undefined || box.parked) return this.input.read(pid, waitMs, maxBytes);
+    box.handed = null;
     const queued = box.queued.shift();
-    if (queued !== undefined) return { data: '', ended: false, signal: queued };
+    if (queued !== undefined) {
+      box.handed = { signal: queued };
+      return { data: '', ended: false, signal: queued };
+    }
     const withdraw = new AbortController();
     const reading = this.input.read(pid, waitMs, maxBytes, withdraw.signal);
     const wait = this.waitSignal(box, waitMs ?? 1000);
@@ -875,7 +891,12 @@ export class SessionProcessSupervisor implements ProcessOutput {
       // A signal that came with it is the next wait's.
       wait.cancel();
       const late = await wait.signal;
-      if (late !== null) box.queued.unshift(late);
+      // Back to the queue, unless a park has given it back already.
+      const given = wait.given();
+      if (late !== null && given !== null && box.handed === given) {
+        box.handed = null;
+        box.queued.unshift(late);
+      }
       return first.packet;
     }
     withdraw.abort();
@@ -897,7 +918,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   takeSignals(pid: number, catches: readonly ProcessSignalName[]): () => void {
     if (this.table.get(pid)?.state !== 'running' || this.signalBoxes.has(pid)) return () => {};
-    const box: SignalBox = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null };
+    const box: SignalBox = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null, parked: false, handed: null };
     this.signalBoxes.set(pid, box);
     // What was sent and not taken goes with its program.
     const release = (): void => {
@@ -913,31 +934,98 @@ export class SessionProcessSupervisor implements ProcessOutput {
   }
 
   /**
+   * `pid`'s program says which signals it catches now, as a Node process's
+   * listeners come and go: the offer takeSignals makes, made, or its
+   * catches changed (none: each signal takes its default action again).
+   * Until it ends, each it catches is queued for it (nextSignal).
+   */
+  catchSignals(pid: number, catches: readonly ProcessSignalName[]): void {
+    const box = this.signalBoxes.get(pid);
+    if (box === undefined) {
+      if (catches.length > 0) this.takeSignals(pid, catches);
+      return;
+    }
+    // A parked box stays parked: a run says what it catches as it starts, before a replay's boundary.
+    box.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
+  }
+
+  /**
+   * `pid`'s program's run, past a replay's boundary, takes back its parked
+   * box (parkSignals): what waits there is its to take, by its waits or with
+   * its input.
+   */
+  takeSignalsBack(pid: number): void {
+    const box = this.signalBoxes.get(pid);
+    if (box !== undefined) box.parked = false;
+  }
+
+  /**
+   * `pid`'s program's run has stopped (a read it waits for, a listen), and
+   * the next will take over: until then what it catches waits in its box,
+   * not given to the stopped run's wait (answered none) nor to the next
+   * run's preparation, and a signal the stopped run was given but did not
+   * ask past goes back to the front.
+   */
+  parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void {
+    // What it catches by its stopped run's own word (its stop record's), which may not have reached here.
+    if (catches !== undefined) {
+      if (!this.signalBoxes.has(pid) && catches.length > 0) this.takeSignals(pid, catches);
+      const made = this.signalBoxes.get(pid);
+      if (made !== undefined) made.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
+    }
+    const box = this.signalBoxes.get(pid);
+    if (box === undefined) return;
+    box.parked = true;
+    if (box.handed !== null) {
+      box.queued.unshift(box.handed.signal);
+      box.handed = null;
+    }
+    box.taker?.(null);
+  }
+
+  /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
+  catchesSignal(pid: number, signal: ProcessSignalName): boolean {
+    return this.signalBoxes.get(pid)?.catches.has(signal) === true;
+  }
+
+  /**
    * The next signal sent to `pid`'s program (takeSignals), waiting up to
    * `waitMs` for one: null if none came, the process ended, or a later wait
    * took its place (one waits at a time).
    */
   nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null> {
     const box = this.signalBoxes.get(pid);
-    return box === undefined ? Promise.resolve(null) : this.waitSignal(box, waitMs).signal;
+    if (box === undefined) return Promise.resolve(null);
+    // It asks again: what it was given it has.
+    box.handed = null;
+    return this.waitSignal(box, waitMs).signal;
   }
 
   /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */
-  private waitSignal(box: SignalBox, waitMs: number): { signal: Promise<ProcessSignalName | null>; cancel(): void } {
+  private waitSignal(box: SignalBox, waitMs: number): { signal: Promise<ProcessSignalName | null>; cancel(): void; given(): { readonly signal: ProcessSignalName } | null } {
     const queued = box.queued.shift();
-    if (queued !== undefined) return { signal: Promise.resolve(queued), cancel: () => {} };
+    if (queued !== undefined) {
+      const handed = { signal: queued };
+      box.handed = handed;
+      return { signal: Promise.resolve(queued), cancel: () => {}, given: () => handed };
+    }
     box.taker?.(null);
     let take: (signal: ProcessSignalName | null) => void = () => {};
+    let handed: { readonly signal: ProcessSignalName } | null = null;
     const signal = new Promise<ProcessSignalName | null>((resolve) => {
       const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
       take = (sent) => {
         clearTimeout(timer);
         if (box.taker === take) box.taker = null;
+        if (sent !== null) {
+          handed = { signal: sent };
+          box.handed = handed;
+        }
         resolve(sent);
       };
       box.taker = take;
     });
-    return { signal, cancel: () => { if (box.taker === take) take(null); } };
+    return { signal, cancel: () => { if (box.taker === take) take(null); }, given: () => handed };
   }
 
   /**
@@ -948,7 +1036,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
   deliverSignal(pid: number, signal: ProcessSignalName): boolean {
     const box = this.signalBoxes.get(pid);
     if (!box || !box.catches.has(signal)) return false;
-    if (box.taker) box.taker(signal);
+    if (box.taker && !box.parked) box.taker(signal);
     else box.queued.push(signal);
     return true;
   }

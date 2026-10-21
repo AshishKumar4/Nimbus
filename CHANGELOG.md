@@ -12,6 +12,35 @@ published independently in the `@nimbus-sh` npm scope.
   - a mount whose backend states no change model (`VFS.changes`) is the session's to answer: a WASI program's call that cannot wait is refused `EAGAIN` there, as before;
   - a read lease vouches for the engine alone: while one is trusted, a WASI program asks the session for the rows of a mount that changes.
 - `git status` after a mount appears or goes reports that mount's paths, not the whole worktree, and a dirty mount covers what its own feed names beneath it.
+- Fixed: `astro dev` runs with Astro 7.4.2. Astro 7.4.2 requires Node
+  22.23.4 or later, and its CLI stopped before its dev server loaded,
+  because a process reported Node v22.22.3. A process now reports
+  v22.23.4: in `process.version` and `process.versions`, `node --version`,
+  the REPL banner and npm's engine check. The unit tests compare Nimbus's
+  node with node 22.23.4, and the shims run that release's own library
+  modules.
+
+- Fixed (security): a process does what Node 22.23.4, the October 2026
+  security release, does in the checks that Nimbus makes itself:
+  - `tls.checkServerIdentity` refuses a host that is an IP address only
+    after IDNA maps it, such as `127.1` or `0x7f.0.0.1` (CVE-2026-106069,
+    CVE-2026-106072). Before, a certificate for `127.0.0.1` was accepted
+    for the host `127.1`. A DNS name now matches in its ASCII form, an IPv6
+    host matches in its canonical form, and the error has Node's message
+    and fields.
+  - `dns` refuses a name, a hostname or a local address that contains a
+    null byte. It throws `ERR_INVALID_ARG_VALUE` before it sends a query
+    (CVE-2026-105482).
+  - Brotli decoding is workerd's native code, and its patch state is
+    Cloudflare's. Node 22.23.4 fixes its Brotli decoder (CVE-2026-111497)
+    and adds the error code `zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH`.
+    The hosted runtime does not have that code (measured on a throwaway,
+    2026-10-21). workerd's published source, up to v1.20261021.1, builds
+    Brotli 1.2.0, which does not have the fix. Nimbus does not add the
+    code and does not claim the fix.
+  - TLS connections and their certificate checks, node:crypto's X.509
+    parsing and the HTTP client's transport are workerd's and Cloudflare's
+    code. The release's fixes to those parts of Node are theirs to make.
 
 - Fixed: a WASI program's filesystem answers as the session holds it where it did not:
   - a file read through a descriptor after the program rewrote it and removed its name read the bytes from before the rewrite;
@@ -112,6 +141,24 @@ published independently in the `@nimbus-sh` npm scope.
     - relative paths: 11.25 → 13.60 ms. A failure there is caught and its error named as given, which costs another throw, about 1 µs per failing call;
     - `fs.promises`: 1.75 → 2.10 ms.
   - End to end, a core-only workspace running a program that loads ajv's and semver's trees and makes about 440 fs calls takes about 690 ms. The difference was within the A/A spread in every confirmation run: [-1.4, 20.8], [-7.7, 17.7] ms.
+- Fixed: `@nimbus-sh/worker` no longer depends on `braces`, which is under advisory GHSA-vfj7-8cjw-p6xm with no fixed version. It served one purpose: expanding a stylesheet's `@source` paths when a process carrying Tailwind's scanner plans which files to hold.
+  - Expanding there was a hazard. An agent writes those stylesheets: `@source "src/{1..100000000}/x.html"` ran the isolate out of memory, and `{` nested 4,999 deep overflowed its stack.
+  - Now no path is expanded. A path's reach is the part before its first glob character (`{ * ? [`), up to its last `/`, and one directory higher for each `..` its brace alternatives could spell. It is computed in one pass over the path, whatever it nests or ranges over.
+  - It is exact for braces in the file part (`../ui/**/*.{ts,tsx}` holds `../ui`). Braces in the directory part (`../{a,b}/src`) hold their common parent: more files, never fewer. A range's directory is held whole, not the files it names. What the plan does not hold, Tailwind's scanner still reads, as before.
+
+- Added: `createNodeCompat({ files, start })` also gives Node's `child_process` (`childProcess`), and `nodeFacesOf(sandbox)` gives it the session's argv start (`sandbox.startProgram`). Each child is placed by its cwd, as every start is.
+  - `exec` starts `/bin/sh -c` its line, as Node's does; `execFile` and `spawn` start their argv.
+  - A child's stdin is bytes with backpressure, to their end; its output is read as you read it; its exit is waitpid's.
+  - A child given no `env` gets the session's environment.
+  - Shapes are Node's:
+    - a failed exit is an error with `code` or `signal`, plus `killed`, `cmd`, `stdout` and `stderr`;
+    - a refused start is the `error` event (`ENOENT`, `syscall: 'spawn <file>'`), then `close` with the negative errno;
+    - `maxBuffer`, `encoding: 'buffer'`, `timeout`/`killSignal`, `signal` and `util.promisify` behave as Node's.
+  - `execSync`, `execFileSync` and `spawnSync` throw `ERR_NIMBUS_SYNC_CHILD_PROCESS`, as the hosted node's do.
+  - `stdio: 'inherit'` output goes nowhere: this process shares no descriptors with its child.
+  - `fork` is unavailable: there is no IPC channel.
+- Changed: lifo's node runs the same `child_process` with no start face until its realm can wait for one. `exec` and `spawn` refuse every child ENOSYS, as Node reports a spawn it cannot make. Before, its stub said "requires shell interpreter", and `spawn` threw.
+- Fixed: a Node program's signal handlers hear the signals sent to it, as on Linux. A `process.on('SIGTERM')` handler runs when the program is killed: by its Node parent (`child.kill()`), by the shell's `kill`, by the session's `signalProcess`, or by a started program's `kill`. The program then does what its handler says. A signal it has no handler for still takes its default action. A signal it catches while it waits in `fs.readFileSync(0)` reaches it once the read returns, as in Node. A program that has taken a signal cannot afterwards wait at a synchronous read of stdin that has no input yet: Nimbus cannot run it again past a signal. It fails that read with `ERR_NIMBUS_SYNC_STDIN`, naming the signal. Before, every such kill ended the program at once.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 

@@ -41,9 +41,30 @@ export async function npmPackument(name) {
   return response.json();
 }
 
+/** `packument`, read at most once per package. */
+export function readOnce(packument) {
+  const packuments = new Map();
+  return (name) => {
+    if (!packuments.has(name)) packuments.set(name, packument(name));
+    return packuments.get(name);
+  };
+}
+
 /** The versions staged for an owner. */
 function stagedVersions(specs, owner) {
   return Object.values(specs).filter((spec) => spec.npm.owner === owner).map((spec) => spec.version);
+}
+
+/**
+ * The version Nimbus's npm installs for a registry request (core
+ * parseRegistryRequest), read from its packument by `read`: a staged
+ * binding owner's newest staged version the range admits, else what any
+ * package would get (core pickInstalledVersion). Null when no published
+ * version answers.
+ */
+export async function installedVersion(request, { read, specs }) {
+  const packument = await read(request.registryName);
+  return pickInstalledVersion(packument.versions, packument['dist-tags'], request.range, stagedVersions(specs, request.registryName));
 }
 
 /**
@@ -58,11 +79,7 @@ export async function missingBindings({ specs = SPECS, demand = DEMAND, packumen
   for (const [owner, name] of owners) {
     if (!demand.some((chain) => chain.at(-1) === owner)) throw new Error(`binding demand: staged binding ${name} (${owner}) ends no chain in DEMAND`);
   }
-  const packuments = new Map();
-  const read = (name) => {
-    if (!packuments.has(name)) packuments.set(name, packument(name));
-    return packuments.get(name);
-  };
+  const read = readOnce(packument);
   const demanded = new Map();
   for (const chain of demand) {
     const [root, ...rest] = chain;
@@ -75,8 +92,7 @@ export async function missingBindings({ specs = SPECS, demand = DEMAND, packumen
       const edge = manifestEdges((await read(from)).versions?.[version] ?? {}).find((e) => e.name === next && e.type !== 'peer' && e.type !== 'peerOptional');
       if (edge === undefined) throw new Error(`binding demand: ${from}@${version} does not depend on ${next}; update DEMAND in scripts/ci/lib/binding-demand.mjs`);
       const request = parseRegistryRequest(next, edge.range);
-      const packument = await read(request.registryName);
-      version = pickInstalledVersion(packument.versions, packument['dist-tags'], request.range, owners.has(request.registryName) ? stagedVersions(specs, request.registryName) : []);
+      version = await installedVersion(request, { read, specs });
       if (version === null) throw new Error(`binding demand: no published ${request.registryName} answers ${via.at(-1)}'s ${edge.range}`);
       via.push(`${request.registryName}@${version}`);
       from = request.registryName;

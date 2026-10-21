@@ -94,8 +94,8 @@ const linkEntries = (dir, except = []) => {
 };
 
 try {
-  // A checkout of its own: the deploy scripts as they are, the two app configs,
-  // and the repository's code and dependencies linked in. Its upload reads
+  // A checkout of its own: the deploy scripts as they are, the two app configs
+  // and the probe target vars, and the repository's code and dependencies linked in. Its upload reads
   // apps/probe and packages/worker/public, so those are its own and committed.
   for (const dir of ['tests/behavioral', 'apps/probe', 'apps/hosted-demo', 'tmp']) mkdirSync(join(checkout, dir), { recursive: true });
   for (const file of ['_throwaway-target.mjs', '_deploy-target.mjs']) copyFileSync(join(REPO, 'tests/behavioral', file), join(checkout, 'tests/behavioral', file));
@@ -104,6 +104,7 @@ try {
     copyFileSync(join(REPO, 'apps', app, 'wrangler.jsonc'), join(checkout, 'apps', app, 'wrangler.jsonc'));
     symlinkSync(join(REPO, 'apps', app, 'node_modules'), join(checkout, 'apps', app, 'node_modules'));
   }
+  copyFileSync(join(REPO, 'apps/probe/probe-target-vars.json'), join(checkout, 'apps/probe/probe-target-vars.json'));
   symlinkSync(join(REPO, 'scripts'), join(checkout, 'scripts'));
   linkEntries('packages', ['worker']);
   linkEntries('packages/worker', ['public']);

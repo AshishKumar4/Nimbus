@@ -1,5 +1,5 @@
 // The names an ES module may import from a CommonJS module (core
-// runtime/cjs-module-exports.ts), against host Node 22.22.3's
+// runtime/cjs-module-exports.ts), against host Node 22.23.4's
 // cjsPreparseModuleExports (lib/internal/modules/esm/translators.js), which
 // skips a re-export whose resolution throws. Each package re-exports a path
 // its "exports" hides: behind a dead branch, in an optional require() in

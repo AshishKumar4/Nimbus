@@ -70,6 +70,7 @@ import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
 import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
+import { printFailure } from '../../scripts/ci/lib/cli-failure.mjs';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 
@@ -144,9 +145,13 @@ if (!run) {
 try {
   await run();
 } catch (error) {
-  if (!(error instanceof TargetNotReadyError)) throw error;
-  console.error(`readiness: NOT GRADED — ${error.message}`);
-  process.exitCode = error.exitCode;
+  if (error instanceof TargetNotReadyError) {
+    console.error(`readiness: NOT GRADED — ${error.message}`);
+    process.exitCode = error.exitCode;
+  } else {
+    printFailure(command, error);
+    process.exitCode = 1;
+  }
 }
 
 // ── Commands ─────────────────────────────────────────────────────────

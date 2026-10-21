@@ -202,6 +202,7 @@ function keepSocketAlive(ws, everyMs = SOCKET_KEEPALIVE_MS) {
 const LEDGER = process.env.NIMBUS_PROBE_LEDGER || '';
 const PROBE = relative(dirname(fileURLToPath(import.meta.url)), process.argv[1] || '');
 const undeleted = new Map(); // sid → its target-scoped session record
+const leftToTtl = new Set(); // anonymous demo sessions deleteSession released to the demo's TTL
 const minted = []; // { sid, at }: every session this probe minted, in order
 let exitHookArmed = false;
 
@@ -254,7 +255,7 @@ function nameMintedOnFailure(code) {
   console.error(`sessions this probe minted on ${BASE} (exit ${code}):`);
   for (const { sid, at } of minted) {
     const { base } = targetOf(sid);
-    console.error(`  ${sid}  minted ${at}${base === BASE ? '' : `  on ${base}`}${undeleted.has(sid) ? '' : '  (deleted by the probe)'}`);
+    console.error(`  ${sid}  minted ${at}${base === BASE ? '' : `  on ${base}`}${undeleted.has(sid) ? '' : leftToTtl.has(sid) ? "  (left to the demo's TTL)" : '  (deleted by the probe)'}`);
   }
 }
 
@@ -308,11 +309,19 @@ export function attachPathFor(sid) {
   return targetOf(sid).session(sid).attachPath;
 }
 
+/**
+ * DELETE the session; `ok` once nothing is left for the probe to delete. An
+ * anonymous demo session (`reap: 'ttl'`) whose DELETE answers 401, as it
+ * does by design, is left to the demo's TTL, as the ledger counts it.
+ */
 export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
-  const result = await targetOf(sid).delete(sid, { reason });
+  const target = targetOf(sid);
+  const result = await target.delete(sid, { reason });
   ledger('delete', sid, result.status, { confirmed: result.ok });
-  if (result.ok) undeleted.delete(sid);
-  return result;
+  const released = result.ok || (target.session(sid).reap === 'ttl' && result.status === 401);
+  if (released) undeleted.delete(sid);
+  if (released && !result.ok) leftToTtl.add(sid);
+  return { ...result, ok: released };
 }
 
 /** GET /s/<sid>/preview/ — returns {status, html}. */
@@ -622,6 +631,18 @@ export function termBody(raw) {
   if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
   if (lines.length && /\$\s/.test(lines[0])) lines.shift();
   return lines.join('\n');
+}
+
+/**
+ * The text of the package.json in `dir`, read in the session with `cat`:
+ * what a scaffold wrote, before an install changes it. Null when there is
+ * none. A probe records it (`a.record('package.json', …)`), and the upstream
+ * canary reads it as npm does (scripts/ci/upstream-canary.mjs).
+ */
+export async function projectPackageJson(t, dir) {
+  // `echo` ends the file's last line, which a scaffold may leave open: else the prompt would share it.
+  const read = await t.run(`cat ${dir}/package.json && echo`, 15_000);
+  return read.exitCode === 0 ? termBody(read.output).trim() : null;
 }
 
 /**

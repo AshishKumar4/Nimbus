@@ -4,6 +4,14 @@
 //     it and promote.mjs refuses a manifest whose digest moved, so it must be
 //     the same for the same manifest whatever its key order, and change with
 //     any module, docs or asset digest in it.
+//   - deployedDigest (the same file): remote-probes skips the paired perf
+//     probes when the baseline's deployment and the candidate's have one
+//     digest, so it must change with the module, the app's config, the
+//     probe target vars or the worker's public assets, and with nothing
+//     else in the tree.
+//   - recordedRelease (the same file): a paired baseline is the module staging
+//     sealed for its commit, copied for one run, or none; a broken seal, or
+//     two sealed releases of one commit with different modules, are refused.
 //   - holdLease (scripts/ci/lib/lease.mjs): one lane at a time per
 //     environment. A second holder waits, and gives up naming the first;
 //     the lease is free the moment its holder's process ends, killed or not.
@@ -11,13 +19,14 @@
 //     probe prints carries no live credential.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { holdLease } from '../../scripts/ci/lib/lease.mjs';
-import { releaseDigest } from '../../scripts/ci/lib/release.mjs';
+import { deployedDigest, recordedRelease, releaseDigest } from '../../scripts/ci/lib/release.mjs';
 import { redactCredentials } from '../behavioral/_driver.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'ci-release-'));
@@ -88,6 +97,76 @@ try {
     assert.notEqual(changed((r) => { r.commit = 'c0ffef'; }), releaseDigest(release), 'the commit');
     assert.notEqual(changed((r) => { r.assets['apps/hosted-demo'].manifest['extra.js'] = '33'; }), releaseDigest(release), 'an added asset');
     console.log('  ok  releaseDigest: one digest per manifest, whatever its key order, and a new one for any changed module, docs or asset');
+  }
+  {
+    const repo = join(root, 'deployed');
+    mkdirSync(repo);
+    const git = (...args) => {
+      const done = spawnSync('git', ['-c', 'user.name=ci', '-c', 'user.email=ci@example.invalid', ...args], { cwd: repo, encoding: 'utf8' });
+      assert.equal(done.status, 0, done.stderr);
+      return done.stdout.trim();
+    };
+    /** A commit whose tree holds `files` ({ path: text }) over the last one's. */
+    const commit = (files) => {
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(repo, path, '..'), { recursive: true });
+        writeFileSync(join(repo, path), text);
+      }
+      git('add', '-A');
+      git('commit', '-q', '-m', 'fixture');
+      return git('rev-parse', 'HEAD');
+    };
+    git('init', '-q');
+    const base = commit({ 'apps/probe/wrangler.jsonc': '{ "name": "probe" }\n', 'packages/worker/public/index.html': '<p>shell</p>\n', 'tests/unit/a.mjs': '1\n' });
+    const testsOnly = commit({ 'tests/unit/a.mjs': '2\n', 'scripts/ci/remote-probes.mjs': '3\n' });
+    const asset = commit({ 'packages/worker/public/index.html': '<p>shell 2</p>\n' });
+    const config = commit({ 'apps/probe/wrangler.jsonc': '{ "name": "probe", "vars": { "A": "1" } }\n' });
+    const targetVars = commit({ 'apps/probe/probe-target-vars.json': '{ "NIMBUS_DEBUG": "1" }\n' });
+    /** The digest of a release of `sha` whose apps/probe module is `module`. */
+    const digest = (sha, module, target = 'apps/probe') => {
+      const dir = join(root, `release-${sha.slice(0, 12)}-${module}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'release.json'), JSON.stringify({ commit: sha, job: 'j', bundles: { 'apps/probe': { main: 'index.js', sha256: module, file: 'apps-probe/index.js' } }, assets: {} }));
+      return deployedDigest(repo, dir, target);
+    };
+    assert.match(digest(base, 'aa'), /^[0-9a-f]{64}$/);
+    assert.equal(digest(testsOnly, 'aa'), digest(base, 'aa'), 'tests and scripts deploy nothing: the same module is the same deployment');
+    assert.notEqual(digest(testsOnly, 'ab'), digest(base, 'aa'), 'a module');
+    assert.notEqual(digest(asset, 'aa'), digest(testsOnly, 'aa'), "the worker's public assets");
+    assert.notEqual(digest(config, 'aa'), digest(asset, 'aa'), "the app's wrangler config");
+    assert.notEqual(digest(targetVars, 'aa'), digest(config, 'aa'), 'the vars every probe target is deployed with');
+    assert.throws(() => digest(base, 'aa', 'apps/hosted-demo:staging'), /has no apps\/hosted-demo:staging/, 'a target the release does not hold');
+    console.log('  ok  deployedDigest: the same module, config and public assets are one deployment; a change to any is another, and a test or script change is none');
+  }
+  {
+    const from = join(root, 'releases');
+    /** A release of `commit` in `from`/`name` whose apps/probe module is `module`, sealed by staged.json unless `seal` is false or a wrong digest. */
+    const record = (name, commit, module, seal = true) => {
+      const dir = join(from, name);
+      mkdirSync(join(dir, 'apps-probe'), { recursive: true });
+      writeFileSync(join(dir, 'apps-probe', 'index.js'), module);
+      const release = { commit, job: name, bundles: { 'apps/probe': { main: 'index.js', sha256: createHash('sha256').update(module).digest('hex'), file: 'apps-probe/index.js' } }, assets: {} };
+      writeFileSync(join(dir, 'release.json'), JSON.stringify(release));
+      if (seal) writeFileSync(join(dir, 'staged.json'), JSON.stringify({ commit, release: seal === true ? releaseDigest(release) : seal }));
+      return release;
+    };
+    const find = (sha, target = 'apps/probe') => recordedRelease({ sha, target, into: join(root, `run-${sha}-${target.replace('/', '-')}`), from });
+    assert.equal(find('c0ffee'), null, 'no releases recorded: none');
+    const sealed = record('c0ffee-j1', 'c0ffee', 'export default 1;\n');
+    record('c0ffee-j0', 'c0ffee', 'export default 0;\n', false);
+    record('beef00-j1', 'beef00', 'export default 2;\n');
+    const found = find('c0ffee');
+    assert.deepEqual({ sealed: found.sealed, digest: found.digest }, { sealed: join(from, 'c0ffee-j1'), digest: releaseDigest(sealed) }, 'the sealed release of the commit, not the unsealed one nor another commit\'s');
+    assert.equal(readFileSync(join(found.dir, 'apps-probe', 'index.js'), 'utf8'), 'export default 1;\n', 'its module is copied for the run');
+    assert.deepEqual(JSON.parse(readFileSync(join(found.dir, 'release.json'), 'utf8')), sealed, 'with its release.json');
+    assert.equal(find('c0ffee', 'apps/hosted-demo:staging'), null, 'a sealed release without the target: none');
+    record('c0ffee-j2', 'c0ffee', 'export default 1;\n');
+    assert.equal(readFileSync(join(find('c0ffee').dir, 'apps-probe', 'index.js'), 'utf8'), 'export default 1;\n', 'two sealed releases of one commit with the same module are one baseline');
+    record('c0ffee-j3', 'c0ffee', 'export default 3;\n');
+    assert.throws(() => find('c0ffee'), /the releases staged for c0ffee hold different apps\/probe modules/, 'two sealed releases of one commit with different modules are refused');
+    record('beef00-j2', 'beef00', 'export default 2;\n', 'f'.repeat(64));
+    assert.throws(() => find('beef00'), /beef00-j2\/staged.json does not seal its release.json/, 'a seal that does not match its release is refused');
+    console.log('  ok  recordedRelease: the module staging sealed for a commit, copied for the run; none, a broken seal or differing modules are not a baseline');
   }
   {
     const dir = join(root, 'leases');

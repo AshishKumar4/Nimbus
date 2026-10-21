@@ -48,6 +48,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
+    /** The workspace's child broker, made the one its children's facets report their output to. */
+    _ensureChildProcessManager(): ChildProcessManager;
     /** This incarnation's restore of the dev servers its previous one ran, their processes spawned again (session/dev-servers.ts). */
     devServersRespawned(): Promise<void>;
     /** The destroy running (rpcDestroy), until it is answered. */
@@ -179,7 +181,7 @@ export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Pro
  * caller's else the session shell's exported one, as a child's is its
  * parent's.
  */
-export declare function rpcStartProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
+export declare function rpcStartProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | '_ensureChildProcessManager'>, argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
 /**
  * Started program `pid`'s exit once it comes, or null after `waitMs` (at
  * most a minute): its end, which its stream says only after the output it

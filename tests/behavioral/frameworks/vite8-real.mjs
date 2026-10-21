@@ -10,7 +10,7 @@
 // HMR uses Nimbus's built-in vite path: inbound WebSocket upgrade to a Node
 // guest server is not implemented in Nimbus, before or after native HTTP.
 // That implementation gap is not a prohibition on a Workers adapter.
-import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,requestHeaders} from '../_driver.mjs';
+import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,requestHeaders,projectPackageJson} from '../_driver.mjs';
 import {launchFrameworkDev} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
 const a=makeAsserter('vite8-real');
@@ -26,6 +26,7 @@ try{
   const create=await t.run('npm create vite@latest app -- --template react-ts --no-interactive 2>&1',240000);
   a.check('create-vite creates the real React/TS project',create.exitCode===0,tail(create.output));
   if(create.exitCode!==0)throw new Error('scaffold failed');
+  a.record('package.json',await projectPackageJson(t,APP));
   const installed=await t.run(`cd ${APP} && npm install 2>&1`,400000);
   a.check('npm install succeeds without a rolldown refusal',installed.exitCode===0&&!/note:\s*rolldown has no Workers-compatible build/.test(installed.output),tail(installed.output));
   if(installed.exitCode!==0)throw new Error('install failed');

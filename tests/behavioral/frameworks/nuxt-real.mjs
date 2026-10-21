@@ -5,7 +5,7 @@
 // route, whose Host is the preview's, not one it listens on: nuxt dev answers
 // such a request 403 unless started with --public, as the Vite probes pass
 // __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS for theirs.
-import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE} from '../_driver.mjs';
+import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,projectPackageJson} from '../_driver.mjs';
 import {launchFrameworkDev} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
 const a=makeAsserter('nuxt-real');
@@ -20,6 +20,7 @@ try{
   const create=await t.run('npx --yes nuxi@latest init mvp -t minimal --no-install --gitInit=false --packageManager=npm 2>&1',240000);
   a.check('nuxi creates the real minimal project',create.exitCode===0,tail(create.output));
   if(create.exitCode!==0)throw new Error('scaffold failed');
+  a.record('package.json',await projectPackageJson(t,APP));
   const installed=await t.run(`cd ${APP} && npm install 2>&1`,400000);
   a.check('npm install succeeds',installed.exitCode===0,tail(installed.output));
   if(installed.exitCode!==0)throw new Error('install failed');

@@ -525,6 +525,8 @@ export async function rpcStartProgram(self, argv, options = {}) {
     const workspace = self.runtimeWorkspace;
     if (!workspace)
         throw new Error('startProgram: the session has no workspace');
+    // What it starts may be a facet (node), whose output reaches it through the broker the session routes to.
+    self._ensureChildProcessManager();
     const program = {
         argv: [...argv],
         env: options.env ?? workspace.shell.getExportedEnv(),

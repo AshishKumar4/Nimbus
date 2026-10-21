@@ -190,6 +190,8 @@ const INPUTS = {
   cpWait: [childPid, waitMs, { position }, false],
   cpBlocked: [{ blocked: true, frontier: 3, seq: 4 }],
   cpNextSignal: [waitMs],
+  cpCatchSignals: [['SIGTERM']],
+  cpTakeSignal: [waitMs],
   innerDoCall: [{ bindingName: 'NimbusDO', id: 'inner-id', path: ['hello'], args: [1, 'two'] }],
   kvCall: [{ root: 'home/user/app', store: 'KV' }, { method: 'get', key: 'k' }],
   r2Call: [{ root: 'home/user/app', store: 'BUCKET' }, { method: 'head', key: 'k' }],

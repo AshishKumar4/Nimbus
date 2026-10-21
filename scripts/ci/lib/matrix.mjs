@@ -15,7 +15,7 @@ import { completedAssertions } from '../../../tests/behavioral/_assertions.mjs';
 import { readFileSync } from 'node:fs';
 
 /** A row's probe, as _deferred.mjs names it: `tests/behavioral/a/b.mjs` → `a/b`. */
-const probeOf = (name) => name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '');
+export const probeOf = (name) => name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '');
 
 /** Live and dry grading share the same verdict-file boundary; an unreadable file is not graded. */
 export function gradeVerdictFiles(paths, deferred) {

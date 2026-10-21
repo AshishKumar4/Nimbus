@@ -227,7 +227,7 @@ const run = async (origin = process.argv[2]) => {
 // Nimbus bearer credentials before handing a public request to user code).
 export const REDIRECT_PROGRAM = `${REDIRECT_SERVER}\n${REDIRECT_CLIENT}`;
 
-/** Expected receiver-visible behavior of Node 22.22.3's undici 6.24.1. */
+/** Expected receiver-visible behavior of Node 22.23.4's undici 6.29.1. */
 export function redirectFailures(report) {
   const failures = [];
   const check = (label, actual, expected) => {

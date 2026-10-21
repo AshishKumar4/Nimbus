@@ -43,7 +43,7 @@ import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFa
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
-import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
+import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
@@ -8148,6 +8148,9 @@ export class FacetManager {
     // run is dropped, the resident's are delivered (exec's finally ends it).
     const gate = this.outputGates.get(pid);
     const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
+    // What it catches (its record's word, which may not have reached the session) waits for the run that comes
+    // next; what the stopped run was given and did not act on, too.
+    this.processes.parkSignals(pid, stopCatchesOf(stop));
     for (const { stream, bytes } of stopped.fresh) await this._deliverOutput(pid, stream, bytes);
     if (stopped.prefix === null) {
       return fail(`it printed more than ${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB before it listened, more than a second run is checked against.`);
@@ -8263,6 +8266,9 @@ export class FacetManager {
     taken?.retire();
     const gate = this.outputGates.get(pid);
     const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
+    // What it catches (its record's word, which may not have reached the session) waits for the run that comes
+    // next; what the stopped run was given and did not act on, too.
+    this.processes.parkSignals(pid, stopCatchesOf(stop));
     for (const { stream, bytes } of stopped.fresh) await this._deliverOutput(pid, stream, bytes);
     // Output a captured run printed before it stopped: the result of an exit
     // that does not run it again. A run that does run again prints it again.
@@ -8312,7 +8318,7 @@ export class FacetManager {
       + '(the most a synchronous read holds, one budget across the session) without ending. Read process.stdin, '
       + 'which takes it as it arrives, or redirect a file (< file), which a synchronous read takes whole.';
     if (before === null) return fail(full);
-    const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes);
+    const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes, pid);
     if ('aborted' in input) {
       this._end(pid, { code: 137, killed: true });
       return ends(130);
@@ -8335,11 +8341,16 @@ export class FacetManager {
    * channel's control packets only the last resize is kept, and a terminating
    * signal, the shell's abort or a kill ends the wait.
    */
-  private async _awaitStoppedInput(channel: StdinChannel, until: 'end' | 'data', signal: AbortSignal, held: ReadAheadAccount, already: number)
+  private async _awaitStoppedInput(channel: StdinChannel, until: 'end' | 'data', signal: AbortSignal, held: ReadAheadAccount, already: number, pid: number)
     : Promise<{ packets: ProcessInputPacket[]; bytes: number; ended: boolean } | { aborted: true } | { signal: string } | { full: true }> {
     const pieces = new OwnedPieces();
     let resize: ProcessInputPacket['resize'];
     let ended = false;
+    // A signal its program catches waits in its parked box (parkSignals) for the run that comes next, as Node
+    // runs a handler once the synchronous read returns; one that reaches the input anyway goes back there once
+    // the wait is over.
+    const caught: ProcessSignalName[] = [];
+    const giveBack = (): void => { for (const sent of caught.splice(0)) this.processes.deliverSignal(pid, sent); };
     const aborted = new Promise<'aborted'>((resolve) => {
       if (signal.aborted) resolve('aborted');
       else signal.addEventListener('abort', () => resolve('aborted'), { once: true });
@@ -8347,14 +8358,20 @@ export class FacetManager {
     const encoder = new TextEncoder();
     for (;;) {
       const packet = await Promise.race([channel.read(1000), aborted]);
-      if (packet === 'aborted') { held.give(pieces.bytes); return { aborted: true }; }
-      if (packet.signal === 'SIGINT' || packet.signal === 'SIGTERM' || packet.signal === 'SIGKILL') { held.give(pieces.bytes); return { signal: packet.signal }; }
+      if (packet === 'aborted') { held.give(pieces.bytes); giveBack(); return { aborted: true }; }
+      const sent = packet.signal === undefined ? null : parseProcessSignalName(packet.signal);
+      if (sent !== null && sent !== 'SIGKILL' && pid > 0 && this.processes.catchesSignal(pid, sent)) {
+        caught.push(sent);
+        continue;
+      }
+      if (packet.signal === 'SIGINT' || packet.signal === 'SIGTERM' || packet.signal === 'SIGKILL') { held.give(pieces.bytes); giveBack(); return { signal: packet.signal }; }
       if (packet.resize) resize = packet.resize;
       const data = typeof packet.data === 'string' ? encoder.encode(packet.data) : packet.data;
       if (data.byteLength > 0) {
         const granted = already + pieces.bytes + data.byteLength > STDIN_SYNC_READ_BYTES ? 0 : held.take(data.byteLength);
         if (granted < data.byteLength) {
           held.give(granted + pieces.bytes);
+          giveBack();
           return { full: true };
         }
         pieces.add(data);
@@ -8364,6 +8381,7 @@ export class FacetManager {
     }
     const packets: ProcessInputPacket[] = pieces.finish().map((data) => ({ data, ended: false }));
     if (resize) packets.push({ data: new Uint8Array(0), ended: false, resize });
+    giveBack();
     return { packets, bytes: pieces.bytes, ended };
   }
 
@@ -10754,4 +10772,19 @@ export class FacetManager {
   }
 
   get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
+}
+
+/**
+ * The signals a stopped run's program had said it catches (its stop
+ * record's): the box is parked with them, as its word of them may not have
+ * reached the session before the stop.
+ */
+function stopCatchesOf(stop: StopRecord): ProcessSignalName[] | undefined {
+  if (stop.catches === undefined) return undefined;
+  const names: ProcessSignalName[] = [];
+  for (const name of stop.catches === '' ? [] : stop.catches.split(',')) {
+    const parsed = parseProcessSignalName(name);
+    if (parsed !== null) names.push(parsed);
+  }
+  return names;
 }

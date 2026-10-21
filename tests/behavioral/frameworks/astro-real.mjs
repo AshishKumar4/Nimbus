@@ -2,7 +2,7 @@
 // Astro 7's real CLI, compiler and Markdown engine, started once as a user
 // starts it. An edit to a page shows on the next request to the same server,
 // as it does under Node.
-import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,requestHeaders,sleep} from '../_driver.mjs';
+import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand,BASE,requestHeaders,sleep,projectPackageJson} from '../_driver.mjs';
 import {launchFrameworkDev,frameworkProxyHost} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
 const a=makeAsserter('astro-real');
@@ -17,6 +17,7 @@ try{
   const create=await t.run('npm create astro@latest mvp -- --template minimal --no-install --no-git --skip-houston --yes 2>&1',240000);
   a.check('create-astro creates the real minimal project',create.exitCode===0,tail(create.output));
   if(create.exitCode!==0)throw new Error('scaffold failed');
+  a.record('package.json',await projectPackageJson(t,APP));
   const installed=await t.run(`cd ${APP} && npm install 2>&1`,400000);
   a.check('npm install succeeds without rejecting the staged bindings',installed.exitCode===0&&!/note:\s*(rolldown|satteri|@astrojs\/compiler-binding) has no Workers-compatible build/.test(installed.output),tail(installed.output));
   if(installed.exitCode!==0)throw new Error('install failed');

@@ -15,8 +15,8 @@
 // staging verified it.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { loadConfig } from '../../deploy-isolation.mjs';
 import { filesUnder } from '../../lib/fs-walk.mjs';
 import { mapOnArmada } from './armada.mjs';
@@ -116,6 +116,45 @@ export function productionCommit() {
   return promoted[0].commit;
 }
 
+/**
+ * `target`'s module of the release staging sealed for `sha` on this machine,
+ * copied with its release.json into `into` for one run to upload: the bytes
+ * staging verified, not a build of `sha` now. A build now runs under today's
+ * recipe (scripts/ci/recipe), whose toolchain the commit's dist-fixpoint.json
+ * may not record, and the dist gate refuses it. Sealed means staged.json's
+ * digest is its release.json's (releaseDigest); a seal that does not match
+ * is refused, and so are sealed releases of `sha` whose `target` modules
+ * differ. uploadConfig checks the module's bytes against release.json.
+ * Resolves to { dir (the copy), sealed (the release's directory), digest },
+ * or null when no sealed release of `sha` holds `target`.
+ *
+ * @param {{ sha: string, target: string, into: string, from?: string }} options
+ */
+export function recordedRelease({ sha, target, into, from = RELEASES }) {
+  const sealed = (existsSync(from) ? readdirSync(from) : []).flatMap((name) => {
+    const dir = join(from, name);
+    if (!existsSync(join(dir, 'staged.json')) || !existsSync(join(dir, 'release.json'))) return [];
+    const release = readRelease(dir);
+    if (release.commit !== sha || !release.bundles[target]) return [];
+    const staged = JSON.parse(readFileSync(join(dir, 'staged.json'), 'utf8'));
+    const digest = releaseDigest(release);
+    if (staged.commit !== sha || staged.release !== digest) throw new Error(`${dir}/staged.json does not seal its release.json (digest ${digest}, sealed ${staged.release})`);
+    return [{ dir, release, digest }];
+  });
+  if (sealed.length === 0) return null;
+  const modules = new Set(sealed.map(({ release }) => release.bundles[target].sha256));
+  if (modules.size > 1) {
+    throw new Error(`the releases staged for ${sha.slice(0, 12)} hold different ${target} modules: ${sealed.map(({ dir, release }) => `${dir} (${release.bundles[target].sha256})`).join(', ')}`);
+  }
+  const [{ dir, release, digest }] = sealed;
+  const copy = join(into, basename(dir));
+  const { file } = release.bundles[target];
+  mkdirSync(dirname(join(copy, file)), { recursive: true });
+  cpSync(join(dir, file), join(copy, file));
+  cpSync(join(dir, 'release.json'), join(copy, 'release.json'));
+  return { dir: copy, sealed: dir, digest };
+}
+
 /** The release in `dir`. */
 export function readRelease(dir) {
   return JSON.parse(readFileSync(join(dir, 'release.json'), 'utf8'));
@@ -140,6 +179,30 @@ export function releaseDigest(release) {
 }
 
 /**
+ * What an upload of `target` reads from its checkout, beside the release:
+ * the app (its wrangler config, and apps/probe's probe-target-vars.json,
+ * which every probe target is deployed with) and the worker's public
+ * assets. uploadConfig refuses a checkout where either differs from the
+ * release's commit.
+ */
+const checkoutInputs = (target) => [target.split(':')[0], 'packages/worker/public'];
+
+/**
+ * The digest of the Worker an upload of `target` from the release in `dir`
+ * deploys: the module and the app's assets as CI built them, and what the
+ * upload reads from a checkout at the release's commit (checkoutInputs), by
+ * git object id. Two releases with one digest deploy the same bytes.
+ * `repo` holds the release's commit.
+ */
+export function deployedDigest(repo, dir, target) {
+  const release = readRelease(dir);
+  const bundle = release.bundles[target];
+  if (!bundle) throw new Error(`the release in ${dir} has no ${target}`);
+  const checkout = Object.fromEntries(checkoutInputs(target).map((path) => [path, git(repo, ['rev-parse', `${release.commit}:${path}`])]));
+  return sha256(canonical({ module: bundle.sha256, assets: release.assets[target.split(':')[0]] ?? null, checkout }));
+}
+
+/**
  * A wrangler config that uploads `target`'s module from the release in
  * `dir` as built, with the app's own settings (its env blocks included)
  * otherwise; returns its path. Refused unless the release is of `root`'s
@@ -160,7 +223,7 @@ export function uploadConfig(dir, target, { root, preview = false, log = (line) 
   if (release.commit !== head) throw new Error(`the release in ${dir} is of ${release.commit}, and this checkout is at ${head}`);
   const bundle = release.bundles[target];
   if (!bundle) throw new Error(`the release in ${dir} has no ${target}`);
-  const local = git(root, ['status', '--porcelain', '--untracked-files=all', '--', app, 'packages/worker/public']);
+  const local = git(root, ['status', '--porcelain', '--untracked-files=all', '--', ...checkoutInputs(target)]);
   if (local) throw new Error(`the upload reads these from the checkout, and they differ from ${head}:\n${local}`);
   const main = join(dir, bundle.file);
   const actual = sha256(readFileSync(main));

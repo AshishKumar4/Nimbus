@@ -145,7 +145,8 @@ unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --bundle <release dir> --var NIMBUS_PROCESS_HOST:peer`,
 and read back where a process actually landed in the process log: every
 probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
-(`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
+(`apps/probe/probe-target-vars.json`, read as `PROBE_TARGET_VARS` in
+`tests/behavioral/_deploy-target.mjs`).
 
 Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
 credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
@@ -409,7 +410,8 @@ probe's to delete in
 `finally`. An anonymous demo session (the `mintSession` fallback on
 `nimbus-os.dev`, below) is the one exception: its DELETE answers 401 by
 design and the demo's TTL reaps it, so the ledger marks it `reap: 'ttl'` and
-`run-all` reports it as TTL-reaped rather than leaked.
+`run-all` reports it as TTL-reaped rather than leaked. `deleteSession`
+answers `ok` for that 401, so a probe's own cleanup check passes there.
 `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
 
 ### CI
@@ -449,9 +451,13 @@ again.
 - The perf probes in `PAIRED_PROBES` (`tests/behavioral/_paired.mjs`:
   cold-start, first-paint, install-warm, clone-fast) grade the candidate
   against a baseline measured in the same run. When the selection has one,
-  `remote-probes` builds the baseline (`--baseline <commit>`, default the
+  `remote-probes` takes the baseline (`--baseline <commit>`, default the
   merge-base with origin/main; `release.mjs staging` passes the commit
-  production serves) beside the candidate, stands up four fresh
+  production serves) as staging sealed it on this machine, or builds it
+  beside the candidate when no sealed release of it is here: a build of an
+  old commit under today's recipe can fail the dist gate (its
+  dist-fixpoint.json records another node). The verdict's `baseline` says
+  which. It stands up four fresh
   throwaways (two of the baseline, two of the candidate), runs those probes
   in a task of their own and deletes the throwaways at the end. Each
   candidate throwaway is graded against the mean of the two baseline ones,
@@ -459,6 +465,15 @@ again.
   run slower than another of the same code for a whole run. A red set is
   confirmed on four fresh throwaways, and the probe is red only when that
   set is red too. Run by hand without them, a paired probe exits 2.
+  When the baseline's release and the candidate's deploy the same bytes
+  (`deployedDigest` in `scripts/ci/lib/release.mjs`: the module, the app's
+  config, its probe target vars and `packages/worker/public`), the timing
+  measures nothing. The suite then skips these probes and stands up no
+  throwaways. It prints
+  `paired perf: skipped, deployed bytes equal to <baseline> (digest …)`, and
+  the verdict records it as `pairedSkipped`. A run that names a paired probe
+  (`--only`, `--repeat`) runs it on equal bytes too: an A/A run, or a change
+  to the probe or its grader.
 - A red row whose session socket closed 1006 (the session ledger records
   it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
   and traces by the exact error on each session's object
@@ -490,6 +505,23 @@ again.
   and fleet cap), through `~/.config/armada/nimbus-armada-v2.json`
   (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_CONNECTION`
   overrides the connection file. Never print its token.
+
+**The upstream canary.** An upstream release can break new projects with
+no change on our side (2026-10-21: vite 8.3.5 needed rolldown 1.2.14, which
+had no staged build, and astro 7.4.2 raised its Node floor). So every day
+at 11:00 UTC, `.github/workflows/upstream-canary.yml` runs
+`scripts/ci/upstream-canary.mjs` on GitHub's runner. It runs the binding
+demand check, then the probes in `UPSTREAM_PROBES` (`scripts/ci/lib/upstream.mjs`)
+against `https://nimbus-os.dev` as an anonymous visitor, less the
+exclusions in `_deferred.mjs`. It needs no secret, and its log and
+artifact are public, so it redacts every credential it prints. A red run
+fails the workflow, and GitHub notifies the user who created it. Nothing
+opens an issue. The run names each package whose version changed since
+the last green run, read from that run's artifact. Each probe records its
+project's package.json (`a.record('package.json', …)`), and the canary
+resolves what it installs from the registry by Nimbus's npm rules. When none of
+those packages changed, look on our side first. Run it now with
+`gh workflow run upstream-canary.yml`.
 
 **Tiers.** A file's leading comment block may carry one marker:
 
