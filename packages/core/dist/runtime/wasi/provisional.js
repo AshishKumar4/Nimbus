@@ -1201,11 +1201,13 @@ export function provisional(host) {
             const gone = removed.get(key);
             if (made === undefined && gone === undefined)
                 return base;
+            // A directory made here has no names but the ones made in it: what the view lists at its name is another's.
             const dir = layer.get(key);
-            if (base === undefined && !(dir && dir.local))
+            const listed = dir && dir.local ? [] : base;
+            if (listed === undefined)
                 return undefined;
             const out = new Map();
-            for (const child of base ?? [])
+            for (const child of listed)
                 if (!gone?.has(child.name))
                     out.set(child.name, child.type);
             for (const [name, type] of made ?? [])
