@@ -225,13 +225,20 @@ export class ChildProcess extends EventEmitter {
     }
   }
 
-  /** Its end, waitpid's: 'exit', then 'close' once its outputs have ended. */
+  /**
+   * Its end, waitpid's: 'exit', then 'close' once its outputs have ended.
+   * An output no one reads is read off and let go, as Node's flushStdio
+   * does, so it ends.
+   */
   private end(status: ExitStatus): void {
     this.exited = true;
     this.exitCode = status.code;
     this.signalCode = status.signal;
     this.stdin?.destroy();
     this.emit('exit', this.exitCode, this.signalCode);
+    for (const output of [this.stdout, this.stderr]) {
+      if (output !== null && output.readableFlowing === null) output.resume();
+    }
     this.maybeClose();
   }
 

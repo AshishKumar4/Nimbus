@@ -119,7 +119,7 @@ try {
     });
 
     await check('maxBuffer', async () => {
-      const error = await promisify(cp.exec)('printf %2000s x', { maxBuffer: 100 }).then(() => null, (e) => e);
+      const error = await promisify(cp.exec)('seq 1 1000', { maxBuffer: 100 }).then(() => null, (e) => e);
       assert.equal(error?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
       assert.equal(error.stdout.length, 100, 'what fit is kept');
     });
@@ -139,6 +139,12 @@ try {
       for (const run of [() => cp.execSync('true'), () => cp.execFileSync('true'), () => cp.spawnSync('true')]) {
         assert.throws(run, { code: 'ERR_NIMBUS_SYNC_CHILD_PROCESS' });
       }
+    });
+
+    await check('an output no one reads', async () => {
+      const child = cp.spawn('sh', ['-c', 'echo to-stdout; echo to-stderr >&2']);
+      const closed = await new Promise((resolve) => child.on('close', (...ended) => resolve(ended)));
+      assert.deepEqual(closed, [0, null], 'it closes all the same, as Node\'s flushStdio lets it');
     });
 
     await check('a kill before the start', async () => {
