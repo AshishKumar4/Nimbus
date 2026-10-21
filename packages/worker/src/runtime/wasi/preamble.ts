@@ -53,7 +53,7 @@ import {
   WASI_LISTEN_PATH_PREFIX,
   WASI_TCP_PATH_PREFIX,
 } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
-import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import {
   residentFilesystem,
@@ -63,9 +63,7 @@ import {
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { CRED_SESSION_USER, type RuntimeFsBridge, type RuntimeVfsDirEntry, type RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { sqlJournal, type JournalSql } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
@@ -319,19 +317,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: 
   // The process holds the subtrees it writes (delegation-holder.ts): its
   // creates, writes, mkdirs, unlinks and renames there are decided here and
   // logged into its filesystem client, which sends them as numbered waves.
-  const waves = sup as unknown as WaveSender;
-  const session: ProcessFsSession = {
-    // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
-    openWriter: (first) => waves.openWaveWriter(first),
-    writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
-    retireWriter: async (writer) => { await waves.retireWaveWriter(writer); },
-    grants: {
-      acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-      release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-      awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-      recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-    },
-  };
+  const session = supervisorSession(sup, authority);
   // A resident's facet keeps the log of what it sends in its own store
   // (process-fs-journal.ts), drained by the session once the process is gone.
   const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
@@ -346,13 +332,6 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: 
   });
   if (kept !== null && view !== null) fs.inbound();
   return { store, fs, ready };
-}
-
-/** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
-interface WaveSender {
-  openWaveWriter(first: boolean): Promise<string | null>;
-  writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
-  retireWaveWriter(writer: string): Promise<void>;
 }
 
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
