@@ -28,13 +28,31 @@ export type Op<T> = Generator<Step, T, void>;
  */
 let answering: FilesFace<'sync'> | null = null;
 
+/** A step's answer already in hand: `yield*` of it is its value, with nothing yielded. */
+class Answered<T> implements Iterator<Step, T, void> {
+  constructor(private readonly value: T) {}
+  next(): IteratorResult<Step, T> {
+    return { done: true, value: this.value };
+  }
+  [Symbol.iterator](): Iterator<Step, T, void> {
+    return this;
+  }
+}
+
+/** What a body's `yield*` of a step takes: its answer, now, or the step it waits for. */
+export type Stepping<T> = Iterable<Step, T, void>;
+
 /**
  * `call`, made on whichever face the driver has: the face's methods take
  * the same arguments and differ only in answering now or with a promise.
- * Answered later, its answer is kept here and read back after the step.
+ * Answered now, it is called where it stands; answered later, its answer is
+ * kept here and read back after the step.
  */
-export function* step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Op<T> {
-  if (answering !== null) return syncValue(call(answering));
+export function step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Stepping<T> {
+  return answering !== null ? new Answered(syncValue(call(answering))) : waitFor(syscall, path, call);
+}
+
+function* waitFor<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Op<T> {
   const slot: { answer: { value: T } | null } = { answer: null };
   yield {
     syscall,

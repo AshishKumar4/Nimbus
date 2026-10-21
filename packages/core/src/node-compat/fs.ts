@@ -26,7 +26,7 @@ import {
   validateInt32,
 } from '../_shared/node-arguments.js';
 import type { NodeFaces, NodeWatch } from './faces.js';
-import { lacks, runAsync, runSync, step, type Op } from './drive.js';
+import { lacks, runAsync, runSync, step, type Op, type Stepping } from './drive.js';
 
 export interface FSWatcher extends EventEmitter {
   close(): void;
@@ -270,7 +270,7 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   const STDIO = 3;
 
   /** `fd`'s call `syscall` on the process's descriptor: EBADF as Node says it, for no descriptor or one without the right. */
-  function* onDescriptor<T>(fd: number, syscall: string, run: (id: number) => Op<T>): Op<T> {
+  function* onDescriptor<T>(fd: number, syscall: string, run: (id: number) => Stepping<T>): Op<T> {
     if (!Number.isSafeInteger(fd) || fd < STDIO) throw fsError('EBADF', syscall);
     try {
       return yield* run(fd - STDIO + 1);
