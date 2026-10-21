@@ -780,50 +780,47 @@ function rangeSpellsSlash(path: string, at: number): { spells: boolean; end: num
 
 /**
  * Whether an expansion of `path`, which starts with a brace group, could
- * start with `/`: one of its leading groups holds a `/` (or a range that may
- * spell one), or they may all be empty (an empty alternative) before a `/`.
- * Linear, and true when unsure.
+ * start with `/`: a `/` (or a range that may spell one) where nothing need
+ * come before it, at the start of an alternative of a leading group, or after
+ * leading groups that may all be empty. One pass, its groups on a stack.
  */
 function mayLeadWithSlash(path: string): boolean {
-  let depth = 0;
-  let mayBeEmpty = true;
-  let groupEmpty = false;
+  // Per open group: whether nothing need come before it, whether one of its alternatives may be empty, and
+  // whether the alternative it is in so far may be.
+  const groups: { first: boolean; empty: boolean; alternative: boolean }[] = [];
+  // Whether nothing need come before here: at depth 0, the groups so far may all be empty.
+  let first = true;
   for (let i = 0; i < path.length; i++) {
     const c = path[i];
+    const top = groups.length > 0 ? groups[groups.length - 1] : null;
+    const atStart = top === null ? first : top.first && top.alternative;
     if (c === '{') {
       const range = rangeSpellsSlash(path, i);
       if (range !== null) {
-        if (range.spells) return true;
-        // At the start it spells its one character, which is not a `/`.
-        if (depth === 0) return false;
+        if (atStart && range.spells) return true;
+        if (top === null) return false;
+        top.alternative = false;
         i = range.end - 1;
         continue;
       }
-    }
-    if (depth === 0) {
-      if (c !== '{') return c === '/' && mayBeEmpty;
-      depth = 1;
-      groupEmpty = path[i + 1] === ',' || path[i + 1] === '}';
+      groups.push({ first: atStart, empty: false, alternative: true });
       continue;
     }
-    if (c === '\\') {
-      i++;
-      if (path[i] === '/') return true;
-      continue;
-    }
-    if (c === '/') return true;
-    if (c === '{') {
-      depth++;
-      if (path[i + 1] === ',' || path[i + 1] === '}') groupEmpty = true;
-    } else if (c === ',') {
-      if (path[i + 1] === ',' || path[i + 1] === '}') groupEmpty = true;
-    } else if (c === '}') {
-      depth--;
-      if (depth === 0) {
-        mayBeEmpty = mayBeEmpty && groupEmpty;
-        groupEmpty = false;
+    if (top !== null && (c === ',' || c === '}')) {
+      if (top.alternative) top.empty = true;
+      top.alternative = true;
+      if (c === '}') {
+        groups.pop();
+        const parent = groups.length > 0 ? groups[groups.length - 1] : null;
+        if (parent === null) first = first && top.empty;
+        else parent.alternative = parent.alternative && top.empty;
       }
+      continue;
     }
+    const literal = c === '\\' && i + 1 < path.length ? path[++i] : c;
+    if (atStart && literal === '/') return true;
+    if (top === null) return false;
+    top.alternative = false;
   }
   return false;
 }

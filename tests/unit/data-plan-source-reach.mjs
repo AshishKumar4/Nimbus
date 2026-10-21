@@ -66,7 +66,9 @@ check('leading braces that may spell a `/`', () => {
   assert.equal(sourceReach('{a,b}/x'), '.');
   assert.equal(sourceReach('{1..9}/x'), '.', 'a range spells a character');
   assert.equal(sourceReach('{-..0}x/y'), '/', 'one that may spell a `/`');
-  assert.equal(sourceReach('{..,x}/a'), '.', 'a `..` is no `/`');
+  assert.equal(sourceReach('{..,x}/a'), './..', 'a `..` is no `/`, but climbs');
+  assert.equal(sourceReach('{x/y,z}/a'), '.', 'a `/` inside an alternative does not lead it');
+  assert.equal(sourceReach('{x,{,/q}}/a'), '/', 'one that leads a nested alternative does');
 });
 
 check('escapes in the static part', () => {
