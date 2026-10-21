@@ -17,6 +17,7 @@ import { requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
  * session, composed the way the supervisor's are: transforms in the object's
@@ -37,7 +38,7 @@ export function loaderFacetHost(env, ctx, network) {
         // back to the session mid-instruction.
         parking: 'jspi',
         open(spec) {
-            return new IsolatePool(env, ctx, {
+            const pool = new IsolatePool(env, ctx, {
                 tag: spec.tag,
                 concurrency: spec.concurrency,
                 preamble: spec.preamble,
@@ -50,6 +51,19 @@ export function loaderFacetHost(env, ctx, network) {
                 supervisorPerCall: spec.warm !== undefined,
                 network,
             });
+            // Experiment (D1, not for landing): the session's thread watched while a one-shot runs.
+            return {
+                submit: async (fn, args, options) => {
+                    const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
+                    try {
+                        return await pool.submit(fn, args, options);
+                    }
+                    finally {
+                        watched();
+                    }
+                },
+                dispose: () => pool.dispose(),
+            };
         },
     };
 }

@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
@@ -8969,7 +8970,9 @@ export class FacetManager {
             this.trackProcessRpcResources(entry.pid, [handle]);
             resourcesTracked = true;
             this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
-            const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
+            // Experiment (D1, not for landing): the session's thread watched while a resident boots (a script's whole run).
+            const watchedBoot = holdThreadWatch(this.ctx, `resident ${opts.resident?.runtime ?? 'worker'}`);
+            const boot = await (foreground ? Promise.race([handle.booted(), foreground.interrupted]) : handle.booted()).finally(watchedBoot);
             step('booted');
             if (record && this.launchJournal.has(entry.pid)) {
                 // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS here (_proveByUptime).
