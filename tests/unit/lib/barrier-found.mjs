@@ -207,6 +207,10 @@ const FOUND = {
       ['sync', 'stat', 'x/e/g'], ['peer', 'write', 'd/n', 'c4751.3'], ['sync', 'readFile', 'mid'], ['unstall'], ['hold', 'listing'], ['own', 'write', 'd/e/g', 'c4751.4'],
       ['unstall'], ['stall'], ['root', 'chmod', 'd', 0o700], ['own', 'write', 'd/n', 'c4751.5'], ['hold', 'delivery'], ['sync', 'readdir', 'd']],
   },
+  'a directory the process made where it had moved one away lists nothing of the one it moved (5119)': {
+    park: 5119,
+    schedule: [['sync', 'rename', 'x', 'z'], ['sync', 'mkdir', 'x'], ['sync', 'readdir', 'x']],
+  },
   'a file fetched in batches that the process read stays resident past a repair (4033)': {
     park: 4033,
     schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
