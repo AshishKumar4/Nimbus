@@ -21,7 +21,7 @@ import {
   objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply,
   reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas,
   reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf,
-  stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError,
+  stringSlice, stringEndsWith, stringToLowerCase, symbolFor, SyntaxError, TypeError, URIError,
 } from './primordials.js';
 
 type ErrorClass = new (message?: string) => Error;
