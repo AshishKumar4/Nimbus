@@ -2,8 +2,9 @@
 // The daily upstream canary names what changed upstream since its last green
 // run (scripts/ci/lib/upstream.mjs):
 //   - resolveInstalls: what a fresh install of each probe's recorded
-//     package.json takes, by the rules Nimbus's npm installs by. Each
-//     dependency and dev dependency at the version its range admits, and
+//     package.json takes, by the rules Nimbus's npm installs by. Its roots
+//     as npm takes them (a dev range over a dependency's), each at the
+//     version its range admits, and
 //     below them each dependency, required peer and optional dependency;
 //     a staged binding's owner at the newest staged version its range
 //     admits; an npm: alias as the package it names. An optional peer is
@@ -46,7 +47,7 @@ const packages = {
   'lightningcss-wasm': pkg('1.30.2', { '1.30.2': {} }),
   '@scope/fork': pkg('2.1.0', { '2.1.0': { dependencies: { vite: '^8.0.0' }, optionalDependencies: { '@rolldown/binding-wasm32-wasi': '1.2.13' } } }),
   '@rolldown/binding-wasm32-wasi': pkg('1.2.13', { '1.2.13': { cpu: ['wasm32'] } }),
-  yaml: pkg('2.8.0', { '2.8.0': {} }),
+  yaml: pkg('2.8.0', { '1.10.2': {}, '2.8.0': {} }),
   less: pkg('4.4.0', { '4.4.0': {} }),
   astro: pkg('7.4.2', { '7.4.1': {}, '7.4.2': { dependencies: { vite: '^8.3.0', 'git-dep': 'github:someone/git-dep' } } }),
   rollup: pkg('4.63.5', { '3.29.5': {}, '4.63.4': {}, '4.63.5': {} }),
@@ -81,6 +82,12 @@ const packages = {
   assert.equal(reads.has('less'), false, 'an optional peer is not installed');
   assert.equal(reads.has('lightningcss'), false, 'a swapped package is read as its target');
   assert.equal(reads.has('@rolldown/binding-linux-x64-gnu'), false, "a staged binding's native optional dependencies are not followed");
+}
+
+// ── a root named in dependencies and devDependencies installs at its dev range, as npm's roots take it (projectRoots) ──
+{
+  const installs = await resolveInstalls({ app: { dependencies: { yaml: '^1.0.0' }, devDependencies: { yaml: '^2.0.0' } } }, { specs: SPECS, packument: registry(packages).packument });
+  assert.deepEqual(installs.app, { yaml: ['2.8.0'] });
 }
 
 // ── a package the install takes in two versions keeps both ──
