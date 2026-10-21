@@ -312,7 +312,7 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|not-admitted)$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|not-admitted|cjs-burn)$/;
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
@@ -330,9 +330,39 @@ export default {
     if (!match) return nimbus.fetch(request, env, ctx);
     return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
       : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1])
-      : match[2] === 'not-admitted' ? embedderNotAdmitted(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
+      : match[2] === 'not-admitted' ? embedderNotAdmitted(request, env, match[1])
+      : match[2] === 'cjs-burn' ? cjsBurn(request, env) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
+
+// Experiment (not for landing): where a CommonJS module's global reads are slow. The same loop
+// (n rounds of Math.imul, a global read each round) in a Loader worker, written each way.
+const BURN_BODY = 'let h = 0x811c9dc5; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h >>> 0;';
+const BURN_MAIN = (from: string) => `import burn from './burn.js';\nexport default { fetch(request) { const n = Number(new URL(request.url).searchParams.get('n')); return new Response(JSON.stringify(${from})); } };\n`;
+const BURN_VARIANTS: Record<string, Record<string, string | { cjs: string } | { js: string }>> = {
+  // An ES module's function.
+  esm: { 'main.js': BURN_MAIN('burn(n)'), 'burn.js': `export default function burn(n) { ${BURN_BODY} }\n` },
+  // A CommonJS module (workerd compiles it as a function of exports, require, module, __filename, __dirname).
+  cjs: { 'main.js': BURN_MAIN('burn.burn(n)'), 'burn.js': { cjs: `module.exports = { burn(n) { ${BURN_BODY} } };\n` } },
+  // The same CommonJS text, its wrapper made by new Function as the ES module loads.
+  fn: { 'main.js': BURN_MAIN('burn.burn(n)'), 'burn.js': `const module = { exports: {} };\nnew Function('exports', 'require', 'module', '__filename', '__dirname', ${JSON.stringify(`module.exports = { burn(n) { ${BURN_BODY} } };`)}).call(module.exports, module.exports, () => null, module, '/burn.js', '/');\nexport default module.exports;\n` },
+  // The same, in a CommonJS module's own sloppy-mode wrapper but through a with-free indirect eval.
+  eval: { 'main.js': BURN_MAIN('burn.burn(n)'), 'burn.js': `const module = { exports: {} };\n(0, eval)(${JSON.stringify(`(function (exports, require, module, __filename, __dirname) { module.exports = { burn(n) { ${BURN_BODY} } }; })`)}).call(module.exports, module.exports, () => null, module, '/burn.js', '/');\nexport default module.exports;\n` },
+};
+const BurnRequest = z.object({ variant: z.enum(['esm', 'cjs', 'fn', 'eval']), n: z.number().int().positive() });
+
+/** POST /api/embedder/<any>/cjs-burn {variant, n} — experiment: the burn, `variant`'s way, in a Loader worker this request calls. */
+async function cjsBurn(request: Request, env: ProbeEnv): Promise<Response> {
+  if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
+  if (!await verifyRequestToken(request, env)) return authRequiredResponse();
+  const { variant, n } = BurnRequest.parse(await request.json());
+  const loader = (env as unknown as { LOADER: { get(id: string, code: () => Promise<{ compatibilityDate: string; mainModule: string; modules: Record<string, string | { cjs: string } | { js: string }> }>): { getEntrypoint(): { fetch(url: string): Promise<Response> } } } }).LOADER;
+  const worker = loader.get(`cjs-burn-${variant}`, async () => ({ compatibilityDate: '2026-09-26', mainModule: 'main.js', modules: BURN_VARIANTS[variant] }));
+  const started = Date.now();
+  const answer = await worker.getEntrypoint().fetch(`https://burn.local/?n=${n}`);
+  const text = await answer.text();
+  return Response.json({ variant, n, status: answer.status, result: text.slice(0, 200), workerMs: Date.now() - started });
+}
 
 /**
  * POST /api/embedder/<id>/spawn-worker — what a colocated embedder does with
