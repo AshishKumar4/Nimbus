@@ -201,6 +201,12 @@ const FOUND = {
     schedule: [['input'], ['own', 'mkdir', 'x/e'], ['release', 'listing'], ['own', 'readFile', 'd/e/g'], ['own', 'readFile', 'mid'], ['sync', 'stat', 'x'],
       ['own', 'unlink', 'top'], ['input'], ['sync', 'readFile', 'z'], ['release'], ['unstall'], ['sync', 'readFile', 'd/e/g'], ['peer', 'write', 'top', 'c4225.6']],
   },
+  'a file a peer made and the process then wrote is listed while its directory is relisted (4751)': {
+    park: 4751,
+    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['input'], ['poison'], ['sync', 'rename', 'x', 'z'], ['input'], ['own', 'readdir', 'z/g'],
+      ['sync', 'stat', 'x/e/g'], ['peer', 'write', 'd/n', 'c4751.3'], ['sync', 'readFile', 'mid'], ['unstall'], ['hold', 'listing'], ['own', 'write', 'd/e/g', 'c4751.4'],
+      ['unstall'], ['stall'], ['root', 'chmod', 'd', 0o700], ['own', 'write', 'd/n', 'c4751.5'], ['hold', 'delivery'], ['sync', 'readdir', 'd']],
+  },
   'a file fetched in batches that the process read stays resident past a repair (4033)': {
     park: 4033,
     schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
@@ -234,6 +240,11 @@ const GAPS = {
     lacks: 'S keeps a rename of a directory as its own effect over the rows the launch listed under the old name, and leaves those rows; once a peer makes the name again they show under it (closed by the cutover: RF decides own renames in the store); '
       + 'meanwhile, in a program that renames a directory away and another process then creates one of that name, statSync and readFileSync can answer files the old directory held',
     shows: 'sync stat d/e/g answered file 644 size 5',
+  },
+  'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
+    lacks: 'B2: a directory whose relist is on its way answers its listing without the names the process wrote there since (the cutover\'s relist fence); '
+      + 'meanwhile a Node program\'s readdirSync can miss a file it has just written, while the directory is relisted',
+    shows: 'sync readdir d answered ["e","f"]',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '

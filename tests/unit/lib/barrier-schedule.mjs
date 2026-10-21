@@ -428,6 +428,8 @@ export function createModel(tree = SEED_TREE) {
     worldsSeen,
     /** Whether `step` must wait: a change in flight overlaps it, other than its own earlier ones for a process that orders its own (`ordered`). */
     busy: (step, ordered = false) => changes.some((change) => change.done === null && overlaps(change.domain, domainOf(step)) && (!ordered || outside(step[0]) || !change.own)),
+    /** The names of a peer's changes in flight. */
+    peersInFlight: () => changes.filter((change) => change.done === null && !change.own).map((change) => change.domain),
     /** `step` begun now, as the process's own changes in flight leave the model for one of its own: its record, or null where it would fail. */
     begin(step) {
       const [way, op, a] = step;
@@ -639,7 +641,9 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const begin = (at, way, step) => {
     const domain = domainOf(step);
     if (model.busy(step, kind === 'node')) return 'wait';
-    if (!outside(way) && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
+    // An awaited change ends after a peer's in flight now: as one made after it, it would decide on what the process cannot know of yet.
+    const unlanded = [...peerAt.filter(({ done }) => done > landed).map(({ domain: theirs }) => theirs), ...(way === 'own' ? model.peersInFlight() : [])];
+    if (!outside(way) && unlanded.some((theirs) => overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
     }
