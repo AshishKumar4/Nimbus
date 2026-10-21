@@ -11,7 +11,7 @@ import { nsDescribes, nsKey } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY } from './tables.js';
-import { feedPointOf, isFeedPosition, ROOT_FEED, rootOf, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
+import { isFeedPosition, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
  *
@@ -231,13 +231,12 @@ export function createTransport(coherence, admission, namespace, cells) {
         // One flat list of ranges across all files, so packing is a single pass and
         // a 25 MiB file and a 40-byte one are the same shape.
         const ranges = new SafeList();
-        // A file on the root's feed is dated by its revision there, which the session's reads check; any other (a
-        // mount's, its revision its own feed's, or none) by its version, as its listing's stat named it.
-        const at = coherence.cursor();
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-            const dated = file.rev !== 0 && (at === null || feedPointOf(at, file.path) === ROOT_FEED);
+            // A file on the root's feed is dated by its revision there, which the session's reads check; any other (a
+            // mount's, its revision its own feed's, or none) by its version, as its listing's stat named it.
+            const dated = file.rev !== 0 && file.epoch !== null;
             const version = dated ? null : ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null;
             const ckey = ownValue(file, 'ckey') ?? null;
             for (let part = 0; part < parts; part++) {
@@ -442,7 +441,7 @@ export function createTransport(coherence, admission, namespace, cells) {
                 }
                 // Its stat, for the bytes the store already has: who may read them (namespace.readable).
                 const contentKey = ownValue(entry, 'contentKey');
-                entries[entries.length] = { path, size, rev, epoch: rootOf(cursor).epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+                entries[entries.length] = { path, size, rev, epoch: rootEpochFor(cursor, path), ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
             }
             if (listed.next === null || listed.next === undefined) {
                 return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };

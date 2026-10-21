@@ -50,5 +50,7 @@ export declare function feedFor(position: FeedPosition, key: string): FeedCursor
 export declare function sameClock(a: FeedPosition, b: FeedPosition, key: string): boolean;
 /** Whether a fed mount's point lies strictly beneath `key` (a path, with or without its leading slash) in `position`: a directory the namespace makes above it. */
 export declare function abovePoint(position: FeedPosition, key: string): boolean;
+/** The root's epoch where `key` is the root feed's (a file there is dated by its revision on it), else null (a mount's: by its version). */
+export declare function rootEpochFor(position: FeedPosition, key: string): string | null;
 export {};
 //# sourceMappingURL=feed-position.d.ts.map

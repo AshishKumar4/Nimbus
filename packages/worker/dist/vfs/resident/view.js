@@ -17,7 +17,7 @@
  * One barrier for both: it asks (or takes the answer a delivery carried),
  * applies, and differs only in how it repairs what it could not apply.
  */
-import { floorFor, isFeedPosition, notAfter, rootOf, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
+import { floorFor, isFeedPosition, notAfter, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsKey, nsRowAt } from './namespace.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE } from './tables.js';
 /** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
@@ -391,7 +391,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null)
                         return null;
-                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry }]);
+                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
                     const bytes = view.content(k, entry.revision);
                     return bytes === undefined ? null : bytes;
                 },
@@ -401,7 +401,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null || files.length === 0)
                         return;
-                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry })));
+                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
                 },
                 acquireArgs: () => argsNow(),
                 repairOwed: () => repairOwed,

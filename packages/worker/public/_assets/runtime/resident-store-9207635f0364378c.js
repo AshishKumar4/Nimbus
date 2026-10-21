@@ -501,6 +501,9 @@ var __nimbusResidentModule = (() => {
     const y = feedOf(b, point);
     return x !== void 0 && y !== void 0 && x.epoch === y.epoch;
   }
+  function rootEpochFor(position, key) {
+    return feedPointOf(position, key) === ROOT_FEED ? rootOf(position).epoch : null;
+  }
 
   // src/vfs/resident/tables.ts
   var RESIDENT_SCHEMA = "4";
@@ -2533,7 +2536,7 @@ var __nimbusResidentModule = (() => {
           async fill(k, entry) {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
-            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry }]);
+            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
             const bytes = view.content(k, entry.revision);
             return bytes === void 0 ? null : bytes;
           },
@@ -2542,7 +2545,7 @@ var __nimbusResidentModule = (() => {
           async fillMany(files) {
             const cursor = coherence.cursor();
             if (cursor === null || files.length === 0) return;
-            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry })));
+            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
           },
           acquireArgs: () => argsNow(),
           repairOwed: () => repairOwed,
@@ -2801,11 +2804,10 @@ var __nimbusResidentModule = (() => {
         files[files.length] = file;
       }
       const ranges = new SafeList();
-      const at = coherence.cursor();
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-        const dated = file.rev !== 0 && (at === null || feedPointOf(at, file.path) === ROOT_FEED);
+        const dated = file.rev !== 0 && file.epoch !== null;
         const version = dated ? null : ownValue3(file, "version") ?? ownValue3(file, "stat") ?? null;
         const ckey = ownValue3(file, "ckey") ?? null;
         for (let part = 0; part < parts; part++) {
@@ -2830,14 +2832,14 @@ var __nimbusResidentModule = (() => {
       const paths = new SafeList();
       for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
       const fill = cells.beginFill(paths);
-      for (let at2 = 0; at2 < ranges.length; ) {
+      for (let at = 0; at < ranges.length; ) {
         const batch = new SafeList();
         let bytes = 0;
-        while (at2 < ranges.length && batch.length < BATCH_PATHS && (batch.length === 0 || bytes + ranges[at2].length <= BATCH_BYTES)) {
-          const range = ranges[at2];
+        while (at < ranges.length && batch.length < BATCH_PATHS && (batch.length === 0 || bytes + ranges[at].length <= BATCH_BYTES)) {
+          const range = ranges[at];
           bytes += range.length;
           batch[batch.length] = range;
-          at2++;
+          at++;
         }
         if (!await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES)) {
           for (let i = 0; i < batch.length; i++) failedPaths.add(batch[i].path);
@@ -2957,7 +2959,7 @@ var __nimbusResidentModule = (() => {
             throw new Error2("Nimbus: fsList returned unusable metadata for '" + path + "'");
           }
           const contentKey = ownValue3(entry, "contentKey");
-          entries[entries.length] = { path, size, rev, epoch: rootOf(cursor).epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+          entries[entries.length] = { path, size, rev, epoch: rootEpochFor(cursor, path), ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
         }
         if (listed.next === null || listed.next === void 0) {
           return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };
@@ -3188,7 +3190,7 @@ var __nimbusResidentModule = (() => {
       for (const path of applied.dropped) {
         const found = namespace.resolve(path, false);
         if (!found || found === "ELOOP" || found.row.kind !== NS_FILE) continue;
-        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootOf(applied.cursor).epoch, version: versionOf(found.row) });
+        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
       }
       if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
       return applied.cursor;
@@ -3459,7 +3461,7 @@ var __nimbusResidentModule = (() => {
           if (cells.has(path)) continue;
           const row = nsRowAt(t, path);
           if (row === void 0 || row.kind !== NS_FILE) continue;
-          fetch.push({ path, size: row.size, rev: row.rev, epoch: rootOf(cursor).epoch, ckey: null, version: versionOf(row) });
+          fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
         }
         return transport.fetchFiles(supervisor, fetch);
       },

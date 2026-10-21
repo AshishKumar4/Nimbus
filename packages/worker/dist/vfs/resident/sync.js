@@ -23,7 +23,7 @@
  * over — measured past the DO CPU limit at pi scale. See `synchronize`.
  */
 import { residentCellCost } from './cell-cost.js';
-import { feedFor, isFeedPosition, rootOf, sameClock } from '@nimbus-sh/core/runtime/feed-position.js';
+import { feedFor, isFeedPosition, rootEpochFor, sameClock } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsDescribes, nsKey, nsRowAt } from './namespace.js';
 import { NS_FILE, RK_OWN_WRITE } from './tables.js';
 import { messageOf } from './transport.js';
@@ -120,7 +120,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             const found = namespace.resolve(path, false);
             if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE)
                 continue;
-            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootOf(applied.cursor).epoch, version: versionOf(found.row) });
+            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
         }
         if (refetch.length > 0)
             await transport.fetchFiles(supervisor, refetch);
@@ -556,7 +556,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 const row = nsRowAt(t, path);
                 if (row === undefined || row.kind !== NS_FILE)
                     continue;
-                fetch.push({ path, size: row.size, rev: row.rev, epoch: rootOf(cursor).epoch, ckey: null, version: versionOf(row) });
+                fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
             }
             return transport.fetchFiles(supervisor, fetch);
         },
