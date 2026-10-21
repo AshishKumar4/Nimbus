@@ -254,6 +254,13 @@ const FOUND = {
     park: 6113,
     schedule: [['sync', 'rename', 'x/h', 'd/n'], ['own', 'write', 'x/h', 'c6113.1'], ['sync', 'stat', 'd/n']],
   },
+  'a file a call that cannot wait missed and the process then renamed away is no miss (6614, drawn before mounts)': {
+    engines: ['node'],
+    park: 6614,
+    schedule: [['own', 'opendir', 'x/h'], ['own', 'stat', 'x/e'], ['sync', 'unlink', 'd/f'], ['own', 'pread', 'mid', 70000], ['own', 'readFile', 'd'], ['release'],
+      ['hold', 'listing'], ['own', 'chmod', 'd/e', 0o755], ['settle'], ['own', 'opendir', 'x'], ['peer', 'write', 'd/e/g', 'c6614.3'], ['sync', 'readFile', 'd/e/g'],
+      ['sync', 'readdir', 'd/n'], ['own', 'rename', 'd/e/g', 'x/h'], ['input']],
+  },
   'a file the process makes on a mount is made less its umask (6614)': {
     park: 6614,
     schedule: [['peer', 'mount', 'd', 'fed', { f: 'm6614.1' }], ['input'], ['own', 'write', 'd/n', 'c6614.5']],
@@ -335,6 +342,11 @@ const GAPS = {
     lacks: 'S lists, in a directory the process removed and made again, a name the session does not hold there while the process\'s own write of it is in flight (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile readdirSync can list a file before its write is made',
     shows: 'sync readdir d/e answered ["g"]',
+  },
+  'a file a call that cannot wait missed and the process then renamed away is no miss (6614, drawn before mounts) [node]': {
+    lacks: 'the oracle and S disagree on a file missed by readFileSync then renamed away by the process while a listing was held (main draws it too; the cutover replaces S\'s ledger); '
+      + 'meanwhile the program\'s misses ledger may leave out a file a later rename moved',
+    shows: 'at rest, the program\'s misses are []; unanswered are [home/user/app/d/e/g]',
   },
   'a fed mount beneath one with no feed answers as the session holds it [node]': {
     lacks: 'S lists a mount with no change feed only where its launch named it, and refuses the rest (closed by the cutover: such a mount is the session\'s to answer, awaited); '
