@@ -22,7 +22,7 @@ setTimeout(() => {
     (text) => { process.stdout.write("READ " + text.length + "\\n"); },
     (error) => { process.stdout.write("FAILED " + error.code + "\\n"); },
   );
-}, 1500);
+}, 150);
 `;
 
 const authority = createAuthority({ storageKernelReserve: 0 });
@@ -37,11 +37,20 @@ let slow = false;
 let grants = 0;
 /** @type {(name: string, args: unknown[]) => Promise<unknown>} */
 let forward = async () => { throw new Error('forward is not ready'); };
+// A session that grants no read leases: another process's change reaches
+// the program on its next barrier, the read's own, as on Cloudflare.
+const unleased = (options) => {
+  if (!options || !options.lease) return options;
+  const { lease, ...rest } = options;
+  return rest;
+};
 const handle = facetSupervisor(authority, {
   fsStorageGrant: async (...args) => {
     if (slow) { grants++; await sleep(300); }
     return forward('fsStorageGrant', args);
   },
+  fsAcquire: (epoch, cursor, options) => forward('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, unleased(options)]),
+  fsAcquired: (acquire, op, args) => forward('fsAcquired', [{ ...acquire, options: unleased(acquire.options) }, op, args]),
 });
 forward = handle.forward;
 
@@ -51,7 +60,7 @@ await launchResident({
 });
 slow = true;
 const bootCalls = { ...handle.log.calls };
-// Another process writes it: what the program held of the tree is recalled, and its next read asks the session.
+// Another process writes it, and the program's next read asks the session.
 await authority.peer.writeFile('home/user/app/late.txt', 'x'.repeat(SIZE));
 
 await until(() => handle.log.exit !== null, 'the process ends', 10_000);
