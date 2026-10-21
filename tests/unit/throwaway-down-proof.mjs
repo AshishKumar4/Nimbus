@@ -58,8 +58,14 @@ try {
   writeFileSync(join(root, 'drive.mjs'), `
 const realFetch = globalThis.fetch;
 const origin = ${JSON.stringify(origin)};
+// FIXTURE_UNRESOLVED: how many API calls this host's resolver cannot make (getaddrinfo EAI_AGAIN).
+let unresolved = Number(process.env.FIXTURE_UNRESOLVED ?? 0);
 globalThis.fetch = (input, options) => {
   const url = new URL(input instanceof Request ? input.url : input);
+  if (url.origin === 'https://api.cloudflare.com' && unresolved > 0) {
+    unresolved--;
+    return Promise.reject(Object.assign(new TypeError('getaddrinfo EAI_AGAIN api.cloudflare.com'), { code: 'EAI_AGAIN' }));
+  }
   if (url.origin === 'https://api.cloudflare.com') return realFetch(origin + url.pathname + url.search, options);
   if (url.origin === origin) return realFetch(input, options);
   throw new Error('unexpected external request to ' + url.origin);
@@ -69,11 +75,11 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   const receipt = join(root, '.wrangler/throwaway-targets', NAME + '.json');
   const deleted = join(root, 'state/nimbus/deleted-previews.json');
   const recorded = JSON.stringify({ name: NAME, preview: PREVIEW, base: origin + '/preview-hostname', secret: 'the-held-signing-secret', secretPushed: true, createdAt: '2026-10-07T00:00:00.000Z' });
-  const run = (command = 'down') => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['drive.mjs', command, '--name', NAME], {
+  const run = (command = 'down', { args = [], unresolved = 0 } = {}) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['drive.mjs', command, '--name', NAME, ...args], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE_URL: origin + '/client/v4', XDG_STATE_HOME: join(root, 'state'), TMPDIR: join(root, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
+      env: { ...process.env, FIXTURE_UNRESOLVED: String(unresolved), CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE_URL: origin + '/client/v4', XDG_STATE_HOME: join(root, 'state'), TMPDIR: join(root, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
     });
     let output = '';
     let stderr = '';
@@ -140,6 +146,26 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   assert.notEqual(unread.status, 0, unread.output);
   assert.match(lastLine, /^version failed: \S/, `the cause is the last line, not ${JSON.stringify(lastLine)}`);
   console.log('  ok  a failed read ends with its cause: ' + lastLine);
+
+  // A read the resolver could not make is made again until its caller's deadline; any other failure is not.
+  const latest = { status: 200, body: { success: true, result: { id: 'deployment-id' }, errors: [] } };
+  answer = latest;
+  const resolved = await run('version', { args: ['--until', String(Date.now() + 30_000)], unresolved: 1 });
+  assert.equal(resolved.status, 0, resolved.output);
+  assert.match(resolved.output, /deployment-id/, 'read again once the resolver answers');
+  const pastDeadline = await run('version', { unresolved: 1 });
+  assert.notEqual(pastDeadline.status, 0, 'with no deadline left, the read fails');
+  assert.match(pastDeadline.stderr.trimEnd().split('\n').at(-1), /^version failed: getaddrinfo EAI_AGAIN/, pastDeadline.output);
+  answer = rejected(401, 10000);
+  events = [];
+  const refused = await run('version', { args: ['--until', String(Date.now() + 30_000)] });
+  assert.notEqual(refused.status, 0, 'an answer the API gave is not read again');
+  assert.equal(events.filter((e) => e === 'GET').length, 1, 'a refusal is asked once');
+  answer = transport;
+  events = [];
+  const dropped = await run('version', { args: ['--until', String(Date.now() + 30_000)] });
+  assert.notEqual(dropped.status, 0, 'a connection dropped after it reached the API is not read again');
+  console.log('  ok  only a read the resolver could not make is made again, until its deadline');
 
   // A failed command leaves a usable receipt: its next down can finish.
   answer = present;
