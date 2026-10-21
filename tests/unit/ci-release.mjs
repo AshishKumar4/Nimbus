@@ -4,6 +4,10 @@
 //     it and promote.mjs refuses a manifest whose digest moved, so it must be
 //     the same for the same manifest whatever its key order, and change with
 //     any module, docs or asset digest in it.
+//   - deployedDigest (the same file): remote-probes skips the paired perf
+//     probes when the baseline's deployment and the candidate's have one
+//     digest, so it must change with the module, the app's config or the
+//     worker's public assets, and with nothing else in the tree.
 //   - holdLease (scripts/ci/lib/lease.mjs): one lane at a time per
 //     environment. A second holder waits, and gives up naming the first;
 //     the lease is free the moment its holder's process ends, killed or not.
@@ -17,7 +21,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { holdLease } from '../../scripts/ci/lib/lease.mjs';
-import { releaseDigest } from '../../scripts/ci/lib/release.mjs';
+import { deployedDigest, releaseDigest } from '../../scripts/ci/lib/release.mjs';
 import { redactCredentials } from '../behavioral/_driver.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'ci-release-'));
@@ -88,6 +92,44 @@ try {
     assert.notEqual(changed((r) => { r.commit = 'c0ffef'; }), releaseDigest(release), 'the commit');
     assert.notEqual(changed((r) => { r.assets['apps/hosted-demo'].manifest['extra.js'] = '33'; }), releaseDigest(release), 'an added asset');
     console.log('  ok  releaseDigest: one digest per manifest, whatever its key order, and a new one for any changed module, docs or asset');
+  }
+  {
+    const repo = join(root, 'deployed');
+    mkdirSync(repo);
+    const git = (...args) => {
+      const done = spawnSync('git', ['-c', 'user.name=ci', '-c', 'user.email=ci@example.invalid', ...args], { cwd: repo, encoding: 'utf8' });
+      assert.equal(done.status, 0, done.stderr);
+      return done.stdout.trim();
+    };
+    /** A commit whose tree holds `files` ({ path: text }) over the last one's. */
+    const commit = (files) => {
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(repo, path, '..'), { recursive: true });
+        writeFileSync(join(repo, path), text);
+      }
+      git('add', '-A');
+      git('commit', '-q', '-m', 'fixture');
+      return git('rev-parse', 'HEAD');
+    };
+    git('init', '-q');
+    const base = commit({ 'apps/probe/wrangler.jsonc': '{ "name": "probe" }\n', 'packages/worker/public/index.html': '<p>shell</p>\n', 'tests/unit/a.mjs': '1\n' });
+    const testsOnly = commit({ 'tests/unit/a.mjs': '2\n', 'scripts/ci/remote-probes.mjs': '3\n' });
+    const asset = commit({ 'packages/worker/public/index.html': '<p>shell 2</p>\n' });
+    const config = commit({ 'apps/probe/wrangler.jsonc': '{ "name": "probe", "vars": { "A": "1" } }\n' });
+    /** The digest of a release of `sha` whose apps/probe module is `module`. */
+    const digest = (sha, module, target = 'apps/probe') => {
+      const dir = join(root, `release-${sha.slice(0, 12)}-${module}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'release.json'), JSON.stringify({ commit: sha, job: 'j', bundles: { 'apps/probe': { main: 'index.js', sha256: module, file: 'apps-probe/index.js' } }, assets: {} }));
+      return deployedDigest(repo, dir, target);
+    };
+    assert.match(digest(base, 'aa'), /^[0-9a-f]{64}$/);
+    assert.equal(digest(testsOnly, 'aa'), digest(base, 'aa'), 'tests and scripts deploy nothing: the same module is the same deployment');
+    assert.notEqual(digest(testsOnly, 'ab'), digest(base, 'aa'), 'a module');
+    assert.notEqual(digest(asset, 'aa'), digest(testsOnly, 'aa'), "the worker's public assets");
+    assert.notEqual(digest(config, 'aa'), digest(asset, 'aa'), "the app's wrangler config");
+    assert.throws(() => digest(base, 'aa', 'apps/hosted-demo:staging'), /has no apps\/hosted-demo:staging/, 'a target the release does not hold');
+    console.log('  ok  deployedDigest: the same module, config and public assets are one deployment; a change to any is another, and a test or script change is none');
   }
   {
     const dir = join(root, 'leases');
