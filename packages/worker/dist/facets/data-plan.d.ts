@@ -103,6 +103,14 @@ export declare const STYLESHEET_SOURCE_MAX_FILES = 5000;
  */
 export declare function sourceReach(path: string): string;
 /**
+ * The directory names a source spells below its reach, each with how many
+ * times it does: a directory its pattern names is one it selects, though a
+ * walk leaves such names out (`../{shared/node_modules/ui,kit}`). Only what
+ * a `/` follows is a directory's: `*.{node_modules,tsx}` names files. Linear
+ * in the path.
+ */
+export declare function sourceNames(path: string): ReadonlyMap<string, number>;
+/**
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
  * package's), each sheet where its links lead and read once, every `@source`
