@@ -52,10 +52,10 @@ function collect(dir, into) {
   walk(real, `${into}/${name}`);
   // Its dependencies sit beside it in the store.
   const siblings = join(real, '..');
-  for (const dependency of Object.keys(dependencies)) collect(join(siblings, dependency), '/app/node_modules');
+  for (const dependency of Object.keys(dependencies)) collect(join(siblings, dependency), '/home/user/app/node_modules');
 }
 const files = new Map();
-collect(join(STORE, 'express@5.2.1/node_modules/express'), '/app/node_modules');
+collect(join(STORE, 'express@5.2.1/node_modules/express'), '/home/user/app/node_modules');
 const PROGRAM = `
 const fs = require('fs');
 const express = require('express');
@@ -77,7 +77,7 @@ for (let round = 0; round < 3; round++) {
   console.log(n);
 })();
 `;
-files.set('/app/main.js', Buffer.from(PROGRAM));
+files.set('/home/user/app/main.js', Buffer.from(PROGRAM));
 
 /** An arm: its side's built core, on a workspace of its own holding the tree. */
 async function arm(from) {
@@ -98,7 +98,7 @@ try {
   const arms = {};
   for (const name of shuffled(Object.keys(sources))) arms[name] = await arm(sources[name]);
   const run = async (ws) => {
-    const result = await ws.exec('cd /app && node main.js');
+    const result = await ws.exec('cd /home/user/app && node main.js');
     assert.equal(result.exitCode, 0, result.stderr);
     return result.stdout;
   };
