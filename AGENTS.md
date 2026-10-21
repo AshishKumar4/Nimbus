@@ -104,17 +104,26 @@ hosts that facet is one deployment-wide var, `NIMBUS_PROCESS_HOST`:**
 | `peer` | a child actor of a sibling session DO | ~1,400 ms p50 | independent | independent |
 
 "The session's thread" is literal. A facet's synchronous work runs on the
-session DO's thread, and so does a Loader worker's that the session calls:
-every one-shot (python, ruby, clang, tsc, a node one-shot facet). It does
-even when the call goes through a stateless entrypoint of the same Worker
-first. While it runs, the session answers nothing: not its terminals, not a
-port request, not a file save. Measured 2026-10-21 on throwaways, an outside
-request to the session every 100 ms:
+session DO's thread, and so does the work of a Loader worker the session calls,
+even through a stateless entrypoint of the same Worker. While it runs, the
+session answers nothing: not its terminals, not a port request, not a file
+save. Only another Durable Object's worker runs elsewhere. Measured 2026-10-21
+on throwaways, an outside request to the session every 100 ms:
 - A 1 s burn held the session 0.9-1.0 s in each of those places. In another
   session DO's Loader worker, the session waited 30 ms.
 - A python one-shot importing ten stdlib modules held it 2.8 s. A second
   terminal's `echo`, a request to a running server and a `POST /api/write-file`
   each waited 3.1-3.4 s, against 0.04-0.12 s with the same run on a peer.
+
+So a one-shot of a facet host (python, ruby, clang, tsc, git.wasm, a WASI
+program) runs on the session's peer, a sibling DO named from the session's
+id, when the peer answered a call of the same worker within
+`ONE_SHOT_WARM_MS`; otherwise it runs in the session and the peer is warmed
+beside it (`@nimbus-sh/fabric/one-shot-peer.js`). The run keeps the SUPERVISOR
+binding its session minted, so it is the session's process under the
+session's rules. A stateful facet (`FacetSpec.stateful`: bash's) stays in the
+session. A node one-shot is not a facet: it is an unkeyed Loader worker
+(`ProcessHost.runOnce`), and it still runs in the session.
 
 Both give the process its own SQLite, and both run the same code: a peer opens
 it by calling the same `processes(ctx, env).spawn` on its own `ctx`. Peer routing costs
