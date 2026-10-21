@@ -927,6 +927,11 @@ export class SessionProcessSupervisor implements ProcessOutput {
     box.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
   }
 
+  /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
+  catchesSignal(pid: number, signal: ProcessSignalName): boolean {
+    return this.signalBoxes.get(pid)?.catches.has(signal) === true;
+  }
+
   /**
    * The next signal sent to `pid`'s program (takeSignals), waiting up to
    * `waitMs` for one: null if none came, the process ended, or a later wait

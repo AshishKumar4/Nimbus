@@ -4,14 +4,16 @@
 // and go, and it takes each signal the session queues for it (cpNextSignal),
 // its handlers deciding what it does; a SIGTERM it has stopped listening for
 // takes the default action. A session that holds no catches for it, answering
-// none at once, is asked again a second later, not in a tight loop. The
-// generated shims run here over a stand-in supervisor.
+// none at once, is asked again a second later, not in a tight loop. What it
+// catches is said again until the session takes it, and its output waits for
+// that, so a "ready" it prints is seen only once it is caught. The generated
+// shims run here over a stand-in supervisor.
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const make = (supervisor) => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusProcessId',
-  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\nreturn { proc: __processMod };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
+  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\nreturn { proc: __processMod, writeLive: __nimbusWriteLiveOutput };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const failures = [];
@@ -61,6 +63,24 @@ await check('none answered at once is not asked again at once', async () => {
   proc.on('SIGINT', () => {});
   await sleep(300);
   assert.ok(asked <= 2, `asked ${asked} times in 300 ms`);
+});
+
+await check('said again until taken; output waits for it', async () => {
+  const events = [];
+  let tries = 0;
+  const supervisor = {
+    cpCatchSignals: async (catches) => {
+      tries++;
+      await sleep(30);
+      if (tries < 3) throw new Error('the session was busy');
+      events.push(`caught ${catches.join(',')}`);
+    },
+    cpNextSignal: (waitMs) => new Promise((resolve) => setTimeout(() => resolve(null), Math.min(waitMs, 50))),
+  };
+  const { proc, writeLive } = make(supervisor);
+  proc.on('SIGTERM', () => {});
+  await new Promise((resolve) => writeLive('stdout', 'ready\n', undefined, resolve, async () => { events.push('ready out'); }));
+  assert.deepEqual([tries, events], [3, ['caught SIGTERM', 'ready out']]);
 });
 
 assert.deepEqual(failures, []);

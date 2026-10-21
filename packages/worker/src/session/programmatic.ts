@@ -73,6 +73,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
+  /** The workspace's child broker, made the one its children's facets report their output to. */
+  _ensureChildProcessManager(): ChildProcessManager;
   /** This incarnation's restore of the dev servers its previous one ran, their processes spawned again (session/dev-servers.ts). */
   devServersRespawned(): Promise<void>;
   /** The destroy running (rpcDestroy), until it is answered. */
@@ -711,7 +713,7 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number) {
  * parent's.
  */
 export async function rpcStartProgram(
-  self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>,
+  self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | '_ensureChildProcessManager'>,
   argv: string[],
   options: SessionStartProgramOptions = {},
 ): Promise<ReadableStream<Uint8Array>> {
@@ -722,6 +724,8 @@ export async function rpcStartProgram(
   await self.ensureRuntimeReady();
   const workspace = self.runtimeWorkspace;
   if (!workspace) throw new Error('startProgram: the session has no workspace');
+  // What it starts may be a facet (node), whose output reaches it through the broker the session routes to.
+  self._ensureChildProcessManager();
   const program: Omit<Program, 'stdin'> & { stdin: ProgramInput } = {
     argv: [...argv],
     env: options.env ?? workspace.shell.getExportedEnv(),

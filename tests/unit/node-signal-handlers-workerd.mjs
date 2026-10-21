@@ -11,6 +11,13 @@
 // Node child: a handler never ran, and a child that would have exited 7 ended
 // by SIGTERM.
 //
+// And a signal it catches while it waits in a synchronous read of stdin (a
+// run Nimbus stops and runs again once the input is there) waits for it, as
+// Node runs a handler once the read returns: Ctrl-C at
+// `(sleep 3; echo x) | node -e '<SIGINT handler>; readFileSync(0)'` ends
+// the writer, the read returns empty, and then the handler runs; the
+// program exits 0. Before, the wait took Ctrl-C as the end (130).
+//
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
@@ -75,6 +82,19 @@ try {
     const got = lines(r.stdout);
     for (const line of got) console.log('  ' + line);
     assert.deepEqual(got, expected, 'what a child\'s signal handlers do, as under host node');
+
+    const t = terminal.terminal;
+    t.reset();
+    t.cmd(`(sleep 3; echo x) | node -e "process.on('SIGINT', () => console.log('heard' + ' SIGINT')); console.log('wait' + 'ing'); console.log('read [' + require('fs').readFileSync(0, 'utf8').trim() + ']')"`);
+    await t.waitFor((b) => /\nwaiting/.test(b), 60_000, 'waiting');
+    await new Promise((r) => setTimeout(r, 1000));
+    t.send('\x03');
+    await t.waitForPrompt(30_000);
+    const parked = (await terminal.run('echo "S=$?"')).stdout;
+    const status = Number(/S=(\d+)/.exec(parked)?.[1]);
+    const order = (t.buf.match(/read \[\]|heard SIGINT/g) ?? []).join(' then ');
+    console.log(`  parked: status ${status}, ${order}`);
+    assert.deepEqual([status, order], [0, 'read [] then heard SIGINT'], 'a caught Ctrl-C waits for the read to return, then its handler runs');
   } finally {
     await terminal.close();
   }

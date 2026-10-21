@@ -10813,7 +10813,10 @@ function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
   stream.writableLength += bytes.byteLength;
   const ready = stream.writableLength < stream.writableHighWaterMark;
   if (!ready) stream.writableNeedDrain = true;
-  const sent = Promise.resolve(send(streamName, bytes));
+  // Held, in order, behind what must reach the session first (what its signal handlers catch).
+  const hold = __nimbusOutputHold;
+  const sent = hold === null ? Promise.resolve(send(streamName, bytes)) : hold.then(() => send(streamName, bytes));
+  if (hold !== null) __nimbusHoldOutput(sent);
   stream.__nimbusOutputPending = sent;
   sent.then(() => {
     stream.writableLength -= bytes.byteLength;
@@ -11106,25 +11109,61 @@ if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWar
 // default action (cpCatchSignals), and this process takes them
 // (cpNextSignal), its handlers deciding what it does, as Node's do. While its
 // stdin pump runs, the pump takes them with its input (one waits at a time).
+// What it catches is said again until the session has it, and its output
+// waits for that: a "ready" it prints after process.on() is seen only once a
+// signal sent then finds it caught.
 const __nimbusCatchable = ["SIGHUP", "SIGINT", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM"];
-let __nimbusCaught = "";
+let __nimbusCaughtWanted = "";
+let __nimbusCaughtSaid = "";
+let __nimbusCaughtSaying = null;
 let __nimbusSignalTaker = null;
 let __nimbusStdinPumping = false;
+// Output held behind what must reach the session first, in order; null when nothing is.
+let __nimbusOutputHold = null;
+function __nimbusHoldOutput(promise) {
+  const held = (__nimbusOutputHold || Promise.resolve()).then(() => promise).then(() => {}, () => {});
+  __nimbusOutputHold = held;
+  held.then(() => { if (__nimbusOutputHold === held) __nimbusOutputHold = null; });
+}
+// A pause no program waits on: the facet's own timer, not the program's.
+function __nimbusPause(ms) {
+  const schedule = globalThis.__nimbusRawSetTimeout || setTimeout;
+  return new Promise((resolve) => { schedule(resolve, ms); });
+}
 function __nimbusCatchSignals(adding) {
   if (!__supervisor || typeof __supervisor.cpCatchSignals !== "function") return;
-  const caught = __nimbusCatchable.filter((sig) => sig === adding || __processMod.listenerCount(sig) > 0);
-  const key = caught.join(",");
-  if (key === __nimbusCaught) return;
-  __nimbusCaught = key;
-  // Sent at once, before what the program does next (a "ready" it prints): a signal sent after that finds it caught.
-  __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(caught), () => undefined).catch(() => {});
+  __nimbusCaughtWanted = __nimbusCatchable.filter((sig) => sig === adding || __processMod.listenerCount(sig) > 0).join(",");
+  __nimbusSayCaught();
   __nimbusTakeSignals();
 }
+function __nimbusSayCaught() {
+  if (__nimbusCaughtSaying !== null || __nimbusCaughtWanted === __nimbusCaughtSaid) return;
+  const saying = (async () => {
+    let failures = 0;
+    while (__nimbusCaughtWanted !== __nimbusCaughtSaid && !__nimbusProgramStopped) {
+      const wanted = __nimbusCaughtWanted;
+      try {
+        await __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(wanted === "" ? [] : wanted.split(",")), () => undefined);
+        __nimbusCaughtSaid = wanted;
+        failures = 0;
+      } catch (error) {
+        if (++failures >= 5) {
+          __nimbusReleaseStderr("[nimbus] the session did not take this process's signal handlers (" + ((error && error.message) || String(error))
+            + "): a signal sent to it takes its default action\\n");
+          return;
+        }
+        await __nimbusPause(200 * failures);
+      }
+    }
+  })().finally(() => { if (__nimbusCaughtSaying === saying) __nimbusCaughtSaying = null; });
+  __nimbusCaughtSaying = saying;
+  __nimbusHoldOutput(saying);
+}
 function __nimbusTakeSignals() {
-  if (__nimbusSignalTaker !== null || __nimbusCaught === "" || __nimbusStdinPumping || typeof __supervisor.cpNextSignal !== "function") return;
+  if (__nimbusSignalTaker !== null || __nimbusCaughtWanted === "" || __nimbusStdinPumping || typeof __supervisor.cpNextSignal !== "function") return;
   __nimbusSignalTaker = (async () => {
     let failures = 0;
-    while (__nimbusCaught !== "" && !__nimbusStdinPumping && !__nimbusProgramStopped) {
+    while (__nimbusCaughtWanted !== "" && !__nimbusStdinPumping && !__nimbusProgramStopped) {
       let sig = null;
       const asked = Date.now();
       try {
@@ -11138,7 +11177,7 @@ function __nimbusTakeSignals() {
       if (__nimbusProgramStopped) return;
       if (sig === null) {
         // An answer of none that came at once (the session holds no catches for it, or failed) is asked again a second later, not at once.
-        if (Date.now() - asked < 1000) await new Promise((resolve) => { const timer = setTimeout(resolve, 1000); timer?.unref?.(); });
+        if (Date.now() - asked < 1000) await __nimbusPause(1000);
         continue;
       }
       // Whatever sent it may have written files first, as for a signal the stdin pump delivers.

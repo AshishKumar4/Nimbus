@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { operandPath } from '../substrate/lifo/utils/path.js';
 import { errnoOf } from '../vfs/vfs-error.js';
 import { invalidArgType, invalidArgValue, nodeError } from '../_shared/node-error.js';
+import { parseSignalName } from '../substrate/lifo/shell/signals.js';
 import type { ExitStatus, StartedProgram } from '../runtime/program-start.js';
 import type { NodeStart } from './faces.js';
 
@@ -42,19 +43,18 @@ export interface ExecOptions extends SpawnOptions {
 type Output = string | Buffer;
 type ExecCallback = (error: Error | null, stdout: Output, stderr: Output) => void;
 
-/** Linux's numbers for the signals a child may be sent by number, as `kill(15)` names SIGTERM. */
-const SIGNAL_NAMES: Readonly<Record<number, string>> = {
-  1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 6: 'SIGABRT', 9: 'SIGKILL', 10: 'SIGUSR1', 12: 'SIGUSR2', 13: 'SIGPIPE',
-  14: 'SIGALRM', 15: 'SIGTERM', 17: 'SIGCHLD', 18: 'SIGCONT', 19: 'SIGSTOP', 20: 'SIGTSTP', 21: 'SIGTTIN', 22: 'SIGTTOU', 28: 'SIGWINCH',
-};
-const SIGNAL_SET = new Set(Object.values(SIGNAL_NAMES));
-
-/** A signal as Node's kill takes it, by name or number; another is ERR_UNKNOWN_SIGNAL. */
-function signalName(signal: string | number | undefined): string {
+/**
+ * A signal as Node's kill takes it (convertToValidSignal): Linux's name
+ * (SIGTERM) or number (15), 0 the probe that sends nothing; another is
+ * ERR_UNKNOWN_SIGNAL.
+ */
+function signalName(signal: string | number | undefined): string | 0 {
   if (signal === undefined) return 'SIGTERM';
-  const name = typeof signal === 'number' ? SIGNAL_NAMES[signal] : signal;
-  if (name === undefined || !SIGNAL_SET.has(name)) throw nodeError(TypeError, 'ERR_UNKNOWN_SIGNAL', `Unknown signal: ${String(signal)}`);
-  return name;
+  if (signal === 0) return 0;
+  const parsed = typeof signal === 'number' ? (Number.isInteger(signal) && signal > 0 ? parseSignalName(String(signal)) : null)
+    : /^SIG[A-Z0-9+-]+$/.test(signal) ? parseSignalName(signal) : null;
+  if (parsed === null || parsed === '0') throw nodeError(TypeError, 'ERR_UNKNOWN_SIGNAL', `Unknown signal: ${String(signal)}`);
+  return `SIG${parsed}`;
 }
 
 /** A start refused with `code`, as Node's spawn reports one: the 'error' event's error. */
@@ -95,6 +95,10 @@ function inputPipe(): { writable: Writable; readable: ReadableStream<Uint8Array>
   let ended = false;
   let gone: Error | null = null;
   let wake: (() => void) | null = null;
+  const settle = (): void => {
+    gone ??= Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
+    for (const write of pending.splice(0)) write.taken(gone);
+  };
   const readable = new ReadableStream<Uint8Array>({
     async pull(controller) {
       while (pending.length === 0 && !ended) await new Promise<void>((resolve) => { wake = resolve; });
@@ -108,8 +112,7 @@ function inputPipe(): { writable: Writable; readable: ReadableStream<Uint8Array>
     },
     cancel() {
       // Its reader has gone (the child ended): what waits is not written, as a pipe's writer meets EPIPE.
-      gone = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
-      for (const write of pending.splice(0)) write.taken(gone);
+      settle();
     },
   }, { highWaterMark: 0 });
   const writable = new Writable({
@@ -127,8 +130,10 @@ function inputPipe(): { writable: Writable; readable: ReadableStream<Uint8Array>
       wake?.();
       done();
     },
+    // Destroyed (its child ended, or never started): what waits is not written, and its writers hear so.
     destroy(error, done) {
       ended = true;
+      settle();
       wake?.();
       done(error);
     },
@@ -152,18 +157,31 @@ export class ChildProcess extends EventEmitter {
   /** The program once it runs; a kill sent before then waits for it. */
   private started: StartedProgram | null = null;
   private pendingKill: string | null = null;
+  /** Aborted by its AbortSignal: its 'error' was the AbortError, and a start that answers cancelled says nothing more. */
+  private aborted = false;
   private exited = false;
   private closed = false;
   private outputsOpen = 0;
 
-  /** kill(2): `signal` to the child, true if it may be sent; false once it has ended. */
+  /**
+   * kill(2): `signal` to the child, true if it may be sent; false once it
+   * has ended. 0 sends nothing: it says the child is there (and, as Node's,
+   * marks it `killed`).
+   */
   kill(signal?: string | number): boolean {
     const name = signalName(signal);
     if (this.exited) return false;
     this.killed = true;
+    if (name === 0) return true;
     if (this.started === null) this.pendingKill = name;
     else this.started.kill(name);
     return true;
+  }
+
+  /** What an AbortSignal's abort makes of it (Node's abortChildProcess): killed, and the AbortError its 'error' event carries. */
+  abort(killSignal: string | number | undefined, reason: unknown): void {
+    this.aborted = true;
+    if (this.kill(killSignal)) this.emit('error', Object.assign(new Error('The operation was aborted', { cause: reason }), { name: 'AbortError', code: 'ABORT_ERR' }));
   }
 
   ref(): this {
@@ -222,8 +240,10 @@ export class ChildProcess extends EventEmitter {
           });
         }
       }
-    } catch {
-      // Its output failed: what was read is all there is.
+    } catch (error) {
+      // Its output is lost while it runs: it is ended (SIGKILL) rather than left running unseen, and the loss is its 'error'.
+      this.started?.kill('SIGKILL');
+      this.emit('error', error instanceof Error ? error : new Error(String(error)));
     } finally {
       this.stdout?.end();
       this.stderr?.end();
@@ -236,6 +256,7 @@ export class ChildProcess extends EventEmitter {
    * does, so it ends.
    */
   private end(status: ExitStatus): void {
+    if (this.exited) return;
     this.exited = true;
     this.exitCode = status.code;
     this.signalCode = status.signal;
@@ -256,7 +277,7 @@ export class ChildProcess extends EventEmitter {
     const errno = Reflect.get(failure, 'errno');
     this.exitCode = typeof errno === 'number' ? errno : -1;
     this.stdin?.destroy();
-    this.emit('error', failure);
+    if (!(this.aborted && code === 'ECANCELED')) this.emit('error', failure);
     this.stdout?.end();
     this.stderr?.end();
     // Node's: what a stream holds is read off so it ends.
@@ -291,11 +312,14 @@ export function createNodeChildProcess(start: NodeStart | undefined, { cwd }: Ch
     return env;
   };
 
-  function spawn(file: string, args?: readonly string[] | SpawnOptions, options?: SpawnOptions): ChildProcess {
+  function spawn(file: string, args?: readonly string[] | SpawnOptions | null, options?: SpawnOptions): ChildProcess {
     if (typeof file !== 'string') throw invalidArgType('file', 'string', file);
     if (file.length === 0) throw invalidArgValue('file', file, 'cannot be empty');
-    const argList = isArgList(args) ? args.map(String) : [];
-    const opts: SpawnOptions = (isArgList(args) ? options : args) ?? {};
+    // As Node's normalizeSpawnArguments: args omitted (or null) keeps the options after them.
+    let argList: string[] = [];
+    let opts: SpawnOptions = options ?? {};
+    if (isArgList(args)) argList = args.map(String);
+    else if (args !== undefined && args !== null) opts = args;
     const shell = opts.shell === true ? '/bin/sh' : typeof opts.shell === 'string' ? opts.shell : null;
     const argv = shell === null ? [file, ...argList] : [shell, '-c', [file, ...argList].join(' ')];
     const stdio = stdioOf(opts.stdio);
@@ -322,13 +346,20 @@ export function createNodeChildProcess(start: NodeStart | undefined, { cwd }: Ch
       child.once('exit', clear);
       child.once('error', clear);
     }
-    if (opts.signal !== undefined) {
+    const { signal } = opts;
+    if (signal !== undefined) {
       const aborted = (): void => {
-        cancel.abort(opts.signal?.reason);
-        child.kill(opts.killSignal);
+        cancel.abort(signal.reason);
+        child.abort(opts.killSignal, signal.reason);
       };
-      if (opts.signal.aborted) queueMicrotask(aborted);
-      else opts.signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) queueMicrotask(aborted);
+      else {
+        signal.addEventListener('abort', aborted, { once: true });
+        // A reused signal keeps no child that has ended.
+        const forget = (): void => signal.removeEventListener('abort', aborted);
+        child.once('exit', forget);
+        child.once('close', forget);
+      }
     }
     const starting = start === undefined
       ? Promise.reject(spawnError('ENOSYS', child.spawnfile, child.spawnargs))

@@ -1637,7 +1637,7 @@ export async function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, w
 }
 
 /** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
-export async function _rpcCpCatchSignals(self: RpcHost, pid: number | undefined, catches: unknown): Promise<void> {
+export async function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void> {
     if (pid === undefined || isPriorGenerationPid(self, pid) || !Array.isArray(catches)) return;
     const names: ProcessSignalName[] = [];
     for (const catching of catches) {
