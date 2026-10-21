@@ -341,7 +341,7 @@ export class CompositeVFS {
         const feeds = {};
         for (const { mount, changes } of sources) {
             if (changes)
-                feeds[mount.point] = { epoch: changes.epoch, cursor: changes.revision() };
+                feeds[mount.point] = changes.fixed ? { epoch: changes.epoch, cursor: changes.revision(), fixed: true } : { epoch: changes.epoch, cursor: changes.revision() };
         }
         return positionOf(table, feeds);
     }
@@ -373,7 +373,7 @@ export class CompositeVFS {
             const delta = changes.since(held.epoch, held.cursor, options);
             if (delta.poison)
                 return poison();
-            feeds[mount.point] = { epoch: delta.epoch, cursor: delta.rev };
+            feeds[mount.point] = changes.fixed ? { epoch: delta.epoch, cursor: delta.rev, fixed: true } : { epoch: delta.epoch, cursor: delta.rev };
             for (const entry of delta.paths) {
                 const at = CompositeVFS.reroot(mount.point, entry.path);
                 if (this.feedShows(at, mount)) {
@@ -1419,18 +1419,6 @@ export class CompositeVFS {
         return ref;
     }
     /** Whether the table declares an accepted mount point, even if its source is absent. */
-    /**
-     * Whether every live mount's feed but the root's is fixed (VfsChanges.fixed):
-     * a read lease, which the engine's writes recall, follows no other feed
-     * that moves.
-     */
-    movesWithTheRootAlone() {
-        for (const { mount, changes } of this.feedSources()) {
-            if (mount.point !== ROOT_POINT && changes !== undefined && changes.fixed !== true)
-                return false;
-        }
-        return true;
-    }
     /**
      * Whether the mount at `point` states a fixed change model (VfsChanges.fixed:
      * its tree never changes, as the kernel's /dev and /proc): false for any

@@ -267,7 +267,7 @@ export interface VFS {
 export interface VfsChanges {
     /** Changes when revisions could regress or be reused: a cursor from another epoch is a poison. */
     readonly epoch: string;
-    /** Its tree never changes while its epoch stands (immutableChanges): nothing a lease must be recalled for. */
+    /** Its tree never changes while its epoch stands (immutableChanges): the kernel's /dev and /proc, which no launch names guide a walk of. */
     readonly fixed?: true;
     revision(): number;
     /** Every path changed in (cursor, now], with its stat when asked; a poison when that cannot be answered. */

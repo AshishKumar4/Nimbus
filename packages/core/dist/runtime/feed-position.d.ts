@@ -1,8 +1,9 @@
 declare const OPAQUE: unique symbol;
-/** One feed's place: its epoch, and its cursor in that epoch. */
+/** One feed's place: its epoch, and its cursor in that epoch; `fixed` where its tree never changes in that epoch (VfsChanges.fixed). */
 export interface FeedCursor {
     readonly epoch: string;
     readonly cursor: number;
+    readonly fixed?: true;
 }
 /** Each fed mount's FeedCursor by its point, read only through rootOf, feedOf and feedsOf. */
 export interface FeedCursors {

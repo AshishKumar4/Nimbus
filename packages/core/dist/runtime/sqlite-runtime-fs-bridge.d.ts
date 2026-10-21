@@ -125,8 +125,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * has no namespace.
      */
     acquire(position: FeedPosition | null, options?: VfsAcquireOptions): VfsAcquireResult;
-    /** Whether a read lease may be granted over this caller's namespace: no feed but the engine's moves (CompositeVFS.movesWithTheRootAlone). */
-    leasable(): boolean;
     /** One page of every name this caller's namespace shows (namespacePage), or SQLite's where it has none. */
     list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage;
     realpath(path: RuntimeFsPath): string;

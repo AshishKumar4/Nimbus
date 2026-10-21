@@ -676,10 +676,6 @@ export class SqliteRuntimeFsBridge {
             ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
         };
     }
-    /** Whether a read lease may be granted over this caller's namespace: no feed but the engine's moves (CompositeVFS.movesWithTheRootAlone). */
-    leasable() {
-        return this.namespace === undefined || this.namespace.movesWithTheRootAlone();
-    }
     /** One page of every name this caller's namespace shows (namespacePage), or SQLite's where it has none. */
     list(after, limit, options) {
         if (this.namespace === undefined) {

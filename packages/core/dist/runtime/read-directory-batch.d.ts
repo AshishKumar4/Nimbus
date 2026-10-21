@@ -14,12 +14,14 @@ declare const Request: z.ZodObject<{
         feeds: z.ZodRecord<z.ZodString, z.ZodObject<{
             epoch: z.ZodString;
             cursor: z.ZodNumber;
+            fixed: z.ZodOptional<z.ZodLiteral<true>>;
         }, z.core.$strict>>;
     }, z.core.$strict>, z.ZodTransform<import("./feed-position.js").FeedPosition, {
         table: string;
         feeds: Record<string, {
             epoch: string;
             cursor: number;
+            fixed?: true | undefined;
         }>;
     }>>>;
     open: z.ZodArray<z.ZodUnion<readonly [z.ZodString, z.ZodObject<{

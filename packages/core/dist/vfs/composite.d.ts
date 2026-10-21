@@ -627,12 +627,6 @@ export declare class CompositeVFS implements VFS {
     private keep;
     /** Whether the table declares an accepted mount point, even if its source is absent. */
     /**
-     * Whether every live mount's feed but the root's is fixed (VfsChanges.fixed):
-     * a read lease, which the engine's writes recall, follows no other feed
-     * that moves.
-     */
-    movesWithTheRootAlone(): boolean;
-    /**
      * Whether the mount at `point` states a fixed change model (VfsChanges.fixed:
      * its tree never changes, as the kernel's /dev and /proc): false for any
      * other, or one whose source is absent.

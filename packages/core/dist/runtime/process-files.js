@@ -179,8 +179,7 @@ class GuardedProcessBridge {
      * reports (Delegations.readLease).
      */
     withReadLease(answer, options) {
-        // The engine's writes recall a lease; a change on another feed that moves would not.
-        if (options?.lease !== true || this.pid === undefined || answer.poison || !this.target.leasable())
+        if (options?.lease !== true || this.pid === undefined || answer.poison)
             return answer;
         let lease;
         try {

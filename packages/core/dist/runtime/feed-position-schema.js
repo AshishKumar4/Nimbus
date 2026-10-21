@@ -9,6 +9,6 @@ import { z } from 'zod';
 import { positionOf, ROOT_FEED } from './feed-position.js';
 export const FeedPositionSchema = z.object({
     table: z.string(),
-    feeds: z.record(z.string(), z.object({ epoch: z.string().max(64), cursor: z.number().int().min(0) }).strict())
+    feeds: z.record(z.string(), z.object({ epoch: z.string().max(64), cursor: z.number().int().min(0), fixed: z.literal(true).optional() }).strict())
         .refine((feeds) => Object.hasOwn(feeds, ROOT_FEED), 'a position holds the root\'s feed'),
 }).strict().transform(({ table, feeds }) => positionOf(table, feeds));
