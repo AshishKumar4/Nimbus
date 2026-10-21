@@ -44,10 +44,14 @@ function prng(seed) {
 // Names chosen to sit on the edges a range scan has: a prefix and its
 // extension, the byte just past '/', and a name past the BMP.
 // U+E000 and U+FFFD sort above a surrogate pair in UTF-16 and below it in
-// UTF-8, which is SQLite's order.
-const PATHS = ['a', 'a/b', 'a/b/c', 'a/bc', 'a0', 'a.', 'ab', 'b', 'b/x', 'é/f', '😀', '😀/g', '\ue000', '\ue000/h', '\ufffd', 'z'];
-const DIRS = ['', 'a', 'a/b', 'b', '😀', '\ue000'];
-const NAMES = ['x', 'y', 'b', 'é', '😀', '\ue000', '\ufffd'];
+// UTF-8, the storage's order. And names holding the characters a key's
+// encoding reserves (U+0001, and NUL below it), placed so a key that does not
+// escape them aliases two rows: ('a', 'b\u0001c') and ('a\u0001b', 'c'), and
+// 'a' scanned as a prefix of 'a\u0001b'.
+const PATHS = ['a', 'a/b', 'a/b/c', 'a/bc', 'a0', 'a.', 'ab', 'b', 'b/x', 'é/f', '😀', '😀/g', '\ue000', '\ue000/h', '\ufffd', 'z',
+  'a\u0001b', 'a\u0001b/c', 'a/b\u0001c', 'a\u0000', 'a\u0001\u0001'];
+const DIRS = ['', 'a', 'a/b', 'b', '😀', '\ue000', 'a\u0001b', 'a\u0000'];
+const NAMES = ['x', 'y', 'b', 'é', '😀', '\ue000', '\ufffd', 'c', 'b\u0001c', 'b\u0000', '\u0001'];
 const REVS = () => [RK_OWN_WRITE, 0, 3, 7];
 
 const reads = (t, rand) => {
@@ -123,7 +127,7 @@ function randomOp(rand) {
   if (r < 0.92) return ['nsDeleteChildren', pick(DIRS)];
   if (r < 0.96) { const prefix = `${pick(DIRS)}/`; return ['nsDeleteParents', prefix, prefixEnd(prefix)]; }
   if (r < 0.965) return ['nsClear'];
-  // Stamps from a small range, so ties in 'used' are ordered by key as SQLite orders them.
+  // Stamps from a small range, so ties in 'used' are ordered by key.
   if (r < 0.985) return ['pagePut', path, pick3(rand), Math.floor(rand() * 3), bytes(), Math.floor(rand() * 6)];
   if (r < 0.993) return ['pageUse', path, pick3(rand), Math.floor(rand() * 3), Math.floor(rand() * 6)];
   return ['pageDelete', path, pick3(rand), Math.floor(rand() * 3)];
