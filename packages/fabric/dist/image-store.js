@@ -19,7 +19,7 @@
  */
 import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { PROCESS_IMAGE_DIR, processImagePath } from './process-fabric.js';
+import { PROCESS_IMAGE_DIR, processImageDir, processImagePath } from './process-fabric.js';
 /**
  * Bytes of an image written in one storage transaction.
  *
@@ -42,6 +42,7 @@ export const FACET_IMAGE_WRITE_SLICE_BYTES = Math.floor(MAX_TX_BLOB_BYTES / CHUN
 export class ImageStore {
     blobs;
     isLive;
+    ownerOf;
     /** pid → the boot images its facet loads from; the image sweep's root set. */
     residentImages = new Map();
     dirReady = false;
@@ -53,9 +54,12 @@ export class ImageStore {
      * @param isLive Whether a pid still names a running process. The root set
      *   is the process table, reached through this one predicate.
      */
-    constructor(blobs, isLive) {
+    constructor(blobs, isLive, 
+    /** The uid process `pid` runs as: whose directory its images are in (processImageDir). */
+    ownerOf) {
         this.blobs = blobs;
         this.isLive = isLive;
+        this.ownerOf = ownerOf;
     }
     /**
      * The image store's directory, created before the first filesystem view is
@@ -78,10 +82,18 @@ export class ImageStore {
         if (this.dirReady)
             return;
         this.dirReady = true;
+        let fs;
         try {
-            this.blobs(pid).mkdirp(PROCESS_IMAGE_DIR);
+            fs = this.blobs(pid);
+            fs.mkdirp(PROCESS_IMAGE_DIR);
         }
-        catch { /* a session whose disk is not writable has no images to store */ }
+        catch {
+            return; /* a session whose disk is not writable has no images to store */
+        }
+        // Before this instance's first command: what an earlier one left that no
+        // running process boots from goes, an earlier release's images at the
+        // top of the directory, readable by every account, among them.
+        this.sweep(fs);
     }
     /**
      * Materialize generated module sources in the content-addressed image store
@@ -114,10 +126,11 @@ export class ImageStore {
         // identity is what makes an append visible — do not replace it.
         const rooted = [];
         this.residentImages.set(pid, rooted);
-        fs.mkdirp(PROCESS_IMAGE_DIR);
+        const owner = this.ownerOf(pid);
+        fs.mkdirp(processImageDir(owner));
         let count = 0;
         for await (const [moduleName, source] of images) {
-            const { path, bytes } = await storeContentBlob(fs, source, processImagePath, { pacer, root: (named) => rooted.push(named) });
+            const { path, bytes } = await storeContentBlob(fs, source, (digest) => processImagePath(owner, digest), { pacer, root: (named) => rooted.push(named) });
             paths[moduleName] = path;
             count++;
             console.log('[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
@@ -152,21 +165,30 @@ export class ImageStore {
                 this.residentImages.delete(pid);
             }
         }
-        let names;
-        try {
-            names = fs.list(PROCESS_IMAGE_DIR);
-        }
-        catch {
-            return;
-        }
-        for (const name of names) {
-            if (live.has(`/${PROCESS_IMAGE_DIR}/${name}`))
-                continue;
+        const unrooted = (dir) => {
+            let names;
             try {
-                fs.unlink(`${PROCESS_IMAGE_DIR}/${name}`);
+                names = fs.list(dir);
             }
-            catch { /* already gone */ }
-        }
+            catch {
+                return;
+            }
+            for (const name of names) {
+                // A uid's directory (processImageDir); any other entry is an image,
+                // one an earlier release wrote at the top included.
+                if (dir === PROCESS_IMAGE_DIR && /^\d+$/.test(name)) {
+                    unrooted(`${dir}/${name}`);
+                    continue;
+                }
+                if (live.has(`/${dir}/${name}`))
+                    continue;
+                try {
+                    fs.unlink(`${dir}/${name}`);
+                }
+                catch { /* already gone */ }
+            }
+        };
+        unrooted(PROCESS_IMAGE_DIR);
     }
 }
 /**

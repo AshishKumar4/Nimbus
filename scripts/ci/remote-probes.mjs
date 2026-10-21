@@ -76,8 +76,25 @@ import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
 const TASK_TIMEOUT_S = 30 * 60;
-/** How long a task may wait to start (a new environment preparing, a queue): past it, not graded. */
-const PREPARE_S = 15 * 60;
+/**
+ * How long a task may take, from its token's minting, to start its first
+ * attempt and still be graded: the sum of the longest of each part measured.
+ * - Minting to the job's creation (deployments read, the pack uploaded): 35 s
+ *   (train 1021a, the one run timed).
+ * - The job's creation to its start, an environment prepared: at most 331.4 s
+ *   over armada's records of 1,623 jobs (2026-10-19 to 10-21; preparation
+ *   152-319 s). On a ready environment, at most 0.9 s.
+ * - A vessel to run it (fleet capacity, boot, checkout): at most 26.4 s, start
+ *   to finish less the vessel's busy time, over the 953 one-task jobs; the
+ *   slowest boot alone, in any job, 61 s.
+ * Not measured: how long many vessels at once wait for fleet capacity in a
+ * job that prepared its environment. Each task's verdict now says when it
+ * started (startedAt), and each run says how long its tasks waited, so the
+ * next derivation measures it. A task that starts past this, or that armada
+ * starts again later (its container lost), runs once more with fresh
+ * credentials (runTasks).
+ */
+const PREPARE_S = Math.ceil(35 + 331.4 + 61);
 const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 /** Workers Logs can trail a reset by minutes: how often, and how many times, a session no log names yet is looked up again. */
 const ATTRIBUTION_WAIT_MS = 45_000;
@@ -260,6 +277,7 @@ async function probeRun({ baseline, releases }) {
   const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll(secret, '[NIMBUS_PROBE_TOKEN]'), text);
   /** Map `list` on armada with credentials of its own; every token it carries is scrubbed from what this prints and keeps. */
   const mapItems = async (list, label) => {
+    const mintedAt = Date.now();
     const { base, token, arms: armTargets, startBy } = await credentials();
     secrets.push(...[token, ...Object.values(armTargets ?? {}).map((arm) => arm.token)].filter(Boolean));
     const env = { ...(token ? { NIMBUS_PROBE_TOKEN: token } : {}), ...(armTargets ? { [PAIRED_ENV]: JSON.stringify(armTargets) } : {}) };
@@ -273,7 +291,32 @@ async function probeRun({ baseline, releases }) {
     }));
     const after = await deployments();
     const moved = Object.keys(expected).filter((name) => before[name] !== expected[name] || after[name] !== expected[name]);
-    return { base, mapped, moved: moved.map((name) => `${name} served ${before[name]} before the job and ${after[name]} after, not ${expected[name]}`) };
+    return { base, mapped, mintedAt, moved: moved.map((name) => `${name} served ${before[name]} before the job and ${after[name]} after, not ${expected[name]}`) };
+  };
+  /**
+   * `list` mapped on armada and read into its tasks. A task armada started
+   * again after its token's start-by (its first attempt's container lost)
+   * refused to run: it runs once more, in a job of its own with credentials
+   * minted for it, so no token outlives one task. Once: a task that starts
+   * late again is not graded.
+   */
+  const runTasks = async (list, label) => {
+    const run = await mapItems(list, label);
+    const tasks = readTasks(list, run.mapped, scrub, run.mintedAt);
+    const problems = [...run.moved];
+    const late = tasks.flatMap((task, at) => (task.lateStart ? [{ at, item: list[task.outcome.index] }] : []));
+    if (late.length > 0) {
+      // The same tasks, by the same names: what a regrade or a confirmation names them by.
+      const again = late.map(({ item }) => item);
+      try {
+        const rerun = await mapItems(again, `${label} late start`);
+        problems.push(...rerun.moved);
+        for (const task of readTasks(again, rerun.mapped, scrub, rerun.mintedAt)) tasks[late[task.outcome.index].at] = task;
+      } catch (error) {
+        problems.push(`the late-started tasks could not run again: ${scrub(error.message)}`);
+      }
+    }
+    return { base: run.base, jobId: run.mapped.jobId, tasks, problems };
   };
 
   // The paired probes run in a task of their own, one at a time; the parts skip them.
@@ -285,14 +328,13 @@ async function probeRun({ baseline, releases }) {
   ];
   let run;
   try {
-    run = await mapItems(items, `remote-probes ${sha.slice(0, 12)} ${throwaway ?? hosted ?? 'staging'}`);
+    run = await runTasks(items, `remote-probes ${sha.slice(0, 12)} ${throwaway ?? hosted ?? 'staging'}`);
   } catch (error) {
     console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);
     return 2;
   }
-  const { base, mapped } = run;
-  const problems = [...run.moved];
-  const tasks = readTasks(items, mapped, scrub);
+  const { base, jobId, tasks } = run;
+  const problems = [...run.problems];
 
   // Red rows a reset or an overload left, attributed from the platform's record.
   const reader = telemetry({ account: process.env.CLOUDFLARE_ACCOUNT_ID });
@@ -324,9 +366,9 @@ async function probeRun({ baseline, releases }) {
     const reruns = regrade.map(({ row }, i) => ({ task: `regrade ${row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')} #${i + 1}`, part: '1/1',
       only: row.name.replace(/^tests\/behavioral\//, ''), skip: '', jobs: 1 }));
     try {
-      const again = await mapItems(reruns, `remote-probes ${sha.slice(0, 12)} regrade`);
-      problems.push(...again.moved);
-      const rerun = readTasks(reruns, again.mapped, scrub);
+      const again = await runTasks(reruns, `remote-probes ${sha.slice(0, 12)} regrade`);
+      problems.push(...again.problems);
+      const rerun = again.tasks;
       tasks.push(...rerun);
       regrade.forEach(({ row }, i) => {
         if (!rerun[i]?.rows?.some((other) => other.name === row.name)) return;
@@ -349,9 +391,9 @@ async function probeRun({ baseline, releases }) {
     try {
       await arms.replace({ baseline, candidate: sha, releases });
       for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
-      const again = await mapItems(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
-      problems.push(...again.moved);
-      const [rerun] = readTasks(confirm, again.mapped, scrub);
+      const again = await runTasks(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
+      problems.push(...again.problems);
+      const [rerun] = again.tasks;
       tasks.push(rerun);
       for (const row of pairedRed) {
         const second = rerun.rows?.find((other) => other.name === row.name);
@@ -381,10 +423,10 @@ async function probeRun({ baseline, releases }) {
   const state = join(NIMBUS_STATE, 'remote-probes');
   try {
     mkdirSync(state, { recursive: true });
-    const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}.json`);
-    writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: mapped.jobId,
+    const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${jobId}.json`);
+    writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: jobId,
       ...(paired.length > 0 ? { paired } : {}), problems, tasks }, null, 2))}\n`);
-    console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${mapped.jobId})`);
+    console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${jobId})`);
     return status;
   } catch (error) {
     console.error(`remote-probes: NOT GRADED — the verdict could not be kept: ${scrub(error.message)}`);
@@ -393,14 +435,20 @@ async function probeRun({ baseline, releases }) {
 }
 
 /** Each item's task as mapped: its rows (null when it was not graded), printed as they are read. */
-function readTasks(items, mapped, scrub) {
-  return mapped.outcomes.map((outcome, i) => {
+function readTasks(items, mapped, scrub, mintedAt) {
+  const tasks = mapped.outcomes.map((outcome, i) => {
     const item = items[outcome.index];
     let verdict = null;
     try { verdict = JSON.parse(mapped.outputs[i] ?? 'null'); } catch { /* reported below */ }
+    // How long it waited to start, from its token's minting (PREPARE_S).
+    if (typeof verdict?.startedAt === 'number') outcome.startDelayS = (verdict.startedAt - mintedAt) / 1000;
     if (outcome.kind !== 'exited' || verdict === null) {
       console.log(`NOT GRADED ${item.task}: ${outcome.kind === 'exited' ? `exit ${outcome.exitCode}, no verdict` : 'armada could not run it'}\n${scrub(outcome.tail ?? '')}`);
       return { ...item, outcome, rows: null };
+    }
+    if (verdict.lateStart === true) {
+      console.log(`NOT GRADED ${item.task}: it started after its token's start-by (attempt ${outcome.attempt ?? 1})\n${scrub(outcome.tail ?? '')}`);
+      return { ...item, outcome, rows: null, lateStart: true };
     }
     const red = verdict.rows.filter((row) => row.exitCode !== 0);
     console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s`);
@@ -417,4 +465,7 @@ function readTasks(items, mapped, scrub) {
     }
     return { ...item, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
   });
+  const delays = tasks.flatMap((task) => (task.outcome.startDelayS === undefined ? [] : [task.outcome.startDelayS]));
+  if (delays.length > 0) console.log(`remote-probes: its tasks started ${Math.min(...delays).toFixed(1)}-${Math.max(...delays).toFixed(1)} s after their tokens were minted (allowed ${PREPARE_S} s)`);
+  return tasks;
 }

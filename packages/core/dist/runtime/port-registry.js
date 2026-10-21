@@ -31,6 +31,7 @@ import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
 import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf } from './document-policy.js';
+import { ProcessNotAdmitted } from './os-contracts.js';
 import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 /**
  * Content codings this hop can undo. `DecompressionStream` decodes exactly
@@ -477,6 +478,10 @@ export class PortRegistry {
      * round-trip occurs anywhere.
      * A user-facet serving a PNG will return the exact same bytes the
      * client receives.
+     *
+     * A request the process refused unsent rejects with ProcessNotAdmitted,
+     * never a 502: it ran nowhere, and its caller may run it again, its body
+     * untouched.
      */
     async routeRequest(port, request, pathname) {
         return this.routeRequestInternal(port, request, pathname, false);
@@ -522,6 +527,8 @@ export class PortRegistry {
         // Settled once the client is done with the answer, or at once when nothing was relayed.
         const { scope, owner } = responseScope(request.signal);
         let relayed = false;
+        // What was to be sent: a refusal before it went (ProcessNotAdmitted) leaves its body unread.
+        let forwarded;
         try {
             // Preserve query; replace the pathname with the inner path so
             // the user's HTTP server sees its own URL shape. (Fragments
@@ -563,14 +570,17 @@ export class PortRegistry {
             // part of the published @cloudflare/workers-types RequestInit,
             // so extend the type locally rather than casting the whole
             // init — that keeps typos in other fields caught by the compiler.
+            // The caller's signal goes with it: a re-run of a refused request
+            // (ProcessNotAdmitted.request) still ends when its caller leaves.
             const init = {
                 method: request.method,
                 headers,
                 body: hasBody ? request.body : undefined,
+                signal: request.signal,
             };
             if (hasBody)
                 init.duplex = 'half';
-            const forwarded = new Request(innerUrl, init);
+            forwarded = new Request(innerUrl, init);
             // HTTP crosses Workers RPC as Request/Response values, streamed with
             // flow control and never materialised. A WebSocket upgrade cannot: its
             // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
@@ -621,6 +631,9 @@ export class PortRegistry {
             return answer;
         }
         catch (error) {
+            // A request the process refused unsent is its caller's to run again: this one, as it was to be sent.
+            if (error instanceof ProcessNotAdmitted)
+                throw new ProcessNotAdmitted(error.pid, error.cause, forwarded);
             // Server-side triage — users see only the 502 body, operators
             // see the full error + stack in Worker logs.
             console.error('[port-registry] routeRequest failed for port', port, ':', error);

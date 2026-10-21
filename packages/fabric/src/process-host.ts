@@ -67,7 +67,7 @@
  */
 
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ProcessNotAdmitted, type ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostActivity, HOST_INCARNATION_HEADER, leafReceived, SentRequests, type HostRequest } from './host-activity.js';
 import { onColdStart } from './generation.js';
@@ -93,6 +93,7 @@ import {
   HOSTED_WATCH_HEADER,
   HOSTED_RESIDENCY_HEADER,
   HOSTED_FAILURE_HEADER,
+  HOSTED_NOT_ADMITTED_HEADER,
   headerPairs,
   isolateToken,
   type HostedHttpRequest,
@@ -175,14 +176,14 @@ class FacetProcessHost implements ProcessHost {
     // standing; the next call to the facet is what shows it. Its boot is left
     // as the facet answers it: a run's own start and stop (a boot waiting on
     // stdin is replayed) are not the host's to judge.
-    const loss = new HostLoss(facet.lost);
+    const loss = new HostLoss(params.pid, facet.lost);
     const starting = hostActivity(this.ctx).acquire();
     return {
       ...facet,
       started: facet.started.finally(() => starting.release()),
       lost: loss.signal,
-      handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(() => facet.handleHttpRequest(request, scope)),
-      handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
+      handleHttpRequest: (request: Request, scope: ResponseScope) => loss.request((sending) => facet.handleHttpRequest(request, scope, { sending })),
+      handleWebSocketRequest: (request: Request) => loss.request((sending) => facet.handleWebSocketRequest(request, sending)),
       release: () => {
         loss.release();
         return facet.release();
@@ -262,7 +263,8 @@ const PeerHttpResult = z.object({
   headers: z.array(z.tuple([z.string(), z.string()])),
   body: z.instanceof(ReadableStream).nullable(),
 });
-const PeerFailure = z.object({ hostLost: z.string() });
+/** A peer's failure: its host lost, and whether the peer refused the request unsent (`notAdmitted`, the pid it names). */
+const PeerFailure = z.object({ hostLost: z.string(), notAdmitted: z.number().int().optional() });
 function peerAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
   try { return parsePeerAnswer(schema, value); }
   finally { disposeRpcResource(value); }
@@ -270,7 +272,9 @@ function peerAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
 
 function parsePeerAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
   const failure = PeerFailure.safeParse(value);
-  if (failure.success) throw new ProcessHostLost(failure.data.hostLost);
+  if (failure.success) {
+    throw failure.data.notAdmitted === undefined ? new ProcessHostLost(failure.data.hostLost) : new ProcessNotAdmitted(failure.data.notAdmitted, failure.data.hostLost);
+  }
   return schema.parse(value);
 }
 
@@ -397,7 +401,7 @@ class PeerProcessHost implements ProcessHost {
     // the process. The workerKey is derivable from a pid; this is not.
     const webSocketCapability = crypto.randomUUID();
 
-    const loss = new HostLoss();
+    const loss = new HostLoss(params.pid);
     let stopObserving = () => {};
     const residency: PeerResidency = { abort: new AbortController(), socket: null };
     this.residencies.set(params.workerKey, residency);
@@ -451,8 +455,15 @@ class PeerProcessHost implements ProcessHost {
       return {
         started,
         lost: loss.signal,
-        handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(async () => {
+        // Sent to the peer at once: a loss its coordinator sees first fails the
+        // request by the loss's name, though the peer may have refused it
+        // unsent. Only the peer's own answer says that (ProcessNotAdmitted,
+        // typed across its reply), when it comes first, and only for a request
+        // whose body did not go to the peer with it: one that did cannot be
+        // sent again, so its refusal is the loss.
+        handleHttpRequest: (request: Request, scope: ResponseScope) => loss.request(async (sendingToPeer) => {
           const lease = observation.acquire();
+          sendingToPeer();
           const sending = sent.send();
           scope.settled((delivered) => {
             lease.release();
@@ -466,12 +477,13 @@ class PeerProcessHost implements ProcessHost {
             if (!leafReceived(error)) sent.unsent(sending);
             else if (sending.abandoned) sent.received(sending);
             lease.release();
-            throw error;
+            throw error instanceof ProcessNotAdmitted && request.body !== null ? new ProcessHostLost(error.cause) : error;
           }
         }),
         // An upgrade hands its socket to the caller at the handshake.
-        handleWebSocketRequest: (request: Request) => loss.route(async () => {
+        handleWebSocketRequest: (request: Request) => loss.request(async (sendingToPeer) => {
           const lease = observation.acquire();
+          sendingToPeer();
           try { return await this.withPeer(placement.peerName, (stub) => routeWebSocketThroughPeer(stub, params.workerKey, webSocketCapability, request)); }
           finally { lease.release(); }
         }),
@@ -659,15 +671,18 @@ class HostLoss {
   private released = false;
   private reject: (lost: ProcessHostLost) => void = () => {};
   readonly signal = new Promise<never>((_, reject) => { this.reject = reject; });
+  /** Requests routed and not yet sent: the loss refuses them unsent (`request`). */
+  private unsent = 0;
 
-  constructor(held?: Promise<unknown>) {
+  constructor(private readonly pid: number, held?: Promise<unknown>) {
     this.signal.catch(() => {});
     held?.then(() => undefined, (error: unknown) => { if (!this.released) this.lose(error); });
   }
 
-  lose(error: unknown): ProcessHostLost {
+  /** The host is gone; `refused` when the loss shows as the host refusing a request unsent (ProcessNotAdmitted). */
+  lose(error: unknown, refused = false): ProcessHostLost {
     if (this.gone === null) {
-      this.gone = error instanceof ProcessHostLost ? error : new ProcessHostLost(error);
+      this.gone = new ProcessHostLost(error instanceof ProcessHostLost ? error.cause : error, refused || this.unsent > 0);
       this.reject(this.gone);
     }
     return this.gone;
@@ -682,9 +697,38 @@ class HostLoss {
   route<T>(leg: () => Promise<T>): Promise<T> {
     if (this.gone !== null) return Promise.reject(this.gone);
     const call = leg().catch((error: unknown) => {
+      if (error instanceof ProcessNotAdmitted) throw this.released ? error : this.lose(error, true);
       throw this.gone ?? (!this.released && (error instanceof ProcessHostLost || isHostReset(error)) ? this.lose(error) : error);
     });
     return Promise.race([call, this.signal]);
+  }
+
+  /**
+   * A request to the process, which says when it is sent (`sending`). One the
+   * loss finds unsent, or that comes after it, was never sent; one its host
+   * refused unsent says so itself (a peer's answer). Either is refused as
+   * ProcessNotAdmitted, owed a run, and the loss says it refused one. One in
+   * flight fails by the loss's name, as `route`'s calls do: it may have run.
+   */
+  request<T>(leg: (sending: () => void) => Promise<T>): Promise<T> {
+    if (this.gone !== null) return Promise.reject(new ProcessNotAdmitted(this.pid, this.gone));
+    let sent = false;
+    let refused: ProcessNotAdmitted | null = null;
+    this.unsent++;
+    const sending = () => {
+      if (sent) return;
+      sent = true;
+      this.unsent--;
+    };
+    const call = this.route(() => leg(sending).catch((error: unknown) => {
+      if (error instanceof ProcessNotAdmitted) refused = error;
+      throw error;
+    }));
+    return call.catch((error: unknown) => {
+      if (refused !== null) throw refused;
+      if (sent || error !== this.gone) throw error;
+      throw new ProcessNotAdmitted(this.pid, error);
+    }).finally(sending);
   }
 }
 
@@ -730,6 +774,7 @@ async function routeWebSocketThroughPeer(
 }
 
 async function peerFetchAnswer(response: Response, capability: string): Promise<Response> {
-  if (response.headers.get(HOSTED_FAILURE_HEADER) === capability) throw new ProcessHostLost(await response.text());
-  return response;
+  if (response.headers.get(HOSTED_FAILURE_HEADER) !== capability) return response;
+  const notAdmitted = response.headers.get(HOSTED_NOT_ADMITTED_HEADER);
+  throw notAdmitted === null ? new ProcessHostLost(await response.text()) : new ProcessNotAdmitted(Number(notAdmitted), await response.text());
 }

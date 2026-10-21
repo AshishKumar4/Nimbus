@@ -1331,6 +1331,8 @@ export declare class FacetManager {
     private rowAmendments;
     /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
     private hostLosses;
+    /** Residents whose host loss refused requests unsent: each is owed a run on a new process, at once (_onResidentTerminal). */
+    private owedRuns;
     /** Each running resident's uptime proof timer (_proveByUptime). */
     private uptimeProofs;
     /**
@@ -1341,6 +1343,22 @@ export declare class FacetManager {
     private ephemeralPids;
     private residentClaims;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
+    /**
+     * The images earlier releases left readable by every account, each made
+     * one principal's, once per session, before anything of it is re-driven or
+     * read. An image holds what its process could read:
+     * - a process image at the top of PROCESS_IMAGE_DIR (each uid's are in a
+     *   directory of its own now): unlinked, as its launch writes it again;
+     * - a durable application's blob (DURABLE_IMAGE_DIR): the kernel's alone,
+     *   as kernelImageBlobs leaves the ones it writes;
+     * - a wasm image staged at the top of INLINE_WASM_DIR: copied into the
+     *   directory of each uid whose durable application boots from it, that
+     *   application written again to read it there (its rows and owner index
+     *   naming the new blob), then unlinked, as a launch stages it again.
+     * Each step is safe to repeat, until the last marks it done. A filesystem
+     * snapshot or export taken before keeps what it held.
+     */
+    private _closeEarlierImages;
     /**
      * What releases before ask 62 kept of their processes' environments, once
      * per session, before anything of it is re-driven or read. Each record
@@ -1388,6 +1406,12 @@ export declare class FacetManager {
      */
     private _endByHostLoss;
     /**
+     * `pid`'s route to its process (the fabric's), whose requests the process
+     * refused unsent (ProcessNotAdmitted) are answered only once the pid reads
+     * ended: a caller that starts it again never finds the lost one.
+     */
+    private _routeTarget;
+    /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
      * than the journal row's release — a crash under 'on-failure' is re-driven
@@ -1406,6 +1430,7 @@ export declare class FacetManager {
     /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
     private _dropUptimeProof;
     private _onResidentTerminal;
+    private _afterResidentEnd;
     /**
      * Claim identity AND write its recovery row in one serializable storage
      * transaction, with the environment its relaunch asks for (`env`, when it
@@ -1459,6 +1484,8 @@ export declare class FacetManager {
      * kernel's umask), as POSIX has it, is what makes the read succeed for any
      * process by construction; the store itself decides nothing about modes.
      */
+    /** The session's filesystem, which a durable application's image is kept in (kernelImageBlobs). */
+    private _durableImageVfs;
     private _imageBlobs;
     /**
      * The session's filesystem as the kernel, writing what process `pid`

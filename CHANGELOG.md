@@ -12,7 +12,58 @@ published independently in the `@nimbus-sh` npm scope.
   - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
   - A namespace with no delegating mount places nothing and runs as before.
 
+- Fixed: a request to a resident process whose idle host the platform
+  replaced is no longer failed with "its host was reset by the platform".
+  Such a request now waits for its host's watch to confirm the process's
+  own instance before it is sent. When the watch finds a fresh instance in
+  its place, the request was never sent, so it ran nowhere. A request to
+  the process's port then runs once on a new process, which the session
+  starts at once whatever the restart policy, and its answer is returned.
+  A call an embedder makes through the process's own facet is refused as
+  `ProcessNotAdmitted` (core `os-contracts`), only once the process's pid
+  reads ended, so the embedder can run it once more. A request already in
+  flight when a host is lost still fails with the loss, since it may have
+  run. On the peer process host, a request its coordinator's watch finds
+  lost first fails the same way, though the peer may have refused it
+  unsent, and so does one whose body went to the peer before it was refused.
+  The first request after a process sits idle pays one round trip to its
+  host before it is sent.
+
+- Fixed (security): another account can no longer read a file of yours
+  through a process's image. A resident process's generated program image
+  holds its program and the files it read at start, a 0600 one among them
+  (such as `~/.bash_history` with an inline `VAR=secret`). The image was
+  the kernel's, mode 0644, so every account on the box could read it. Now
+  each image belongs to the uid its process runs as, mode 0400, in a
+  directory per uid (`/.nimbus/process-images/<uid>`), as are the wasm
+  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`).
+  A durable application's blobs (`/.nimbus/images`), which applications of
+  any uid share by content and only the kernel reads, are the kernel's
+  alone. The first start after the upgrade closes what earlier releases
+  left open: their process images go, durable blobs become the kernel's, and
+  a staged wasm image is copied for each uid whose durable application
+  boots from it (the application is written again to read its copy); one
+  nothing boots from goes. Two accounts that run the same program now keep
+  a copy each. Copies already taken in a snapshot, an export or a clone are
+  not changed.
+
+- Fixed (CI): a probe task armada starts again after losing its container
+  is graded. Its token, minted when the job was submitted, could expire
+  before the second attempt's limit, so that attempt refused to run and the
+  task went ungraded (train 1021a's paired perf, twice: the first attempt's
+  container was lost after 17 minutes). `remote-probes` now runs such a
+  task once more, in a job of its own with fresh credentials, for the
+  suite, a regrade and a paired confirmation alike, so no token lives past
+  one task's limit. The wait a task may take before its first attempt is
+  the sum of its measured parts (35 s to create the job, up to 331 s to
+  prepare an environment, up to 61 s for a vessel), 428 s rather than a
+  fixed 15 minutes, so each token lives about 37 minutes instead of 45.
+  Each task's verdict now says when it started, and each run says how long
+  its tasks waited, which measures the part not yet measured: many vessels
+  waiting at once for fleet capacity.
+
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
+
 - Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin, signal })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
   - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `signal` aborted while it is pending rejects `ECANCELED`, and kills anything that had started.
   - Its output streams as you read it. Its exit is waitpid's code or signal, seen whether or not you read the output, and `kill(signal)` sends that signal to the program.
@@ -21,6 +72,7 @@ published independently in the `@nimbus-sh` npm scope.
   - Its env defaults to the session shell's exported environment.
   - `signalProcess`, `writeProcessInput` and `endProcessInput` reach a started program as the child broker's. Every other process keeps its own routes.
   - A scoped session (one named shell or identity) refuses it with EPERM: a start names neither.
+
 - Added: a session's files answer as Node's `fs` needs them, over Workers RPC and the remote API alike.
   - `files.stat` and `files.lstat` carry all of stat(2): `dev`, `ino`, `nlink`, `uid`, `gid`, `mode`, `size`, `atime`, `mtime` and `ctime`.
   - `files.mkdir(path, { recursive, mode })` is mkdir(2). With no options it stays `mkdir -p`.

@@ -33,12 +33,18 @@ export declare const FACET_IMAGE_WRITE_SLICE_BYTES: number;
  * What the store needs from the disk it writes images to — derived from the
  * writes it actually performs, nothing more. Modes, credentials and path
  * normalization are the implementation's: the store passes the same
- * store-relative paths it later roots and sweeps by.
+ * store-relative paths it later roots and sweeps by. An image holds what
+ * its process could read, so an implementation that hosts more than one
+ * principal leaves each readable by its process's alone.
  */
 export interface ImageBlobStore {
     /** Create a directory (and its parents) if it does not exist. */
     mkdirp(dir: string): void;
-    /** The file's current size in bytes, or null when it does not exist. */
+    /**
+     * The file's current size in bytes, or null when it does not exist as
+     * this disk writes it (an owner or mode it would not give it): the store
+     * writes it again.
+     */
     sizeOf(path: string): number | null;
     /**
      * Create or REPLACE the file with exactly these bytes (truncating). The
@@ -63,6 +69,8 @@ export interface ImageBlobStore {
 export declare class ImageStore {
     private readonly blobs;
     private readonly isLive;
+    /** The uid process `pid` runs as: whose directory its images are in (processImageDir). */
+    private readonly ownerOf;
     /** pid → the boot images its facet loads from; the image sweep's root set. */
     private residentImages;
     private dirReady;
@@ -74,7 +82,9 @@ export declare class ImageStore {
      * @param isLive Whether a pid still names a running process. The root set
      *   is the process table, reached through this one predicate.
      */
-    constructor(blobs: (pid: number) => ImageBlobStore, isLive: (pid: number) => boolean);
+    constructor(blobs: (pid: number) => ImageBlobStore, isLive: (pid: number) => boolean, 
+    /** The uid process `pid` runs as: whose directory its images are in (processImageDir). */
+    ownerOf: (pid: number) => number);
     /**
      * The image store's directory, created before the first filesystem view is
      * built rather than on the first image write.

@@ -45,7 +45,7 @@ import { relayRpcBody, responseScope } from '@nimbus-sh/core/runtime/port-regist
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner, launchArgv } from './resident-identity.js';
 import { z } from 'zod/v4';
-import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX, DEV_SERVER_KEY_PREFIX, PROCESS_ENV_DROPPED_KEY } from '../session/keys.js';
+import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX, DEV_SERVER_KEY_PREFIX, EARLIER_IMAGES_CLOSED_KEY, PROCESS_ENV_DROPPED_KEY } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
@@ -88,13 +88,13 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, stagedBindingsDeclaredBy, STAGED_BINDINGS, } from '../runtime/staged-bindings.js';
-import { encodeCodePack, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
+import { encodeCodePack, PROCESS_IMAGE_DIR, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
 import { deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
-import { persistDurableWorkerImage, readStoredImages, purgeDurableWorkerImages, rewriteWithoutEnvironment, unlinkDurableImages, } from './durable-images.js';
+import { DURABLE_IMAGE_DIR, DURABLE_IMAGE_MODE, kernelImageBlobs, persistDurableWorkerImage, readStoredImages, resolveDurableWorkerImage, purgeDurableWorkerImages, rewriteWasmPaths, rewriteWithoutEnvironment, applicationsNaming, unlinkDurableImages, } from './durable-images.js';
 import { legacyGeneratedImages } from './legacy-images.js';
 import { deleteRecord, putRecord, relaunchEnv } from './process-env.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
@@ -106,7 +106,7 @@ import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, ProcessNotAdmitted, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, reclaimableSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
@@ -708,8 +708,16 @@ const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
  * real directory, which no one else may write, no directory on the way to a
  * store is one a user could replace with a link (_kernelStoreFor).
  */
-/** Where inlined wasm images are staged, one kernel-owned file per content key. */
+/**
+ * Where inlined wasm images are staged, one file per content key in a
+ * directory per uid: written through the image store's port (_imageBlobs),
+ * so each is its process's uid's alone, as the code it was found in was.
+ */
 const INLINE_WASM_DIR = `${KERNEL_STORE_ROOT}/inline-wasm`;
+/** A process's image: its uid's alone (_imageBlobs). */
+const IMAGE_MODE = 0o400;
+/** A directory of process images: the kernel's, which every account passes through to an image of its own. */
+const IMAGE_DIR_MODE = 0o711;
 /**
  * A base64 string literal whose first bytes are wasm's `\0asm` magic
  * (`AGFzbQ`), long enough to be a module. Quotes bound the match, so the scan
@@ -4535,7 +4543,7 @@ export class FacetManager {
      * writing through this session's kernel-credentialed VFS and rooted off the
      * live process table.
      */
-    imageStore = new ImageStore((pid) => this._imageBlobs(pid), (pid) => this.processes.get(pid)?.state === 'running');
+    imageStore = new ImageStore((pid) => this._imageBlobs(pid), (pid) => this.processes.get(pid)?.state === 'running', (pid) => this.processes.cred(pid).uid);
     /**
      * The resident-launch journal (fabric's fenced-work.ts): the durable
      * record of every resident this session owes the user, and its recovery
@@ -4668,6 +4676,8 @@ export class FacetManager {
     rowAmendments = new Map();
     /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
     hostLosses = new Map();
+    /** Residents whose host loss refused requests unsent: each is owed a run on a new process, at once (_onResidentTerminal). */
+    owedRuns = new Set();
     /** Each running resident's uptime proof timer (_proveByUptime). */
     uptimeProofs = new Map();
     /**
@@ -4775,6 +4785,7 @@ export class FacetManager {
         // First: what an earlier release kept of its processes' environments goes,
         // before any of it is re-driven or read (ask 62).
         onColdStart(ctx, () => this._dropEnvironmentsAtRest());
+        onColdStart(ctx, () => this._closeEarlierImages());
         onColdStart(ctx, () => this.processJournals.drainPending({
             reserved: reservedFacetNames(this.ctx),
             generation: generation(this.ctx),
@@ -4806,6 +4817,92 @@ export class FacetManager {
             this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
         this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
+    }
+    /**
+     * The images earlier releases left readable by every account, each made
+     * one principal's, once per session, before anything of it is re-driven or
+     * read. An image holds what its process could read:
+     * - a process image at the top of PROCESS_IMAGE_DIR (each uid's are in a
+     *   directory of its own now): unlinked, as its launch writes it again;
+     * - a durable application's blob (DURABLE_IMAGE_DIR): the kernel's alone,
+     *   as kernelImageBlobs leaves the ones it writes;
+     * - a wasm image staged at the top of INLINE_WASM_DIR: copied into the
+     *   directory of each uid whose durable application boots from it, that
+     *   application written again to read it there (its rows and owner index
+     *   naming the new blob), then unlinked, as a launch stages it again.
+     * Each step is safe to repeat, until the last marks it done. A filesystem
+     * snapshot or export taken before keeps what it held.
+     */
+    async _closeEarlierImages() {
+        if (await this.ctx.storage.get(EARLIER_IMAGES_CLOSED_KEY) === true)
+            return;
+        const vfs = this.vfs;
+        if (vfs !== null) {
+            const kernel = vfs.as(CRED_KERNEL);
+            const files = (dir) => (kernel.exists(dir)
+                ? kernel.readdir(dir).filter(({ name }) => kernel.lstat(`${dir}/${name}`).type === 'file').map(({ name }) => `${dir}/${name}`)
+                : []);
+            for (const path of files(PROCESS_IMAGE_DIR))
+                kernel.unlink(path);
+            if (kernel.exists(DURABLE_IMAGE_DIR))
+                kernel.chmod(DURABLE_IMAGE_DIR, 0o700);
+            for (const path of files(DURABLE_IMAGE_DIR)) {
+                kernel.chown(path, CRED_KERNEL.uid, CRED_KERNEL.gid);
+                kernel.chmod(path, DURABLE_IMAGE_MODE);
+            }
+            const wasmDir = stripLeadingSlashes(INLINE_WASM_DIR);
+            const earlier = new Set(files(wasmDir));
+            if (earlier.size > 0) {
+                const indexes = await this.ctx.storage.list({ prefix: DURABLE_IMAGES_KEY_PREFIX });
+                for (const [key, row] of await this.launchJournal.rows()) {
+                    // A row with no credential is not re-driven (ResidentLaunchRecord.cred).
+                    if (row.recipe.kind !== 'worker' || row.cred === undefined)
+                        continue;
+                    const resolved = await resolveDurableWorkerImage(vfs, row.recipe);
+                    const moved = new Map();
+                    for (const path of Object.values(resolved?.vfsWasmModules ?? {})) {
+                        const from = stripLeadingSlashes(path);
+                        if (!earlier.has(from))
+                            continue;
+                        const dir = `${wasmDir}/${row.cred.uid}`;
+                        const to = `${dir}/${from.slice(wasmDir.length + 1)}`;
+                        kernel.mkdir(dir, { recursive: true, mode: IMAGE_DIR_MODE });
+                        kernel.writeFile(to, kernel.readFile(from), { mode: IMAGE_MODE });
+                        kernel.chown(to, row.cred.uid, row.cred.gid);
+                        moved.set(path, `/${to}`);
+                    }
+                    if (moved.size === 0)
+                        continue;
+                    const old = row.recipe.image.application;
+                    const application = await rewriteWasmPaths(vfs, old, moved);
+                    const recipe = { ...row.recipe, image: { runner: row.recipe.image.runner, application } };
+                    const owner = residentOwner({ ...row, recipe });
+                    const indexKey = `${DURABLE_IMAGES_KEY_PREFIX}${owner}`;
+                    const index = owner === undefined ? undefined : indexes.get(indexKey);
+                    const repointed = index?.map((image) => (image.application === old ? { runner: image.runner, application } : image));
+                    // The row and its owner's index name the new blob together.
+                    await this.ctx.storage.transaction(async (txn) => {
+                        await txn.put(key, { ...row, recipe });
+                        if (repointed !== undefined)
+                            await txn.put(indexKey, repointed);
+                    });
+                    if (repointed !== undefined)
+                        indexes.set(indexKey, repointed);
+                }
+                // An application blob that still reads an earlier wasm image and that
+                // no row or index names (one this step, or an interrupted run of it,
+                // wrote again) goes, and then every earlier wasm image.
+                const named = new Set([...indexes.values()].flat().flatMap((image) => [image.runner, image.application]));
+                for (const row of (await this.launchJournal.rows()).values())
+                    if (row.recipe.kind === 'worker')
+                        named.add(row.recipe.image.application);
+                const readsEarlier = (path) => earlier.has(stripLeadingSlashes(path));
+                unlinkDurableImages(vfs, (await applicationsNaming(vfs, readsEarlier)).filter((digest) => !named.has(digest)));
+                for (const path of earlier)
+                    kernel.unlink(path);
+            }
+        }
+        await this.ctx.storage.put(EARLIER_IMAGES_CLOSED_KEY, true);
     }
     /**
      * What releases before ask 62 kept of their processes' environments, once
@@ -4967,7 +5064,24 @@ export class FacetManager {
         console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
         this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended: ${lost.message}\n`);
         this.hostLosses.set(pid, lost);
+        if (lost.refusedRequests)
+            this.owedRuns.add(pid);
         this._end(pid, { code: HOST_LOST_EXIT_CODE, cause: lost.message, portEnding: `"${entry.command}" (pid ${pid}) ended: ${lost.message}` });
+    }
+    /**
+     * `pid`'s route to its process (the fabric's), whose requests the process
+     * refused unsent (ProcessNotAdmitted) are answered only once the pid reads
+     * ended: a caller that starts it again never finds the lost one.
+     */
+    _routeTarget(pid, handle) {
+        const target = handle.routeTarget;
+        const endedFirst = (error) => (error instanceof ProcessNotAdmitted
+            ? this.processes.whenEnded(pid).then(() => { throw error; })
+            : Promise.reject(error));
+        return {
+            handleHttpRequest: (request, scope) => target.handleHttpRequest(request, scope).catch(endedFirst),
+            handleWebSocketRequest: (request) => target.handleWebSocketRequest(request).catch(endedFirst),
+        };
     }
     /**
      * The process is over. Every end-of-life passes through here: a clean
@@ -5005,6 +5119,14 @@ export class FacetManager {
         this._dropUptimeProof(pid);
         const hostLost = this.hostLosses.get(pid);
         this.hostLosses.delete(pid);
+        try {
+            await this._afterResidentEnd(pid, hostLost);
+        }
+        finally {
+            this.owedRuns.delete(pid);
+        }
+    }
+    async _afterResidentEnd(pid, hostLost) {
         await this.rowAmendments.get(pid);
         this.ephemeralPids.delete(pid);
         await this._releaseResidentClaim(pid);
@@ -5013,14 +5135,23 @@ export class FacetManager {
         const entry = this.processes.get(pid);
         const key = `${FENCED_WORK_KEY_PREFIX}${pid}`;
         const row = (await this.launchJournal.rows()).get(key);
-        const crashed = entry?.state === 'exited' && (entry.exitCode ?? 0) !== 0;
-        if (this.launchesClosed || row === undefined || row.restart !== 'on-failure' || !crashed) {
+        const code = entry?.exitCode ?? 0;
+        const crashed = entry?.state === 'exited' && code !== 0;
+        // A loss that refused requests unsent owes them a run, whatever the
+        // restart policy, now: their callers wait on it (routeToSessionPort).
+        const owed = this.owedRuns.has(pid);
+        if (this.launchesClosed || row === undefined || (!owed && (row.restart !== 'on-failure' || !crashed))) {
             await this.launchJournal.release(pid);
+            return;
+        }
+        if (owed) {
+            this.hooks.notify?.(`\x1b[2m[nimbus: the platform replaced the host of "${row.command}" — starting it again for the requests it was sent]\x1b[0m\r\n`);
+            await this.launchJournal.driveOwed(key, row, { kind: 'host-reset' });
             return;
         }
         const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** row.attempt;
         const ended = hostLost === undefined
-            ? `"${row.command}" exited with code ${entry.exitCode}`
+            ? `"${row.command}" exited with code ${code}`
             : `the platform reset the host of "${row.command}"`;
         this.hooks.notify?.(`\x1b[2m[nimbus: ${ended} — restarting in ${delayMs / 1000}s (FencedWork attempt ${row.attempt + 1})]\x1b[0m\r\n`);
         await this.launchPump.nextTurn(Promise.resolve(), Date.now() + delayMs);
@@ -5029,7 +5160,7 @@ export class FacetManager {
         if (!(await this.launchJournal.rows()).has(key))
             return;
         await this.launchJournal.drive(key, row, hostLost === undefined
-            ? { kind: 'exited', code: entry.exitCode ?? 1 }
+            ? { kind: 'exited', code }
             : { kind: 'host-reset' });
     }
     /**
@@ -5160,16 +5291,38 @@ export class FacetManager {
      * kernel's umask), as POSIX has it, is what makes the read succeed for any
      * process by construction; the store itself decides nothing about modes.
      */
+    /** The session's filesystem, which a durable application's image is kept in (kernelImageBlobs). */
+    _durableImageVfs() {
+        if (this.vfs === null)
+            throw new Error('Nimbus: a durable application needs a session filesystem to keep its image');
+        return this.vfs;
+    }
     _imageBlobs(pid) {
         if (!this.filesystem) {
             throw new Error('Nimbus: a resident process needs a session filesystem to materialize its boot image');
         }
         const fs = this._kernelStoreFor(pid);
         const at = (path) => `/${stripLeadingSlashes(path)}`;
+        // An image holds what process `pid` could read (its program, the files
+        // it read at start, a 0600 one among them): it is the process's uid's
+        // alone, as those files were. The kernel writes it and the process
+        // reads it, through its binding, as a peer host's boot does.
+        const owned = (path) => {
+            const stat = fs.stat(at(path), { followSymlinks: false });
+            return stat?.type === 'file' && stat.uid === this.processes.cred(pid).uid && (stat.mode & 0o777) === IMAGE_MODE ? stat.size : null;
+        };
         return {
-            mkdirp: (dir) => fs.mkdir(at(dir), { recursive: true, mode: 0o755 }),
-            sizeOf: (path) => fs.stat(at(path), { followSymlinks: false })?.size ?? null,
-            writeFile: (path, bytes) => { fs.writeFile(at(path), bytes); },
+            mkdirp: (dir) => fs.mkdir(at(dir), { recursive: true, mode: IMAGE_DIR_MODE }),
+            sizeOf: owned,
+            writeFile: (path, bytes) => {
+                // A file not as this port leaves one (an earlier release's, readable
+                // by every account) is replaced by a new one, never written over.
+                if (fs.stat(at(path), { followSymlinks: false }) !== null && owned(path) === null)
+                    fs.unlink(at(path));
+                fs.writeFile(at(path), bytes, { umask: 0o777 & ~IMAGE_MODE });
+                const { uid, gid } = this.processes.cred(pid);
+                fs.chown(at(path), uid, gid);
+            },
             writeRange: (path, offset, bytes) => { fs.writeRange(at(path), offset, bytes); },
             list: (dir) => fs.readdir(at(dir)).map((entry) => entry.name),
             unlink: (path) => fs.unlink(at(path)),
@@ -5336,13 +5489,14 @@ export class FacetManager {
     _stageWasmImageBytes(images, pid) {
         if (images.length === 0 || !this.filesystem)
             return [];
-        const fs = this._kernelStoreFor(pid);
-        fs.mkdir(INLINE_WASM_DIR, { recursive: true, mode: 0o755 });
+        const blobs = this._imageBlobs(pid);
+        const dir = `${INLINE_WASM_DIR}/${this.processes.cred(pid).uid}`;
+        blobs.mkdirp(dir);
         return images.map((bytes) => {
             const digest = wasmImageDigest(bytes);
-            const vfsPath = `${INLINE_WASM_DIR}/${digest.replace(':', '-')}.wasm`;
-            if (fs.stat(vfsPath, { followSymlinks: false })?.size !== bytes.byteLength)
-                fs.writeFile(vfsPath, bytes);
+            const vfsPath = `${dir}/${digest.replace(':', '-')}.wasm`;
+            if (blobs.sizeOf(vfsPath) !== bytes.byteLength)
+                blobs.writeFile(vfsPath, bytes);
             return { vfsPath, digest };
         });
     }
@@ -7701,7 +7855,7 @@ export class FacetManager {
             // listen()→SUPERVISOR.registerPort back-fills it. The opencode runner
             // dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
             if (port !== undefined)
-                this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
+                this.portRegistry.bindFacetStub(pid, this._routeTarget(pid, handle), { deliversAcquire: true });
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             resourcesTracked = true;
             this._watchLifetime(pid, handle, `${what} process`);
@@ -8665,7 +8819,7 @@ export class FacetManager {
                         this.trackProcessRpcResources(entry.pid, [handle], { releaseOnReportExit: !opts.attachedTty });
                         resourcesTracked = true;
                         // A node-shims resident: its __nimbusServeHttp takes the delivered ACQUIRE off each request.
-                        this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
+                        this.portRegistry.bindFacetStub(entry.pid, this._routeTarget(entry.pid, handle), { deliversAcquire: true });
                         if (opts.attachedTty) {
                             this._watchLifetime(entry.pid, handle, 'long-running node process');
                         }
@@ -8861,7 +9015,7 @@ export class FacetManager {
                 // No environment: neither a binding env (refused above) nor the
                 // process's own (storedStartArgs), as every process can read it.
                 const image = opts.durable.image
-                    ?? await persistDurableWorkerImage(this._imageBlobs(entry.pid), workerCode, {
+                    ?? await persistDurableWorkerImage(kernelImageBlobs(this._durableImageVfs()), workerCode, {
                         modules: opts.modules ?? {},
                         vfsWasmModules: opts.vfsWasmModules,
                         vfsTextModules: opts.vfsTextModules,
@@ -8955,7 +9109,7 @@ export class FacetManager {
             });
             this.trackProcessRpcResources(entry.pid, [handle]);
             resourcesTracked = true;
-            this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
+            this.portRegistry.bindFacetStub(entry.pid, this._routeTarget(entry.pid, handle));
             const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
             if (record && this.launchJournal.has(entry.pid)) {
                 // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS here (_proveByUptime).
@@ -8978,7 +9132,9 @@ export class FacetManager {
                 }
                 await this._registerResidentPort(entry.pid, opts.port);
             }
-            const target = handle.routeTarget;
+            // A request the process refused unsent is the caller's to run again
+            // (ProcessNotAdmitted), once the pid reads ended.
+            const target = this._routeTarget(entry.pid, handle);
             return {
                 pid: entry.pid,
                 boot,
@@ -8994,12 +9150,7 @@ export class FacetManager {
                             throw error;
                         }
                     },
-                    connect: async (request) => {
-                        if (typeof target.handleWebSocketRequest !== 'function') {
-                            throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);
-                        }
-                        return target.handleWebSocketRequest(request);
-                    },
+                    connect: (request) => target.handleWebSocketRequest(request),
                 },
             };
         }
@@ -9419,7 +9570,7 @@ export class FacetManager {
             // driving the row again would boot a second copy. One that has ended
             // is owed the port only if its restart policy runs it again; otherwise
             // its row is being released (_onResidentTerminal), and nothing will.
-            if (this.processes.get(record.pid)?.state === 'exited' && record.restart !== 'on-failure')
+            if (this.processes.get(record.pid)?.state === 'exited' && record.restart !== 'on-failure' && !this.owedRuns.has(record.pid))
                 return 'absent';
             return (await this._waitForPort(port, DURABLE_ENSURE_BOOT_BUDGET_MS))
                 ? 'started' : 'failed';

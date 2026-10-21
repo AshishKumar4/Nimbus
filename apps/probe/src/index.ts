@@ -30,7 +30,7 @@ import { processHostMode } from '../../../packages/worker/src/loaders/process-ho
 import { nimbusDebugEnabled } from '../../../packages/worker/src/_shared/nimbus-debug.js';
 import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
-import { abortFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { abortFacet, heldFacetName } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { z } from 'zod/v4';
 import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
@@ -246,6 +246,14 @@ export class NimbusSession extends SdkNimbusSession {
     this.requireProbeDiagnostics();
     return peerPlacement(this.ctx, pid);
   }
+  /** The platform's replacement of an idle process's facet: aborted, so its next call meets a fresh instance. */
+  _rpcProbeFacetReplace(pid: number): string {
+    this.requireProbeDiagnostics();
+    const name = heldFacetName(this.ctx, pid);
+    if (name === null) throw new Error(`process ${pid} holds no facet here`);
+    abortFacet(this.ctx, name, new Error('probe: the platform replaced the facet'));
+    return name;
+  }
   _rpcProbeCoordinatorReset(): never {
     this.requireProbeDiagnostics();
     this.ctx.abort('probe: coordinator reset');
@@ -304,14 +312,14 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket)$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|not-admitted)$/;
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
 };
 const HostLossProbe = z.discriminatedUnion('action', [
   z.object({ action: z.literal('mode') }),
-  z.object({ action: z.enum(['inspect', 'state', 'facet-reset', 'host-reset', 'coordinator-reset']), pid: z.number().int().positive().safe() }),
+  z.object({ action: z.enum(['inspect', 'state', 'facet-reset', 'host-reset', 'coordinator-reset', 'facet-replace']), pid: z.number().int().positive().safe() }),
   z.object({ action: z.literal('placement-state'), peerName: z.string(), workerKey: z.string() }),
 ]);
 
@@ -321,7 +329,8 @@ export default {
     const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname) : null;
     if (!match) return nimbus.fetch(request, env, ctx);
     return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
-      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
+      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1])
+      : match[2] === 'not-admitted' ? embedderNotAdmitted(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
 
@@ -397,6 +406,50 @@ async function spawnEmbedderWorker(request: Request, env: any, sessionId: string
   }
 }
 
+/**
+ * POST /api/embedder/<id>/not-admitted — an embedder's call to its own
+ * worker after the platform replaced the worker's idle facet (Kinu ask 63):
+ * spawned and called once, left idle, its facet replaced, called again.
+ * Answers how the second call failed and the process's state as it did.
+ */
+async function embedderNotAdmitted(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  let stub: DurableObjectStub<NimbusSession> | undefined;
+  try {
+    if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
+    const verified = await verifyRequestToken(request, env);
+    if (!verified) return authRequiredResponse();
+    requireScopes(verified, ['sandbox:use']);
+    requireSessionPin(verified, sessionId);
+    const box = Nimbus.fromEnv(env).sandbox(sessionId, { tenant: verified.claims.tn, subject: verified.claims.sub ?? '_' });
+    await box.ready();
+    stub = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
+    const code = `import { DurableObject } from 'cloudflare:workers';
+export class NimbusProcess extends DurableObject {
+  startProcess() { return { ok: true }; }
+  handleHttpRequest() { return new Response('slate'); }
+}`;
+    const spawned = await stub._rpcSpawnWorker(code, 'slate', '/home/user', {});
+    try {
+      const first = await spawned.facet.fetch(new Request('http://slate.local/first'));
+      const firstBody = await first.text();
+      // Idle: the call is done, and nothing holds the process's host.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const facet = await stub._rpcProbeFacetReplace(spawned.pid);
+      let second: { status: number } | { name: string; message: string; state: string | undefined };
+      try {
+        second = { status: (await spawned.facet.fetch(new Request('http://slate.local/after-idle'))).status };
+      } catch (error) {
+        const state = (await stub._rpcListProcesses()).find((row) => row.pid === spawned.pid)?.state;
+        second = { name: error instanceof Error ? error.name : 'unknown', message: error instanceof Error ? error.message : String(error), state };
+      }
+      return Response.json({ pid: spawned.pid, facet, first: { status: first.status, body: firstBody }, second }, { headers: { 'Cache-Control': 'no-store' } });
+    } finally { disposeRpcResource(spawned); }
+  } catch (error) {
+    if (error instanceof NimbusAuthError) return authErrorResponse(error);
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  } finally { disposeRpcResource(stub); }
+}
+
 async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
   let owner: DurableObjectStub<NimbusSession> | undefined;
   try {
@@ -420,6 +473,7 @@ async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string)
     const process = rows.find((row) => row.pid === input.pid);
     if (!process) return new Response('Unknown process', { status: 404 });
     if (input.action === 'state') return Response.json(process);
+    if (input.action === 'facet-replace') return Response.json({ facet: await owner._rpcProbeFacetReplace(input.pid) });
     const placement = await owner._rpcProbePlacement(input.pid);
     if (!placement) return new Response('Peer process not found', { status: 404 });
     if (input.action === 'coordinator-reset') {
