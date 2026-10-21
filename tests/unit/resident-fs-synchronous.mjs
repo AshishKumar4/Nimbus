@@ -213,7 +213,8 @@ await runScenarios(import.meta.path, {
     assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a volatile file is size 0');
     const version = await e.fs.readFile('/proc/version');
     assert.deepEqual(await answersNow(e, 'readFile of /proc/version', () => e.sync.readFile('/proc/version')), version);
-    // A fed mount another changes: shown once the input's barrier lands.
+    // A fed mount's file, once read, is held as any; another's change is shown once the input's barrier lands.
+    assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/mem/a')), 'MEM');
     assert.equal(new TextDecoder().decode(await answersNow(e, 'readFile of /mnt/mem/a', () => e.sync.readFile('/mnt/mem/a'))), 'MEM');
     mem.writeFile('/b', new TextEncoder().encode('NEW'));
     await e.input();

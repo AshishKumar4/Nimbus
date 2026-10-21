@@ -51,7 +51,7 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
-import { feedPointOf, rootOf, type FeedPosition } from '../feed-position.js';
+import { feedPointOf, ROOT_FEED, rootOf, type FeedPosition } from '../feed-position.js';
 import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 
@@ -873,6 +873,24 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return root !== undefined && root !== null && root.dev === entry.dev;
   };
 
+  /** Whether `key` is on a mount (its deepest fed mount point is not the root): the session's to change, never this process's to decide. */
+  const onMount = (key: string): boolean => {
+    const cursor = store.cursor();
+    return cursor !== null && feedPointOf(cursor, key) !== ROOT_FEED;
+  };
+
+  /**
+   * The row at `key` where this process may decide a change on it: the
+   * session's own filesystem's (absent there too). A mount's row, or a name
+   * absent on a mount, is the session's: a wave deciding on it is refused
+   * (the name leads to a mount, not the file the process decided on).
+   */
+  const ownEntryAt = (key: string): ResidentEntry | null | undefined => {
+    const entry = entryAt(key);
+    if (entry === undefined) return undefined;
+    return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
+  };
+
   /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
   const volatileProc = (key: string, entry: ResidentEntry): boolean => {
     if (entry.type !== 'file' || entry.size !== 0) return false;
@@ -892,8 +910,6 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
   };
 
-  /** A file whose bytes the view never holds: a device's (read by a descriptor of the session's), or a volatile /proc file's. */
-  const unheld = (key: string, entry: ResidentEntry): boolean => isCharacterDevice(entry.mode) || volatileProc(key, entry);
 
   /**
    * A file's bytes: what this process decided for it, else the store's,
@@ -992,6 +1008,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * anyway, counting it toward taking the subtree.
    */
   const decidable = (key: string, ...walks: Walk[]): boolean => {
+    if (onMount(key)) return false;
     if (holder!.client.held(key) === undefined) return true;
     const cursor = store.cursor();
     return walks.every((walk) => walk.crossed.every((name) => holder!.entry(name) !== undefined
@@ -1284,7 +1301,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder === null || !store.ready()) throw NOT_NOW;
     const walk = walkFor(path, follow);
     if (walk === DELEGATE || walk instanceof Promise) throw NOT_NOW;
-    const row = entryAt(walk.key);
+    const row = ownEntryAt(walk.key);
     if (row === undefined) throw NOT_NOW;
     const done = decided(walk.key, row);
     if (done === false || done === undefined) throw NOT_NOW;
@@ -1305,7 +1322,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * a grant decides a name or the view cannot place one, by the session.
    */
   const ownChange = <T>(keys: readonly (string | undefined)[], decided: (rows: (ResidentEntry | null)[], awaited: boolean) => boolean | Promise<unknown>, session: () => Awaitable<T>): Awaitable<T | undefined> => {
-    const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : entryAt(key)));
+    const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : ownEntryAt(key)));
     const placed = rows.every((row) => row !== undefined) ? rows as (ResidentEntry | null)[] : undefined;
     if (now) {
       if (placed === undefined || decided(placed, false) === false) throw NOT_NOW;
@@ -1329,8 +1346,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const openByNumber = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile => {
     if (flags.directory) throw NOT_NOW;
-    return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => (row !== null && unheld(key, row) ? undefined
-      : holder!.provisional.open(key, pathOf(path), flags, row))));
+    return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder!.provisional.open(key, pathOf(path), flags, row)));
   };
 
   /**

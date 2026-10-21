@@ -2387,9 +2387,8 @@ const __fsMod = (() => {
   // The namespace's position the store's rows are at (core runtime/feed-position.ts), null before any.
   const _cursor = globalThis.__nimbusVfsCursor
     || (globalThis.__nimbusVfsCursor = { position: null });
-  const _P = __nimbusResidentModule;
   /** \`k\`'s feed's revision at the cursor: the clock its fills and reports are dated by. */
-  function _feedRev(k) { return _cursor.position === null ? 0 : _P.feedFor(_cursor.position, k).cursor; }
+  function _feedRev(k) { return _cursor.position === null ? 0 : __nimbusResidentModule.feedFor(_cursor.position, k).cursor; }
   // Admissions under way: from a delta's admission until the last directory
   // it made searchable is relisted, the cursor can be past rows the
   // namespace does not hold yet. Nothing is answered from the view then (_heldStat).
@@ -2664,12 +2663,12 @@ const __fsMod = (() => {
     if (!supervisor || typeof supervisor.fsAcquire !== "function" || !_nsActive()) return false;
     if (result !== null && result.poison === true) return false;
     const floor = __resident.coherence.cursor();
-    if (floor === null || (result !== null && !_P.sameEpochs(result.position, floor))) return false;
+    if (floor === null || (result !== null && !__nimbusResidentModule.sameEpochs(result.position, floor))) return false;
     let delta;
     try {
       delta = await __nimbusUseRpcResult(supervisor.fsAcquire(floor, { namespace: true }), (r) => r);
     } catch { return false; }
-    if (!delta || delta.poison === true || !_P.isFeedPosition(delta.position) || !_P.sameEpochs(delta.position, floor)) return false;
+    if (!delta || delta.poison === true || !__nimbusResidentModule.isFeedPosition(delta.position) || !__nimbusResidentModule.sameEpochs(delta.position, floor)) return false;
     if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
     await __resident.admission.roomForPushed(delta);
     const applied = await _admitting(async () => {
@@ -3009,7 +3008,7 @@ const __fsMod = (() => {
         options ? supervisor.fsAcquire(args.position, options) : supervisor.fsAcquire(args.position),
         (r) => r,
       );
-      if (!result || !_P.isFeedPosition(result.position)) {
+      if (!result || !__nimbusResidentModule.isFeedPosition(result.position)) {
         throw new Error("fsAcquire answered without a cursor");
       }
       // Held from now, whatever this barrier does with the answer: its recalls are this process's to answer.
@@ -3037,8 +3036,8 @@ const __fsMod = (() => {
   function _currentAnswer(result) {
     const held = _cursor.position;
     if (result.poison === true || held === null) return result;
-    if (_P.notAfter(result.position, held)) return { ...result, position: held, paths: [] };
-    const paths = result.paths.filter((entry) => entry.rev > _P.floorFor(result.position, held, entry.path));
+    if (__nimbusResidentModule.notAfter(result.position, held)) return { ...result, position: held, paths: [] };
+    const paths = result.paths.filter((entry) => entry.rev > __nimbusResidentModule.floorFor(result.position, held, entry.path));
     return paths.length === result.paths.length ? result : { ...result, paths };
   }
 
@@ -3057,7 +3056,7 @@ const __fsMod = (() => {
     if (!delivered || typeof delivered !== "object") return null;
     const { args, answer } = delivered;
     if (!args || !answer || answer.poison === true || !Array.isArray(answer.paths) || _cursor.position === null) return null;
-    if (!_P.isFeedPosition(answer.position) || !_P.isFeedPosition(args.position) || !_P.notAfter(args.position, _cursor.position)) return null;
+    if (!__nimbusResidentModule.isFeedPosition(answer.position) || !__nimbusResidentModule.isFeedPosition(args.position) || !__nimbusResidentModule.notAfter(args.position, _cursor.position)) return null;
     return _currentAnswer(answer);
   }
 
@@ -3938,9 +3937,9 @@ const __fsMod = (() => {
     await _acquireBarrier(supervisor, acquired, true);
     if (fill) {
       const dated = acquired && acquired.answer;
-      if (dated && dated.poison !== true && _P.isFeedPosition(dated.position)
-          && _cursor.position !== null && _P.samePosition(dated.position, _cursor.position)) {
-        const rev = _P.feedFor(dated.position, fill.k).cursor;
+      if (dated && dated.poison !== true && __nimbusResidentModule.isFeedPosition(dated.position)
+          && _cursor.position !== null && __nimbusResidentModule.samePosition(dated.position, _cursor.position)) {
+        const rev = __nimbusResidentModule.feedFor(dated.position, fill.k).cursor;
         if (rev > fill.rev) fill.rev = rev;
       } else {
         fill.reported = Infinity;
@@ -3969,7 +3968,7 @@ const __fsMod = (() => {
     // The name as asked must be held before anything is walked: most are not, and they cost nothing here.
     const k = _strip(_resolve(p));
     if (_cursor.position === null) return undefined;
-    const root = _P.rootOf(_cursor.position);
+    const root = __nimbusResidentModule.rootOf(_cursor.position);
     if (client.vouch(k, root) !== "held" || /(^|\\/)\\.\\.(\\/|$)/.test(String(p))) return undefined;
     const ns = __resident.namespace;
     // An entry whose device is one the namespace gave a mount is on that mount, which no grant covers.

@@ -31,12 +31,13 @@ function key(path: string): string {
   return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
 }
 
-/** What every view of one /proc shares: its files, which of them are volatile, and its tree's version and time. */
+/** What every view of one /proc shares: its files, which of them are volatile, its tree's version and time, and its feed. */
 interface ProcTree {
   readonly files: Map<string, ProcGenerator>;
   readonly volatile: Set<string>;
   version: number;
   mtimeMs: number;
+  changes?: VfsChanges;
 }
 
 export class ProcVFS implements VFS {
@@ -45,7 +46,8 @@ export class ProcVFS implements VFS {
 
   constructor(private readonly tree: ProcTree = { files: new Map(), volatile: new Set(), version: 0, mtimeMs: Date.now() }, private readonly cred: VfsCred | null = null) {
     this.sync = this;
-    this.changes = immutableChanges(this, () => tree.version);
+    // One feed for every principal's view: its tree is theirs alike (a file's content is what differs, made when read).
+    this.changes = tree.changes ??= immutableChanges(this, () => tree.version);
   }
 
   private get files(): Map<string, ProcGenerator> { return this.tree.files; }
