@@ -523,9 +523,7 @@ export function provisional(host) {
     /** What a name record keeps: itself and its names, and a link's target. */
     const nameCost = (keys, target = '') => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
     /** Log the op that made `records`, their fate its. */
-    const loggedOn = (records, op) => {
-        logged(op, (refused) => settleRecords(records, refused));
-    };
+    const loggedOn = (records, op, awaited = false) => logged(op, (refused) => settleRecords(records, refused), awaited);
     /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
     const extended = (record, data, at) => {
         // The record's own op: changed where it is.
@@ -1412,7 +1410,7 @@ export function provisional(host) {
             return { key: desc.inode.origin, entry: desc.inode.row };
         },
         keyOf: (handleId) => descOf(handleId).inode.key,
-        mkdir: (key, path, mode, row, mask) => {
+        mkdir: (key, path, mode, row, mask, awaited) => {
             if (row === undefined || (mode & 0o7000) !== 0)
                 return false;
             if (row !== null)
@@ -1425,13 +1423,12 @@ export function provisional(host) {
             host.drain();
             admit(madeCost(key) + nameCost([key]), 'mkdir', path);
             const inode = made(key, 'directory', 0o40000 | perm, parent);
-            loggedName({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, umask } }, [key], nameCost([key]), () => {
+            return loggedName({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, umask } }, [key], nameCost([key]), () => {
                 place(key, inode);
                 added.set(key, added.get(key) ?? new Map());
-            });
-            return true;
+            }, undefined, undefined, awaited) ?? true;
         },
-        unlink: (key, path, row) => {
+        unlink: (key, path, row, awaited) => {
             if (row === undefined)
                 return false;
             if (row === null)
@@ -1443,10 +1440,9 @@ export function provisional(host) {
             // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
             host.drain();
             keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
-            loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null));
-            return true;
+            return loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null), undefined, undefined, awaited) ?? true;
         },
-        rmdir: (key, path, row) => {
+        rmdir: (key, path, row, awaited) => {
             if (row === undefined)
                 return false;
             if (row === null)
@@ -1462,14 +1458,13 @@ export function provisional(host) {
                 return false;
             host.drain();
             admit(nameCost([key]), 'rmdir', path);
-            loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
+            return loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
                 place(key, null);
                 added.delete(key);
                 removed.delete(key);
-            });
-            return true;
+            }, undefined, undefined, awaited) ?? true;
         },
-        symlink: (key, path, target, row) => {
+        symlink: (key, path, target, row, awaited) => {
             if (row === undefined)
                 return false;
             if (row !== null)
@@ -1480,10 +1475,9 @@ export function provisional(host) {
             host.drain();
             admit(madeCost(key, target) + nameCost([key]), 'symlink', path);
             const inode = made(key, 'symlink', 0o120777, parent, target);
-            loggedName({ type: 'call', call: { call: 'symlink', path: key, target } }, [key], nameCost([key]), () => place(key, inode));
-            return true;
+            return loggedName({ type: 'call', call: { call: 'symlink', path: key, target } }, [key], nameCost([key]), () => place(key, inode), undefined, undefined, awaited) ?? true;
         },
-        rename: (from, to, path, source, target) => {
+        rename: (from, to, path, source, target, awaited) => {
             if (source === undefined || target === undefined)
                 return false;
             if (source === null)
@@ -1516,7 +1510,7 @@ export function provisional(host) {
             for (const [inode, grows] of beneath)
                 inode.reserved += grows;
             const { expect: expectTo } = expecting(target);
-            loggedName({ type: 'rename', from, to, ...expecting(source), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
+            const answer = loggedName({ type: 'rename', from, to, ...expecting(source), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
                 // What is beneath the source moves with it: names, never records.
                 for (const [key, value] of [...layer]) {
                     if (key === from || !within(key, from))
@@ -1542,13 +1536,13 @@ export function provisional(host) {
                     if (within(inode.origin, from))
                         renamed(inode, inode.key, to + inode.origin.slice(from.length));
                 }
-            });
+            }, awaited);
             fit(moving);
             for (const inode of beneath.keys())
                 fit(inode);
-            return true;
+            return answer ?? true;
         },
-        setattr: (key, path, attrs, row) => {
+        setattr: (key, path, attrs, row, awaited) => {
             if (row === undefined)
                 return false;
             const syscall = 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime';
@@ -1566,9 +1560,9 @@ export function provisional(host) {
                 throw error;
             }
             host.count(key);
-            loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) });
+            const answer = loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) }, awaited);
             fit(inode);
-            return true;
+            return answer ?? true;
         },
         copyFile: (from, to, path, source, target, keepMode) => {
             // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
