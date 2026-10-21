@@ -151,6 +151,8 @@ const ANY_WORKER = '';
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
   tag: string;
+  /** Its worker, as warmth knows it (warmthOf): '' for one only the peer object's warmth decides. */
+  worker: string;
   host: 'session' | 'peer';
   ms: number;
   at: number;
@@ -166,8 +168,18 @@ export function oneShotPlacement(ctx: DurableObjectState, env: object): OneShotP
   return placement;
 }
 
+/** What /api/_diag/session shows of a session's one-shot placement. */
+export interface OneShotPlacementDiagnostics {
+  peer: string | null;
+  /** Each worker the peer is warm for, and how long since it answered a call of it (ms). */
+  warm: Record<string, number>;
+  calls: OneShotPlacementCall[];
+  /** The last warming that failed, and why. */
+  warmFailure: { worker: string; message: string; at: number } | null;
+}
+
 /** Its peer and the last calls it placed, for /api/_diag/session; null before its first one-shot. */
-export function oneShotPlacementDiagnostics(ctx: object): { peer: string | null; warm: Record<string, number>; calls: OneShotPlacementCall[] } | null {
+export function oneShotPlacementDiagnostics(ctx: object): OneShotPlacementDiagnostics | null {
   return placements.get(ctx)?.diagnostics() ?? null;
 }
 
@@ -189,6 +201,7 @@ export class OneShotPlacement {
   /** Advanced when the peer is forgotten: what answers a call made before is not news of the peer chosen after. */
   #generation = 0;
   readonly #calls: OneShotPlacementCall[] = [];
+  #warmFailure: { worker: string; message: string; at: number } | null = null;
 
   constructor(ctx: DurableObjectState, env: object) {
     this.#ctx = ctx;
@@ -211,14 +224,14 @@ export class OneShotPlacement {
         const peer = this.#warmFor(warmth);
         if (peer === null || options?.signal?.aborted === true) {
           if (peer === null) this.#warm(wire, images, fn, warmth);
-          try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, 'session', began); }
+          try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, warmth, 'session', began); }
         }
         opened = peer;
         const answer = await this.#submit<A, R>(peer, wire, callImages(images, options?.wasmModules), warmth, fn, args, options);
         if (answer === null) {
-          try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, 'session', began); }
+          try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, warmth, 'session', began); }
         }
-        this.#note(spec.tag, 'peer', began);
+        this.#note(spec.tag, warmth, 'peer', began);
         if (answer.ok) return answer.value;
         throw Object.assign(new Error(answer.message), answer.code === undefined ? {} : { code: answer.code }, answer.unsettled ? { unsettled: true } : {});
       },
@@ -283,7 +296,10 @@ export class OneShotPlacement {
       if (peer === null || wire.scope === undefined) return;
       await this.#call(peer, 'oneShotWarm', [{ ...wire, key: crypto.randomUUID() }, fn, this.#images(wire, images)]);
       this.#heard(generation, warmth);
-    })().catch(() => {}).finally(() => { this.#warming.delete(warming); }));
+    })().catch((error: unknown) => {
+      // The call that found the peer cold ran here; the next one finds it cold too, and warms it again.
+      this.#warmFailure = { worker: warmth, message: errorText(error), at: Date.now() };
+    }).finally(() => { this.#warming.delete(warming); }));
   }
 
   /**
@@ -357,17 +373,18 @@ export class OneShotPlacement {
     }
   }
 
-  #note(tag: string, host: 'session' | 'peer', began: number): void {
-    this.#calls.push({ tag, host, ms: Date.now() - began, at: began });
+  #note(tag: string, worker: string, host: 'session' | 'peer', began: number): void {
+    this.#calls.push({ tag, worker, host, ms: Date.now() - began, at: began });
     if (this.#calls.length > PLACEMENT_CALLS_KEPT) this.#calls.shift();
   }
 
-  diagnostics(): { peer: string | null; warm: Record<string, number>; calls: OneShotPlacementCall[] } {
+  diagnostics(): OneShotPlacementDiagnostics {
     const now = Date.now();
     return {
       peer: this.#peer,
       warm: Object.fromEntries([...this.#answered].map(([key, at]) => [key === ANY_WORKER ? '(object)' : key, now - at])),
       calls: [...this.#calls],
+      warmFailure: this.#warmFailure,
     };
   }
 }
@@ -493,14 +510,14 @@ function networkOf(wire: z.infer<typeof OneShotSpecSchema>): WorkspaceNetwork {
   return wire.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(wire.network.egress, wire.network.id);
 }
 
-/** The images a call carries, each read through its session when the load opens it. */
+/**
+ * The images a call carries, each read through its session when the load
+ * opens it: the session's own read, which refuses bytes its identity no
+ * longer names.
+ */
 function facetImages(images: unknown): Record<string, FacetImage> {
   return Object.fromEntries(Object.entries(OneShotImagesSchema.parse(images)).map(([name, image]) => [name, {
     path: image.path, identity: image.identity, size: image.size, peak: image.peak,
-    read: async () => {
-      const bytes = new Uint8Array(await new Response(await image.open()).arrayBuffer());
-      if (bytes.byteLength !== image.size) throw Object.assign(new Error(`ESTALE: '${image.path}' changed while its peer read it`), { code: 'ESTALE' });
-      return bytes;
-    },
+    read: async () => new Uint8Array(await new Response(await image.open()).arrayBuffer()),
   }]));
 }

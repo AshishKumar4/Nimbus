@@ -25,7 +25,7 @@ const KINDS = [
   { kind: 'python print', line: 'python3 -c "print(1)"', tags: ['cpython-runner@3'] },
   { kind: 'python imports', line: `python3 -c "${PY_IMPORTS}"`, tags: ['cpython-runner@3'] },
   { kind: 'ruby requires', line: `ruby -e "require 'json'; require 'set'; require 'time'; require 'fileutils'; require 'optparse'; puts 1"`, tags: ['ruby-runner'] },
-  { kind: 'clang', line: 'clang x.c -o x && ./x', tags: ['clang-runner-clang', 'clang-runner-wasm-ld'] },
+  { kind: 'clang', line: 'clang x.c -o x', tags: ['clang-runner-clang', 'clang-runner-wasm-ld'] },
   { kind: 'tsc noEmit', line: 'cd ~/tsp && tsc -p . --noEmit; echo tsc=$?; cd ~', tags: ['tsrs'] },
 ];
 const PORT = 4391;

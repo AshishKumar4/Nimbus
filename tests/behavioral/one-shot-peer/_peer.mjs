@@ -36,6 +36,22 @@ export async function warmFor(sid, tag) {
   }
 }
 
+/** The worker the session's last one-shot ran on, as its placement keys warmth. */
+export async function lastWorker(sid) {
+  return ((await placement(sid))?.calls ?? []).at(-1)?.worker ?? null;
+}
+
+/** Until the peer is warm for `worker` (warmFor's bound). */
+export async function warmForWorker(sid, worker) {
+  const until = Date.now() + 35_000;
+  for (;;) {
+    const record = await placement(sid);
+    if (record?.peer && Object.hasOwn(record.warm ?? {}, worker)) return;
+    if (Date.now() > until) throw new Error(`the peer was not warm for ${JSON.stringify(worker)} within 35 s: ${JSON.stringify(record)}`);
+    await sleep(250);
+  }
+}
+
 /** When the session's last one-shot began, on its clock: what `hostsSince` counts from. */
 export async function mark(sid) {
   return ((await placement(sid))?.calls ?? []).at(-1)?.at ?? 0;

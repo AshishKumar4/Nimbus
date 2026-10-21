@@ -6,14 +6,14 @@
 //      writes is its caller's; its environment reaches it, and the peer stores
 //      none of it.
 //   2. Kill: Ctrl-C ends a sleeping run and a computing one on the peer, with
-//      the exit it has in the session; the time from Ctrl-C to the prompt on
-//      each host is recorded.
+//      the exit it has in the session, and no later than the session's
+//      slowest (the time from Ctrl-C to the prompt, each host).
 //   3. Its host lost: a peer reset mid-run ends the run at once (not when the
 //      run would have ended), with an error naming the cause; the run is not
 //      run again, and the next one-shot runs.
 import { makeAsserter, mintSession, deleteSession, Terminal, sleep } from '../_driver.mjs';
 import { addAlice } from '../durable/_another-account.mjs';
-import { peer, warmFor, mark, hostsSince, median } from './_peer.mjs';
+import { peer, warmFor, warmForWorker, lastWorker, mark, hostsSince, median } from './_peer.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('one-shot-peer/boundaries');
@@ -69,18 +69,27 @@ try {
   a.check('and the peer stores none of it', stored.stored === false, JSON.stringify(stored));
 
   // ── 2. Kill ───────────────────────────────────────────────────────────────
-  // The computing run prints now and then: a run that never calls out hears
-  // no kill on either host, and in the session holds its thread meanwhile.
+  // The computing run ends by itself after 20 s, so a kill it never hears
+  // ends the probe's wait too, at that bound.
   const KILLED = {
     sleeping: 'python3 -c "import time; time.sleep(60)"',
-    computing: 'python3 -u -c "import itertools; [print(i) for i in itertools.count() if i % 2000000 == 0]"',
+    computing: 'python3 -c "import time; t=time.time(); [0 for _ in iter(lambda: time.time()-t < 20, False)]"',
+  };
+  /**
+   * The next run placed on `host`. A killed run's worker is never used
+   * again, so the next run takes another, which the peer is not warm for:
+   * a short run takes it, gives it back and warms the peer for it.
+   */
+  const placeNext = async (host) => {
+    if (host === 'session') return peer(sid, 'forget');
+    await run('python3 -c "pass"');
+    await warmForWorker(sid, await lastWorker(sid));
   };
   const kills = [];
   for (let i = 1; i <= 3; i++) {
     for (const [what, line] of Object.entries(KILLED)) {
       for (const host of i % 2 ? ['session', 'peer'] : ['peer', 'session']) {
-        if (host === 'session') await peer(sid, 'forget');
-        else await warmFor(sid, PY);
+        await placeNext(host);
         const marked = await mark(sid);
         t.reset();
         t.cmd(line);
@@ -88,7 +97,7 @@ try {
         await sleep(3000);
         const at = Date.now();
         t.send('\x03');
-        await t.waitFor(() => submission.end !== null, 120_000, `${what} run's end after Ctrl-C`);
+        await t.waitFor(() => submission.end !== null, 60_000, `${what} run's end after Ctrl-C`);
         const ms = Date.now() - at;
         const ranOn = await hostsSince(sid, marked);
         kills.push({ what, host, ms, exit: submission.exitCode, ranOn });
@@ -98,13 +107,14 @@ try {
   }
   for (const what of Object.keys(KILLED)) {
     const of = (host) => kills.filter((k) => k.what === what && k.host === host);
-    a.check(`Ctrl-C ends a ${what} run on the peer, with the exit it has in the session (prompt after ${median(of('peer').map((k) => k.ms))} ms on the peer, ${median(of('session').map((k) => k.ms))} ms in the session)`,
-      of('peer').every((k) => ran(k, 'peer') && k.exit === of('session')[0].exit) && of('session').every((k) => ran(k, 'session')),
+    const slowest = Math.max(...of('session').map((k) => k.ms));
+    a.check(`Ctrl-C ends a ${what} run on the peer with the exit it has in the session, no later than the session's slowest (prompt after ${median(of('peer').map((k) => k.ms))} ms on the peer, ${median(of('session').map((k) => k.ms))} ms in the session, its slowest ${slowest} ms)`,
+      of('peer').every((k) => ran(k, 'peer') && k.exit === of('session')[0].exit && k.ms <= slowest) && of('session').every((k) => ran(k, 'session')),
       JSON.stringify(kills.filter((k) => k.what === what)));
   }
 
   // ── 3. Its host lost ──────────────────────────────────────────────────────
-  await warmFor(sid, PY);
+  await placeNext('peer');
   const marked = await mark(sid);
   t.reset();
   t.cmd('python3 -c "import time; time.sleep(30); print(\'finished\')"');
