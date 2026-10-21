@@ -77,6 +77,7 @@ async function processWith(files, { holding = false, session: direct = false } =
   const counted = {
     get device() { return view.device; },
     get cred() { return view.cred; },
+    cursor: () => view.cursor(),
     ready: () => view.ready(),
     entry: (key) => view.entry(key),
     children: (key) => view.children(key),

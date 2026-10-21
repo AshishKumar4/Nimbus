@@ -2371,7 +2371,7 @@ const __fsMod = (() => {
   const _cursor = globalThis.__nimbusVfsCursor
     || (globalThis.__nimbusVfsCursor = { position: null });
   /** \`k\`'s feed's revision at the cursor: the clock its fills and reports are dated by. */
-  function _feedRev(k) { return _cursor.position === null ? 0 : __nimbusResidentModule.feedFor(_cursor.position, k).cursor; }
+  function _feedRev(k) { return _cursor.position === null || !_nsActive() ? 0 : __nimbusResidentModule.feedFor(_cursor.position, k).cursor; }
   // Admissions under way: from a delta's admission until the last directory
   // it made searchable is relisted, the cursor can be past rows the
   // namespace does not hold yet. Nothing is answered from the view then (_heldStat).

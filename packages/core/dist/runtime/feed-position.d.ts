@@ -47,5 +47,7 @@ export declare function sameEpochs(a: FeedPosition, b: FeedPosition): boolean;
 export declare function feedFor(position: FeedPosition, key: string): FeedCursor;
 /** Whether a revision of `key` read at `a` and one read at `b` are of one clock: its feed at the same epoch in both. */
 export declare function sameClock(a: FeedPosition, b: FeedPosition, key: string): boolean;
+/** Whether a fed mount's point lies strictly beneath `key` (a path, with or without its leading slash) in `position`: a directory the namespace makes above it. */
+export declare function abovePoint(position: FeedPosition, key: string): boolean;
 export {};
 //# sourceMappingURL=feed-position.d.ts.map

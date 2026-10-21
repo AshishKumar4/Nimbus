@@ -43,7 +43,7 @@ import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
-import { feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
+import { abovePoint, feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
 import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 /** Listings one call may take before it gives the question to the authority. */
@@ -581,7 +581,8 @@ export function residentFilesystem(session, resident, delegation) {
      * mount without a feed (a snapshot its listing walked), which is the
      * session's to answer. A row is its fed mount's where its device is that
      * mount's root's (the deepest fed mount point at or above it): a mount
-     * without a feed beneath it has a device of its own.
+     * without a feed beneath it has a device of its own. A directory the
+     * namespace makes above a fed mount point is answered too.
      */
     const answerable = (key, entry) => {
         if (entry.dev === store.device)
@@ -589,6 +590,9 @@ export function residentFilesystem(session, resident, delegation) {
         const cursor = store.cursor();
         if (cursor === null)
             return false;
+        // A directory the namespace makes above a fed mount (no backend holds it): the table's, which a poison moves.
+        if (entry.type === 'directory' && abovePoint(cursor, key))
+            return true;
         const point = feedPointOf(cursor, key).slice(1);
         if (point === '')
             return false;
