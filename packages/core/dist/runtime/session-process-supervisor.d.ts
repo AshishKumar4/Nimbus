@@ -419,6 +419,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * Until it ends, each it catches is queued for it (nextSignal).
      */
     catchSignals(pid: number, catches: readonly ProcessSignalName[]): void;
+    /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
+    catchesSignal(pid: number, signal: ProcessSignalName): boolean;
     /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait

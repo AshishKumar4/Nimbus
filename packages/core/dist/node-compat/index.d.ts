@@ -337,7 +337,7 @@ export declare function createNodeCompat({ files, start }: {
     };
     childProcess: {
         ChildProcess: typeof import("./child_process.js").ChildProcess;
-        spawn: (file: string, args?: readonly string[] | import("./child_process.js").SpawnOptions, options?: import("./child_process.js").SpawnOptions) => import("./child_process.js").ChildProcess;
+        spawn: (file: string, args?: readonly string[] | import("./child_process.js").SpawnOptions | null, options?: import("./child_process.js").SpawnOptions) => import("./child_process.js").ChildProcess;
         exec: (command: string, options?: import("./child_process.js").ExecOptions | ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | null | undefined, callback?: ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | undefined) => import("./child_process.js").ChildProcess;
         execFile: (file: string, args?: readonly string[] | import("./child_process.js").ExecOptions | ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | null, options?: import("./child_process.js").ExecOptions | ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | null, callback?: (error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) => import("./child_process.js").ChildProcess;
         fork: (modulePath: string) => never;

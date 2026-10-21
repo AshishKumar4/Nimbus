@@ -7236,7 +7236,7 @@ export class FacetManager {
             + 'which takes it as it arrives, or redirect a file (< file), which a synchronous read takes whole.';
         if (before === null)
             return fail(full);
-        const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes);
+        const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes, inputChannel);
         if ('aborted' in input) {
             this._end(pid, { code: 137, killed: true });
             return ends(130);
@@ -7260,10 +7260,15 @@ export class FacetManager {
      * channel's control packets only the last resize is kept, and a terminating
      * signal, the shell's abort or a kill ends the wait.
      */
-    async _awaitStoppedInput(channel, until, signal, held, already) {
+    async _awaitStoppedInput(channel, until, signal, held, already, pid) {
         const pieces = new OwnedPieces();
         let resize;
         let ended = false;
+        // A signal its program catches (its handler's, catchSignals) waits for it, as Node runs a handler once a
+        // synchronous read returns: the run that resumes takes it. Any other ends the wait.
+        const caught = [];
+        const caughtBack = () => { for (const sent of caught.splice(0))
+            this.processes.deliverSignal(pid, sent); };
         const aborted = new Promise((resolve) => {
             if (signal.aborted)
                 resolve('aborted');
@@ -7276,6 +7281,11 @@ export class FacetManager {
             if (packet === 'aborted') {
                 held.give(pieces.bytes);
                 return { aborted: true };
+            }
+            const sent = packet.signal === undefined ? null : parseProcessSignalName(packet.signal);
+            if (sent !== null && sent !== 'SIGKILL' && pid > 0 && this.processes.catchesSignal(pid, sent)) {
+                caught.push(sent);
+                continue;
             }
             if (packet.signal === 'SIGINT' || packet.signal === 'SIGTERM' || packet.signal === 'SIGKILL') {
                 held.give(pieces.bytes);
@@ -7302,6 +7312,7 @@ export class FacetManager {
         const packets = pieces.finish().map((data) => ({ data, ended: false }));
         if (resize)
             packets.push({ data: new Uint8Array(0), ended: false, resize });
+        caughtBack();
         return { packets, bytes: pieces.bytes, ended };
     }
     /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */

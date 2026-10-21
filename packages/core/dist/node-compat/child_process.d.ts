@@ -49,11 +49,19 @@ export declare class ChildProcess extends EventEmitter {
     /** The program once it runs; a kill sent before then waits for it. */
     private started;
     private pendingKill;
+    /** Aborted by its AbortSignal: its 'error' was the AbortError, and a start that answers cancelled says nothing more. */
+    private aborted;
     private exited;
     private closed;
     private outputsOpen;
-    /** kill(2): `signal` to the child, true if it may be sent; false once it has ended. */
+    /**
+     * kill(2): `signal` to the child, true if it may be sent; false once it
+     * has ended. 0 sends nothing: it says the child is there (and, as Node's,
+     * marks it `killed`).
+     */
     kill(signal?: string | number): boolean;
+    /** What an AbortSignal's abort makes of it (Node's abortChildProcess): killed, and the AbortError its 'error' event carries. */
+    abort(killSignal: string | number | undefined, reason: unknown): void;
     ref(): this;
     unref(): this;
     /** Begins it: `start`'s answer, its output into its streams, its end. */
@@ -87,7 +95,7 @@ export interface ChildProcessOptions {
 /** Node's `child_process` over `start` (none: every start refused ENOSYS). */
 export declare function createNodeChildProcess(start: NodeStart | undefined, { cwd }: ChildProcessOptions): {
     ChildProcess: typeof ChildProcess;
-    spawn: (file: string, args?: readonly string[] | SpawnOptions, options?: SpawnOptions) => ChildProcess;
+    spawn: (file: string, args?: readonly string[] | SpawnOptions | null, options?: SpawnOptions) => ChildProcess;
     exec: (command: string, options?: ExecOptions | ExecCallback | null | undefined, callback?: ExecCallback | undefined) => ChildProcess;
     execFile: (file: string, args?: readonly string[] | ExecOptions | ExecCallback | null, options?: ExecOptions | ExecCallback | null, callback?: ExecCallback) => ChildProcess;
     fork: (modulePath: string) => never;

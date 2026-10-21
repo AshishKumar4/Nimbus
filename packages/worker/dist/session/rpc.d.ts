@@ -492,7 +492,7 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
 export declare function _rpcLoaderCodeStore(self: RpcHost, request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown>;
 export declare function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null>;
 /** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
-export declare function _rpcCpCatchSignals(self: RpcHost, pid: number | undefined, catches: unknown): Promise<void>;
+export declare function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;
 export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2, pid?: number): Promise<void>;
