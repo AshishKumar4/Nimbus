@@ -259,7 +259,7 @@ try {
     let exit = await ws.children.wait(childPid);
     while (!exit.done) exit = await ws.children.wait(childPid);
     assert.deepEqual(kills, ['SIGINT']);
-    assert.deepEqual([exit.exitCode, exit.signal], [130, 'SIGINT']);
+    assert.deepEqual([exit.exitCode, exit.signal], [null, 'SIGINT'], 'as Node reports a signal: no code');
     ws.processes.exit(parent.pid, 0);
   }
 
