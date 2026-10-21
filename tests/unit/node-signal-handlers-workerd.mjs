@@ -70,7 +70,7 @@ const parked = () => new Promise((resolve) => {
     }, 1000);
   });
   child.on('close', (code, signal) => {
-    console.log('parked: code=' + code + ' signal=' + signal + ' out=' + JSON.stringify(out.split('\n').filter(Boolean)));
+    console.log('parked: code=' + code + ' signal=' + signal + ' out=' + JSON.stringify(out.split('\\n').filter(Boolean)));
     resolve();
   });
 });
