@@ -592,12 +592,17 @@ function argvArg(value: unknown): string[] {
 }
 
 /** startProgram's options as a remote caller may give them: its cwd and environment, no stream. */
-function startProgramOptions(value: unknown): { cwd?: string; env?: Record<string, string> } {
+function startProgramOptions(value: unknown): { cwd?: string; env?: Record<string, string>; stdin?: 'written' } {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object') throw apiError('options must be an object', 'E_ARG_SHAPE', 400);
   const cwd = Reflect.get(value, 'cwd');
   const env = Reflect.get(value, 'env');
-  const options: { cwd?: string; env?: Record<string, string> } = {};
+  const stdin = Reflect.get(value, 'stdin');
+  const options: { cwd?: string; env?: Record<string, string>; stdin?: 'written' } = {};
+  if (stdin !== undefined) {
+    if (stdin !== 'written') throw apiError("stdin must be 'written': its bytes follow in writeProcessInput calls", 'E_ARG_SHAPE', 400);
+    options.stdin = stdin;
+  }
   if (cwd !== undefined) options.cwd = stringArg(cwd, 'cwd');
   if (env !== undefined) {
     if (typeof env !== 'object' || env === null) throw apiError('env must be an object of strings', 'E_ARG_SHAPE', 400);

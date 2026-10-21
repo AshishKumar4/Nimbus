@@ -20,7 +20,7 @@
  * routed through it would silently acquire all of that.
  */
 
-import { startProgram } from './start-program.js';
+import { startProgram, type ProgramInput } from './start-program.js';
 import type { Program, StartedSessionProgram } from '../runtime/program-start.js';
 import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
@@ -655,7 +655,7 @@ export class NimbusWorkspace {
    * every start is. Its stdin, output, exit and signals are the child
    * broker's (workspace/start-program.ts).
    */
-  startProgram(program: Program, cancel: AbortSignal): Promise<StartedSessionProgram> {
+  startProgram(program: Omit<Program, 'stdin'> & { readonly stdin: ProgramInput }, cancel: AbortSignal): Promise<StartedSessionProgram> {
     return startProgram({ children: this.children, processes: this.processes, cred: this.identity.cred }, program, cancel);
   }
 

@@ -24,12 +24,23 @@ export interface ProgramHost {
 }
 
 /**
+ * A program's input: the contract's (a stream to its end, or none: ended at
+ * once), or `written`: left open for the session's process-input calls
+ * (writeProcessInput, endProcessInput), as a caller across HTTP writes it.
+ */
+export type ProgramInput = Program['stdin'] | 'written';
+
+/**
  * `program` started (ExecDelegate.start's contract): resolved once it runs,
  * rejected with Node's spawn error (`code`, `errno`, `syscall: 'spawn
  * <file>'`, `path`) when it could not start, ECANCELED when `cancel`
  * aborted while it was pending (whatever had started is killed first).
  */
-export async function startProgram(host: ProgramHost, program: Program, cancel: AbortSignal): Promise<StartedSessionProgram> {
+export async function startProgram(
+  host: ProgramHost,
+  program: Omit<Program, 'stdin'> & { readonly stdin: ProgramInput },
+  cancel: AbortSignal,
+): Promise<StartedSessionProgram> {
   const [file, ...args] = program.argv;
   if (file === undefined || file === '') throw new TypeError('startProgram: argv[0] must name a program');
   if (cancel.aborted) throw spawnError(program.argv, { code: 'ECANCELED' });
@@ -64,7 +75,7 @@ export async function startProgram(host: ProgramHost, program: Program, cancel: 
     await ended;
     throw spawnError(program.argv, { code: heard.spawnError });
   }
-  void pumpInput(children, childPid, program.stdin);
+  if (program.stdin !== 'written') void pumpInput(children, childPid, program.stdin);
   return { pid: childPid, output: outputOf(children, childPid), exit: ended, kill: (signal) => { children.kill(childPid, signal); } };
 }
 

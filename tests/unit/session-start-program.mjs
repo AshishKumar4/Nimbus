@@ -64,6 +64,13 @@ try {
   assert.ok(joined.every((b, i) => b === bytes[i]), 'in order, byte for byte');
   assert.deepEqual(await started.exit, { code: 0, signal: null });
 
+  // Its input left open, written afterwards (as a caller across HTTP writes it), then ended.
+  started = await ws.startProgram(program(['cat'], { stdin: 'written' }), never);
+  await ws.children.stdinWrite(started.pid, new Uint8Array([0, 0xff, 0x41]));
+  await ws.children.stdinEnd(started.pid);
+  ran = await finish(started);
+  assert.deepEqual([[...ran.stdout], ran.exit], [[0, 0xff, 0x41], { code: 0, signal: null }]);
+
   // kill(signal) is the program's: ended by it, waitpid says which.
   started = await ws.startProgram(program(['sleep', '600']), never);
   started.kill('SIGTERM');

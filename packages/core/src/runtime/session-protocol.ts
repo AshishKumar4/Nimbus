@@ -270,12 +270,16 @@ export interface SessionExecOptions extends SessionReadyOptions {
   /** startProcess only; spontaneous failures follow this restart policy. */
   restart?: SessionRestartPolicy;
 }
-/** startProgram's: its cwd (absolute), its environment (else the session's exported one), and its stdin's bytes. */
+/** startProgram's: its cwd (absolute), its environment (else the session's exported one), and its input. */
 export interface SessionStartProgramOptions {
   cwd?: string;
   env?: Record<string, string>;
-  /** Colocated callers only: across HTTP, write the started program's input with writeProcessInput. */
-  stdin?: ReadableStream<Uint8Array>;
+  /**
+   * Its stdin's bytes, to their end (colocated callers); `written`: left
+   * open for writeProcessInput calls until endProcessInput (across HTTP);
+   * none: ended at once.
+   */
+  stdin?: ReadableStream<Uint8Array> | 'written';
 }
 export interface SessionRunCodeOptions extends SessionExecOptions {
   language?: string;

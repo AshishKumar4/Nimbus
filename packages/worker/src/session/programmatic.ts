@@ -39,6 +39,7 @@ import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { encodeProgramStream } from '@nimbus-sh/core/runtime/program-stream.js';
 import type { Program } from '@nimbus-sh/core/runtime/program-start.js';
+import type { ProgramInput } from '@nimbus-sh/core/workspace/start-program.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -717,7 +718,7 @@ export async function rpcStartProgram(self: ProgrammaticHost, argv: string[], op
   await ensureProgrammaticReady(self);
   const workspace = self.runtimeWorkspace;
   if (!workspace) throw new Error('startProgram: the session has no workspace');
-  const program: Program = {
+  const program: Omit<Program, 'stdin'> & { stdin: ProgramInput } = {
     argv: [...argv],
     env: options.env ?? workspace.shell.getExportedEnv(),
     cwd: options.cwd ?? workspace.shell.getCwd(),
