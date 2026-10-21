@@ -39,8 +39,11 @@ try {
   }
   {
     // Run the real release entrypoint. Only its external upload/build/lease
-    // seams are replaced; no staging credentials or network are involved.
+    // seams, and the binding demand it reads from the npm registry, are
+    // replaced: no staging credentials or network are involved, so a
+    // publish upstream cannot turn this red.
     const entry = new URL('../../scripts/ci/release.mjs', import.meta.url).href;
+    const demand = new URL('../../scripts/ci/lib/binding-demand.mjs', import.meta.url).href;
     const installed = new URL('../../scripts/ci/lib/installed.mjs', import.meta.url).href;
     const bundles = new URL('../../scripts/ci/lib/release.mjs', import.meta.url).href;
     const lease = new URL('../../scripts/ci/lib/lease.mjs', import.meta.url).href;
@@ -52,6 +55,7 @@ try {
       const check = spawnSync(process.execPath, ['-e', `
         import { mock } from 'bun:test';
         mock.module(${JSON.stringify(installed)}, () => ({ assertInstalled() {} }));
+        mock.module(${JSON.stringify(demand)}, () => ({ missingBindings: async () => ({ missing: [], demanded: [] }) }));
         mock.module(${JSON.stringify(bundles)}, () => ({ fetchRelease: async () => ({ dir: '/fixture/bundle', release: {} }), packNpmRelease: async () => [], productionCommit: () => 'c0ffee', releaseDigest() { throw new Error('an ungraded upload must not be sealed'); } }));
         mock.module(${JSON.stringify(lease)}, () => ({ holdLease: () => require('node:fs').openSync('/dev/null', 'r') }));
         process.env.CLOUDFLARE_ACCOUNT_ID = 'fixture-account';

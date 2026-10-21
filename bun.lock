@@ -207,7 +207,7 @@
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.24.0",
+      "version": "0.24.1",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
         "@nimbus-sh/config": "^0.3.2",

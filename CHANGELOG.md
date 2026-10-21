@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
+  - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
+  - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
+  - `type` and `command -v` report the machine's program.
+  - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
+  - A namespace with no delegating mount places nothing and runs as before.
+
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
 - Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin, signal })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
   - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `signal` aborted while it is pending rejects `ECANCELED`, and kills anything that had started.
@@ -21,14 +28,16 @@ published independently in the `@nimbus-sh` npm scope.
   - New calls: `appendFile`, `symlink`, `realpath`, `truncate`, `utimes` (milliseconds; `followSymlinks: false` for a link's own times) and `chown` (a null side keeps the file's).
 - Changed: over the remote API, a call that fails with an errno keeps Node's fields. The response carries `code`, `errno`, `syscall` and `path` (and `dest`), with status 404 for ENOENT, 403 for EACCES/EPERM/EROFS, 409 for EEXIST/ENOTEMPTY/EBUSY, 500 for EIO, 503 for EHOSTDOWN, and 400 for any other errno. `NimbusRemoteError` exposes them. Before, every such failure was `E_NIMBUS_REMOTE_RPC` with status 500 and a message only.
 
+## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
+
+- Fixed: a new Vite project installs again. Vite 8.3.5, published
+  2026-10-21, asks for rolldown ~1.2.14, which had no Workers build, so
+  `npm install` in a new `npm create vite` project installed a rolldown that
+  cannot load. rolldown 1.2.14 now has its own build, beside 1.2.11 and
+  1.2.13.
+
 ## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
 
-- Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
-  - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
-  - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
-  - `type` and `command -v` report the machine's program.
-  - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
-  - A namespace with no delegating mount places nothing and runs as before.
 - Security: every session trusts the TLS roots this deployment serves, at `/proc/nimbus/ca-certificates.crt` (read-only, generated from the build as the rest of /proc is), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
 - Fixed: listing a session's processes (`listProcesses`,
   `GET /api/processes`) waits until each dev server its previous
