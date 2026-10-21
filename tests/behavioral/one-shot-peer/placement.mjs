@@ -2,9 +2,10 @@
 // one-shot-peer/placement — a session's one-shots run on its warm peer, and
 // while they run there the session answers (fabric one-shot-peer.ts).
 //
-// Each kind runs paired within one session, in the session (its peer
-// forgotten first, so the run is placed here) and on the warm peer, order
-// alternating by round:
+// A second terminal stays attached, so the session's thread is wanted and a
+// one-shot may go to the peer (one-shot-peer.ts #threadWanted). Each kind runs
+// paired within one session, in the session (its peer forgotten first, so
+// the run is placed here) and on the warm peer, order alternating by round:
 //   - where each run ran (the session's placement record), its exit and
 //     output the same on both;
 //   - its wall, and the session's thread held during it (the worst latency of
@@ -13,7 +14,9 @@
 // modules, in the session and on the peer: a second terminal's echo, a
 // request to a running server, an editor save. On the peer each waits less
 // than in the session (medians over the rounds). And three such one-shots at
-// once, in the session and on the peer.
+// once, in the session and on the peer. Then, the second terminal closed and
+// no port listening, the session idle: a one-shot runs in the session, and a
+// terminal that attaches during it waits for it (what (b) accepts, recorded).
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, requestHeaders, sleep } from '../_driver.mjs';
 import { peer, placement, warmFor, mark, hostsSince, diagLatency, watched, median } from './_peer.mjs';
 
@@ -65,6 +68,8 @@ async function runOn(host, kind, line, tags, observe = () => diagLatency(sid)) {
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
+  await t2.connect();
+  await t2.waitForPrompt(60_000);
   for (const line of ['nimbus install python', 'nimbus install ruby', 'nimbus install clang', heredocCommand('x.c', CSRC), 'mkdir -p ~/tsp/src',
     heredocCommand('tsp/tsconfig.json', JSON.stringify({ compilerOptions: { strict: true, target: 'ES2022', noEmit: true }, include: ['src'] })),
     ...TS_FILES.map(([path, body]) => heredocCommand(`tsp/${path}`, body)), heredocCommand('srv.js', SERVER)]) {
@@ -90,8 +95,6 @@ try {
   }
 
   // What the user waits for during a python one-shot importing ten stdlib modules.
-  await t2.connect();
-  await t2.waitForPrompt(60_000);
   await t.run('node srv.js &', 60_000);
   for (let ready = null, until = Date.now() + 30_000; ready?.status !== 200;) {
     if (Date.now() > until) throw new Error(`server never answered: ${ready?.status}`);
@@ -167,6 +170,37 @@ try {
         ranOn.length === 3 && ranOn.every((h) => h === host) && ones === 3 && w.value.exitCode === 0, JSON.stringify({ ranOn, printed: printed(w.value.output) }));
     }
   }
+
+  // Idle: the second terminal closed, the server stopped.
+  await t.run('kill %1 2>/dev/null; wait 2>/dev/null; true', 60_000);
+  await t2.close();
+  for (let until = Date.now() + 30_000; ;) {
+    const ports = await fetchPort(sid, PORT, 'gone').then((r) => r.status).catch(() => 0);
+    if (ports !== 200) break;
+    if (Date.now() > until) throw new Error('the server never stopped');
+    await sleep(500);
+  }
+  let marked = await mark(sid);
+  const idle = await t.run(heavy.line, 600_000);
+  const idleOn = ((await placement(sid))?.calls ?? []).filter((call) => call.at > marked);
+  a.check('idle, a one-shot runs in the session and says nothing wanted the thread',
+    idle.exitCode === 0 && idleOn.length > 0 && idleOn.every((call) => call.host === 'session' && call.wants.length === 0), JSON.stringify(idleOn));
+  // Mid-run: a terminal attaches 1 s into an idle run, and its echo waits for the run.
+  marked = await mark(sid);
+  const late = new Terminal(sid, { terminal: 'late' });
+  const running = t.run(heavy.line, 600_000);
+  await sleep(1_000);
+  const attachStarted = Date.now();
+  await late.connect();
+  await late.waitForPrompt(60_000);
+  const echo = await late.run('echo late', 60_000);
+  const lateWait = Date.now() - attachStarted;
+  const midRun = await running;
+  const midOn = ((await placement(sid))?.calls ?? []).filter((call) => call.at > marked);
+  out({ midRun: true, lateWaitMs: lateWait, exit: midRun.exitCode, placed: midOn });
+  a.check(`a terminal that attaches mid-run waits for the run (${lateWait} ms to attach and echo): the run stays where it started`,
+    echo.exitCode === 0 && midOn.length > 0 && midOn.every((call) => call.host === 'session'), JSON.stringify({ lateWait, midOn }));
+  await late.close();
 } catch (error) {
   a.check('the probe ran to its end', false, String(error?.stack ?? error).slice(0, 2000));
 } finally {

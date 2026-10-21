@@ -26,6 +26,7 @@ const out = (record) => console.log(JSON.stringify(record));
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
+const other = new Terminal(sid, { terminal: 'other' });
 const run = async (line, timeoutMs = 120_000) => {
   const r = await t.run(line, timeoutMs);
   return { ...r, text: r.output };
@@ -45,6 +46,9 @@ const lines = (r) => (r.text ?? r.output).split('\n').slice(1).map((line) => lin
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
+  // A second terminal attached: the session's thread is wanted, so a one-shot may go to the peer.
+  await other.connect();
+  await other.waitForPrompt(60_000);
   for (const line of ['nimbus install python', 'echo private > /home/user/private.txt && chmod 600 /home/user/private.txt',
     'sudo mkdir -p /srv/shared && sudo chmod 1777 /srv/shared']) {
     const r = await run(line, 600_000);
@@ -145,6 +149,7 @@ try {
 } catch (error) {
   a.check('the probe ran to its end', false, String(error?.stack ?? error).slice(0, 2000));
 } finally {
+  await other.close().catch(() => {});
   await t.close().catch(() => {});
   await deleteSession(sid).catch(() => {});
 }
