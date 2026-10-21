@@ -13,6 +13,8 @@ export interface WorkerStub {
 export interface EntrypointStub {
     fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
     execute(...args: unknown[]): Promise<unknown>;
+    /** Loads the worker and runs nothing (IsolatePool.warm). */
+    warm(): Promise<void>;
 }
 export type GetCodeCallback = () => Promise<WorkerCode>;
 export interface WorkerLoader {
