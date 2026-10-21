@@ -4,6 +4,8 @@
  * a filesystem call that fails are Node's: the same code, errno, syscall,
  * path and message as real Node's fs gives for the same call on the same
  * tree, sync and callback alike (one error shape, core vfs/vfs-error.ts).
+ * A path named relatively (`rel`, from the tree's root as the cwd) is named
+ * so in the error, as Node names it, not as the filesystem resolved it.
  * The oracle is the `node` on PATH (the CI image's Node 22), in a process
  * of its own: this test runs under Bun, whose node:fs is not Node's.
  */
@@ -49,10 +51,19 @@ const SYNC = {
   'rmdirSync of a missing directory': 'fs.rmdirSync(at("missing"))',
   'unlinkSync of a missing file': 'fs.unlinkSync(at("missing"))',
   'readSync of a closed descriptor': 'fs.readSync(987654, Buffer.alloc(1))',
+  'readFileSync of a missing file, named relatively': 'fs.readFileSync(rel("missing"))',
+  'statSync of a missing file, named relatively': 'fs.statSync(rel("missing"))',
+  'unlinkSync of a missing file, named relatively': 'fs.unlinkSync(rel("missing"))',
+  'renameSync of a missing file, named relatively': 'fs.renameSync(rel("missing"), rel("other"))',
+  'mkdirSync of an existing directory, named relatively': 'fs.mkdirSync(rel("dir"))',
+  'symlinkSync onto an existing file, named relatively': 'fs.symlinkSync("target", rel("file"))',
+  'truncateSync of a missing file with a bad length, named relatively': 'fs.truncateSync(rel("missing"), 1.5)',
+  'readFileSync of an object': 'fs.readFileSync({})',
 };
 const CALLBACK = {
   'readFile of a missing file': 'fs.readFile(at("missing"), cb)',
   'stat of a missing file': 'fs.stat(at("missing"), cb)',
+  'readFile of a missing file, named relatively': 'fs.readFile(rel("missing"), cb)',
 };
 
 // One tree, on disk for Node and in the session's VFS for the shell's node.
@@ -71,13 +82,15 @@ const oracle = spawnSync('node', ['--input-type=module', '-e', `
   import * as fs from 'node:fs';
   const root = ${JSON.stringify(disk)};
   const at = (name) => root + '/' + name;
+  const rel = (name) => name;
+  process.chdir(root);
   const shape = ${shape.toString()};
   const out = { runtime: typeof Bun === 'undefined' ? 'node ' + process.versions.node : 'bun', sync: {}, callback: {} };
   for (const [label, code] of Object.entries(${JSON.stringify(SYNC)})) {
-    try { new Function('fs', 'at', code)(fs, at); out.sync[label] = null; } catch (error) { out.sync[label] = shape(error, root); }
+    try { new Function('fs', 'at', 'rel', code)(fs, at, rel); out.sync[label] = null; } catch (error) { out.sync[label] = shape(error, root); }
   }
   for (const [label, code] of Object.entries(${JSON.stringify(CALLBACK)})) {
-    out.callback[label] = await new Promise((resolve) => new Function('fs', 'at', 'cb', code)(fs, at, (error) => resolve(shape(error, root))));
+    out.callback[label] = await new Promise((resolve) => new Function('fs', 'at', 'rel', 'cb', code)(fs, at, rel, (error) => resolve(shape(error, root))));
   }
   process.stdout.write(JSON.stringify(out));
 `], { encoding: 'utf8' });
@@ -88,7 +101,7 @@ assert.match(node.runtime, /^node \d+\./, `the oracle is Node: ${node.runtime}`)
 const failed = [];
 try {
   for (const [label, code] of Object.entries(SYNC)) {
-    const lifo = thrown(() => new Function('fs', 'at', code)(ours, (name) => `/t/${name}`), '/t');
+    const lifo = thrown(() => new Function('fs', 'at', 'rel', code)(ours, (name) => `/t/${name}`, (name) => name), '/t');
     try {
       assert.deepEqual(lifo, node.sync[label], label);
     } catch {
@@ -96,7 +109,7 @@ try {
     }
   }
   for (const [label, code] of Object.entries(CALLBACK)) {
-    const lifo = await passed((cb) => new Function('fs', 'at', 'cb', code)(ours, (name) => `/t/${name}`, cb), '/t');
+    const lifo = await passed((cb) => new Function('fs', 'at', 'rel', 'cb', code)(ours, (name) => `/t/${name}`, (name) => name, cb), '/t');
     try {
       assert.deepEqual(lifo, node.callback[label], label);
     } catch {
