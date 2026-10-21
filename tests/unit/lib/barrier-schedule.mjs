@@ -19,7 +19,10 @@
  *                          there, its root the point's directory. Drawn over
  *                          names the process may hold, and a fed mount
  *                          beneath one with none. A mount point is not
- *                          removed, moved or chowned; a rename never crosses
+ *                          removed, moved or chowned, nor is a directory
+ *                          above one given another mode or owner (EBUSY:
+ *                          an unfed parent's access changes out of band
+ *                          only, resident-fs-synchronous); a rename never crosses
  *                          a mount (EXDEV); a mounted name is not chowned
  *                          (a MemoryVFS has one owner);
  *   ['input']              input arrives: the process's barrier, left in flight;
@@ -218,8 +221,9 @@ function applied(world, change) {
   const next = new Map(world);
   if (!root && unreachable(world, a) !== null) return null;
   if (op !== 'mount') {
-    // A mount point stays as it is; a rename never crosses a mount; a MemoryVFS has one owner.
+    // A mount point, and a directory above one, stays as it is (EBUSY); a rename never crosses a mount; a MemoryVFS has one owner.
     if (at?.mount !== undefined) return null;
+    if ((op === 'chmod' || op === 'chown') && [...world].some(([rel, state]) => state.mount !== undefined && rel !== a && under(rel, a))) return null;
     if (op === 'chown' && mountOf(world, a) !== null) return null;
     if (op === 'rename' && (world.get(b)?.mount !== undefined || mountOf(world, a)?.point !== mountOf(world, b)?.point
       || [...world].some(([rel, state]) => state.mount !== undefined && rel !== a && under(rel, a)))) return null;
@@ -917,7 +921,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         }
       }
       // What the session holds is what the model says, as root sees it through the namespace: nothing the process wrote was lost.
-      const held = normalized(await namespacePeer(CRED_KERNEL).stat(abs(rel), { followSymlinks: false }).catch(() => null));
+      const held = normalized(await Promise.resolve().then(() => namespacePeer(CRED_KERNEL).stat(abs(rel), { followSymlinks: false })).catch(() => null));
       if (!statIs(held, state)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {

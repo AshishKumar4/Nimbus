@@ -258,9 +258,10 @@ const FOUND = {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
   },
-  'a fed mount beneath one with no feed is reached as that one lets the process reach it': {
+  'a fed mount beneath one with no feed answers as the session holds it': {
     schedule: [['peer', 'mount', '', 'unfed', { d: null, 'd/e': null, x: null }], ['peer', 'mount', 'd/e', 'fed', { g: 'g1111' }], ['input'], ['settle'],
-      ['own', 'readFile', 'd/e/g'], ['settle'], ['root', 'chmod', 'd', 0o700], ['settle'], ['sync', 'readFile', 'd/e/g'], ['own', 'readFile', 'd/e/g'], ['settle']],
+      ['own', 'readFile', 'd/e/g'], ['own', 'readdir', ''], ['settle'], ['sync', 'readFile', 'd/e/g'], ['sync', 'readdir', ''], ['peer', 'write', 'd/e/g', 'g2222'],
+      ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'd/e/g'], ['own', 'readFile', 'd/e/g'], ['settle']],
   },
   'a name on a mount with no feed answers as the session holds it now': {
     schedule: [['peer', 'mount', 'x', 'unfed', { h: 'u00' }], ['input'], ['settle'], ['own', 'readFile', 'x/h'], ['settle'], ['root', 'write', 'x/h', 'u11'],
@@ -330,11 +331,6 @@ const GAPS = {
     lacks: 'S lists, in a directory the process removed and made again, a name the session does not hold there while the process\'s own write of it is in flight (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile readdirSync can list a file before its write is made',
     shows: 'sync readdir d/e answered ["g"]',
-  },
-  'a fed mount beneath one with no feed is reached as that one lets the process reach it [node]': {
-    lacks: 'S walks to a fed mount through the directories of a mount with no feed above it as its launch saw them (closed by the cutover: such a mount is the session\'s to answer); '
-      + 'meanwhile fs.readFile can answer a file beneath a directory the process may no longer search',
-    shows: 'own readFile d/e/g answered "g1111"',
   },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
