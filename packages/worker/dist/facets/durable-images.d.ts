@@ -35,6 +35,17 @@ export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
 type InlineModule = string | {
     wasm: ArrayBuffer;
 };
+/** A durable blob's mode: the kernel's alone. */
+export declare const DURABLE_IMAGE_MODE = 256;
+/**
+ * The durable store's disk, as the kernel. Its blobs are shared by content
+ * across every durable application of the session, whichever uid it runs
+ * as, and only the kernel reads them (resolveDurableWorkerImage): each is
+ * the kernel's alone, and one not left so (an earlier release's, readable by
+ * every account) is written again, never written over. Only below the
+ * kernel's own store root (ensureKernelStoreRoot).
+ */
+export declare function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore;
 /** An application blob an earlier release wrote with an environment in it. */
 export interface ApplicationHoldingEnv {
     digest: string;
@@ -62,6 +73,8 @@ export declare function readStoredImages(vfs: SqliteVFS): Promise<{
  * that whole environment). Answers the new application digest.
  */
 export declare function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string>;
+/** `application`, written again with each wasm module path in `moved` read from where it moved. */
+export declare function rewriteWasmPaths(vfs: SqliteVFS, application: string, moved: ReadonlyMap<string, string>): Promise<string>;
 /** Remove only the owner's blobs that no other retained recipe references. */
 export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable<{
     runner: string;

@@ -1342,6 +1342,22 @@ export declare class FacetManager {
     private residentClaims;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
     /**
+     * The images earlier releases left readable by every account, each made
+     * one principal's, once per session, before anything of it is re-driven or
+     * read. An image holds what its process could read:
+     * - a process image at the top of PROCESS_IMAGE_DIR (each uid's are in a
+     *   directory of its own now): unlinked, as its launch writes it again;
+     * - a durable application's blob (DURABLE_IMAGE_DIR): the kernel's alone,
+     *   as kernelImageBlobs leaves the ones it writes;
+     * - a wasm image staged at the top of INLINE_WASM_DIR: copied into the
+     *   directory of each uid whose durable application boots from it, that
+     *   application written again to read it there (its rows and owner index
+     *   naming the new blob), then unlinked, as a launch stages it again.
+     * Each step is safe to repeat, until the last marks it done. A filesystem
+     * snapshot or export taken before keeps what it held.
+     */
+    private _closeEarlierImages;
+    /**
      * What releases before ask 62 kept of their processes' environments, once
      * per session, before anything of it is re-driven or read. Each record
      * moves its environment to where this host keeps environments
@@ -1359,20 +1375,6 @@ export declare class FacetManager {
      *   session is told how many look generated (legacy-images.ts).
      * A filesystem snapshot or export taken before keeps what it held.
      */
-    /**
-     * The images earlier releases left readable by every account, each made
-     * one principal's, once per session. An image holds what its process could
-     * read, as _imageBlobs leaves the ones it writes:
-     * - a durable application's blobs (DURABLE_IMAGE_DIR): the kernel's alone,
-     *   0400, as only the kernel reads them (resolveDurableWorkerImage);
-     * - a wasm image staged at the top of INLINE_WASM_DIR: the uid of each
-     *   durable application that boots from it, 0400, as that process reads
-     *   it; unlinked when none does, as a launch stages it again.
-     * Process images at the top of PROCESS_IMAGE_DIR go with the image store's
-     * sweep (ImageStore.ensureDir). A filesystem snapshot or export taken
-     * before keeps what it held.
-     */
-    private _closeEarlierImages;
     private _dropEnvironmentsAtRest;
     /**
      * A signal's default action: the process ends with 128+signo whether its
@@ -1473,6 +1475,8 @@ export declare class FacetManager {
      * kernel's umask), as POSIX has it, is what makes the read succeed for any
      * process by construction; the store itself decides nothing about modes.
      */
+    /** The session's filesystem, which a durable application's image is kept in (kernelImageBlobs). */
+    private _durableImageVfs;
     private _imageBlobs;
     /**
      * The session's filesystem as the kernel, writing what process `pid`
