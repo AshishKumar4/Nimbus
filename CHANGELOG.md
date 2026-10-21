@@ -7,6 +7,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
 
+## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
+
+- Fixed: a new Vite project installs again. Vite 8.3.5, published
+  2026-10-21, asks for rolldown ~1.2.14, which had no Workers build, so
+  `npm install` in a new `npm create vite` project installed a rolldown that
+  cannot load. rolldown 1.2.14 now has its own build, beside 1.2.11 and
+  1.2.13.
+
 ## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
 
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
