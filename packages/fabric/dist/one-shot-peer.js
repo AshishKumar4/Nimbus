@@ -176,7 +176,7 @@ export class OneShotPlacement {
                 const peer = this.#warmFor(worker);
                 if (peer === null || options?.signal?.aborted === true) {
                     if (peer === null)
-                        this.#warm(spec, images, fn, worker);
+                        this.#warm(spec, callImages, fn, worker);
                     try {
                         return await local.submit(fn, args, options);
                     }
@@ -246,6 +246,8 @@ export class OneShotPlacement {
                         if (carries)
                             throw new BindingError(`one-shot peer '${peer}' did not hold the preamble the call carried`);
                         this.#carried.delete(hash);
+                        // Killed before the peer took it: it never started, and is not sent again.
+                        options?.signal?.throwIfAborted();
                         continue;
                     }
                     if (generation === this.#generation)
@@ -415,12 +417,13 @@ function workerOf(spec, images, fn) {
     if (spec.scope === undefined)
         return ANY_WORKER;
     const identities = Object.entries(images).map(([name, image]) => `${name}=${image.identity}`).sort().join(',');
-    return [spec.tag, spec.reuse ?? 'session', spec.scope, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
+    const supervisor = spec.supervisor === undefined ? 's-none' : 's-call';
+    return [spec.tag, spec.reuse ?? 'session', spec.scope, supervisor, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
 }
-/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. */
+/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. None, or an empty one, is '0', as the pool has it. */
 const preambleHashes = new Map();
 function preambleHash(preamble) {
-    if (preamble === undefined)
+    if (!preamble)
         return '0';
     let hash = preambleHashes.get(preamble);
     if (hash === undefined)
