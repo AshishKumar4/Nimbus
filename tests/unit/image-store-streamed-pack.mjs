@@ -42,7 +42,7 @@ const blobs = () => ({
   unlink(path) { files.delete(path); },
 });
 const sameBytes = (a, b) => a.byteLength === b.byteLength && a.every((byte, i) => byte === b[i]);
-const store = new ImageStore(blobs, () => true);
+const store = new ImageStore(blobs, () => true, () => 1000);
 const pacer = { chunks: 0, async spend() {} };
 
 // 96 modules of 64 KiB-ish each (6 MiB, many slices), some two-byte and some
@@ -81,7 +81,7 @@ const watch = async (run) => {
 const pack = encodeCodePack(modules);
 const paths = await watch(() => store.materialize(3, [['code pack', pack]], pacer));
 const path = paths['code pack'];
-assert.equal(path, processImagePath(await facetImageDigest(expected)), 'the pack is named by the digest of its bytes');
+assert.equal(path, processImagePath(1000, await facetImageDigest(expected)), 'the pack is named by the digest of its bytes');
 const stored = contents(path.replace(/^\/+/, ''));
 assert.ok(sameBytes(stored, expected), 'and holds exactly them');
 assert.deepEqual(Object.keys(decodeCodePackBytes(stored)), Object.keys(modules), 'which decode to every module');
@@ -119,7 +119,7 @@ console.log('  a pack already stored is recognized without a whole copy and not 
   writes.length = 0;
   const straddled = await store.materialize(6, [['code pack', pack]], pacer);
   const at = straddled['code pack'].replace(/^\/+/, '');
-  assert.equal(straddled['code pack'], processImagePath(await facetImageDigest(whole)), 'its digest is the whole pack\'s');
+  assert.equal(straddled['code pack'], processImagePath(1000, await facetImageDigest(whole)), 'its digest is the whole pack\'s');
   assert.ok(sameBytes(contents(at), whole), 'and its bytes are');
   assert.equal(writes[0], SLICE, 'the first slice is whole, holding the first two bytes of the four');
   console.log('  a character straddling a slice is split across two');

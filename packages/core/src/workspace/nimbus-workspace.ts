@@ -20,6 +20,8 @@
  * routed through it would silently acquire all of that.
  */
 
+import { startProgram, StartedPrograms, type ProgramInput } from './start-program.js';
+import type { ExitStatus, Program, StartedSessionProgram } from '../runtime/program-start.js';
 import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -325,6 +327,8 @@ export class NimbusWorkspace {
   readonly shellProcessPid: number;
 
   private readonly namedShells: NamedShells;
+  /** Programs startProgram started, and their exits. */
+  private readonly startedPrograms = new StartedPrograms();
 
   private constructor(
     vfs: SqliteVFS,
@@ -633,6 +637,30 @@ export class NimbusWorkspace {
   }
 
   /**
+   * `program` started by its argv (Kinu ask 67): the start contract a
+   * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
+   * every start is. Its stdin, output, exit and signals are the child
+   * broker's (workspace/start-program.ts).
+   */
+  startProgram(program: Omit<Program, 'stdin'> & { readonly stdin: ProgramInput }, cancel: AbortSignal): Promise<StartedSessionProgram> {
+    return startProgram({ children: this.children, processes: this.processes, cred: this.identity.cred, started: this.startedPrograms }, program, cancel);
+  }
+
+  /** Whether `pid` is a program startProgram started that has not ended: its input and signals are the broker's. */
+  isStartedProgram(pid: number): boolean {
+    return this.startedPrograms.running(pid);
+  }
+
+  /**
+   * Started program `pid`'s exit once it comes, or null once `waitMs` pass
+   * first: its end, apart from its output, which may lie unread. ESRCH for
+   * a pid it did not start, or one that ended over a minute before.
+   */
+  waitProgram(pid: number, waitMs: number): Promise<ExitStatus | null> {
+    return this.startedPrograms.wait(pid, waitMs);
+  }
+
+  /**
    * Run `command` as a process of its own and collect what it printed.
    *
    * Without a `shellId` the call runs in a shell built for it alone (see
@@ -647,6 +675,7 @@ export class NimbusWorkspace {
    * ended, leave the process table when the result is returned; one that ends
    * later (a background job) leaves at the first call to start a minute after.
    */
+
   exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
     const { shellId, detach, ...call } = options;
     if (shellId === undefined) return this.runProcess(command, call, null);

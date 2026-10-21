@@ -14,7 +14,7 @@
  */
 import { type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
-import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
@@ -128,6 +128,8 @@ export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
 export declare function abortFacet(ctx: DurableObjectState, name: string, reason: Error): void;
+/** The ephemeral facet name process `pid` holds in this incarnation's book, if it holds one. */
+export declare function heldFacetName(ctx: DurableObjectState, pid: number): string | null;
 /**
  * What `processes(ctx, env).spawn` hands back: a running process, minus its placement.
  *
@@ -137,16 +139,23 @@ export declare function abortFacet(ctx: DurableObjectState, name: string, reason
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'> & {
+export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest' | 'handleWebSocketRequest'> & {
     name: string;
     slot?: number;
     acquireActivity(signal?: AbortSignal): HostActivityLease;
     /**
-     * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
+     * HostedProcess.handleHttpRequest. A peer relaying its coordinator's
      * request passes the signal its coordinator abandons it by
-     * (HandledRequests) instead of the scope's end.
+     * (HandledRequests, `relayed`) instead of the scope's end; a caller that
+     * tells a request sent from one never sent (HostLoss.request) is told the
+     * moment it is (`sending`).
      */
-    handleHttpRequest(request: Request, scope: ResponseScope, relayed?: AbortSignal): Promise<Response>;
+    handleHttpRequest(request: Request, scope: ResponseScope, leg?: {
+        relayed?: AbortSignal;
+        sending?: () => void;
+    }): Promise<Response>;
+    /** HostedProcess.handleWebSocketRequest, told the moment the upgrade is sent (`sending`). */
+    handleWebSocketRequest(request: Request, sending?: () => void): Promise<Response>;
 };
 /**
  * The process surface of one hosting actor: how a resident process comes

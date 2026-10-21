@@ -26,11 +26,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
-import type {
-  SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions,
-  SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions,
-  SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget,
-} from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -1070,7 +1066,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcKillProcess(pid: number) { return _programmatic.rpcKillProcess(this as any, pid); }
   _rpcListTerminals() { return _programmatic.rpcListTerminals(this); }
   _rpcCloseTerminal(name: string) { return _programmatic.rpcCloseTerminal(this, name); }
-  async _rpcWriteProcessInput(pid: number, data: string) { return _programmatic.rpcWriteProcessInput(this as any, pid, data); }
+  async _rpcWriteProcessInput(pid: number, data: string | Uint8Array) { return _programmatic.rpcWriteProcessInput(this as any, pid, data); }
+  async _rpcWriteProcessInputStream(pid: number, data: Uint8Array) { return _programmatic.rpcWriteProcessInputStream(this, pid, data); }
+  async _rpcWaitProgram(pid: number, waitMs?: number) { return _programmatic.rpcWaitProgram(this, pid, waitMs); }
+  async _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions) { return _programmatic.rpcStartProgram(this, argv, options); }
   async _rpcEndProcessInput(pid: number) { return _programmatic.rpcEndProcessInput(this as any, pid); }
   async _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return _programmatic.rpcResizeProcess(this as any, pid, size); }
   async _rpcSignalProcess(pid: number, signal: string) { return _programmatic.rpcSignalProcess(this as any, pid, signal); }

@@ -61,12 +61,13 @@ function rolldown(version, sha256, toolchain, lockfile = null) {
 /**
  * Every build, by `<name>@<version>`. A binding is built from one upstream
  * version and loads only under its owner at that version, so each version a
- * project may install is a build of its own: vite 8.3.4 asks for rolldown
- * ~1.2.12, and projects made before it pin 1.2.11.
+ * project may install is a build of its own: vite 8.3.5 asks for rolldown
+ * ~1.2.14, vite 8.3.4 for ~1.2.12, and projects made before it pin 1.2.11.
  */
 export const SPECS = {
   'rolldown@1.2.11': rolldown('1.2.11', 'fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403', '1.98.1', 'rolldown/Cargo.lock'),
   'rolldown@1.2.13': rolldown('1.2.13', 'f22d36d1dc3fc068274149b5e699058657a3f7da1802aee42e7e667f3a31cf04', '1.99.0'),
+  'rolldown@1.2.14': rolldown('1.2.14', '5ecdd5edca9721052cf6250d7ba18b4985c318582cdacafbcf3d336a011d043d', '1.99.0'),
 
   // Astro 7's Markdown engine (@astrojs/markdown-satteri). Its binding has
   // no async fns and no tokio: upstream's own crate, workspace and lockfile.

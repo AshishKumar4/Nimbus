@@ -5,16 +5,84 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
-
-## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
-
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
   - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
   - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
   - `type` and `command -v` report the machine's program.
   - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
   - A namespace with no delegating mount places nothing and runs as before.
+
+- Fixed: a request to a resident process whose idle host the platform
+  replaced is no longer failed with "its host was reset by the platform".
+  Such a request now waits for its host's watch to confirm the process's
+  own instance before it is sent. When the watch finds a fresh instance in
+  its place, the request was never sent, so it ran nowhere. A request to
+  the process's port then runs once on a new process, which the session
+  starts at once whatever the restart policy, and its answer is returned.
+  A call an embedder makes through the process's own facet is refused as
+  `ProcessNotAdmitted` (core `os-contracts`), only once the process's pid
+  reads ended, so the embedder can run it once more. A request already in
+  flight when a host is lost still fails with the loss, since it may have
+  run. On the peer process host, a request its coordinator's watch finds
+  lost first fails the same way, though the peer may have refused it
+  unsent, and so does one whose body went to the peer before it was refused.
+  The first request after a process sits idle pays one round trip to its
+  host before it is sent.
+
+- Fixed (security): another account can no longer read a file of yours
+  through a process's image. A resident process's generated program image
+  holds its program and the files it read at start, a 0600 one among them
+  (such as `~/.bash_history` with an inline `VAR=secret`). The image was
+  the kernel's, mode 0644, so every account on the box could read it. Now
+  each image belongs to the uid its process runs as, mode 0400, in a
+  directory per uid (`/.nimbus/process-images/<uid>`), as are the wasm
+  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`).
+  A durable application's blobs (`/.nimbus/images`), which applications of
+  any uid share by content and only the kernel reads, are the kernel's
+  alone. The first start after the upgrade closes what earlier releases
+  left open: their process images go, durable blobs become the kernel's, and
+  a staged wasm image is copied for each uid whose durable application
+  boots from it (the application is written again to read its copy); one
+  nothing boots from goes. Two accounts that run the same program now keep
+  a copy each. Copies already taken in a snapshot, an export or a clone are
+  not changed.
+
+- Fixed (CI): a probe task armada starts again after losing its container
+  is graded. Its token, minted when the job was submitted, could expire
+  before the second attempt's limit, so that attempt refused to run and the
+  task went ungraded (train 1021a's paired perf, twice: the first attempt's
+  container was lost after 17 minutes). `remote-probes` now runs such a
+  task once more, in a job of its own with fresh credentials, for the
+  suite, a regrade and a paired confirmation alike, so no token lives past
+  one task's limit. The wait a task may take before its first attempt is
+  the sum of its measured parts (35 s to create the job, up to 331 s to
+  prepare an environment, up to 61 s for a vessel), 428 s rather than a
+  fixed 15 minutes, so each token lives about 37 minutes instead of 45.
+  Each task's verdict now says when it started, and each run says how long
+  its tasks waited, which measures the part not yet measured: many vessels
+  waiting at once for fleet capacity.
+
+- Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
+
+- Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin, signal })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
+  - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `signal` aborted while it is pending rejects `ECANCELED`, and kills anything that had started.
+  - Its output streams as you read it. Its exit is waitpid's code or signal, seen whether or not you read the output, and `kill(signal)` sends that signal to the program.
+  - Its stdin is bytes, every value, in order, to their end, with each write waiting for room. A source that fails ends the program's input there; so does a write that fails, and if even that cannot be done, the program is killed. Over Workers RPC it is a stream. Over the remote API the SDK writes it with `writeProcessInput`, which now takes bytes and waits; a byte write whose client leaves is withdrawn.
+  - It is placed by its cwd, as every start is: under a delegating mount, the mount's machine starts it.
+  - Its env defaults to the session shell's exported environment.
+  - `signalProcess`, `writeProcessInput` and `endProcessInput` reach a started program as the child broker's. Every other process keeps its own routes.
+  - A scoped session (one named shell or identity) refuses it with EPERM: a start names neither.
+
+## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
+
+- Fixed: a new Vite project installs again. Vite 8.3.5, published
+  2026-10-21, asks for rolldown ~1.2.14, which had no Workers build, so
+  `npm install` in a new `npm create vite` project installed a rolldown that
+  cannot load. rolldown 1.2.14 now has its own build, beside 1.2.11 and
+  1.2.13.
+
+## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
+
 - Security: every session trusts the TLS roots this deployment serves, at `/proc/nimbus/ca-certificates.crt` (read-only, generated from the build as the rest of /proc is), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
 - Fixed: listing a session's processes (`listProcesses`,
   `GET /api/processes`) waits until each dev server its previous

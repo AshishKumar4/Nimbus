@@ -14,7 +14,7 @@
       "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
       "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "4cf59400e8729d2724511e3e11c7b005aede88f032b9fa763c1496fe0de397d7",
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
-      "packages/worker/scripts/napi-wasm/specs.mjs": "c12128ac7b54509bbb359380572208302d0e72d16a54f6341de8542ee36c9613",
+      "packages/worker/scripts/napi-wasm/specs.mjs": "e9cb531f6740a8d7e6dc3e69d66c71053850960e689ac391cd096781be30dfac",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
       "packages/worker/tsconfig.json": "fa6f4d05c31f08aebf48fc3a2373a2478cb3df3f937c5246a9c47a310ec08c0b",
       "tsconfig.base.json": "6003784c8e56ac1d084c3a15b9a48776154644c8534e5be3bbe212d9ebfc8038",

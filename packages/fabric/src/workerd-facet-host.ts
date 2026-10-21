@@ -29,7 +29,7 @@ import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import type { ResponseScope, SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { ProcessNotAdmitted, type ResponseScope, type SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   getCtxExports,
   stagedBootAssembler,
@@ -44,7 +44,6 @@ import {
   withDynamicWorkerCapNamed,
 } from './budgets.js';
 import {
-  ProcessHostLost,
   RESIDENT_PROCESS_CLASS,
   RESIDENT_SETTLE_DEADLINE_MS,
   residentLoaderConfig,
@@ -386,6 +385,12 @@ export function abortFacet(ctx: DurableObjectState, name: string, reason: Error)
   facetContainer(ctx).abort(name, reason);
 }
 
+/** The ephemeral facet name process `pid` holds in this incarnation's book, if it holds one. */
+export function heldFacetName(ctx: DurableObjectState, pid: number): string | null {
+  const slot = slotBook(ctx).held.get(pid);
+  return slot === undefined ? null : residentFacetName(slot);
+}
+
 
 
 /**
@@ -397,16 +402,20 @@ export function abortFacet(ctx: DurableObjectState, name: string, reason: Error)
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'> & {
+export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest' | 'handleWebSocketRequest'> & {
   name: string;
   slot?: number;
   acquireActivity(signal?: AbortSignal): HostActivityLease;
   /**
-   * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
+   * HostedProcess.handleHttpRequest. A peer relaying its coordinator's
    * request passes the signal its coordinator abandons it by
-   * (HandledRequests) instead of the scope's end.
+   * (HandledRequests, `relayed`) instead of the scope's end; a caller that
+   * tells a request sent from one never sent (HostLoss.request) is told the
+   * moment it is (`sending`).
    */
-  handleHttpRequest(request: Request, scope: ResponseScope, relayed?: AbortSignal): Promise<Response>;
+  handleHttpRequest(request: Request, scope: ResponseScope, leg?: { relayed?: AbortSignal; sending?: () => void }): Promise<Response>;
+  /** HostedProcess.handleWebSocketRequest, told the moment the upgrade is sent (`sending`). */
+  handleWebSocketRequest(request: Request, sending?: () => void): Promise<Response>;
 };
 
 /**
@@ -653,12 +662,18 @@ function spawnResident(
   const observation = hostActivity(ctx).observe(watch, (error) => { if (!released) markLost(error); }, incarnation);
   stopObserving = observation.close;
   // A request runs only on the instance pinned at open. An instance that
-  // refuses it as replaced is this process's host lost, never a guest answer.
+  // refuses it as replaced took nothing of it: the request ran nowhere, and
+  // this process's host is lost (HostLoss.route), never a guest answer.
   const checked = async (response: Response): Promise<Response> => {
     if (response.status !== 410 || response.headers.get(HOST_REQUEST_HEADER) !== watchCapability) return response;
-    const gone = new Error(await response.text());
-    if (!released) markLost(gone);
-    throw new ProcessHostLost(gone);
+    throw new ProcessNotAdmitted(params.pid, new Error(await response.text()));
+  };
+  // A request waiting on its lease's watch: the host lost meanwhile (the
+  // watch found another instance) refuses it unsent, and anything else that
+  // ended the wait (its caller left) is that.
+  const unsentUntilValidated = async (lease: HostActivityLease): Promise<void> => {
+    try { await lease.ready; }
+    catch (error) { throw lostAlready ? new ProcessNotAdmitted(params.pid, error) : error; }
   };
   // A request's admission rides its headers: the leaf's entry is its fetch.
   const admitted = async (request: Request, signal?: AbortSignal): Promise<Request> => {
@@ -676,30 +691,51 @@ function spawnResident(
     // cancelled: the call carries a signal that ends when the response will
     // not be delivered (its caller left, before any header or after), or a
     // peer's own for the request it relays.
-    handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: AbortSignal) => {
-      const lease = observation.acquire();
-      const cancel = relayed === undefined ? new AbortController() : null;
+    //
+    // It is sent only to the instance pinned at open. With no live watch that
+    // found it (the first request after the process sat idle) it waits for
+    // its lease's watch to, one round trip to the leaf: a watch that finds
+    // another instance (the platform replaced an idle host) loses the host
+    // before the request is sent, so the request ran nowhere and is whole,
+    // body and all, for its caller to run again (HostLoss.request).
+    handleHttpRequest: async (request: Request, scope: ResponseScope, leg: { relayed?: AbortSignal; sending?: () => void } = {}) => {
+      const cancel = leg.relayed === undefined ? new AbortController() : null;
+      const signal = leg.relayed ?? cancel!.signal;
+      // A caller that leaves while the request waits for validation ends the
+      // wait (the lease follows `signal`); the lease is let go once the
+      // request is sent and its answer is done with.
+      const lease = observation.acquire(signal);
+      let sent = false;
+      let done = false;
       scope.settled((delivered) => {
-        lease.release();
+        done = true;
+        if (sent) lease.release();
         if (!delivered) cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
       });
-      const signal = relayed ?? cancel!.signal;
       try {
-        // A live watch that found the pinned instance admits the request; without one it carries its admission.
+        if (!observation.validated()) await unsentUntilValidated(lease);
+        sent = true;
+        if (done) lease.release();
+        leg.sending?.();
         // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
-        const response = await facet.fetch(observation.validated() ? request : await admitted(request), { signal, encodeResponseBody: 'manual' });
+        const response = await facet.fetch(request, { signal, encodeResponseBody: 'manual' });
         if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability) throw receivedFailure(new Error(await response.text()));
-        return response.status === 410 ? await checked(response) : response;
+        return response;
       } catch (error) {
         lease.release();
         throw error;
       }
     },
-    // An upgrade hands its socket to the caller at the handshake.
-    handleWebSocketRequest: async (request: Request) => {
-      const lease = observation.acquire();
-      try { return await checked(await facet.fetch(await admitted(request))); }
-      finally { lease.release(); }
+    // An upgrade hands its socket to the caller at the handshake. It carries
+    // its admission, which an instance other than the pinned one refuses.
+    handleWebSocketRequest: async (request: Request, sending?: () => void) => {
+      const lease = observation.acquire(request.signal);
+      try {
+        if (!observation.validated()) await unsentUntilValidated(lease);
+        const upgrade = await admitted(request);
+        sending?.();
+        return await checked(await facet.fetch(upgrade));
+      } finally { lease.release(); }
     },
     release,
     name,

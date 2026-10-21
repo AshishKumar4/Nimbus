@@ -227,7 +227,11 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   assert.equal(answer.boot, 1, 'the running process still answers');
   assert.equal(evaluations, 1, 'nothing this incarnation runs was ended and booted again');
   other.kill(); running.kill();
-  await Promise.all([other.done, running.done]);
+  // The second process never validates a watch of its own on a facet the
+  // first holds (the running instance answers the first's capability): it
+  // is lost once a watch runs, which a request's validation may start.
+  await other.done.catch(() => {});
+  await running.done;
 }
 
 resetProcessFacetStorage();

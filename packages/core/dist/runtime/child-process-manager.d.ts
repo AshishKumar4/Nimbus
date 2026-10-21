@@ -218,7 +218,7 @@ export declare class ChildProcessManager {
      */
     private _stdinOf;
     /** `writer`, the process writing, is interrupted by a signal it takes (SessionProcessSupervisor.writeInputBytesWait). */
-    stdinWrite(childPid: number, data: Uint8Array, writer?: number): Promise<{
+    stdinWrite(childPid: number, data: Uint8Array, writer?: number, withdraw?: AbortSignal): Promise<{
         ok: boolean;
         signal?: string;
     }>;
@@ -312,6 +312,8 @@ export declare class ChildProcessManager {
     private _markStarted;
     /** A piece of news of `child` for its parent, numbered (ChildProcessManagerDeps.issueNews). */
     private _news;
+    /** Forget child `pid` once its end is published: its holder has taken its output and exit. */
+    release(childPid: number): void;
     /** Reap entries older than maxAgeMs whose end is published. */
     reap(maxAgeMs?: number): number;
     get stats(): {

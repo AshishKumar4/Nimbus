@@ -19,6 +19,7 @@
  * the shell before the host can register a command of its own. A session
  * routed through it would silently acquire all of that.
  */
+import { startProgram, StartedPrograms } from './start-program.js';
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -116,6 +117,8 @@ export class NimbusWorkspace {
      *  supplied one, else the `sh` this workspace spawned. */
     shellProcessPid;
     namedShells;
+    /** Programs startProgram started, and their exits. */
+    startedPrograms = new StartedPrograms();
     constructor(vfs, kernel, shell, registry, env, sql, processes, children, runtimes, shellProcessPid, supervisorOps, filesystem, hostLeases, 
     /** Who the workspace shell acts as, and so every call's process. */
     identity) {
@@ -412,6 +415,27 @@ export class NimbusWorkspace {
     }
     async close() {
         await releaseHostLeases(this.hostLeases);
+    }
+    /**
+     * `program` started by its argv (Kinu ask 67): the start contract a
+     * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
+     * every start is. Its stdin, output, exit and signals are the child
+     * broker's (workspace/start-program.ts).
+     */
+    startProgram(program, cancel) {
+        return startProgram({ children: this.children, processes: this.processes, cred: this.identity.cred, started: this.startedPrograms }, program, cancel);
+    }
+    /** Whether `pid` is a program startProgram started that has not ended: its input and signals are the broker's. */
+    isStartedProgram(pid) {
+        return this.startedPrograms.running(pid);
+    }
+    /**
+     * Started program `pid`'s exit once it comes, or null once `waitMs` pass
+     * first: its end, apart from its output, which may lie unread. ESRCH for
+     * a pid it did not start, or one that ended over a minute before.
+     */
+    waitProgram(pid, waitMs) {
+        return this.startedPrograms.wait(pid, waitMs);
     }
     /**
      * Run `command` as a process of its own and collect what it printed.

@@ -382,9 +382,10 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * A pipe write to `pid`'s input, waiting for room. When `writer`, the
      * process writing, takes its own signals (takeSignals), a signal sent to
      * it while it waits answers instead, as a write is interrupted, and the
-     * write is withdrawn, taking nothing.
+     * write is withdrawn, taking nothing. `gone` (its caller has left) ends a
+     * wait the same way, with what it has not written unwritten.
      */
-    writeInputBytesWait(pid: number, data: Uint8Array, writer?: number): Promise<{
+    writeInputBytesWait(pid: number, data: Uint8Array, writer?: number, gone?: AbortSignal): Promise<{
         ok: boolean;
         signal?: ProcessSignalName;
     }>;

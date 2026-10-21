@@ -16,6 +16,8 @@
 //     session user, never the kernel;
 //   - a scope that names no shell runs no command, so it can neither read
 //     nor plant the embedder's workspace shell environment, yet reads files;
+//   - no scoped session starts a program by its argv: a start names neither
+//     shell nor identity;
 //   - a scoped session cannot destroy the workspace.
 
 import assert from 'node:assert/strict';
@@ -160,6 +162,8 @@ try {
   await assert.rejects(shellless.execStream('true'), /EPERM/, 'streaming or not');
   await assert.rejects(shellless.startProcess('true'), /EPERM/, 'nor start a process');
   await assert.rejects(shellless.exec('true', { shellId: 'agent-a' }), /EPERM/, 'nor enter a named shell');
+  await assert.rejects(shellless.startProgram(['true']), /EPERM/, 'nor start a program by its argv');
+  await assert.rejects(a.startProgram(['true']), /EPERM/, 'which no scope does: a start names neither shell nor identity');
   assert.equal((await runtime.exec('echo "planted=$PLANTED"')).stdout, 'planted=\n', 'the embedder\'s shell is untouched');
   assert.equal(await shellless.files.read('/tmp/shared.txt'), 'one plane', 'its files still answer');
   console.log('  [4] a scope that names no shell runs no command');

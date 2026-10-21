@@ -160,10 +160,23 @@ export class FencedWork {
      * a settled drive supersedes the row the same way recovery's does.
      */
     drive(key, record, cause) {
+        return this.driveOnce(key, record, cause, record.attempt >= FENCED_WORK_MAX_ATTEMPT ? null : record.attempt + 1);
+    }
+    /**
+     * Re-drive one journal row for a caller it is owed to: requests the lost
+     * process refused unsent, which ran nowhere and wait on a new one. Not the
+     * autonomous recovery's, so not counted against its attempts: the row's
+     * attempt is kept, and a later crash's recovery counts from it.
+     */
+    driveOwed(key, record, cause) {
+        return this.driveOnce(key, record, cause, record.attempt);
+    }
+    /** `drive`, single-flight per row, with `attempt` the launch's; null when the row's attempts are spent. */
+    driveOnce(key, record, cause, attempt) {
         let inflight = this.drives.get(key);
         if (inflight === undefined) {
             inflight = (async () => {
-                if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
+                if (attempt === null) {
                     this.host.onAbandoned?.(record, cause);
                     await this.supersede(key);
                     return true;
@@ -172,7 +185,7 @@ export class FencedWork {
                     this.host.onRedrive?.(record);
                 let failed = false;
                 try {
-                    await this.host.redrive(record, record.attempt + 1, cause);
+                    await this.host.redrive(record, attempt, cause);
                 }
                 catch (e) {
                     this.host.onRedriveFailed?.(record, e);

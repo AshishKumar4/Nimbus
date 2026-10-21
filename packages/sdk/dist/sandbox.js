@@ -11,6 +11,8 @@ import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { SessionResults, SessionSuccessSchema, SessionFailureSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { decodeProgramStream, PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
+import { feedProgramInput } from '@nimbus-sh/core/runtime/program-start.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
@@ -168,6 +170,9 @@ export class NimbusSandbox {
         return {
             _rpcReady: (options) => this.remoteRpc('ready', [options]),
             _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
+            _rpcStartProgram: (argv, options) => this.remoteProgramStream([argv, options === undefined ? undefined : {
+                    cwd: options.cwd, env: options.env, ...(options.stdin === undefined ? {} : { stdin: 'written' }),
+                }]),
             _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
             _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
             _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
@@ -195,6 +200,7 @@ export class NimbusSandbox {
             _rpcListTerminals: () => this.remoteRpc('listTerminals', []),
             _rpcCloseTerminal: (name) => this.remoteRpc('closeTerminal', [name]),
             _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data]),
+            _rpcWaitProgram: (pid, waitMs) => this.remoteRpc('waitProgram', waitMs === undefined ? [pid] : [pid, waitMs]),
             _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid]),
             _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size]),
             _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal]),
@@ -218,6 +224,14 @@ export class NimbusSandbox {
         if (!response.ok || !success.success)
             throw remoteFailure(response, payload);
         return SessionResults[op].parse(WireDecoder.parse(success.data.result));
+    }
+    /** The `startProgram` op answers with the encoded program stream as its body, or a JSON error. */
+    async remoteProgramStream(args) {
+        const response = await this.remoteFetch('startProgram', args, PROGRAM_STREAM_CONTENT_TYPE);
+        const type = response.headers.get('Content-Type') ?? '';
+        if (response.ok && response.body && type.startsWith(PROGRAM_STREAM_CONTENT_TYPE))
+            return response.body;
+        throw remoteFailure(response, await remotePayload(response));
     }
     /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
     async remoteExecStream(args) {
@@ -258,6 +272,46 @@ export class NimbusSandbox {
             this.readyPromise = this.rpc(this.stub()._rpcReady({ preinstall })).then(() => undefined);
         }
         return this.readyPromise;
+    }
+    /**
+     * Start a program by its argv, as execvp starts one (never a shell line):
+     * resolved once it runs, rejected with Node's spawn error (`code`,
+     * `errno`, `syscall: 'spawn <file>'`, `path`) when it cannot. Its output
+     * is read as you read it; its exit is waitpid's code or signal; `kill`
+     * sends it a signal. A cwd under a mount that runs programs on its own
+     * machine starts it there. `stdin`'s bytes are its input, to their end;
+     * none: its input ends at once. `signal` aborted before it runs cancels
+     * the start (ECANCELED), killing what had started.
+     */
+    async startProgram(argv, options = {}) {
+        const { signal: cancel, ...start } = options;
+        await this.ready();
+        const stub = this.stub();
+        const control = {
+            signal: (pid, sent) => {
+                this.rpc(stub._rpcSignalProcess(pid, sent)).catch((error) => console.error(`Nimbus: could not send ${sent} to ${pid}`, error));
+            },
+            wait: async (pid) => (await this.rpc(stub._rpcWaitProgram(pid))).exit,
+        };
+        // Across HTTP no stream rides the request: the bytes follow the start, written with the program's input calls.
+        const remote = this.target.kind === 'remote';
+        const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, start)), control, cancel);
+        if (remote && start.stdin !== undefined)
+            void this.feed(started, start.stdin);
+        return started;
+    }
+    /**
+     * `stdin` into `program`'s input with the program's input calls
+     * (feedProgramInput). A write that fails cancels `stdin` with its error and
+     * ends the input; a program whose input cannot be ended either is killed.
+     */
+    async feed(program, stdin) {
+        const stub = this.stub();
+        const sink = {
+            write: async (bytes) => (await this.rpc(stub._rpcWriteProcessInput(program.pid, bytes))).ok,
+            end: async () => { await this.rpc(stub._rpcEndProcessInput(program.pid)); },
+        };
+        await feedProgramInput(stdin, sink, program.exit).catch(() => program.kill('SIGKILL'));
     }
     /** Run a command to completion and return its output as strings. Built on {@link execStream}. */
     async exec(command, options = {}) {

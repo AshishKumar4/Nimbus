@@ -214,6 +214,15 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      */
     drive(key: string, record: R, cause: RedriveCause): Promise<boolean>;
     /**
+     * Re-drive one journal row for a caller it is owed to: requests the lost
+     * process refused unsent, which ran nowhere and wait on a new one. Not the
+     * autonomous recovery's, so not counted against its attempts: the row's
+     * attempt is kept, and a later crash's recovery counts from it.
+     */
+    driveOwed(key: string, record: R, cause: RedriveCause): Promise<boolean>;
+    /** `drive`, single-flight per row, with `attempt` the launch's; null when the row's attempts are spent. */
+    private driveOnce;
+    /**
      * Re-drive the launches a previous instance was building when it was reset.
      *
      * Sited on the launch-turn pump because the pump is what an alarm calls, and

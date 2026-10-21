@@ -19,6 +19,8 @@
  * the shell before the host can register a command of its own. A session
  * routed through it would silently acquire all of that.
  */
+import { type ProgramInput } from './start-program.js';
+import type { ExitStatus, Program, StartedSessionProgram } from '../runtime/program-start.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
@@ -292,9 +294,28 @@ export declare class NimbusWorkspace {
      *  supplied one, else the `sh` this workspace spawned. */
     readonly shellProcessPid: number;
     private readonly namedShells;
+    /** Programs startProgram started, and their exits. */
+    private readonly startedPrograms;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
     close(): Promise<void>;
+    /**
+     * `program` started by its argv (Kinu ask 67): the start contract a
+     * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
+     * every start is. Its stdin, output, exit and signals are the child
+     * broker's (workspace/start-program.ts).
+     */
+    startProgram(program: Omit<Program, 'stdin'> & {
+        readonly stdin: ProgramInput;
+    }, cancel: AbortSignal): Promise<StartedSessionProgram>;
+    /** Whether `pid` is a program startProgram started that has not ended: its input and signals are the broker's. */
+    isStartedProgram(pid: number): boolean;
+    /**
+     * Started program `pid`'s exit once it comes, or null once `waitMs` pass
+     * first: its end, apart from its output, which may lie unread. ESRCH for
+     * a pid it did not start, or one that ended over a minute before.
+     */
+    waitProgram(pid: number, waitMs: number): Promise<ExitStatus | null>;
     /**
      * Run `command` as a process of its own and collect what it printed.
      *

@@ -81,9 +81,11 @@ for (const kind of ['cold', 'failed', 'closed', 'capability']) {
 }
 await host.close();
 
-// A leaf the platform replaced under a live record refuses the pinned
-// incarnation before its guest runs; that refusal is the process's host lost,
-// reported once, on both substrates.
+// A leaf the platform replaced under a live record is the process's host
+// lost, reported once, on both substrates. A request sent while its live
+// watch still vouched for the leaf fails by the loss's name, as it may have
+// run; one after the loss was never sent, and is refused so
+// (ProcessNotAdmitted). The replacement never runs either.
 for (const mode of ['facet', 'peer']) {
   let instances = 0, replacementCalls = 0;
   const staleWorld = createFacetWorld(() => {
@@ -101,10 +103,11 @@ for (const mode of ['facet', 'peer']) {
   void stale.lost.catch((error) => losses.push(error));
   const [name] = staleWorld.liveFacets();
   staleWorld.replace(name);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await assert.rejects(stale.handleHttpRequest(new Request('https://app.invalid/'), responseScope(new AbortController().signal).scope),
-      (error) => error.name === 'ProcessHostLost', mode + ': a replaced leaf is this process\'s host lost');
-  }
+  await assert.rejects(stale.handleHttpRequest(new Request('https://app.invalid/'), responseScope(new AbortController().signal).scope),
+    (error) => error.name === 'ProcessHostLost' || (mode === 'peer' && error.name === 'ProcessNotAdmitted'),
+    mode + ': a request sent while its live watch vouched for the leaf fails by the loss');
+  await assert.rejects(stale.handleHttpRequest(new Request('https://app.invalid/'), responseScope(new AbortController().signal).scope),
+    (error) => error.name === 'ProcessNotAdmitted', mode + ': one after the loss is refused unsent');
   await turns();
   assert.equal(replacementCalls, 0, mode + ': the replacement never runs the request');
   assert.equal(losses.length, 1, mode + ': the loss is reported once');

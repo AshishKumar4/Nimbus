@@ -21,11 +21,7 @@
 import { RpcTarget } from 'cloudflare:workers';
 import { CRED_SESSION_USER, sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
-import type {
-  SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions,
-  SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions,
-  SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget,
-} from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 
@@ -136,8 +132,17 @@ export class HostedSession extends RpcTarget implements SessionRpc {
   _rpcKillProcess(pid: number) { return operations.rpcKillProcess(this.#client(), pid); }
   _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
   _rpcCloseTerminal(name: string) { return operations.rpcCloseTerminal(this.#client(), name); }
-  _rpcWriteProcessInput(pid: number, data: string) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
+  _rpcWriteProcessInput(pid: number, data: string | Uint8Array) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
+  _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions) {
+    // A start names no shell and no identity: it would run as the workspace, from its shell's environment.
+    if (this.scope !== null) throw new Error('EPERM: a scoped session starts no program by its argv');
+    return operations.rpcStartProgram(this.#client(), argv, options);
+  }
   _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.#client(), pid); }
+  _rpcWaitProgram(pid: number, waitMs?: number) {
+    if (this.scope !== null) throw new Error('EPERM: a scoped session starts no program by its argv');
+    return operations.rpcWaitProgram(this.#client(), pid, waitMs);
+  }
   _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return operations.rpcResizeProcess(this.#client(), pid, size); }
   _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.#client(), pid, signal); }
   _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions) {

@@ -24,7 +24,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
-import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -635,10 +635,15 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcCloseTerminal(name: string): Promise<{
         closed: boolean;
     }>;
-    _rpcWriteProcessInput(pid: number, data: string): Promise<{
+    _rpcWriteProcessInput(pid: number, data: string | Uint8Array): Promise<{
         ok: boolean;
         pid: number;
     }>;
+    _rpcWriteProcessInputStream(pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
+    _rpcWaitProgram(pid: number, waitMs?: number): Promise<{
+        exit: import("@nimbus-sh/core/runtime/program-start.js").ExitStatus | null;
+    }>;
+    _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
     _rpcEndProcessInput(pid: number): Promise<{
         ok: boolean;
         pid: number;
