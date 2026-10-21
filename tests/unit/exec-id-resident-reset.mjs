@@ -130,7 +130,8 @@ assert.ok(node2.pid > 2 * PID_GEN_STRIDE, 'under a pid of the new generation');
 assert.equal(node2.execId, 'j1', 'the re-driven node server keeps j1');
 assert.equal(python2.execId, 'j1', 'so does the re-driven python server');
 assert.equal(plain2.execId, undefined, 'and the untagged one is still untagged');
-await settle(() => row(node2.pid)?.phase === 'running');
+// Each is running, with its uptime proof captured, before the proofs are run.
+await settle(() => [node2, python2, plain2].every((entry) => row(entry.pid)?.phase === 'running'));
 assert.equal(row(node2.pid)?.execId, 'j1', 'the re-drive journals it again, for the next reset');
 
 // ── generation 3: and the next one ──────────────────────────────────────

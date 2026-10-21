@@ -98,8 +98,8 @@ async function incarnation({ restored = true } = {}) {
   });
   current = { ctx, processes, ports, workspace, runtime };
   runtimes.push(runtime);
-  // Its restore has run once no record a previous incarnation left is still there.
-  if (restored) await settle(() => recordKeys().every((key) => Number(key.slice('dev-server:'.length)) > processes.pidBase), 'the restore');
+  // Its restore, whole: a previous incarnation's record goes before its link is taken back.
+  if (restored) await runtime.restoreDevServers();
   return current;
 }
 const restarted = (processes) => processes.getAll().filter((entry) => entry.restartedFrom !== undefined);
