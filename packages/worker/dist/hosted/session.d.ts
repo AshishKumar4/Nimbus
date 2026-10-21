@@ -19,7 +19,7 @@
  */
 import { RpcTarget } from 'cloudflare:workers';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as operations from '../session/programmatic.js';
 export interface HostedSessionScope {
     /** The only named shell a command may run in; every command must name it (`sandbox(id, { shellId })`). */
@@ -193,13 +193,17 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
     _rpcCloseTerminal(name: string): Promise<{
         closed: boolean;
     }>;
-    _rpcWriteProcessInput(pid: number, data: string): Promise<{
+    _rpcWriteProcessInput(pid: number, data: string | Uint8Array): Promise<{
         ok: boolean;
         pid: number;
     }>;
+    _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
     _rpcEndProcessInput(pid: number): Promise<{
         ok: boolean;
         pid: number;
+    }>;
+    _rpcWaitProgram(pid: number, waitMs?: number): Promise<{
+        exit: import("@nimbus-sh/core/runtime/program-start.js").ExitStatus | null;
     }>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<{
         ok: boolean;

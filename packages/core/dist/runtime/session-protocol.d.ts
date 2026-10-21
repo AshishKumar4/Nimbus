@@ -254,6 +254,14 @@ export declare const SessionDestroyResultSchema: z.ZodObject<{
     reason: z.ZodNullable<z.ZodString>;
 }, z.core.$strip>;
 export type SessionDestroyResult = z.infer<typeof SessionDestroyResultSchema>;
+/** waitpid(2)'s answer: an exit code, or the signal that ended it. */
+export declare const ExitStatusSchema: z.ZodUnion<readonly [z.ZodObject<{
+    code: z.ZodNumber;
+    signal: z.ZodNull;
+}, z.core.$strip>, z.ZodObject<{
+    code: z.ZodNull;
+    signal: z.ZodString;
+}, z.core.$strip>]>;
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
 declare const SessionResultSchemas: {
     ready: z.ZodObject<{
@@ -439,6 +447,15 @@ declare const SessionResultSchemas: {
         ok: z.ZodBoolean;
         pid: z.ZodNumber;
     }, z.core.$strip>;
+    waitProgram: z.ZodObject<{
+        exit: z.ZodNullable<z.ZodUnion<readonly [z.ZodObject<{
+            code: z.ZodNumber;
+            signal: z.ZodNull;
+        }, z.core.$strip>, z.ZodObject<{
+            code: z.ZodNull;
+            signal: z.ZodString;
+        }, z.core.$strip>]>>;
+    }, z.core.$strip>;
     processLogs: z.ZodObject<{
         pid: z.ZodNumber;
         chunks: z.ZodArray<z.ZodObject<{
@@ -561,7 +578,7 @@ declare const SessionResultSchemas: {
     }, z.core.$strip>;
 };
 export type SessionJsonOperation = keyof typeof SessionResultSchemas;
-export type SessionOperation = SessionJsonOperation | 'execStream';
+export type SessionOperation = SessionJsonOperation | 'execStream' | 'startProgram';
 export type SessionResult<Op extends SessionJsonOperation> = z.infer<(typeof SessionResultSchemas)[Op]>;
 export declare const SessionResults: {
     [Op in SessionJsonOperation]: z.ZodType<SessionResult<Op>>;
@@ -608,6 +625,17 @@ export interface SessionExecOptions extends SessionReadyOptions {
     /** startProcess only; spontaneous failures follow this restart policy. */
     restart?: SessionRestartPolicy;
 }
+/** startProgram's: its cwd (absolute), its environment (else the session's exported one), and its input. */
+export interface SessionStartProgramOptions {
+    cwd?: string;
+    env?: Record<string, string>;
+    /**
+     * Its stdin's bytes, to their end (colocated callers); `written`: left
+     * open for writeProcessInput calls until endProcessInput (across HTTP);
+     * none: ended at once.
+     */
+    stdin?: ReadableStream<Uint8Array> | 'written';
+}
 export interface SessionRunCodeOptions extends SessionExecOptions {
     language?: string;
     install?: 'never' | 'ifMissing';
@@ -643,6 +671,8 @@ export interface SessionRpc {
     _rpcReady(options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
     _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcStartProcess(command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
+    /** A program started by its argv (NimbusWorkspace.startProgram), as an encoded program stream (program-stream.ts). */
+    _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcDetachExec(detachId: string): Promise<SessionResult<'detachExec'>>;
     _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<SessionResult<'runCode'>>;
     _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFile'>>;
@@ -667,10 +697,13 @@ export interface SessionRpc {
     _rpcKillProcess(pid: number): Promise<SessionResult<'killProcess'>>;
     _rpcListTerminals(): Promise<SessionTerminal[]>;
     _rpcCloseTerminal(name: string): Promise<SessionResult<'closeTerminal'>>;
-    _rpcWriteProcessInput(pid: number, data: string): Promise<SessionResult<'writeProcessInput'>>;
+    /** Text is queued as a terminal's keys; bytes are a pipe's, the call waiting for room. */
+    _rpcWriteProcessInput(pid: number, data: string | Uint8Array): Promise<SessionResult<'writeProcessInput'>>;
     _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;
     _rpcSignalProcess(pid: number, signal: string): Promise<SessionResult<'signalProcess'>>;
+    /** A started program's exit once it comes, or null once `waitMs` pass: its end apart from its output. */
+    _rpcWaitProgram(pid: number, waitMs?: number): Promise<SessionResult<'waitProgram'>>;
     _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions): Promise<SessionProcessLogs>;
     _rpcListPorts(): Promise<SessionPort[]>;
     _rpcExposePort(port: number, options?: SessionExposeOptions): Promise<SessionResult<'exposePort'>>;
@@ -686,6 +719,8 @@ export interface SessionRpc {
 /** Placement diagnostics belong only to the remotely addressable session. */
 export interface SessionRouterRpc extends SessionRpc {
     _rpcBootProbe(): Promise<SessionResult<'bootProbe'>>;
+    /** A byte write whose answer (the remote API's JSON envelope) is a stream's body: cancelling it withdraws what still waits for room. */
+    _rpcWriteProcessInputStream(pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>>;
 }
 export {};
 //# sourceMappingURL=session-protocol.d.ts.map

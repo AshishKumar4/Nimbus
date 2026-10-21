@@ -326,11 +326,11 @@ export class ChildProcessManager {
     }
     // ── stdin queue ─────────────────────────────────────────────────────────
     /** `writer`, the process writing, is interrupted by a signal it takes (SessionProcessSupervisor.writeInputBytesWait). */
-    async stdinWrite(childPid, data, writer) {
+    async stdinWrite(childPid, data, writer, withdraw) {
         const child = this.children.get(childPid);
         if (!child || child.exitCode !== null)
             return { ok: false };
-        return this.deps.processes.writeInputBytesWait(childPid, data, writer);
+        return this.deps.processes.writeInputBytesWait(childPid, data, writer, withdraw);
     }
     async stdinEnd(childPid) {
         const child = this.children.get(childPid);
@@ -704,6 +704,12 @@ export class ChildProcessManager {
         }
     }
     // ── housekeeping ────────────────────────────────────────────────────────
+    /** Forget child `pid` once its end is published: its holder has taken its output and exit. */
+    release(childPid) {
+        const child = this.children.get(childPid);
+        if (child !== undefined && this._ended(child))
+            this.children.delete(childPid);
+    }
     /** Reap entries older than maxAgeMs whose end is published. */
     reap(maxAgeMs = 60_000) {
         const now = Date.now();

@@ -73,7 +73,7 @@ import type { W12EnableResult } from './replica-routes.js';
 export interface SessionInternal extends Pick<SessionRouterRpc,
   | '_rpcReady' | '_rpcBootProbe' | '_rpcExecStream' | '_rpcStartProcess' | '_rpcRunCode'
   | '_rpcInstallRuntime' | '_rpcEnsureRuntimes' | '_rpcListRuntimes' | '_rpcListProcesses'
-  | '_rpcKillProcess' | '_rpcListTerminals' | '_rpcCloseTerminal' | '_rpcWriteProcessInput' | '_rpcEndProcessInput' | '_rpcResizeProcess'
+  | '_rpcKillProcess' | '_rpcListTerminals' | '_rpcCloseTerminal' | '_rpcWriteProcessInput' | '_rpcWriteProcessInputStream' | '_rpcWaitProgram' | '_rpcEndProcessInput' | '_rpcResizeProcess' | '_rpcStartProgram'
   | '_rpcSignalProcess' | '_rpcProcessLogs' | '_rpcListPorts' | '_rpcExposePort'
   | '_rpcEnsureDurableApp' | '_rpcUnexposePort' | '_rpcDeleteFile'
 > {

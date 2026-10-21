@@ -21,6 +21,7 @@ import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
@@ -182,6 +183,21 @@ export async function handleNimbusRemoteApi(
       const args = body.args ?? [];
       const wire = await ctx.stub._rpcExecStream(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
       return corsResponse(wire, 200, { 'Content-Type': EXEC_STREAM_CONTENT_TYPE });
+    }
+    // A started program is a stream too; its input comes in writeProcessInput calls (no stream rides a request).
+    if (body.op === 'startProgram') {
+      const args = body.args ?? [];
+      const wire = await ctx.stub._rpcStartProgram(argvArg(args[0]), startProgramOptions(args[1]));
+      return corsResponse(wire, 200, { 'Content-Type': PROGRAM_STREAM_CONTENT_TYPE });
+    }
+    // A byte write waits for room: its answer is a stream's body, so a client that leaves withdraws it.
+    if (body.op === 'writeProcessInput') {
+      const args = body.args ?? [];
+      const data = fileContentArg(args[1]);
+      if (data instanceof Uint8Array) {
+        const answer = await ctx.stub._rpcWriteProcessInputStream(numberArg(args[0], 'pid'), data);
+        return corsResponse(answer, 200, { 'Content-Type': 'application/json' });
+      }
     }
     const t0 = Date.now();
     return await useRpcResource(
@@ -381,7 +397,7 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     case 'closeTerminal':
       return ctx.stub._rpcCloseTerminal(stringArg(args[0], 'name'));
     case 'writeProcessInput':
-      return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), stringArg(args[1], 'data'));
+      return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), fileContentArg(args[1]));
     case 'endProcessInput':
       return ctx.stub._rpcEndProcessInput(numberArg(args[0], 'pid'));
     case 'resizeProcess': {
@@ -393,6 +409,9 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     }
     case 'signalProcess':
       return ctx.stub._rpcSignalProcess(numberArg(args[0], 'pid'), stringArg(args[1], 'signal'));
+    case 'waitProgram':
+      // JSON has no undefined: an absent wait is null too.
+      return ctx.stub._rpcWaitProgram(numberArg(args[0], 'pid'), args[1] === undefined || args[1] === null ? undefined : numberArg(args[1], 'waitMs'));
     case 'processLogs':
       return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), processLogOptions(args[1]));
     case 'listPorts':
@@ -577,6 +596,31 @@ function numberArg(value: unknown, name: string): number {
   const number = Number(value);
   if (!Number.isFinite(number)) throw apiError(`${name} must be a number`, 'E_ARG_SHAPE', 400);
   return number;
+}
+
+function argvArg(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) throw apiError('argv must be a non-empty array of strings', 'E_ARG_SHAPE', 400);
+  return value.map((word, index) => stringArg(word, `argv[${index}]`));
+}
+
+/** startProgram's options as a remote caller may give them: its cwd and environment, no stream. */
+function startProgramOptions(value: unknown): { cwd?: string; env?: Record<string, string>; stdin?: 'written' } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object') throw apiError('options must be an object', 'E_ARG_SHAPE', 400);
+  const cwd = Reflect.get(value, 'cwd');
+  const env = Reflect.get(value, 'env');
+  const stdin = Reflect.get(value, 'stdin');
+  const options: { cwd?: string; env?: Record<string, string>; stdin?: 'written' } = {};
+  if (stdin !== undefined) {
+    if (stdin !== 'written') throw apiError("stdin must be 'written': its bytes follow in writeProcessInput calls", 'E_ARG_SHAPE', 400);
+    options.stdin = stdin;
+  }
+  if (cwd !== undefined) options.cwd = stringArg(cwd, 'cwd');
+  if (env !== undefined) {
+    if (typeof env !== 'object' || env === null) throw apiError('env must be an object of strings', 'E_ARG_SHAPE', 400);
+    options.env = Object.fromEntries(Object.entries(env).map(([name, word]) => [name, stringArg(word, `env.${name}`)]));
+  }
+  return options;
 }
 
 function fileContentArg(value: unknown): string | Uint8Array {

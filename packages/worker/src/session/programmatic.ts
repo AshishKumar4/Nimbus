@@ -23,14 +23,7 @@ import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import {
-  SessionProcessLogsOptionsSchema,
-  type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions,
-  type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult,
-  type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget,
-  type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize,
-  type SessionRuntimeInstallOptions, type SessionResult,
-} from '@nimbus-sh/core/runtime/session-protocol.js';
+import { SessionProcessLogsOptionsSchema, type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult, type SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
@@ -44,6 +37,9 @@ import { socketOpen, type NamedTerminals } from './named-terminals.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { encodeProgramStream } from '@nimbus-sh/core/runtime/program-stream.js';
+import type { Program } from '@nimbus-sh/core/runtime/program-start.js';
+import type { ProgramInput } from '@nimbus-sh/core/workspace/start-program.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -707,15 +703,99 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number) {
   return { ok, pid: n };
 }
 
-export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string) {
+/**
+ * A program started by its argv (NimbusWorkspace.startProgram), as one byte
+ * stream of frames: its start's answer, its output, its exit. Its cwd is the
+ * caller's (absolute) else the session shell's; its environment the
+ * caller's else the session shell's exported one, as a child's is its
+ * parent's.
+ */
+export async function rpcStartProgram(
+  self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>,
+  argv: string[],
+  options: SessionStartProgramOptions = {},
+): Promise<ReadableStream<Uint8Array>> {
+  if (!Array.isArray(argv) || argv.length === 0 || argv.some((word) => typeof word !== 'string')) {
+    throw new TypeError('startProgram: argv must be a non-empty array of strings');
+  }
+  if (options.cwd !== undefined && !options.cwd.startsWith('/')) throw new TypeError(`startProgram: cwd must be absolute, got ${JSON.stringify(options.cwd)}`);
+  await self.ensureRuntimeReady();
+  const workspace = self.runtimeWorkspace;
+  if (!workspace) throw new Error('startProgram: the session has no workspace');
+  const program: Omit<Program, 'stdin'> & { stdin: ProgramInput } = {
+    argv: [...argv],
+    env: options.env ?? workspace.shell.getExportedEnv(),
+    cwd: options.cwd ?? workspace.shell.getCwd(),
+    stdin: options.stdin ?? null,
+  };
+  return encodeProgramStream((cancel) => workspace.startProgram(program, cancel));
+}
+
+/**
+ * Started program `pid`'s exit once it comes, or null after `waitMs` (at
+ * most a minute): its end, which its stream says only after the output it
+ * holds is read.
+ */
+export async function rpcWaitProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, pid: number, waitMs = 25_000) {
+  await self.ensureRuntimeReady();
+  const workspace = self.runtimeWorkspace;
+  if (!workspace) throw new Error('waitProgram: the session has no workspace');
+  const bound = Math.min(Math.max(0, Number(waitMs) || 0), 60_000);
+  return { exit: await workspace.waitProgram(Number(pid), bound) };
+}
+
+/** Whether `pid` is a program started by its argv: its input and signals are the broker's. */
+function startedProgram(self: Pick<ProgrammaticHost, 'runtimeWorkspace'>, pid: number): boolean {
+  return self.runtimeWorkspace?.isStartedProgram(pid) === true;
+}
+
+export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string | Uint8Array) {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
-  return writeProcessInput(self.processes, n, String(data ?? ''));
+  if (typeof data === 'string') return writeProcessInput(self.processes, n, data);
+  return writeProcessBytes(self, n, data);
+}
+
+/** What a byte write reaches: the session's process table, and its workspace's started programs. */
+type ProcessBytesHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'processes'>;
+
+/** Bytes are a pipe's: in order, the call waiting for room; `gone`, its caller left, withdraws what still waits. */
+async function writeProcessBytes(self: ProcessBytesHost, pid: number, data: Uint8Array, gone?: AbortSignal) {
+  const children = self.runtimeWorkspace?.children;
+  const written = children !== undefined && startedProgram(self, pid)
+    ? await children.stdinWrite(pid, data, undefined, gone)
+    : await self.processes.writeInputBytesWait(pid, data, undefined, gone);
+  return { ok: written.ok, pid };
+}
+
+/**
+ * A byte write as the remote API makes it: its answer, the JSON envelope a
+ * remote call answers with, is the body of a stream, so a client that leaves
+ * while the write waits for room (its body cancelled) withdraws it.
+ */
+export async function rpcWriteProcessInputStream(self: ProcessBytesHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+  await self.ensureRuntimeReady();
+  const gone = new AbortController();
+  const writing = writeProcessBytes(self, Number(pid), data, gone.signal);
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const result = await writing;
+      if (gone.signal.aborted) return;
+      controller.enqueue(new TextEncoder().encode(JSON.stringify({ ok: true, result })));
+      controller.close();
+    },
+    cancel() { gone.abort(); },
+  }, { highWaterMark: 0 });
 }
 
 export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number) {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
+  const children = self.runtimeWorkspace?.children;
+  if (children !== undefined && startedProgram(self, n)) {
+    await children.stdinEnd(n);
+    return { ok: true, pid: n };
+  }
   return endProcessInput(self.processes, n);
 }
 
@@ -734,7 +814,11 @@ export async function rpcSignalProcess(
   signal: string,
 ) {
   await ensureProgrammaticReady(self);
-  return signalProcess(self.processes, Number(pid), String(signal));
+  const n = Number(pid);
+  // A started program is the broker's child: its signal is the broker's to deliver (ChildProcessManager.kill).
+  const children = self.runtimeWorkspace?.children;
+  if (children !== undefined && startedProgram(self, n)) return { ok: children.kill(n, String(signal)), pid: n };
+  return signalProcess(self.processes, n, String(signal));
 }
 
 export async function rpcProcessLogs(

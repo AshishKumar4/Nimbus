@@ -149,6 +149,11 @@ export const SessionDestroyResultSchema = z.object({
     reason: z.string().nullable(),
 });
 const ProcessControlResultSchema = z.object({ ok: z.boolean(), pid: z.number() });
+/** waitpid(2)'s answer: an exit code, or the signal that ended it. */
+export const ExitStatusSchema = z.union([
+    z.object({ code: z.number(), signal: z.null() }),
+    z.object({ code: z.null(), signal: z.string() }),
+]);
 const RemovedAppSchema = z.object({ owner: z.string(), removed: z.boolean(), port: z.number().nullable() });
 const FileBytesSchema = z.instanceof(Uint8Array);
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
@@ -183,6 +188,7 @@ const SessionResultSchemas = {
     endProcessInput: ProcessControlResultSchema,
     resizeProcess: ProcessControlResultSchema,
     signalProcess: ProcessControlResultSchema,
+    waitProgram: z.object({ exit: ExitStatusSchema.nullable() }),
     processLogs: SessionProcessLogsSchema,
     listPorts: z.array(SessionPortSchema),
     exposePort: SessionExposedPortSchema,

@@ -144,7 +144,7 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         ok: boolean;
         pid: number;
     }>;
-    writeProcessInput: (pid: number, data: string) => Promise<{
+    writeProcessInput: (pid: number, data: string | Uint8Array<ArrayBufferLike>) => Promise<{
         ok: boolean;
         pid: number;
     }>;

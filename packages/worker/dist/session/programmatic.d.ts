@@ -19,7 +19,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult, type SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, SpawnedWorker } from '../facets/manager.js';
 import { type GenerationContext } from '@nimbus-sh/fabric/generation.js';
@@ -172,10 +172,34 @@ export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Pro
     ok: boolean;
     pid: number;
 }>;
-export declare function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string): Promise<{
+/**
+ * A program started by its argv (NimbusWorkspace.startProgram), as one byte
+ * stream of frames: its start's answer, its output, its exit. Its cwd is the
+ * caller's (absolute) else the session shell's; its environment the
+ * caller's else the session shell's exported one, as a child's is its
+ * parent's.
+ */
+export declare function rpcStartProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
+/**
+ * Started program `pid`'s exit once it comes, or null after `waitMs` (at
+ * most a minute): its end, which its stream says only after the output it
+ * holds is read.
+ */
+export declare function rpcWaitProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, pid: number, waitMs?: number): Promise<{
+    exit: import("@nimbus-sh/core/runtime/program-start.js").ExitStatus | null;
+}>;
+export declare function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string | Uint8Array): Promise<{
     ok: boolean;
     pid: number;
 }>;
+/** What a byte write reaches: the session's process table, and its workspace's started programs. */
+type ProcessBytesHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'processes'>;
+/**
+ * A byte write as the remote API makes it: its answer, the JSON envelope a
+ * remote call answers with, is the body of a stream, so a client that leaves
+ * while the write waits for room (its body cancelled) withdraws it.
+ */
+export declare function rpcWriteProcessInputStream(self: ProcessBytesHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>>;
 export declare function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{
     ok: boolean;
     pid: number;

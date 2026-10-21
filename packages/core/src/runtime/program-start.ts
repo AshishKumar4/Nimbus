@@ -57,3 +57,47 @@ export type ProgramPlacement =
   | { readonly kind: 'absent'; readonly reason: string };
 
 export const LOCAL_PLACEMENT: ProgramPlacement = Object.freeze({ kind: 'local' });
+
+/** A program a session started (NimbusWorkspace.startProgram), and its pid in the session's process table. */
+export interface StartedSessionProgram extends StartedProgram {
+  readonly pid: number;
+}
+
+/** Where a program's input goes: each write waits for room (false: it takes no more); `end` is its EOF, after every write. */
+export interface ProgramInputSink {
+  write(bytes: Uint8Array): Promise<boolean>;
+  end(): Promise<void>;
+}
+
+/**
+ * `stdin`'s bytes into `sink`, in order, then its end, as a pipe's writer
+ * gives them; a source that fails ends it there, as a writer that dies
+ * closes its pipe. Once the program has ended (`ended`) or takes no more,
+ * the source is let go: a read still waiting is cancelled. A sink that fails
+ * lets the source go with its error and ends the input; when that fails too
+ * it rejects, and the caller is left a program it can only kill.
+ */
+export async function feedProgramInput(stdin: ReadableStream<Uint8Array>, sink: ProgramInputSink, ended: Promise<unknown>): Promise<void> {
+  const reader = stdin.getReader();
+  const gone = ended.then(() => null, () => null);
+  try {
+    for (;;) {
+      let next: ReadableStreamReadResult<Uint8Array> | null;
+      try {
+        next = await Promise.race([reader.read(), gone]);
+      } catch {
+        break;
+      }
+      if (next !== null && next.done) break;
+      if (next === null || !(await sink.write(next.value))) {
+        await reader.cancel();
+        return;
+      }
+    }
+  } catch (error) {
+    await reader.cancel(error);
+  } finally {
+    reader.releaseLock();
+  }
+  await sink.end();
+}

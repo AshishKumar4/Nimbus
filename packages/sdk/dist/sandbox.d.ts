@@ -11,6 +11,7 @@ export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contr
 export type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ExecChunk, type ExecExit, type ExecStream, type ExecOutput } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
 export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime, };
 import { type NimbusConfig, type NimbusCodeLanguage, type RuntimeSpec } from '@nimbus-sh/config/sandbox';
 export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, RuntimeSpec, NimbusRuntimeName as RuntimeName } from '@nimbus-sh/config/sandbox';
@@ -152,10 +153,34 @@ export declare class NimbusSandbox {
     private stub;
     private remoteStub;
     private remoteRpc;
+    /** The `startProgram` op answers with the encoded program stream as its body, or a JSON error. */
+    private remoteProgramStream;
     /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
     private remoteExecStream;
     private remoteFetch;
     ready(): Promise<void>;
+    /**
+     * Start a program by its argv, as execvp starts one (never a shell line):
+     * resolved once it runs, rejected with Node's spawn error (`code`,
+     * `errno`, `syscall: 'spawn <file>'`, `path`) when it cannot. Its output
+     * is read as you read it; its exit is waitpid's code or signal; `kill`
+     * sends it a signal. A cwd under a mount that runs programs on its own
+     * machine starts it there. `stdin`'s bytes are its input, to their end;
+     * none: its input ends at once. `signal` aborted before it runs cancels
+     * the start (ECANCELED), killing what had started.
+     */
+    startProgram(argv: string[], options?: {
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: ReadableStream<Uint8Array>;
+        signal?: AbortSignal;
+    }): Promise<StartedSessionProgram>;
+    /**
+     * `stdin` into `program`'s input with the program's input calls
+     * (feedProgramInput). A write that fails cancels `stdin` with its error and
+     * ends the input; a program whose input cannot be ended either is killed.
+     */
+    private feed;
     /** Run a command to completion and return its output as strings. Built on {@link execStream}. */
     exec(command: string, options?: NimbusExecOptions): Promise<NimbusExecResult>;
     /**
