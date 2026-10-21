@@ -2372,7 +2372,9 @@ const __fsMod = (() => {
   const _cursor = globalThis.__nimbusVfsCursor
     || (globalThis.__nimbusVfsCursor = { position: null });
   /** \`k\`'s feed's revision at the cursor: the clock its fills and reports are dated by. */
-  function _feedRev(k) { return _cursor.position === null || !_nsActive() ? 0 : __nimbusResidentModule.feedFor(_cursor.position, k).cursor; }
+  function _feedRev(k) { return _feedRevAt(_cursor.position, k); }
+  /** \`k\`'s feed's revision at \`at\` (a position the cursor held), 0 before the store answers. */
+  function _feedRevAt(at, k) { return at === null || !_nsActive() ? 0 : __nimbusResidentModule.feedFor(at, k).cursor; }
   // Admissions under way: from a delta's admission until the last directory
   // it made searchable is relisted, the cursor can be past rows the
   // namespace does not hold yet. Nothing is answered from the view then (_heldStat).
@@ -2486,7 +2488,7 @@ const __fsMod = (() => {
    * and before its RPC.
    */
   function _beginFill(k) {
-    const fill = { k, rev: _feedRev(k), reported: -1 };
+    const fill = { k, rev: _feedRev(k), at: _cursor.position, reported: -1 };
     let live = _fillReports.get(k);
     if (!live) {
       live = new __NimbusSafeSet();
@@ -3750,8 +3752,9 @@ const __fsMod = (() => {
         // reported it unheard, so a cursor that moved spoils it.
         if (first.path !== undefined && _strip(first.path) !== _strip(absPath)) {
           reachedFill = _beginFill(_strip(first.path));
-          reachedFill.rev = fill.rev;
-          if (fill.reported > fill.rev || _feedRev(fill.k) !== fill.rev) reachedFill.reported = Infinity;
+          // Dated where the read's barrier left the cursor, on the reached file's own feed.
+          reachedFill.rev = _feedRevAt(fill.at, reachedFill.k);
+          if (fill.reported > fill.rev || fill.at !== _cursor.position) reachedFill.reported = Infinity;
         }
       } catch (error) {
         _endFill(fill);

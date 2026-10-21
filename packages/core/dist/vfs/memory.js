@@ -74,9 +74,38 @@ export class MemoryVFS {
         }
         return { epoch: this.epoch, rev, paths, poison: false };
     }
-    /** `path` changed now (`structural`: a directory removed, moved or given another mode; `gone`: nothing is there). */
-    note(path, structural = false, gone = false) {
-        const key = `/${rootClampedSegments(path).join('/')}`;
+    /**
+     * The name in the tree `path` leads to, as find walks it: each link on the
+     * way followed, a final one where `follow`; where a name on the way is
+     * missing, the rest as spelled.
+     */
+    treePath(path, follow, hops = 0) {
+        const parts = rootClampedSegments(path);
+        let at = this.root;
+        for (let i = 0; i < parts.length; i++) {
+            const next = at.type === 'directory' ? at.children.get(parts[i]) : undefined;
+            if (next === undefined)
+                return `/${parts.join('/')}`;
+            if (next.type === 'symlink' && (follow || i < parts.length - 1) && hops < 40) {
+                const base = next.target.startsWith('/') ? '' : `/${parts.slice(0, i).join('/')}`;
+                return this.treePath(`${base}/${next.target}/${parts.slice(i + 1).join('/')}`, follow, hops + 1);
+            }
+            at = next;
+        }
+        return `/${parts.join('/')}`;
+    }
+    /** The tree name of `path`'s directory, as parentOf finds it (its links followed). */
+    treeParent(path) {
+        const parts = rootClampedSegments(path);
+        parts.pop();
+        return this.treePath(`/${parts.join('/')}`, true);
+    }
+    /**
+     * The tree name `key` changed now (treePath, treeParent: a change through a
+     * link is its target's). `structural`: a directory removed, moved or given
+     * another mode; `gone`: nothing is there.
+     */
+    note(key, structural = false, gone = false) {
         const had = this.changed.get(key);
         if (had !== undefined) {
             this.changed.delete(key);
@@ -196,7 +225,7 @@ export class MemoryVFS {
                 throw fail('EISDIR', call);
             existing.data = bytes;
             this.touch(existing);
-            this.note(path);
+            this.note(this.treePath(path, true));
             return;
         }
         const { dir, name } = this.parentOf(path, call);
@@ -204,8 +233,8 @@ export class MemoryVFS {
         entry.data = bytes;
         dir.children.set(name, entry);
         this.touch(dir);
-        this.note(path);
-        this.note(`${path}/..`);
+        this.note(this.treePath(path, false));
+        this.note(this.treeParent(path));
     }
     writeRange(path, offset, bytes) {
         const call = { syscall: 'open', path };
@@ -217,7 +246,7 @@ export class MemoryVFS {
         next.set(bytes, offset);
         entry.data = next;
         this.touch(entry);
-        this.note(path);
+        this.note(this.treePath(path, true));
     }
     truncate(path, size) {
         const entry = this.file(path, { syscall: 'open', path });
@@ -225,7 +254,7 @@ export class MemoryVFS {
         next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
         entry.data = next;
         this.touch(entry);
-        this.note(path);
+        this.note(this.treePath(path, true));
     }
     readdir(path) {
         const call = { syscall: 'scandir', path };
@@ -259,8 +288,8 @@ export class MemoryVFS {
         const { dir, name } = this.parentOf(path, call);
         dir.children.set(name, this.entry('directory', options?.mode ?? 0o755));
         this.touch(dir);
-        this.note(path);
-        this.note(`${path}/..`);
+        this.note(this.treePath(path, false));
+        this.note(this.treeParent(path));
     }
     unlink(path) {
         const call = { syscall: 'unlink', path };
@@ -275,8 +304,8 @@ export class MemoryVFS {
         dir.children.delete(name);
         this.count--;
         this.touch(dir);
-        this.note(path, false, true);
-        this.note(`${path}/..`);
+        this.note(this.treePath(path, false), false, true);
+        this.note(this.treeParent(path));
     }
     rmdir(path) {
         const call = { syscall: 'rmdir', path };
@@ -291,8 +320,8 @@ export class MemoryVFS {
         dir.children.delete(name);
         this.count--;
         this.touch(dir);
-        this.note(path, true, true);
-        this.note(`${path}/..`);
+        this.note(this.treePath(path, false), true, true);
+        this.note(this.treeParent(path));
     }
     removeRecursive(path) {
         const call = { syscall: 'rm', path };
@@ -303,8 +332,8 @@ export class MemoryVFS {
         dir.children.delete(name);
         this.count -= MemoryVFS.sizeOf(entry);
         this.touch(dir);
-        this.note(path, entry.type === 'directory', true);
-        this.note(`${path}/..`);
+        this.note(this.treePath(path, false), entry.type === 'directory', true);
+        this.note(this.treeParent(path));
     }
     /**
      * POSIX rename(2): a file target is replaced; a directory replaces an empty
@@ -341,10 +370,11 @@ export class MemoryVFS {
             this.count--;
         this.touch(source.dir);
         this.touch(target.dir);
-        this.note(from, entry.type === 'directory', true);
-        this.note(to, replaced?.type === 'directory');
-        this.note(`${from}/..`);
-        this.note(`${to}/..`);
+        // A directory moved is structural at both names: what was under it is under the new one, which a reader lists again.
+        this.note(this.treePath(from, false), entry.type === 'directory', true);
+        this.note(this.treePath(to, false), entry.type === 'directory' || replaced?.type === 'directory');
+        this.note(this.treeParent(from));
+        this.note(this.treeParent(to));
     }
     symlink(target, path) {
         const call = { syscall: 'symlink', path: target, dest: path };
@@ -355,8 +385,8 @@ export class MemoryVFS {
         entry.target = target;
         dir.children.set(name, entry);
         this.touch(dir);
-        this.note(path);
-        this.note(`${path}/..`);
+        this.note(this.treePath(path, false));
+        this.note(this.treeParent(path));
     }
     readlink(path) {
         const call = { syscall: 'readlink', path };
@@ -374,7 +404,7 @@ export class MemoryVFS {
             throw fail('ENOENT', call);
         entry.mode = mode & 0o7777;
         this.touch(entry);
-        this.note(path, entry.type === 'directory');
+        this.note(this.treePath(path, true), entry.type === 'directory');
     }
     /** Its entries keep an mtime alone: the atime is taken and dropped. */
     utimes(path, _atime, mtime) {
@@ -384,7 +414,7 @@ export class MemoryVFS {
             throw fail('ENOENT', call);
         entry.mtimeMs = timeAt(mtime, entry.mtimeMs, Date.now());
         entry.revision = ++this.clock;
-        this.note(path);
+        this.note(this.treePath(path, true));
     }
     describe() {
         return { source: 'memory', type: 'tmpfs', options: ['rw'] };

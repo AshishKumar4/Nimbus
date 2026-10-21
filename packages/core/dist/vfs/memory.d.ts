@@ -25,7 +25,19 @@ export declare class MemoryVFS implements VFS {
     private entry;
     /** What changed since `cursor` of `epoch`: each path's newest change after it, with its lstat now where `stats`. */
     private since;
-    /** `path` changed now (`structural`: a directory removed, moved or given another mode; `gone`: nothing is there). */
+    /**
+     * The name in the tree `path` leads to, as find walks it: each link on the
+     * way followed, a final one where `follow`; where a name on the way is
+     * missing, the rest as spelled.
+     */
+    private treePath;
+    /** The tree name of `path`'s directory, as parentOf finds it (its links followed). */
+    private treeParent;
+    /**
+     * The tree name `key` changed now (treePath, treeParent: a change through a
+     * link is its target's). `structural`: a directory removed, moved or given
+     * another mode; `gone`: nothing is there.
+     */
     private note;
     /** The entries `entry` holds, itself among them. */
     private static sizeOf;

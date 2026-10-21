@@ -50,7 +50,8 @@ export function immutableChanges(vfs, version = () => 0) {
         const at = version();
         const entries = treeListing(vfs);
         const text = entries.map((e) => `${e.path}\u0000${e.kind}\u0000${e.size}\u0000${e.stat.mode}\u0000${e.stat.uid}\u0000${e.stat.gid}`).join('\u0001');
-        tree = { entries, epoch: `tree:${hash(text)}`, version: at };
+        // Its version too: a registration that replaces a file's content with as many bytes is another tree.
+        tree = { entries, epoch: `tree:${hash(text)}.${at}`, version: at };
         return tree;
     };
     return {

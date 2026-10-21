@@ -8,9 +8,9 @@
  * any fed mount is.
  *
  * Its epoch is its tree's: every name with its type, size, mode and owner,
- * as `stat` and `readdir` say them now. A tree that changes (a /proc file
- * registered) is another epoch, so a reader holding the last one lists
- * again.
+ * as `stat` and `readdir` say them now, and the version the backend gives
+ * it. A tree that changes (a /proc file registered) is another epoch, so a
+ * reader holding the last one lists again.
  */
 import type { VfsBackendPage, VfsListEntry } from '../runtime/os-contracts.js';
 import type { SyncVFS, VfsChanges } from './vfs.js';

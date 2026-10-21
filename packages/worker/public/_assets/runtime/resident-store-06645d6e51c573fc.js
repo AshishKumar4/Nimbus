@@ -495,6 +495,8 @@ var __nimbusResidentModule = (() => {
   }
   function sameClock(a, b, key) {
     const point = feedPointOf(a, key);
+    if (feedPointOf(b, key) !== point)
+      return false;
     const x = feedOf(a, point);
     const y = feedOf(b, point);
     return x !== void 0 && y !== void 0 && x.epoch === y.epoch;
@@ -3244,6 +3246,7 @@ var __nimbusResidentModule = (() => {
         }
         dropped.push(row.path);
       }
+      let vouched = 0;
       for (const [path, rev] of cells.heldRevisions()) {
         if (current.has(path)) continue;
         const entry = listed.get(path);
@@ -3252,14 +3255,19 @@ var __nimbusResidentModule = (() => {
           own.push({ path, rev: !comparable(path) ? null : entry !== void 0 ? entry.rev : feedFor(at, path).cursor });
           continue;
         }
-        if (vouches(entry, rev) || !judgeable) {
+        if (vouches(entry, rev)) {
+          vouched++;
+          current.add(path);
+          continue;
+        }
+        if (!judgeable) {
           current.add(path);
           continue;
         }
         cells.forget(path);
         dropped.push(path);
       }
-      if (dropped.length > 0 && !comparable("") && rekeyed === 0) {
+      if (dropped.length > 0 && vouched === 0 && rekeyed === 0) {
         t.dropDatedFiles();
       } else {
         for (const path of dropped) {

@@ -99,6 +99,8 @@ const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'see
 const NOT_NOW = Symbol('not now');
 /** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
 const REFUSED_ON_A_DIRECTORY = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
+/** The device of a directory the namespace makes that no backend holds (CompositeVFS: no backend's, the root mount's none). */
+const NAMESPACE_DEV = 0;
 /** Whether the session refuses `syscall` with `args` on a directory: an open as the session's open judges one (refusesDirectory). */
 function refusesADirectory(syscall, args) {
     if (syscall !== 'open')
@@ -591,8 +593,9 @@ export function residentFilesystem(session, resident, delegation) {
         const cursor = store.cursor();
         if (cursor === null)
             return false;
-        // A directory the namespace makes above a fed mount (no backend holds it): the table's, which a poison moves.
-        if (entry.type === 'directory' && abovePoint(cursor, key))
+        // A directory the namespace makes above a fed mount that no backend holds (no device: the namespace's own): the
+        // table's, which a poison moves. One a backend without a feed holds is that backend's, its changes unreported.
+        if (entry.type === 'directory' && entry.dev === NAMESPACE_DEV && abovePoint(cursor, key))
             return true;
         const at = feedPointOf(cursor, key);
         if (at === ROOT_FEED)
@@ -884,6 +887,9 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = entryAt(key);
         // Only the file the caller stat'd, at the revision it stat'd: anything else is the session's to open.
         if (!entry || entry.type !== 'file' || entry.dev !== stat.dev || entry.ino !== stat.ino || entry.size > WASI_RESIDENT_FILE_CAP_BYTES)
+            return null;
+        // Bytes no row holds (a device's, a volatile /proc file's): a descriptor of the session's reads them.
+        if (isCharacterDevice(entry.mode) || volatileProc(key, entry))
             return null;
         if (!modeAllows(entry, 4, store.cred))
             return null;
