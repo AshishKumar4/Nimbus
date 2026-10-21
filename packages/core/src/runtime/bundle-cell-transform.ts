@@ -259,6 +259,8 @@ export interface BundleCellTransformStats {
   transformed: number;
   /** esbuild's verdict was a rejection; the cell is a diagnostic shim. */
   failed: number;
+  /** Scratch forensics: the exact rejected cells and their diagnostic shims. */
+  failures?: Array<{ path: string; diagnostic: string }>;
   /** Source sent to the transform host. */
   hostBytes: number;
   /** Results the store refused, storage being full, and the first refusal's reason. */
@@ -305,6 +307,7 @@ export async function transformBundleCells(
     place(cell.path, result);
     if (result.failed) {
       stats.failed++;
+      (stats.failures ??= []).push({ path: cell.path, diagnostic: result.code });
       return;
     }
     stats.transformed++;
