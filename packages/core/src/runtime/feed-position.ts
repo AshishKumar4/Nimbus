@@ -144,9 +144,11 @@ export function feedFor(position: FeedPosition, key: string): FeedCursor {
   return feedOf(position, feedPointOf(position, key)) ?? rootOf(position);
 }
 
-/** Whether a revision of `key` read at `a` and one read at `b` are of one clock: its feed at the same epoch in both. */
+/** Whether a revision of `key` read at `a` and one read at `b` are of one clock: the same feed for it in both, at the same epoch. */
 export function sameClock(a: FeedPosition, b: FeedPosition, key: string): boolean {
+  // Both route it to one feed: a mount made over it since (or gone) is another clock, whatever the root's says.
   const point = feedPointOf(a, key);
+  if (feedPointOf(b, key) !== point) return false;
   const x = feedOf(a, point);
   const y = feedOf(b, point);
   return x !== undefined && y !== undefined && x.epoch === y.epoch;

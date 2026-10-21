@@ -8,9 +8,9 @@
  * any fed mount is.
  *
  * Its epoch is its tree's: every name with its type, size, mode and owner,
- * as `stat` and `readdir` say them now. A tree that changes (a /proc file
- * registered) is another epoch, so a reader holding the last one lists
- * again.
+ * as `stat` and `readdir` say them now, and the version the backend gives
+ * it. A tree that changes (a /proc file registered) is another epoch, so a
+ * reader holding the last one lists again.
  */
 import type { VfsBackendPage, VfsListEntry } from '../runtime/os-contracts.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
@@ -63,7 +63,8 @@ export function immutableChanges(vfs: Pick<SyncVFS, 'stat' | 'readdir'>, version
     const at = version();
     const entries = treeListing(vfs);
     const text = entries.map((e) => `${e.path}\u0000${e.kind}\u0000${e.size}\u0000${e.stat.mode}\u0000${e.stat.uid}\u0000${e.stat.gid}`).join('\u0001');
-    tree = { entries, epoch: `tree:${hash(text)}`, version: at };
+    // Its version too: a registration that replaces a file's content with as many bytes is another tree.
+    tree = { entries, epoch: `tree:${hash(text)}.${at}`, version: at };
     return tree;
   };
   return {

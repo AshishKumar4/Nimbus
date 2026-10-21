@@ -291,6 +291,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // own. Dated: kept only where the listing proves it current; otherwise it
     // goes, and is fetched again like any dropped row, so a sync read of it is
     // a miss rather than bytes the authority has replaced.
+    /** Dated files the listing proved current: kept, so never swept with the rest. */
+    let vouched = 0;
     for (const [path, rev] of cells.heldRevisions()) {
       if (current.has(path)) continue;
       const entry = listed.get(path);
@@ -299,17 +301,19 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         own.push({ path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor });
         continue;
       }
-      if (vouches(entry, rev) || !judgeable) { current.add(path); continue; }
+      if (vouches(entry, rev)) { vouched++; current.add(path); continue; }
+      if (!judgeable) { current.add(path); continue; }
       cells.forget(path);
       dropped.push(path);
     }
     // Sweep what could not be vouched for. When NOTHING could — a new supervisor
-    // incarnation, whose revisions say nothing about ours — that is every row but
-    // this facet's own unflushed writes, and at pi scale a per-path delete would
+    // incarnation, whose revisions say nothing about ours, and no other feed's
+    // file kept — that is every row but this facet's own unflushed writes, and
+    // at pi scale a per-path delete would
     // be ~32,000 statements in one turn against an object that has been observed
     // resetting under exactly that load. So it is a predicate there, and per path
     // where a reconcile has made the set small by construction.
-    if (dropped.length > 0 && !comparable('') && rekeyed === 0) {
+    if (dropped.length > 0 && vouched === 0 && rekeyed === 0) {
       t.dropDatedFiles();
     } else {
       for (const path of dropped) {

@@ -103,9 +103,39 @@ export class MemoryVFS implements VFS {
     return { epoch: this.epoch, rev, paths, poison: false };
   }
 
-  /** `path` changed now (`structural`: a directory removed, moved or given another mode; `gone`: nothing is there). */
-  private note(path: string, structural = false, gone = false): void {
-    const key = `/${rootClampedSegments(path).join('/')}`;
+  /**
+   * The name in the tree `path` leads to, as find walks it: each link on the
+   * way followed, a final one where `follow`; where a name on the way is
+   * missing, the rest as spelled.
+   */
+  private treePath(path: string, follow: boolean, hops = 0): string {
+    const parts = rootClampedSegments(path);
+    let at = this.root;
+    for (let i = 0; i < parts.length; i++) {
+      const next = at.type === 'directory' ? at.children.get(parts[i]!) : undefined;
+      if (next === undefined) return `/${parts.join('/')}`;
+      if (next.type === 'symlink' && (follow || i < parts.length - 1) && hops < 40) {
+        const base = next.target.startsWith('/') ? '' : `/${parts.slice(0, i).join('/')}`;
+        return this.treePath(`${base}/${next.target}/${parts.slice(i + 1).join('/')}`, follow, hops + 1);
+      }
+      at = next;
+    }
+    return `/${parts.join('/')}`;
+  }
+
+  /** The tree name of `path`'s directory, as parentOf finds it (its links followed). */
+  private treeParent(path: string): string {
+    const parts = rootClampedSegments(path);
+    parts.pop();
+    return this.treePath(`/${parts.join('/')}`, true);
+  }
+
+  /**
+   * The tree name `key` changed now (treePath, treeParent: a change through a
+   * link is its target's). `structural`: a directory removed, moved or given
+   * another mode; `gone`: nothing is there.
+   */
+  private note(key: string, structural = false, gone = false): void {
     const had = this.changed.get(key);
     if (had !== undefined) {
       this.changed.delete(key);
@@ -219,7 +249,7 @@ export class MemoryVFS implements VFS {
       if (existing.type === 'directory') throw fail('EISDIR', call);
       existing.data = bytes;
       this.touch(existing);
-      this.note(path);
+      this.note(this.treePath(path, true));
       return;
     }
     const { dir, name } = this.parentOf(path, call);
@@ -227,8 +257,8 @@ export class MemoryVFS implements VFS {
     entry.data = bytes;
     dir.children!.set(name, entry);
     this.touch(dir);
-    this.note(path);
-    this.note(`${path}/..`);
+    this.note(this.treePath(path, false));
+    this.note(this.treeParent(path));
   }
 
   writeRange(path: string, offset: number, bytes: Uint8Array): void {
@@ -240,7 +270,7 @@ export class MemoryVFS implements VFS {
     next.set(bytes, offset);
     entry.data = next;
     this.touch(entry);
-    this.note(path);
+    this.note(this.treePath(path, true));
   }
 
   truncate(path: string, size: number): void {
@@ -249,7 +279,7 @@ export class MemoryVFS implements VFS {
     next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
     entry.data = next;
     this.touch(entry);
-    this.note(path);
+    this.note(this.treePath(path, true));
   }
 
   readdir(path: string): VfsDirent[] {
@@ -280,8 +310,8 @@ export class MemoryVFS implements VFS {
     const { dir, name } = this.parentOf(path, call);
     dir.children!.set(name, this.entry('directory', options?.mode ?? 0o755));
     this.touch(dir);
-    this.note(path);
-    this.note(`${path}/..`);
+    this.note(this.treePath(path, false));
+    this.note(this.treeParent(path));
   }
 
   unlink(path: string): void {
@@ -294,8 +324,8 @@ export class MemoryVFS implements VFS {
     dir.children!.delete(name);
     this.count--;
     this.touch(dir);
-    this.note(path, false, true);
-    this.note(`${path}/..`);
+    this.note(this.treePath(path, false), false, true);
+    this.note(this.treeParent(path));
   }
 
   rmdir(path: string): void {
@@ -308,8 +338,8 @@ export class MemoryVFS implements VFS {
     dir.children!.delete(name);
     this.count--;
     this.touch(dir);
-    this.note(path, true, true);
-    this.note(`${path}/..`);
+    this.note(this.treePath(path, false), true, true);
+    this.note(this.treeParent(path));
   }
 
   removeRecursive(path: string): void {
@@ -320,8 +350,8 @@ export class MemoryVFS implements VFS {
     dir.children.delete(name);
     this.count -= MemoryVFS.sizeOf(entry);
     this.touch(dir);
-    this.note(path, entry.type === 'directory', true);
-    this.note(`${path}/..`);
+    this.note(this.treePath(path, false), entry.type === 'directory', true);
+    this.note(this.treeParent(path));
   }
 
   /**
@@ -353,10 +383,11 @@ export class MemoryVFS implements VFS {
     if (replaced !== undefined) this.count--;
     this.touch(source.dir);
     this.touch(target.dir);
-    this.note(from, entry.type === 'directory', true);
-    this.note(to, replaced?.type === 'directory');
-    this.note(`${from}/..`);
-    this.note(`${to}/..`);
+    // A directory moved is structural at both names: what was under it is under the new one, which a reader lists again.
+    this.note(this.treePath(from, false), entry.type === 'directory', true);
+    this.note(this.treePath(to, false), entry.type === 'directory' || replaced?.type === 'directory');
+    this.note(this.treeParent(from));
+    this.note(this.treeParent(to));
   }
 
   symlink(target: string, path: string): void {
@@ -367,8 +398,8 @@ export class MemoryVFS implements VFS {
     entry.target = target;
     dir.children!.set(name, entry);
     this.touch(dir);
-    this.note(path);
-    this.note(`${path}/..`);
+    this.note(this.treePath(path, false));
+    this.note(this.treeParent(path));
   }
 
   readlink(path: string): string {
@@ -385,7 +416,7 @@ export class MemoryVFS implements VFS {
     if (entry === null) throw fail('ENOENT', call);
     entry.mode = mode & 0o7777;
     this.touch(entry);
-    this.note(path, entry.type === 'directory');
+    this.note(this.treePath(path, true), entry.type === 'directory');
   }
 
   /** Its entries keep an mtime alone: the atime is taken and dropped. */
@@ -395,7 +426,7 @@ export class MemoryVFS implements VFS {
     if (entry === null) throw fail('ENOENT', call);
     entry.mtimeMs = timeAt(mtime, entry.mtimeMs, Date.now());
     entry.revision = ++this.clock;
-    this.note(path);
+    this.note(this.treePath(path, true));
   }
 
   describe() {
