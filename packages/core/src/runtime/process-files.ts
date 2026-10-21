@@ -1146,7 +1146,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const name = await this.path(path, openFollows(opened));
       const files = this.owned(mutates ? options : undefined);
       const node = await openMounted({
-        name, flags: opened, mode: flags.mode,
+        name, flags: opened, mode: flags.mode === undefined ? undefined : flags.mode & ~(flags.umask ?? this.cred.umask),
         refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
         pin: (file, follow) => files.pin(file, { follow, sync: false }),
         sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
