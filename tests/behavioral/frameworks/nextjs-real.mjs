@@ -19,7 +19,7 @@
 // require closure (webpack bundle5.js) exceeds the facet snapshot bound.
 // Both are asserted, so a silent hang or a fake success would fail here.
 
-import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort, BASE, outputLines } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort, BASE, outputLines, projectManifest } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('nextjs-real');
@@ -51,6 +51,7 @@ try {
     /Initializing project with template/.test(createOut), createDetail);
   a.check('create-next-app completes: "Success! Created mvp" and exit 0',
     /Success! Created mvp/.test(createOut) && createR.exitCode === 0, createDetail);
+  a.record('manifest', await projectManifest(t, '/home/user/nextjs-probe/mvp'));
 
   const tpl = await t.run(
     `node -e "const fs=require('fs');const need=['mvp/next.config.ts','mvp/tsconfig.json','mvp/src'];console.log('TPL='+need.every(p=>fs.existsSync(p)));console.log('PKG='+fs.existsSync('mvp/package.json'));"`,

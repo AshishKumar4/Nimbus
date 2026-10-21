@@ -634,6 +634,19 @@ export function termBody(raw) {
 }
 
 /**
+ * The package.json in `dir`, read in the session with `cat`: what a scaffold
+ * wrote, before an install changes it. Null when there is none. A probe
+ * records it (`a.record('manifest', …)`), and the upstream canary resolves
+ * its install from it (scripts/ci/lib/upstream.mjs).
+ */
+export async function projectManifest(t, dir) {
+  const lines = termBody((await t.run(`cat ${dir}/package.json`, 15_000)).output).split('\n');
+  const start = lines.findIndex((line) => line.startsWith('{'));
+  const end = lines.findLastIndex((line) => line === '}');
+  return start === -1 || end < start ? null : JSON.parse(lines.slice(start, end + 1).join('\n'));
+}
+
+/**
  * The lines of terminal `output`, without ANSI and trimmed. A bare `\r`
  * ends a line as `\n` and `\r\n` do: a terminal redraws over it.
  */

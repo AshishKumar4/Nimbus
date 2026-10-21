@@ -34,7 +34,7 @@
 // What a user needs: `react-router dev` serves the app through the port
 // route on its first run, as the other framework probes require.
 
-import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE, writeFileViaShell } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE, writeFileViaShell, projectManifest } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -61,6 +61,7 @@ try {
   const launched = /facet started: pid=\d+ cmd="node[^"]*create-react-router/.test(createOut);
   a.check('create-react-router resolves its dependency tree and launches (npm resolver + facet spawn)',
     launched, JSON.stringify(createOut.split(/\r?\n/).slice(-6).join(' | ')));
+  a.record('manifest', await projectManifest(t, '/home/user/remix-probe/mvp'));
 
   // The template extracted: the project create-react-router wrote.
   const extractCheck = [
