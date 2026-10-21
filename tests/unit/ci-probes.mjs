@@ -107,11 +107,13 @@ try {
     const unreachable = await probes(['--base', 'http://127.0.0.1:9']);
     assert.equal(unreachable.status, 2);
     assert.match(unreachable.rows[0].output, /is unreachable/);
-    const late = await probes(['--base', base, '--start-by', String(Date.now() - 1000)]);
+    const lateStartBy = Date.now() - 1000;
+    const late = await probes(['--base', base, '--start-by', String(lateStartBy)]);
     assert.equal(late.status, 2);
     assert.deepEqual(rows(late), [['probes', 2]]);
     assert.match(late.rows[0].output, /the token could expire before its limit/);
     assert.equal(late.lateStart, true, 'and says it started late, which a run with fresh credentials can grade');
+    assert.ok(typeof late.startedAt === 'number' && late.startedAt > lateStartBy, 'and when it started');
     assert.equal(verdict.lateStart, undefined, 'which no other refusal says');
     console.log('  ok  no token, a target that does not answer, or a task that starts too late for its token is not graded (2), with a row saying why, a late start said so');
   }

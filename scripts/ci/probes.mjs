@@ -33,6 +33,8 @@ import { readScreenshots } from './lib/probe-screenshots.mjs';
 const anonymous = process.argv.includes('--anonymous');
 const argv = process.argv.slice(2).filter((arg) => arg !== '--anonymous');
 const FLAGS = ['--out', '--base', '--only', '--skip', '--part', '--jobs', '--start-by', '--screenshots'];
+/** When this task started: its verdict says so, so how long tasks wait to start is measured (remote-probes.mjs PREPARE_S). */
+const startedAt = Date.now();
 const flags = {};
 for (let i = 0; i < argv.length; i += 2) {
   if (!FLAGS.includes(argv[i]) || argv[i + 1] === undefined) usage(`unexpected ${JSON.stringify(argv[i])}`);
@@ -52,7 +54,7 @@ const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll
 const rows = [];
 /** Not graded, and why; `lateStart` when the task started too late for its token, which a run with fresh credentials can grade. */
 const notGraded = (why, { lateStart = false } = {}) => {
-  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base ?? null, part: flags.part ?? null, ...(lateStart ? { lateStart: true } : {}),
+  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base ?? null, part: flags.part ?? null, startedAt, ...(lateStart ? { lateStart: true } : {}),
     rows: [...rows, { name: 'probes', exitCode: 2, seconds: 0, output: scrub(why) }] })}\n`);
   console.error(`probes: NOT GRADED — ${scrub(why)}`);
   process.exit(2);
@@ -99,8 +101,8 @@ function run(command, args, env) {
   });
 }
 
-if (flags['start-by'] !== undefined && Date.now() > Number(flags['start-by'])) {
-  notGraded(`this task started at ${new Date().toISOString()}, after ${new Date(Number(flags['start-by'])).toISOString()}: the token could expire before its limit`, { lateStart: true });
+if (flags['start-by'] !== undefined && startedAt > Number(flags['start-by'])) {
+  notGraded(`this task started at ${new Date(startedAt).toISOString()}, after ${new Date(Number(flags['start-by'])).toISOString()}: the token could expire before its limit`, { lateStart: true });
 }
 if (!token && !anonymous) notGraded('NIMBUS_PROBE_TOKEN is not set: mint one for the target and this run');
 try {
@@ -137,7 +139,7 @@ try {
     name: 'session-ledger', exitCode: leaks.length === 0 ? 0 : 1, seconds: 0,
     output: `${minted} minted, ${deleted} deleted${leaks.map((leak) => `\nleaked: ${leak.probe}: ${leak.sid} (last DELETE: ${leak.last})`).join('')}`,
   });
-  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base, part: verdict.part, rows, ...(captures ? { screenshots: readScreenshots(captures) } : {}) })}\n`);
+  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base, part: verdict.part, startedAt, rows, ...(captures ? { screenshots: readScreenshots(captures) } : {}) })}\n`);
   process.exitCode = rows.every((row) => row.exitCode === 0) ? 0 : 1;
 } finally {
   rmSync(scratch, { recursive: true, force: true });
