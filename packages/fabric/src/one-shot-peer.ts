@@ -285,7 +285,11 @@ export class OneShotPlacement {
         let raw: unknown;
         try {
           await new Promise((resolve) => setTimeout(resolve, 0));
+          // Experiment: the session's pending writes made durable first, so the output gate holds nothing back.
+          const synced = Date.now();
+          await this.#ctx.storage.sync();
           const sent = Date.now();
+          (globalThis as unknown as { __d1Sync?: number[] }).__d1Sync = [...((globalThis as unknown as { __d1Sync?: number[] }).__d1Sync ?? []).slice(-31), sent - synced];
           raw = await dispatch({ op: 'oneShotSubmit', args: [this.#wire(spec, carries), callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(spec, images, options?.signal)] });
           (globalThis as unknown as { __d1Sent?: object[] }).__d1Sent = [...((globalThis as unknown as { __d1Sent?: object[] }).__d1Sent ?? []).slice(-31), { sent, answered: Date.now() }];
         } catch (error) {

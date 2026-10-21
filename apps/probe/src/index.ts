@@ -266,7 +266,8 @@ export class NimbusSession extends SdkNimbusSession {
   }
   /** The session's one-shot peer (fabric one-shot-peer.ts), or null; forgotten first with `forget`, so its next one-shot runs here and warms it again. */
   _rpcProbeSent(): object[] {
-    return (globalThis as unknown as { __d1Sent?: object[] }).__d1Sent ?? [];
+    const sync = (globalThis as unknown as { __d1Sync?: number[] }).__d1Sync ?? [];
+    return ((globalThis as unknown as { __d1Sent?: object[] }).__d1Sent ?? []).map((sent, i, all) => ({ ...sent, syncMs: sync[sync.length - all.length + i] }));
   }
   _rpcProbeOneShotPeer(forget: boolean): string | null {
     this.requireProbeDiagnostics();
