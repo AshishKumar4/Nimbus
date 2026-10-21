@@ -565,6 +565,10 @@ async function dispatchRubyFacet(facets, warmKeys, syscalls, args, image, pid, s
         const result = normalizeRubyFacetResult(rawResult);
         if (result)
             warmKeys.give(warm, { reusable: result.reusable, error: result.error, killed: signal.aborted });
+        // Experiment (not for landing): the run's filesystem statistics, on stderr.
+        if (result && args.userEnv.NIMBUS_WASI_FS_STATS === '1' && typeof rawResult === 'object' && rawResult !== null) {
+            result.stderr += `[wasi-fs] ruby ${JSON.stringify(Reflect.get(rawResult, 'fsStats') ?? null)}\n`;
+        }
         return result || {
             exitCode: 1,
             stdout: '',

@@ -544,6 +544,9 @@ export function residentFilesystem(session, resident, delegation) {
                     .then((known) => {
                     if (known)
                         foundIn.set(parent, Boolean(store.entry(walked.missing)));
+                    // Experiment (not for landing): lookups whose name is absent.
+                    if (known && store.entry(walked.missing) === null)
+                        counts.absentLookups = (counts.absentLookups ?? 0) + 1;
                     return known ? attempt(asked + 1) : DELEGATE;
                 });
             }

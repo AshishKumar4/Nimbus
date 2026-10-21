@@ -99,7 +99,9 @@ export const rubyFacetCall = async function rubyFacetCall(inArgs, facetEnv) {
         Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
     adopt?.(supervisor);
     // The invocation as the runner made it: a field it adds reaches the VM.
-    return fn(inArgs);
+    const answer = await fn(inArgs);
+    // Experiment (not for landing): the run's filesystem statistics.
+    return typeof answer === 'object' && answer !== null ? { ...answer, fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null } : answer;
 };
 export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
     const wasmTable = globalThis.__NIMBUS_WASM || {};
