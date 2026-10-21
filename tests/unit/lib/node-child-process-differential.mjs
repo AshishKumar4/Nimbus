@@ -9,7 +9,7 @@
 //     0x00-0xff, and 1 MiB to a slow reader, in order.
 
 /** The program: `cp` is Node's module. */
-export async function childDifferential(cp, note = () => {}) {
+export async function childDifferential(cp, note = (_step) => {}) {
   const out = {};
   out.exit3 = await new Promise((resolve) => cp.exec('echo out; echo err >&2; exit 3', (error, stdout, stderr) => resolve({
     code: error?.code, killed: error?.killed, signal: error?.signal, cmd: error?.cmd, message: error?.message, stdout, stderr,
