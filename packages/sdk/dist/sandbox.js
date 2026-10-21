@@ -169,7 +169,9 @@ export class NimbusSandbox {
         return {
             _rpcReady: (options) => this.remoteRpc('ready', [options]),
             _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
-            _rpcStartProgram: (argv, options) => this.remoteProgramStream([argv, options === undefined ? undefined : { cwd: options.cwd, env: options.env }]),
+            _rpcStartProgram: (argv, options) => this.remoteProgramStream([argv, options === undefined ? undefined : {
+                    cwd: options.cwd, env: options.env, ...(options.stdin === undefined ? {} : { stdin: 'written' }),
+                }]),
             _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
             _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
             _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
@@ -286,25 +288,23 @@ export class NimbusSandbox {
         };
         // Across HTTP no stream rides the request: the bytes follow the start, written with the program's input calls.
         const remote = this.target.kind === 'remote';
-        const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, remote ? { cwd: options.cwd, env: options.env } : options)), signal);
-        if (remote)
-            void this.feed(started.pid, options.stdin ?? null);
+        const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, options)), signal);
+        if (remote && options.stdin !== undefined)
+            void this.feed(started.pid, options.stdin);
         return started;
     }
     /** `stdin`'s bytes into program `pid`'s input, each write waiting for room, then its end. */
     async feed(pid, stdin) {
         const stub = this.stub();
         try {
-            if (stdin !== null) {
-                const reader = stdin.getReader();
-                for (;;) {
-                    const next = await reader.read();
-                    if (next.done)
-                        break;
-                    if (!(await this.rpc(stub._rpcWriteProcessInput(pid, next.value))).ok) {
-                        await reader.cancel();
-                        return;
-                    }
+            const reader = stdin.getReader();
+            for (;;) {
+                const next = await reader.read();
+                if (next.done)
+                    break;
+                if (!(await this.rpc(stub._rpcWriteProcessInput(pid, next.value))).ok) {
+                    await reader.cancel();
+                    return;
                 }
             }
             await this.rpc(stub._rpcEndProcessInput(pid));

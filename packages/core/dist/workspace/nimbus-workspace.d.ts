@@ -19,6 +19,7 @@
  * the shell before the host can register a command of its own. A session
  * routed through it would silently acquire all of that.
  */
+import { type ProgramInput } from './start-program.js';
 import type { Program, StartedSessionProgram } from '../runtime/program-start.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -317,7 +318,9 @@ export declare class NimbusWorkspace {
      * every start is. Its stdin, output, exit and signals are the child
      * broker's (workspace/start-program.ts).
      */
-    startProgram(program: Program, cancel: AbortSignal): Promise<StartedSessionProgram>;
+    startProgram(program: Omit<Program, 'stdin'> & {
+        readonly stdin: ProgramInput;
+    }, cancel: AbortSignal): Promise<StartedSessionProgram>;
     exec(command: string, options?: WorkspaceExecOptions): Promise<CommandResult>;
     private runProcess;
     /**

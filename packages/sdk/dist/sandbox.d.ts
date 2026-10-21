@@ -10,7 +10,7 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 export type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ExecChunk, type ExecExit, type ExecStream, type ExecOutput } from '@nimbus-sh/core/runtime/exec-stream.js';
-import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionStartProgramOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
 export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime, };
 import { type NimbusConfig, type NimbusCodeLanguage, type RuntimeSpec } from '@nimbus-sh/config/sandbox';
@@ -168,7 +168,11 @@ export declare class NimbusSandbox {
      * machine starts it there. `stdin`'s bytes are its input, to their end;
      * none: its input ends at once.
      */
-    startProgram(argv: string[], options?: SessionStartProgramOptions): Promise<StartedSessionProgram>;
+    startProgram(argv: string[], options?: {
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: ReadableStream<Uint8Array>;
+    }): Promise<StartedSessionProgram>;
     /** `stdin`'s bytes into program `pid`'s input, each write waiting for room, then its end. */
     private feed;
     /** Run a command to completion and return its output as strings. Built on {@link execStream}. */

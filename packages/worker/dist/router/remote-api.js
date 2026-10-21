@@ -501,7 +501,13 @@ function startProgramOptions(value) {
         throw apiError('options must be an object', 'E_ARG_SHAPE', 400);
     const cwd = Reflect.get(value, 'cwd');
     const env = Reflect.get(value, 'env');
+    const stdin = Reflect.get(value, 'stdin');
     const options = {};
+    if (stdin !== undefined) {
+        if (stdin !== 'written')
+            throw apiError("stdin must be 'written': its bytes follow in writeProcessInput calls", 'E_ARG_SHAPE', 400);
+        options.stdin = stdin;
+    }
     if (cwd !== undefined)
         options.cwd = stringArg(cwd, 'cwd');
     if (env !== undefined) {

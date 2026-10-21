@@ -48,7 +48,8 @@ export async function startProgram(host, program, cancel) {
         await ended;
         throw spawnError(program.argv, { code: heard.spawnError });
     }
-    void pumpInput(children, childPid, program.stdin);
+    if (program.stdin !== 'written')
+        void pumpInput(children, childPid, program.stdin);
     return { pid: childPid, output: outputOf(children, childPid), exit: ended, kill: (signal) => { children.kill(childPid, signal); } };
 }
 /** The child's exit as waitpid says it, once it comes; its parent ends with it. */

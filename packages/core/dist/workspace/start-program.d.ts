@@ -16,10 +16,18 @@ export interface ProgramHost {
     readonly cred: Readonly<VfsCred>;
 }
 /**
+ * A program's input: the contract's (a stream to its end, or none: ended at
+ * once), or `written`: left open for the session's process-input calls
+ * (writeProcessInput, endProcessInput), as a caller across HTTP writes it.
+ */
+export type ProgramInput = Program['stdin'] | 'written';
+/**
  * `program` started (ExecDelegate.start's contract): resolved once it runs,
  * rejected with Node's spawn error (`code`, `errno`, `syscall: 'spawn
  * <file>'`, `path`) when it could not start, ECANCELED when `cancel`
  * aborted while it was pending (whatever had started is killed first).
  */
-export declare function startProgram(host: ProgramHost, program: Program, cancel: AbortSignal): Promise<StartedSessionProgram>;
+export declare function startProgram(host: ProgramHost, program: Omit<Program, 'stdin'> & {
+    readonly stdin: ProgramInput;
+}, cancel: AbortSignal): Promise<StartedSessionProgram>;
 //# sourceMappingURL=start-program.d.ts.map
