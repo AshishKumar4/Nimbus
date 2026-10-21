@@ -1545,24 +1545,35 @@ var __nimbusResidentModule = (() => {
        */
       applyEntry(t, entry) {
         const k = nsKey(entry.path);
-        learnings.forEach((asked) => {
-          asked.reported[asked.reported.length] = k;
-        });
-        if (k === "") return null;
+        const moved2 = (beneath) => {
+          learnings.forEach((asked) => {
+            asked.reported[asked.reported.length] = { at: k, beneath };
+          });
+        };
+        if (k === "") {
+          moved2(true);
+          return null;
+        }
         const stat = ownValue(entry, "stat");
         if (stat === null) {
+          moved2(true);
           deleteTree(t, k, true);
           return null;
         }
         const before = nsRowAt(t, k);
-        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue(entry, "linkTarget"))) return null;
+        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue(entry, "linkTarget"))) {
+          moved2(true);
+          return null;
+        }
         const after = nsRowAt(t, k);
         if (after === void 0 || after.kind !== NS_DIR) {
+          moved2(true);
           deleteTree(t, k, false);
           return null;
         }
         const was = before !== void 0 && traversable(before);
         const now = traversable(after);
+        moved2(!(before !== void 0 && before.kind === NS_DIR && before.ino === after.ino && before.dev === after.dev && was === now && !ownValue(entry, "structural") && !ownValue(entry, "subtree")));
         if (lazy) {
           if (ownValue(entry, "structural") || ownValue(entry, "subtree") || was !== now) deleteTree(t, k, false);
           return null;
@@ -1728,8 +1739,8 @@ var __nimbusResidentModule = (() => {
         learnings.add(asked);
         const named = (k, beneath) => {
           for (let i = 0; i < asked.reported.length; i++) {
-            const at = asked.reported[i];
-            if (at === "" || at === k || stringStartsWith(k, at + "/") || beneath && (k === "" || stringStartsWith(at, k + "/"))) return true;
+            const { at, beneath: under } = asked.reported[i];
+            if (at === k || under && (at === "" || stringStartsWith(k, at + "/")) || beneath && (k === "" || stringStartsWith(at, k + "/"))) return true;
           }
           return false;
         };

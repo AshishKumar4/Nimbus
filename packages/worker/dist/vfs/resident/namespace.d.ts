@@ -41,7 +41,7 @@ export type Resolved = {
 } | 'ELOOP';
 /** A lookup or listing asked of the session, until its answer is installed or dropped (Namespace.learning). */
 export interface Learning {
-    /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at or above `k`, and the table was not replaced. */
+    /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at `k`, or above it with what is beneath it moved, and the table was not replaced. */
     installs(k: string): boolean;
     /** Whether the answer's listing of `dir` may be installed: as `installs`, and nothing admitted beneath it either. */
     lists(dir: string): boolean;
