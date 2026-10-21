@@ -7068,6 +7068,7 @@ export class FacetManager {
         // run is dropped, the resident's are delivered (exec's finally ends it).
         const gate = this.outputGates.get(pid);
         const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
+        this._takeStopCatches(pid, stop);
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         if (stopped.prefix === null) {
@@ -7182,6 +7183,7 @@ export class FacetManager {
         taken?.retire();
         const gate = this.outputGates.get(pid);
         const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
+        this._takeStopCatches(pid, stop);
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         // Output a captured run printed before it stopped: the result of an exit
@@ -7236,7 +7238,7 @@ export class FacetManager {
             + 'which takes it as it arrives, or redirect a file (< file), which a synchronous read takes whole.';
         if (before === null)
             return fail(full);
-        const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes, inputChannel);
+        const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes, pid);
         if ('aborted' in input) {
             this._end(pid, { code: 137, killed: true });
             return ends(130);
@@ -7314,6 +7316,23 @@ export class FacetManager {
             packets.push({ data: new Uint8Array(0), ended: false, resize });
         caughtBack();
         return { packets, bytes: pieces.bytes, ended };
+    }
+    /**
+     * The signals a stopped run's program had said it catches (its stop
+     * record's): taken before its output is shown, as a "ready" it printed
+     * after process.on() is seen only once a signal sent then finds it caught,
+     * and its word of them may not have reached the session before the stop.
+     */
+    _takeStopCatches(pid, stop) {
+        if (stop.catches === undefined)
+            return;
+        const names = [];
+        for (const name of stop.catches === '' ? [] : stop.catches.split(',')) {
+            const parsed = parseProcessSignalName(name);
+            if (parsed !== null)
+                names.push(parsed);
+        }
+        this.processes.catchSignals(pid, names);
     }
     /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
     _stdinChannel(pid) {

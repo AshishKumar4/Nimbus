@@ -68,6 +68,12 @@ export interface StopRecord {
     };
     /** `diverged`: how. */
     why?: string;
+    /**
+     * The signals its program had said it catches (its handlers), comma-joined:
+     * the session takes them before the run's output is shown, as the run's own
+     * word of them may not have reached it before the stop.
+     */
+    catches?: string;
 }
 /** What a run after a stop is handed (the runner's `args.replay`). */
 export interface ReplayLaunch {

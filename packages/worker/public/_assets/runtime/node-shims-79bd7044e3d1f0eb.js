@@ -15662,6 +15662,8 @@ function __nimbusPause(ms) {
 function __nimbusCatchSignals(adding) {
   if (!__supervisor || typeof __supervisor.cpCatchSignals !== "function") return;
   __nimbusCaughtWanted = __nimbusCatchable.filter((sig) => sig === adding || __processMod.listenerCount(sig) > 0).join(",");
+  // A run that stops carries them, as its word may not have reached the session.
+  if (__nimbusReplay && typeof __nimbusReplay.catches === "function") __nimbusReplay.catches(__nimbusCaughtWanted);
   __nimbusSayCaught();
   __nimbusTakeSignals();
 }
