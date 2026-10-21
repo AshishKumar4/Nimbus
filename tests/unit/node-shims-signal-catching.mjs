@@ -1,0 +1,67 @@
+#!/usr/bin/env bun
+// A Node process catches the signals it listens for (Kinu ask 67.4): its
+// process's listeners say so to the session (cpCatchSignals) as they come
+// and go, and it takes each signal the session queues for it (cpNextSignal),
+// its handlers deciding what it does; a SIGTERM it has stopped listening for
+// takes the default action. A session that holds no catches for it, answering
+// none at once, is asked again a second later, not in a tight loop. The
+// generated shims run here over a stand-in supervisor.
+import assert from 'node:assert/strict';
+import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+
+const make = (supervisor) => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusProcessId',
+  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\nreturn { proc: __processMod };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const failures = [];
+const check = async (name, body) => {
+  try {
+    await body();
+  } catch (error) {
+    failures.push(`${name}: ${error.message}`);
+  }
+};
+
+await check('listeners say what it catches; a queued signal reaches them', async () => {
+  const said = [];
+  const queued = [];
+  let waiting = null;
+  const supervisor = {
+    cpCatchSignals: async (catches) => { said.push([...catches]); },
+    cpNextSignal: (waitMs) => new Promise((resolve) => {
+      if (queued.length > 0) { resolve(queued.shift()); return; }
+      waiting = resolve;
+      setTimeout(() => { if (waiting === resolve) { waiting = null; resolve(null); } }, Math.min(waitMs, 50));
+    }),
+  };
+  const send = (signal) => { if (waiting) { const take = waiting; waiting = null; take(signal); } else queued.push(signal); };
+  const { proc } = make(supervisor);
+  const heard = [];
+  const onTerm = () => heard.push('SIGTERM');
+  proc.on('SIGTERM', onTerm);
+  proc.once('SIGUSR1', () => heard.push('SIGUSR1'));
+  assert.deepEqual(said, [['SIGTERM'], ['SIGUSR1', 'SIGTERM']], 'said as each is added, at once');
+  send('SIGTERM');
+  send('SIGUSR1');
+  for (let i = 0; i < 100 && heard.length < 2; i++) await sleep(10);
+  assert.deepEqual(heard, ['SIGTERM', 'SIGUSR1'], 'its handlers hear them');
+  assert.deepEqual(said.at(-1), ['SIGTERM'], 'a once listener gone, it no longer catches its signal');
+  proc.off('SIGTERM', onTerm);
+  assert.deepEqual(said.at(-1), [], 'none left: it catches none');
+});
+
+await check('none answered at once is not asked again at once', async () => {
+  let asked = 0;
+  const supervisor = {
+    cpCatchSignals: async () => {},
+    cpNextSignal: async () => { asked++; return null; },
+  };
+  const { proc } = make(supervisor);
+  proc.on('SIGINT', () => {});
+  await sleep(300);
+  assert.ok(asked <= 2, `asked ${asked} times in 300 ms`);
+});
+
+assert.deepEqual(failures, []);
+console.log('node-shims-signal-catching: a Node process catches the signals it listens for and takes them itself');

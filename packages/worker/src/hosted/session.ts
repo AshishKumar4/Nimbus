@@ -21,7 +21,7 @@
 import { RpcTarget } from 'cloudflare:workers';
 import { CRED_SESSION_USER, sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
-import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 
@@ -36,7 +36,7 @@ export type HostedSessionOwner = operations.ProgrammaticHost & operations.Termin
   noteClientActivity(): void;
 };
 
-export class HostedSession extends RpcTarget implements SessionRpc {
+export class HostedSession extends RpcTarget implements SessionRpc, Pick<SessionRouterRpc, '_rpcWriteProcessInputStream'> {
   private readonly scope: HostedSessionScope | null;
 
   constructor(private readonly owner: HostedSessionOwner, scope: HostedSessionScope) {
@@ -147,6 +147,8 @@ export class HostedSession extends RpcTarget implements SessionRpc {
   _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
   _rpcCloseTerminal(name: string) { return operations.rpcCloseTerminal(this.#client(), name); }
   _rpcWriteProcessInput(pid: number, data: string | Uint8Array) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
+  // The remote API's byte write, for an embedder's router in front of its hosted runtime.
+  _rpcWriteProcessInputStream(pid: number, data: Uint8Array) { return operations.rpcWriteProcessInputStream(this.#client(), pid, data); }
   _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions) {
     // A start names no shell and no identity: it would run as the workspace, from its shell's environment.
     if (this.scope !== null) throw new Error('EPERM: a scoped session starts no program by its argv');
