@@ -4,18 +4,18 @@
 // Each probe here installs real frameworks from npm at their latest
 // releases, so a new upstream release can break it with no change on our
 // side. Each records its project's package.json once it is written
-// (tests/behavioral/_driver.mjs projectManifest). The canary resolves what
-// that manifest installs from the registry, by the rules Nimbus's npm
-// installs by, keeps it with every run, and on a red run names each package
-// whose version differs from the last green run's.
+// (tests/behavioral/_driver.mjs projectPackageJson). The canary resolves
+// what it installs from the registry, by the rules Nimbus's npm installs
+// by, keeps it with every run, and on a red run names each package whose
+// version differs from the last green run's.
 
-import { manifestEdges } from '../../../packages/core/src/_shared/npm-tree.ts';
+import { manifestEdges, projectRoots } from '../../../packages/core/src/_shared/npm-tree.ts';
 import { parseRegistryRequest } from '../../../packages/core/src/_shared/npm-spec.ts';
 import { SPECS } from '../../../packages/worker/scripts/napi-wasm/specs.mjs';
 import { applyStagedArtifact, isOptionalNativeBinding, lookupStagedArtifact, lookupSwap, swapCoversVersion } from '../../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { installedVersion, npmPackument, readOnce } from './binding-demand.mjs';
 
-/** The probes the canary runs against production. Each records its project's package.json as `manifest`. */
+/** The probes the canary runs against production. Each records its project's package.json, as text, under `package.json`. */
 export const UPSTREAM_PROBES = [
   'frameworks/vite8-real',
   'frameworks/astro-real',
@@ -50,10 +50,10 @@ async function installedPackage(request, context) {
 
 /**
  * What a fresh install of each probe's manifest takes: { probe: { name:
- * [version, …] } }, names and versions in order. Its dependencies and dev
- * dependencies, and below them each dependency, optional dependency and
- * required peer, are the package and version Nimbus's npm installs
- * (installedPackage); an optional peer is not installed. The package ABI
+ * [version, …] } }, names and versions in order. Its roots as npm takes
+ * them (core projectRoots), and below them each dependency, optional
+ * dependency and required peer, are the package and version Nimbus's npm
+ * installs (installedPackage); an optional peer is not installed. The package ABI
  * policy shapes the tree as the installer does: a staged artifact installs
  * without its optional dependencies and platform fields, and then an
  * optional native package is left out. A spec no registry answers (git,
@@ -63,12 +63,12 @@ async function installedPackage(request, context) {
  */
 export async function resolveInstalls(manifests, { specs = SPECS, packument = npmPackument } = {}) {
   const context = { read: readOnce(packument), specs };
-  const edgesOf = (manifest) => manifestEdges(manifest).filter((edge) => edge.type !== 'peerOptional')
+  const requests = (edges) => edges.filter((edge) => edge.type !== 'peerOptional')
     .map((edge) => ({ request: parseRegistryRequest(edge.name, edge.range), optional: edge.type === 'optional' }));
   const installs = {};
   for (const [probe, manifest] of Object.entries(manifests)) {
     const taken = new Map();
-    let wanted = edgesOf({ ...manifest, dependencies: { ...manifest.devDependencies, ...manifest.dependencies } });
+    let wanted = requests(projectRoots(manifest, []));
     while (wanted.length > 0) {
       const resolved = await Promise.all(wanted.filter(({ request }) => request.registry)
         .map(async ({ request, optional }) => ({ optional, picked: await installedPackage(request, context) })));
@@ -80,7 +80,7 @@ export async function resolveInstalls(manifests, { specs = SPECS, packument = np
         if (staged) applyStagedArtifact(shaped, staged);
         if (optional && isOptionalNativeBinding(shaped)) continue;
         taken.set(picked.name, (taken.get(picked.name) ?? new Set()).add(picked.version));
-        wanted.push(...edgesOf(shaped));
+        wanted.push(...requests(manifestEdges(shaped)));
       }
     }
     installs[probe] = Object.fromEntries([...taken].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, versions]) => [name, [...versions].sort(byVersion)]));
