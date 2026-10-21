@@ -641,8 +641,9 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const begin = (at, way, step) => {
     const domain = domainOf(step);
     if (model.busy(step, kind === 'node')) return 'wait';
-    // An awaited change ends after a peer's in flight now: as one made after it, it would decide on what the process cannot know of yet.
-    const unlanded = [...peerAt.filter(({ done }) => done > landed).map(({ domain: theirs }) => theirs), ...(way === 'own' ? model.peersInFlight() : [])];
+    // The resident filesystem decides an awaited change over its view as it stands, and shows it at once: begun beside a
+    // peer's change in flight, it ends after it, as if made after it, on what the process cannot know of yet.
+    const unlanded = [...peerAt.filter(({ done }) => done > landed).map(({ domain: theirs }) => theirs), ...(way === 'own' && kind !== 'node' ? model.peersInFlight() : [])];
     if (!outside(way) && unlanded.some((theirs) => overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;

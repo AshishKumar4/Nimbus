@@ -1845,6 +1845,8 @@ export function provisional(host: ProvisionalHost): Provisional {
           release(inode);
           if (inodeAtNumber(inode.dev, inode.ino) !== inode) continue;
         }
+        // Bytes changed by what retires: what its descriptors read before (its pin) is not what it is.
+        const rewritten = retired.some((record) => record.op.kind === 'write' || record.op.kind === 'append' || record.op.kind === 'truncate');
         let seen = viewed(inode);
         // What its retired records did is the view's: the grant's decision of its name they fold over answers no more.
         if (retired.length > 0 && inode.over !== undefined) {
@@ -1868,9 +1870,11 @@ export function provisional(host: ProvisionalHost): Provisional {
           inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
           // What its descriptors read last is what it made, at no revision the view named: theirs once no name leads to it (pin).
           if (inode.descs > 0 && inode.state?.bytes) inode.pin = { revision: null, bytes: inode.state.bytes.subarray(0, inode.state.size) };
+          else if (rewritten) delete inode.pin;
           inode.base = null;
           inode.state = null;
         } else {
+          if (rewritten) delete inode.pin;
           dropRecords(inode, new Set(retired));
           const folded = inode.base === null ? null : retired.reduce((state, record) => applyOp(state, record.op), inode.base);
           const decision = folded === null ? undefined : host.absorb(seen.name, { ...seen.row, size: folded.size, mode: folded.mode, uid: folded.uid, gid: folded.gid, atime: folded.atime, mtime: folded.mtime, ctime: folded.ctime });
