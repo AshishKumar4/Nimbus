@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f7998a145da213f8c7efb209e4c5cfbb5eef060eb36d07d8473d3d8a79fbcad1",
+  "fingerprint": "bcbbab5d6fefa9057c3bd65857629f1dfec295df24aaf26df2a81927d804c424",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2027,8 +2027,8 @@
     "packages/fabric/dist/one-shot-entry.d.ts.map": "16132eb8664dc69f6aca6509ffcac1b0e8d831d11013410d86a8617dc618272e",
     "packages/fabric/dist/one-shot-entry.js": "1400fb73fdc35e9ff31e04d557d3334edd6e53c3975e1d11c91d3b11355907ef",
     "packages/fabric/dist/one-shot-peer.d.ts": "9b07263ca22e408bce99e3d0d288ba24b21b3ed75067b0efaf68cf1dbf4398a9",
-    "packages/fabric/dist/one-shot-peer.d.ts.map": "112bff38870ee0a71c0c4901eb0247b43bd9ef1fd560bcea5fd9d92dbb346f40",
-    "packages/fabric/dist/one-shot-peer.js": "3876d300379cecc2e274759c7c40a645fe654b5a123ab2fa02ac12ffeeffab13",
+    "packages/fabric/dist/one-shot-peer.d.ts.map": "a9fae6863ce72ecc370fba8d26839e50d0a4758c2c05b59137e1d9f554c779c1",
+    "packages/fabric/dist/one-shot-peer.js": "315a3c465331b215e573f5ab69dcc06617a7e879f9b344bff01923c9e5658fde",
     "packages/fabric/dist/outbox.d.ts": "e5e215cca1f313f461f7feb5275872fc8ae5c59ebfd27e402135e5b9612d68ea",
     "packages/fabric/dist/outbox.d.ts.map": "37c85149be15bbc1994be3bb21f2ef0f12e4e5bedbf6a3b77028466c6a5d064d",
     "packages/fabric/dist/outbox.js": "284e996c0b310e02a4310fb433b2521d226d9ad5a130cdab8b9896f0b4d0b3c9",
@@ -2111,7 +2111,7 @@
     "packages/fabric/src/loader-store-client.ts": "24b896f18eea0ddd846efd3f41167770e154afa78d9c0f4dd02b029c776baa56",
     "packages/fabric/src/node-async-hooks.d.ts": "3038f7d5bffd3203f4289b7155ad17e45181b6454dd00d67db1571deb7f0bc05",
     "packages/fabric/src/one-shot-entry.ts": "b34585fd41a8d348b80ca30f9d6dbf224740aa4a936c71e80d6daefb0ebfe1ae",
-    "packages/fabric/src/one-shot-peer.ts": "401c8b244abe13ec537a3eba5e4419c768b153161bb897a06831862d88476754",
+    "packages/fabric/src/one-shot-peer.ts": "f0da625c8c777580d3e638a51d9f5251d2b8499a2600bec01fefd483911327a1",
     "packages/fabric/src/outbox.ts": "1846ad24a607a2a3808da682a2f2e96f24e5e4bf04f58d26e99612266f624384",
     "packages/fabric/src/peer-host.ts": "35573189e21e079eb4f56369945c758889790106e868e2327c3156485e9b5ee1",
     "packages/fabric/src/process-fabric.ts": "0f3eb7a35ee13bae4d5a26d2f5f287f2bbc847baf20f433eeb7a986c89225d0d",
