@@ -250,7 +250,7 @@ export declare const REPLAY_OPERATION_POLICY: {
         kind: "control";
     };
     cpNextSignal: {
-        readonly kind: "control";
+        readonly kind: "observation";
     };
     cpCatchSignals: {
         readonly kind: "control";
