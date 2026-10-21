@@ -196,6 +196,17 @@ const FOUND = {
       ['own', 'write', 'x/f', 'a4'], ['settle'], ['own', 'write', 'x/f', 'a5'], ['settle'], ['own', 'write', 'x/f', 'a6'], ['settle'],
       ['own', 'write', 'x/f', 'saved'], ['settle'], ['own', 'rename', 'x/f', 'x/h'], ['settle'], ['sync', 'readFile', 'x/h'], ['sync', 'stat', 'x/h']],
   },
+  'a file the process read whole stays resident across an input after a read of a file fetched in batches (4225)': {
+    park: 4225,
+    schedule: [['input'], ['own', 'mkdir', 'x/e'], ['release', 'listing'], ['own', 'readFile', 'd/e/g'], ['own', 'readFile', 'mid'], ['sync', 'stat', 'x'],
+      ['own', 'unlink', 'top'], ['input'], ['sync', 'readFile', 'z'], ['release'], ['unstall'], ['sync', 'readFile', 'd/e/g'], ['peer', 'write', 'top', 'c4225.6']],
+  },
+  'a file fetched in batches that the process read stays resident past a repair (4033)': {
+    park: 4033,
+    schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
+      ['peer', 'write', 'top', 'c4033.2'], ['release', 'wave'], ['input'], ['release'], ['sync', 'readFile', 'z'], ['sync', 'write', 'x/f', 'c4033.3'],
+      ['sync', 'readFile', 'mid'], ['sync', 'rename', 'd/f', 'x/e/g'], ['release', 'acquire'], ['sync', 'readdir', 'd/e']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
