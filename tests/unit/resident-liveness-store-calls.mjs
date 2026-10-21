@@ -22,7 +22,7 @@ setTimeout(() => {
     (text) => { process.stdout.write("READ " + text.length + "\\n"); },
     (error) => { process.stdout.write("FAILED " + error.code + "\\n"); },
   );
-}, 150);
+}, 1500);
 `;
 
 const authority = createAuthority({ storageKernelReserve: 0 });
