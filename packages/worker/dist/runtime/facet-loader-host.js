@@ -29,7 +29,11 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 // Experiment (D1, not for landing): a session's one-shots of these runtimes run
 // on another session Durable Object (by name, set per session from the probe
 // app), its own IsolatePool over the same spec, its syscalls routed back here.
-export const d1OneShotPeer = new Map();
+// On globalThis: the probe app's copy of this module is not the SDK's.
+export function d1OneShotPeer() {
+    const shared = globalThis;
+    return shared.__nimbusD1OneShotPeer ??= new Map();
+}
 const D1_MOVED = /^(tsrs|clang-runner|cpython-runner|ruby-runner|git-runner)/;
 function d1Images(images) {
     if (images === undefined)
@@ -81,7 +85,7 @@ export function loaderFacetHost(env, ctx, network) {
             return {
                 submit(fn, args, options) {
                     const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-                    const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer.get(ctx.id.toString()) : undefined;
+                    const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer().get(ctx.id.toString()) : undefined;
                     if (peerName === undefined)
                         return pool.submit(fn, args, options).finally(watched);
                     peerUsed = peerName;

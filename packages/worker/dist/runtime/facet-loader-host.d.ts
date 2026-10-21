@@ -25,7 +25,7 @@ import type { FacetManager } from '../facets/manager.js';
  * grow.
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
-export declare const d1OneShotPeer: Map<string, string>;
+export declare function d1OneShotPeer(): Map<string, string>;
 export interface D1PeerImage {
     path: string;
     identity: string;

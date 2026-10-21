@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4a75952ef240addbc9b7a8aa47601c691bfea3257ca137d335375ae6014cbdcd",
+  "fingerprint": "262c5a8fcda350190850736090bcf158dd3e925bd846667d4b25592db310f5bd",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2762,9 +2762,9 @@
     "packages/worker/dist/runtime/esbuild-wasm-bytes.d.ts": "13eb158560a6cbb55db0d6110193ed1b30d60b4c6f9e5e70a7a1b99c63418447",
     "packages/worker/dist/runtime/esbuild-wasm-bytes.d.ts.map": "bf0f06338f51dab146171ffb67e9150e0fe012dd7c00208812fe54df86a20de3",
     "packages/worker/dist/runtime/esbuild-wasm-bytes.js": "0361235628a73c673eb0c0a4ce4241b78ce464ea86b239d70a926ba73c605598",
-    "packages/worker/dist/runtime/facet-loader-host.d.ts": "bc7ab44daaf1a37d09ce896ea96f7a4d26a88b8f7db2b6a97e40462bd02dbdd2",
-    "packages/worker/dist/runtime/facet-loader-host.d.ts.map": "c69f3c6b3818261093a83ec8f77e59218dc8c5a839700c4ba89c6320225fe5a6",
-    "packages/worker/dist/runtime/facet-loader-host.js": "3cf69498e7b673203b91c3c4809f645b5beca2507510004d9cd65ee1f143a7c2",
+    "packages/worker/dist/runtime/facet-loader-host.d.ts": "4977eafaa0cf7d20122d140d4ff0b1dec42c73c77d76425ae6b0a72baa598aa6",
+    "packages/worker/dist/runtime/facet-loader-host.d.ts.map": "d841c25201d443ca939de2583d14c633d1d5a24b70670a50268876c77e89cd7c",
+    "packages/worker/dist/runtime/facet-loader-host.js": "36e519d8e0cea3994ead5c971cbd8e4b184ec6558620f2c9dc5adea6a0912cb6",
     "packages/worker/dist/runtime/fetch-http-client.d.ts": "007a6a5c6d0dc44950b7773d03150083475318360c0eab1f14d366dd9c107540",
     "packages/worker/dist/runtime/fetch-http-client.d.ts.map": "465038a41ca161e61db314b7e036f419e63b86fafbfd647a57f952e04524c8ea",
     "packages/worker/dist/runtime/fetch-http-client.js": "37c970520b8c5eefa059be917aee152664c7312d9db7df82b0668ff08624da6c",
@@ -3427,7 +3427,7 @@
     "packages/worker/src/runtime/cpython-resident.ts": "a440728c12be8d2b008afae9e5e0dd709a11fdd2218fdfc6bda1f5b9bdaa5940",
     "packages/worker/src/runtime/egress-tls-client.ts": "31ad20f715be279e1de23c4957d67d977d9240775c0b79804bf90b156f13ce8c",
     "packages/worker/src/runtime/esbuild-wasm-bytes.ts": "8157f7b59cc7558695ff78f0bf0cedcfa2a9e4e6efda1367426f438860e2e3c5",
-    "packages/worker/src/runtime/facet-loader-host.ts": "495e3e35cb10fb1c4b056c48c57e8a750a715bf0089f1f1b292212f730d13762",
+    "packages/worker/src/runtime/facet-loader-host.ts": "bd22a15af09e4167042d074c25e787bd20d63bba374bcf5bc2491856e4ad6210",
     "packages/worker/src/runtime/fetch-http-client.ts": "0949599edbfe92598e9d30c1e943a6cee4528a3d88ae701d1f83fdf020f96026",
     "packages/worker/src/runtime/git-bundle-artifact.ts": "6c3ea8f56dd23999f68f86ee57d82993d2957d8ecec231b1c12507f349249c59",
     "packages/worker/src/runtime/html-entrypoint.ts": "a601f3fe0bbec416f945a7f6d7ca029f819ab1c610530d438df384337682fc74",
