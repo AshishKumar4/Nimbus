@@ -8326,7 +8326,9 @@ export class FacetManager {
     const back: ProcessInputPacket[] = before.chunks.map((data) => ({ data, ended: false }));
     channel.unread(back.concat(input.packets));
     held.give(before.bytes + input.bytes);
-    return { next: { replay, stdinWhole: input.ended, stdinAtLeast: before.bytes + input.bytes } };
+    // What it caught while it waited, the next run takes past its read.
+    const next: ReplayLaunch = input.caught.length > 0 ? { ...replay, signals: input.caught } : replay;
+    return { next: { replay: next, stdinWhole: input.ended, stdinAtLeast: before.bytes + input.bytes } };
   }
 
   /**
@@ -8338,14 +8340,13 @@ export class FacetManager {
    * signal, the shell's abort or a kill ends the wait.
    */
   private async _awaitStoppedInput(channel: StdinChannel, until: 'end' | 'data', signal: AbortSignal, held: ReadAheadAccount, already: number, pid: number)
-    : Promise<{ packets: ProcessInputPacket[]; bytes: number; ended: boolean } | { aborted: true } | { signal: string } | { full: true }> {
+    : Promise<{ packets: ProcessInputPacket[]; bytes: number; ended: boolean; caught: ProcessSignalName[] } | { aborted: true } | { signal: string } | { full: true }> {
     const pieces = new OwnedPieces();
     let resize: ProcessInputPacket['resize'];
     let ended = false;
     // A signal its program catches (its handler's, catchSignals) waits for it, as Node runs a handler once a
-    // synchronous read returns: the run that resumes takes it. Any other ends the wait.
+    // synchronous read returns: the run that resumes takes it past the read (ReplayLaunch.signals). Any other ends the wait.
     const caught: ProcessSignalName[] = [];
-    const caughtBack = (): void => { for (const sent of caught.splice(0)) this.processes.deliverSignal(pid, sent); };
     const aborted = new Promise<'aborted'>((resolve) => {
       if (signal.aborted) resolve('aborted');
       else signal.addEventListener('abort', () => resolve('aborted'), { once: true });
@@ -8375,8 +8376,7 @@ export class FacetManager {
     }
     const packets: ProcessInputPacket[] = pieces.finish().map((data) => ({ data, ended: false }));
     if (resize) packets.push({ data: new Uint8Array(0), ended: false, resize });
-    caughtBack();
-    return { packets, bytes: pieces.bytes, ended };
+    return { packets, bytes: pieces.bytes, ended, caught };
   }
 
   /**

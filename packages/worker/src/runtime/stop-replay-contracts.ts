@@ -96,6 +96,12 @@ export interface ReplayLaunch {
   prefix: { stdout: string; stderr: string } | null;
   /** Completed supervisor/network observations the guest must receive again. */
   observations?: Record<string, number>;
+  /**
+   * Signals sent to it while the run before waited for stdin, which its
+   * program caught: taken once it is past the read (Node runs a handler once
+   * the read it interrupted returns), not before.
+   */
+  signals?: string[];
 }
 
 /** A complete response, or the exact body failure after its headers. */
