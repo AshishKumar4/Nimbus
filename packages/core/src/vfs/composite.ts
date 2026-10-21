@@ -33,9 +33,9 @@ import { normalizeVfsPath, parentOf } from './path.js';
 import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { modeAllows } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
-import { DIRENT_TYPES } from './dirent-type.js';
+import { runtimeStatOf } from './runtime-stat.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 
 /**
@@ -133,21 +133,6 @@ const SYNTH_RUNTIME_STAT: RuntimeVfsStat = {
   dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
 };
 
-/**
- * A namespace entry's stat in the runtime contract's shape: its identity
- * (dev, ino) is the namespace's, and a mounted backend's entries carry no
- * SQLite revision.
- */
-export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
-  // Format bits the backend's mode leaves out are its coarse type's (dirent-type.ts).
-  const typeBits = DIRENT_TYPES[stat.type].format;
-  const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & S_IFMT ? stat.mode : typeBits | stat.mode);
-  return {
-    dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
-    ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
-    mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : 0,
-  };
-}
 
 export type { Principal } from './vfs.js';
 

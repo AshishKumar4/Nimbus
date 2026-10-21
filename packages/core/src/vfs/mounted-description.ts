@@ -18,7 +18,8 @@
 import { processView, settleHeld, type DescriptorScope, type MountedFileDescription } from '../runtime/descriptors.js';
 import type { RuntimeFileHandle, RuntimeVfsDirEntry, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
-import { runtimeStatOf, type HeldFile, type PinnedName } from './composite.js';
+import type { HeldFile, PinnedName } from './composite.js';
+import { runtimeStatOf } from './runtime-stat.js';
 import { andThen, isPromise, type Awaitable, type VfsStat } from './vfs.js';
 import { isVfsError, type VfsErrorCode } from './vfs-error.js';
 

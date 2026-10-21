@@ -13,7 +13,8 @@
  * them to the process's own descriptors before any read. /dev/tcp is the
  * WASI socket prefix, not a node here.
  */
-import { S_IFCHR, type SyncVFS, type VFS, type VfsDirent, type VfsStat } from './vfs.js';
+import { S_IFCHR, type SyncVFS, type VFS, type VfsChanges, type VfsDirent, type VfsStat } from './vfs.js';
+import { immutableChanges } from './immutable-changes.js';
 import { syscallError } from './vfs-error.js';
 
 const DEV_MODE = S_IFCHR | 0o666;
@@ -56,6 +57,8 @@ function name(path: string): string {
 
 export class DevVFS implements VFS {
   readonly sync: SyncVFS = this;
+  /** Its devices are fixed: a reader that listed them is current (immutable-changes.ts). */
+  readonly changes: VfsChanges = immutableChanges(this);
 
   /** The device at `path`; ENOENT for `syscall` when there is none. */
   private node(path: string, syscall: string): DevNode {

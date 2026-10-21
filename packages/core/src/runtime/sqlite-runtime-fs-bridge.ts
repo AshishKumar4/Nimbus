@@ -3,7 +3,8 @@ import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFo
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeAccess, settleHeldAt, type Authority, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
-import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
+import type { CompositeVFS } from '../vfs/composite.js';
+import { runtimeStatOf } from '../vfs/runtime-stat.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { entryVfsPath, walkVfsPath } from '../vfs/path-walk.js';

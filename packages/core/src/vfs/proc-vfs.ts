@@ -3,11 +3,19 @@
  *
  * Synchronous and read-only. A file is a generator from the reading
  * principal's credential to text; `register` adds or replaces one, and
- * `name` may be nested (`net/info`), which makes its directories. Nothing
- * here is stored, so nothing here has a revision: a cache never holds it.
+ * `name` may be nested (`net/info`), which makes its directories.
+ *
+ * Its tree changes only by `register`, so its feed is an immutable one
+ * (immutable-changes.ts): a reader that listed it is current until a file
+ * is registered. A file is constant for the tree (the trust store, the
+ * CPUs, the version), its stat its content's size; or volatile (`register`
+ * with `volatile`: the heap, the clock, the network), its stat size 0, as
+ * Linux procfs says, and its content made at each read by whoever reads it.
+ * Every stat's mtime is the tree's: when it was made, or last registered to.
  */
 import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
-import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
+import { immutableChanges } from './immutable-changes.js';
+import type { SyncVFS, VFS, VfsChanges, VfsCred, VfsDirent, VfsStat } from './vfs.js';
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 
@@ -28,23 +36,37 @@ function key(path: string): string {
   return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
 }
 
-export class ProcVFS implements VFS {
-  private readonly files: Map<string, ProcGenerator>;
-  readonly sync: SyncVFS;
+/** What every view of one /proc shares: its files, which of them are volatile, and its tree's version and time. */
+interface ProcTree {
+  readonly files: Map<string, ProcGenerator>;
+  readonly volatile: Set<string>;
+  version: number;
+  mtimeMs: number;
+}
 
-  constructor(files?: Map<string, ProcGenerator>, private readonly cred: VfsCred | null = null) {
-    this.files = files ?? new Map();
+export class ProcVFS implements VFS {
+  readonly sync: SyncVFS;
+  readonly changes: VfsChanges;
+
+  constructor(private readonly tree: ProcTree = { files: new Map(), volatile: new Set(), version: 0, mtimeMs: Date.now() }, private readonly cred: VfsCred | null = null) {
     this.sync = this;
+    this.changes = immutableChanges(this, () => tree.version);
   }
 
-  /** Add or replace `/proc/<name>`. */
-  register(name: string, generator: ProcGenerator): void {
-    this.files.set(key(name), generator);
+  private get files(): Map<string, ProcGenerator> { return this.tree.files; }
+
+  /** Add or replace `/proc/<name>`; `volatile`: its content is made at each read (size 0). */
+  register(name: string, generator: ProcGenerator, volatile = false): void {
+    const k = key(name);
+    this.files.set(k, generator);
+    if (volatile) this.tree.volatile.add(k); else this.tree.volatile.delete(k);
+    this.tree.version++;
+    this.tree.mtimeMs = Date.now();
   }
 
   /** The same files, generated for `cred`. */
   as(cred: VfsCred): ProcVFS {
-    return new ProcVFS(this.files, cred);
+    return new ProcVFS(this.tree, cred);
   }
 
   private isDir(k: string): boolean {
@@ -63,10 +85,11 @@ export class ProcVFS implements VFS {
 
   stat(path: string): VfsStat | null {
     const k = key(path);
-    if (this.isDir(k)) return DIR;
+    if (this.isDir(k)) return { ...DIR, mtimeMs: this.tree.mtimeMs };
     if (!this.files.has(k)) return null;
+    if (this.tree.volatile.has(k)) return { size: 0, mtimeMs: this.tree.mtimeMs, ...FILE };
     const content = this.generate(path);
-    return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: Date.now(), ...FILE };
+    return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: this.tree.mtimeMs, ...FILE };
   }
 
   readFile(path: string): Uint8Array {
@@ -158,11 +181,11 @@ export function standardProc(): ProcVFS {
       `HeapTotal:      ${Math.floor(memory.totalJSHeapSize / 1024)} kB`,
       '',
     ].join('\n');
-  });
+  }, true);
   proc.register('uptime', () => {
     const seconds = typeof performance !== 'undefined' ? (performance.now() / 1000).toFixed(2) : '0.00';
     return `${seconds} ${seconds}\n`;
-  });
+  }, true);
   proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
   proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
   proc.register('net/info', () => {
@@ -177,6 +200,6 @@ export function standardProc(): ProcVFS {
       `rtt:           ${conn.rtt ?? 0} ms`,
       '',
     ].join('\n');
-  });
+  }, true);
   return proc;
 }
