@@ -134,11 +134,11 @@ function workspace() {
   assert.equal(await code(() => vfs.readFile('/proc/nope')), 'ENOENT');
 }
 
-// The standard /proc: cpuinfo, meminfo, uptime, version, net/info.
+// The standard /proc: cpuinfo, meminfo, uptime, version, net/info, nimbus/ca-certificates.crt.
 {
   const vfs = new CompositeVFS(new MemoryVFS());
   vfs.mount('/proc', standardProc());
-  assert.deepEqual((await vfs.readdir('/proc')).map((e) => e.name).sort(), ['cpuinfo', 'meminfo', 'net', 'uptime', 'version']);
+  assert.deepEqual((await vfs.readdir('/proc')).map((e) => e.name).sort(), ['cpuinfo', 'meminfo', 'net', 'nimbus', 'uptime', 'version']);
   assert.match(await readText(vfs, '/proc/cpuinfo'), /^processor\t: 0/);
   assert.match(await readText(vfs, '/proc/meminfo'), /^MemTotal:/);
 }

@@ -49,7 +49,8 @@ try {
   for (const line of [`echo forged >> ${FILE}`, `rm -f ${FILE}`, 'touch /proc/nimbus/extra.pem']) {
     const refused = await ws.exec(line);
     assert.notEqual(refused.exitCode, 0, `${line}: refused`);
-    assert.match(refused.stderr, /EROFS|[Rr]ead-only file system/, `${line}: ${refused.stderr}`);
+    // A user's write to a 0444 file of root's is refused before the read-only /proc would be asked, as on Linux.
+    assert.match(refused.stderr, /Permission denied|Read-only file system/, `${line}: ${refused.stderr}`);
   }
   assert.equal(createHash('sha256').update(await ws.fs.readFile(FILE)).digest('hex'), PINNED_SHA256, 'unchanged by them');
 } finally {
