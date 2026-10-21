@@ -99,7 +99,7 @@ export interface OneShotPlacementCall {
     at: number;
 }
 /** What may want a session's thread while a one-shot computes there (SessionDemand). */
-export type ThreadWant = 'terminal' | 'process' | 'request';
+export type ThreadWant = 'terminal' | 'process';
 /** The placement of the one-shots of the Durable Object whose state is `ctx`, its peers in `env`'s host namespace. */
 export declare function oneShotPlacement(ctx: DurableObjectState, env: object): OneShotPlacement;
 /** What /api/_diag/session shows of a session's one-shot placement. */

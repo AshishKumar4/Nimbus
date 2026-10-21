@@ -202,9 +202,10 @@ try {
   const idleSaved = printed((await t.run('cat /home/user/saved.txt', 30_000)).output);
   out({ idleSave: true, worstMs: idleSaves.worst, samples: idleSaves.samples, placed: idleSaves.value.calls.map((call) => ({ host: call.host, wants: call.wants })) });
   a.check(`a save during an idle session's run waits for it (worst ${idleSaves.worst} ms): the run stays in the session, the save lands`,
-    idleSaves.value.r.exitCode === 0 && idleSaves.value.calls.length > 0 && idleSaves.value.calls.every((call) => call.host === 'session' && call.wants.length === 0)
+    idleSaves.value.r.exitCode === 0 && printed(idleSaves.value.r.output).includes('1')
+      && idleSaves.value.calls.length > 0 && idleSaves.value.calls.every((call) => call.host === 'session' && call.wants.length === 0)
       && lastSaved !== null && idleSaved.includes(lastSaved),
-    JSON.stringify({ worst: idleSaves.worst, calls: idleSaves.value.calls, lastSaved, idleSaved }));
+    JSON.stringify({ worst: idleSaves.worst, printed: printed(idleSaves.value.r.output), calls: idleSaves.value.calls, lastSaved, idleSaved }));
   for (const [source, { start }] of Object.entries(SOURCES)) {
     const stop = await start();
     await t.run(PY_PRINT, 600_000);

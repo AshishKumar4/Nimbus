@@ -1,16 +1,4 @@
 import { liveTerminals } from './shell-socket.js';
-const inFlight = new WeakMap();
-/** An HTTP request to the session `ctx` began; the answer ends it. */
-export function requestBegan(ctx) {
-    inFlight.set(ctx, (inFlight.get(ctx) ?? 0) + 1);
-    let ended = false;
-    return () => {
-        if (ended)
-            return;
-        ended = true;
-        inFlight.set(ctx, (inFlight.get(ctx) ?? 1) - 1);
-    };
-}
 export function threadDemand(host) {
     return {
         wants(pid) {
@@ -22,14 +10,16 @@ export function threadDemand(host) {
                 terminals.delete(own.terminal === '' ? undefined : own.terminal);
             if (terminals.size > 0)
                 wants.push('terminal');
+            // The run and what is waiting for it: its ancestors, but one that listens.
             const ancestry = new Set();
             for (let entry = own; entry !== undefined && !ancestry.has(entry.pid); entry = entry.parentPid === undefined ? undefined : host.processes.get(entry.parentPid)) {
-                ancestry.add(entry.pid);
+                if (entry === own || !host.listens(entry.pid))
+                    ancestry.add(entry.pid);
+                else
+                    break;
             }
             if (host.processes.getRunning().some((entry) => !ancestry.has(entry.pid) && !host.isShell(entry.pid)))
                 wants.push('process');
-            if ((inFlight.get(host.ctx) ?? 0) > 0)
-                wants.push('request');
             return wants;
         },
     };

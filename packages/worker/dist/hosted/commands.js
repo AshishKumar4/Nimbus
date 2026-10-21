@@ -42,6 +42,7 @@ export async function registerHostedCommands(self, workspace) {
     oneShotPlacement(self.ctx, self.env).wantedBy(threadDemand({
         ctx: self.ctx,
         processes: self.processes,
+        listens: (pid) => self.portRegistry.getAll().some((entry) => entry.pid === pid),
         isShell: (pid) => pid === workspace.shellProcessPid || self.terminals.isShell(pid),
     }));
     const sqliteFs = workspace.vfs;
