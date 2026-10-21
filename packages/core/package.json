@@ -35,6 +35,12 @@
       "types": "./dist/workspace/nimbus-workspace.d.ts",
       "import": "./dist/workspace/nimbus-workspace.js"
     },
+    "./node-compat": {
+      "workspace": "./src/node-compat/index.ts",
+      "bun": "./src/node-compat/index.ts",
+      "types": "./dist/node-compat/index.d.ts",
+      "import": "./dist/node-compat/index.js"
+    },
     "./*.js": {
       "workspace": "./src/*.ts",
       "bun": "./src/*.ts",
