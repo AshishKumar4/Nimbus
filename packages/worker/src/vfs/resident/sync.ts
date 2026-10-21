@@ -260,6 +260,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     const dropped: string[] = [];
     const own: { path: string; rev: number | null }[] = [];
     let rekeyed = 0;
+    /** Dated files the listing proved current: kept, so never swept with the rest. */
+    let vouched = 0;
     for (const row of rows) {
       const entry = listed.get(row.path);
       if (row.rev === RK_OWN_WRITE) {
@@ -270,8 +272,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         });
         continue;
       }
-      const keep = vouches(entry, row.rev) || !judgeable;
-      if (keep) { current.add(row.path); continue; }
+      if (vouches(entry, row.rev)) { vouched++; current.add(row.path); continue; }
+      if (!judgeable) { current.add(row.path); continue; }
       // The listing names the same bytes (a revision moved, the content did
       // not, or another epoch): kept and dated at the listing, while its stat
       // says this credential may read them (a chmod or chown moves the
@@ -291,8 +293,6 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // own. Dated: kept only where the listing proves it current; otherwise it
     // goes, and is fetched again like any dropped row, so a sync read of it is
     // a miss rather than bytes the authority has replaced.
-    /** Dated files the listing proved current: kept, so never swept with the rest. */
-    let vouched = 0;
     for (const [path, rev] of cells.heldRevisions()) {
       if (current.has(path)) continue;
       const entry = listed.get(path);
