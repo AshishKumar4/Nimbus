@@ -20,10 +20,9 @@
  * `require`, which every read, scan and write goes through.
  */
 import type { HeapTables, ResidentTables } from './tables.js';
-export interface Cursor {
-    epoch: string;
-    rev: number;
-}
+import { type FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
+/** Where the store's rows are known-good: the namespace's position (feed-position.ts), each fed mount's feed. */
+export type Cursor = FeedPosition;
 export interface Coherence {
     /** Bound to tables (store.bind / store.bindInMemory), sealed. */
     bind(t: ResidentTables, heap: HeapTables | null): void;

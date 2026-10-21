@@ -2,6 +2,7 @@ import type { ProgramPlacement } from './program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { VfsRemoval } from '../vfs/vfs.js';
+import type { FeedPosition } from './feed-position.js';
 /**
  * A value SQLite can return in a row.
  *
@@ -442,7 +443,7 @@ export interface RuntimeFsBridge {
      * the caller must drop its entire resident set. That costs a cold cache;
      * the alternative would be serving a stale byte.
      */
-    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Awaitable<VfsAcquireResult>;
+    acquire(position: FeedPosition | null, options?: VfsAcquireOptions): Awaitable<VfsAcquireResult>;
     /**
      * Enumerate every path this bridge's credential can see, one bounded page at
      * a time, resuming past `after`.
@@ -657,10 +658,22 @@ export interface VfsAcquireOptions {
         exclude?: string[];
     };
 }
-/** Result of a {@link RuntimeFsBridge.acquire} barrier. */
-export interface VfsAcquireResult {
+/**
+ * What one backend's feed answers (VfsChanges.since, SqliteVFS.acquire):
+ * every path changed since a cursor of its own epoch, at its own revision,
+ * or a poison.
+ */
+export interface VfsDelta {
     epoch: string;
     rev: number;
+    paths: VfsInvalidatedPath[];
+    poison: boolean;
+    /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
+    namespace?: boolean;
+}
+/** Result of a {@link RuntimeFsBridge.acquire} barrier: the namespace's, at the position it leaves its reader. */
+export interface VfsAcquireResult {
+    position: FeedPosition;
     paths: VfsInvalidatedPath[];
     poison: boolean;
     /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
@@ -720,7 +733,7 @@ export interface VfsListEntry {
  * of defect as reading a truncated file as a complete one, which is why
  * `_rpcFsReadBatch` rejects rather than truncates.
  *
- * `epoch`/`rev` are read BEFORE the page is walked, for the same reason
+ * The position (each feed's epoch and cursor) is read BEFORE the page is walked, for the same reason
  * `buildPrefetchBundle` reads its cursor before its walk: a mutation landing
  * during enumeration must be reported by the next ACQUIRE, never silently
  * missed. Dating rows at a cursor OLDER than their bytes costs a refetch;
@@ -739,9 +752,16 @@ export interface VfsListOptions {
     /** Each link's `linkTarget`: a read of its content, which may not be at hand. Default true. */
     linkTargets?: boolean;
 }
-export interface VfsListPage {
+/** One page of one backend's listing (VfsChanges.list, SqliteVFS.list), at its own epoch and revision. */
+export interface VfsBackendPage {
     epoch: string;
     rev: number;
+    entries: VfsListEntry[];
+    next: string | null;
+}
+/** One page of the namespace's listing, at the position it was taken at (read before the page). */
+export interface VfsListPage {
+    position: FeedPosition;
     entries: VfsListEntry[];
     next: string | null;
 }
@@ -752,8 +772,7 @@ export interface VfsListPage {
  * refused (E2BIG), never cut short.
  */
 export interface VfsListTree {
-    epoch: string;
-    rev: number;
+    position: FeedPosition;
     entries: VfsListEntry[];
 }
 export interface RuntimeProcessBridge {

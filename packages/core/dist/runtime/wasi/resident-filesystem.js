@@ -43,6 +43,9 @@ import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
+import { feedPointOf, rootOf } from '../feed-position.js';
+import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
+import { isCharacterDevice } from '../../vfs/vfs.js';
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
 /** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
@@ -346,7 +349,7 @@ export function residentFilesystem(session, resident, delegation) {
             const entry = store.entry(key);
             if (entry === undefined)
                 return { missing: key };
-            if (entry !== null && entry.dev !== store.device)
+            if (entry !== null && !answerable(key, entry))
                 return DELEGATE;
             step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
         }
@@ -567,10 +570,52 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = store.entry(key);
         if (entry === undefined)
             return undefined;
-        if (entry !== null && entry.dev !== store.device)
+        if (entry !== null && !answerable(key, entry))
             return undefined;
         return entry;
     };
+    /**
+     * Whether the view answers for `entry` at `key`: a row of a fed mount
+     * (the session's own filesystem, or a mount whose backend states its
+     * change model: VFS.changes, /dev and /proc among them), never one of a
+     * mount without a feed (a snapshot its listing walked), which is the
+     * session's to answer. A row is its fed mount's where its device is that
+     * mount's root's (the deepest fed mount point at or above it): a mount
+     * without a feed beneath it has a device of its own.
+     */
+    const answerable = (key, entry) => {
+        if (entry.dev === store.device)
+            return true;
+        const cursor = store.cursor();
+        if (cursor === null)
+            return false;
+        const point = feedPointOf(cursor, key).slice(1);
+        if (point === '')
+            return false;
+        const root = point === key ? entry : store.entry(point);
+        return root !== undefined && root !== null && root.dev === entry.dev;
+    };
+    /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
+    const volatileProc = (key, entry) => {
+        if (entry.type !== 'file' || entry.size !== 0)
+            return false;
+        const cursor = store.cursor();
+        return cursor !== null && feedPointOf(cursor, key) === PROC_MOUNT_POINT;
+    };
+    /**
+     * A volatile /proc file's bytes, made here by the session's own generator
+     * (proc-files.ts) where this process has it; undefined where only the
+     * session makes it (/proc/mounts).
+     */
+    const generated = (key) => {
+        const generate = volatileProcFile(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
+        if (generate === undefined)
+            return undefined;
+        const content = generate({ ...store.cred, umask: 0 });
+        return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
+    };
+    /** A file whose bytes the view never holds: a device's (read by a descriptor of the session's), or a volatile /proc file's. */
+    const unheld = (key, entry) => isCharacterDevice(entry.mode) || volatileProc(key, entry);
     /**
      * A file's bytes: what this process decided for it, else the store's,
      * fetched into it. Undefined when only the authority can read them (a file
@@ -684,7 +729,7 @@ export function residentFilesystem(session, resident, delegation) {
             return true;
         const cursor = store.cursor();
         return walks.every((walk) => walk.crossed.every((name) => holder.entry(name) !== undefined
-            || (cursor !== null && holder.client.certifies(name, cursor) !== undefined)));
+            || (cursor !== null && holder.client.certifies(name, rootOf(cursor)) !== undefined)));
     };
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
@@ -862,8 +907,10 @@ export function residentFilesystem(session, resident, delegation) {
             throw fsError('EACCES', 'open', path);
         if (entry.type === 'directory')
             throw fsError('EISDIR', 'open', path);
-        if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES)
+        if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode))
             return DELEGATE;
+        if (volatileProc(key, entry))
+            return generated(key) ?? DELEGATE;
         return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
@@ -1057,7 +1104,8 @@ export function residentFilesystem(session, resident, delegation) {
     const openByNumber = (path, flags) => {
         if (flags.directory)
             throw NOT_NOW;
-        return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
+        return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => (row !== null && unheld(key, row) ? undefined
+            : holder.provisional.open(key, pathOf(path), flags, row))));
     };
     /**
      * A read by a descriptor of the holder's: its file's bytes here (a grant's
@@ -1584,7 +1632,7 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const vouchedContent = ({ key }) => {
         const cursor = store.cursor();
-        if (cursor === null || holder.client.vouch(key, cursor) !== 'held')
+        if (cursor === null || holder.client.vouch(key, rootOf(cursor)) !== 'held')
             return undefined;
         const entry = entryAt(key);
         return entry ? store.content(key, entry.revision) : undefined;

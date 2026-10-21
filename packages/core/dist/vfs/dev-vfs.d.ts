@@ -13,9 +13,11 @@
  * them to the process's own descriptors before any read. /dev/tcp is the
  * WASI socket prefix, not a node here.
  */
-import { type SyncVFS, type VFS, type VfsDirent, type VfsStat } from './vfs.js';
+import { type SyncVFS, type VFS, type VfsChanges, type VfsDirent, type VfsStat } from './vfs.js';
 export declare class DevVFS implements VFS {
     readonly sync: SyncVFS;
+    /** Its devices are fixed: a reader that listed them is current (immutable-changes.ts). */
+    readonly changes: VfsChanges;
     /** The device at `path`; ENOENT for `syscall` when there is none. */
     private node;
     stat(path: string): VfsStat | null;

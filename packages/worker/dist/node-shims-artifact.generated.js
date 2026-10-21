@@ -9,17 +9,17 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-5253130531f6c96e.js";
-export const NODE_SHIMS_BUILD_ID = "5253130531f6c96e";
-export const NODE_SHIMS_SHA256 = "5253130531f6c96e1840cec76cff5b6ba646a0f90340183ded9442209be1d2f2";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-cd7615d9e85fabb4.js";
+export const NODE_SHIMS_BUILD_ID = "cd7615d9e85fabb4";
+export const NODE_SHIMS_SHA256 = "cd7615d9e85fabb4e1ae6dc33d5b447cffd4c927187ebac6d397a78124104735";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-f7b8d03b5040098e.js";
-export const VFS_WRITE_LEDGER_BUILD_ID = "f7b8d03b5040098e";
-export const VFS_WRITE_LEDGER_SHA256 = "f7b8d03b5040098ed8a8344ed1b9a1f9b40db082b923d0d33bdb29563d4cf722";
+export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-daea8d486d29a1aa.js";
+export const VFS_WRITE_LEDGER_BUILD_ID = "daea8d486d29a1aa";
+export const VFS_WRITE_LEDGER_SHA256 = "daea8d486d29a1aa97e26b97cff2b60780a54c7e6a5432fef0d227afd04104ff";
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-40767589b04b6b48.js";
-export const RESIDENT_STORE_BUILD_ID = "40767589b04b6b48";
-export const RESIDENT_STORE_SHA256 = "40767589b04b6b48d8853a21c2578e1ee59612bcfe757f895935cb832f4ddb5a";
+export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-09918338bc7a5a24.js";
+export const RESIDENT_STORE_BUILD_ID = "09918338bc7a5a24";
+export const RESIDENT_STORE_SHA256 = "09918338bc7a5a24ba70894eee3d5e85325ee4b75649b680f8d0b0e0628d5440";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-eb58a6d5234006d4.js";
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "eb58a6d5234006d4";

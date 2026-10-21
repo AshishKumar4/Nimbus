@@ -1,3 +1,4 @@
+import { feedOf, positionOf } from '../runtime/feed-position.js';
 import { LOCAL_PLACEMENT } from '../runtime/program-start.js';
 import { inWatchedTree, projectChange } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
@@ -5,9 +6,9 @@ import { normalizeVfsPath, parentOf } from './path.js';
 import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { modeAllows } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
-import { DIRENT_TYPES } from './dirent-type.js';
+import { runtimeStatOf } from './runtime-stat.js';
 import { walkRemoval } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
 export { comparePaths };
@@ -48,21 +49,6 @@ function sourceId(found) {
 const SYNTH_RUNTIME_STAT = {
     dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
 };
-/**
- * A namespace entry's stat in the runtime contract's shape: its identity
- * (dev, ino) is the namespace's, and a mounted backend's entries carry no
- * SQLite revision.
- */
-export function runtimeStatOf(stat) {
-    // Format bits the backend's mode leaves out are its coarse type's (dirent-type.ts).
-    const typeBits = DIRENT_TYPES[stat.type].format;
-    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & S_IFMT ? stat.mode : typeBits | stat.mode);
-    return {
-        dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
-        ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
-        mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : 0,
-    };
-}
 /** A mount-relative `rel` under its `point`, root-aware and not normalized. */
 function rerooted(point, rel) {
     return point === '/' ? rel : point + rel;
@@ -320,7 +306,7 @@ export class CompositeVFS {
         return {
             position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
             since: (position, options) => this.feedSince(position, options),
-            list: (after, limit, walked) => this.feedList(after, limit, walked),
+            list: (after, limit, walked, options) => this.feedList(after, limit, walked, options),
             walk: (named, limit) => this.walkUnfed(named, limit),
         };
     }
@@ -357,7 +343,7 @@ export class CompositeVFS {
             if (changes)
                 feeds[mount.point] = { epoch: changes.epoch, cursor: changes.revision() };
         }
-        return { table, feeds };
+        return positionOf(table, feeds);
     }
     static reroot(point, path) {
         if (point === ROOT_POINT)
@@ -374,14 +360,14 @@ export class CompositeVFS {
         const table = this.feedSignature();
         const sources = this.feedSources();
         const poison = () => ({ position: this.feedPosition(table, sources), poison: true, paths: [] });
-        if (position.table !== table)
+        if (position === null || position.table !== table)
             return poison();
         const feeds = {};
         const paths = [];
         for (const { mount, changes } of sources) {
             if (!changes)
                 continue;
-            const held = position.feeds[mount.point];
+            const held = feedOf(position, mount.point);
             if (held === undefined)
                 return poison();
             const delta = changes.since(held.epoch, held.cursor, options);
@@ -391,7 +377,8 @@ export class CompositeVFS {
             for (const entry of delta.paths) {
                 const at = CompositeVFS.reroot(mount.point, entry.path);
                 if (this.feedShows(at, mount)) {
-                    paths.push(at === entry.path ? entry : { ...entry, path: at });
+                    paths.push(at === entry.path && mount.dev === null ? entry
+                        : { ...entry, path: at, ...(entry.stat ? { stat: this.identifyListed(mount, at, entry.stat) } : {}) });
                     continue;
                 }
                 // A covered row changing is nothing to the reader, except at a
@@ -403,7 +390,7 @@ export class CompositeVFS {
                 }
             }
         }
-        return { position: { table, feeds }, poison: false, paths };
+        return { position: positionOf(table, feeds), poison: false, paths };
     }
     /**
      * One page of every name the namespace shows, in path order: each feed's
@@ -413,7 +400,7 @@ export class CompositeVFS {
      * those mounts). A mount without a feed shows only its point otherwise.
      * Take `position()` before the first page.
      */
-    feedList(after, limit, walked = []) {
+    feedList(after, limit, walked = [], options) {
         const want = Math.max(1, limit);
         const past = (path) => after === null || comparePaths(path, after) > 0;
         const streams = [];
@@ -446,11 +433,11 @@ export class CompositeVFS {
             const entries = [];
             let more = true;
             while (entries.length < want && more) {
-                const page = changes.list(from, want);
+                const page = changes.list(from, want, options);
                 for (const entry of page.entries) {
                     const at = CompositeVFS.reroot(point, entry.path);
                     if (past(at) && this.feedShows(at, mount) && at !== point) {
-                        entries.push(at === entry.path ? entry : { ...entry, path: at });
+                        entries.push(at === entry.path && mount.dev === null ? entry : { ...entry, path: at, stat: this.identifyListed(mount, at, entry.stat) });
                     }
                 }
                 more = page.next !== null;
@@ -1432,6 +1419,30 @@ export class CompositeVFS {
         return ref;
     }
     /** Whether the table declares an accepted mount point, even if its source is absent. */
+    /**
+     * Whether every live mount's feed but the root's is fixed (VfsChanges.fixed):
+     * a read lease, which the engine's writes recall, follows no other feed
+     * that moves.
+     */
+    movesWithTheRootAlone() {
+        for (const { mount, changes } of this.feedSources()) {
+            if (mount.point !== ROOT_POINT && changes !== undefined && changes.fixed !== true)
+                return false;
+        }
+        return true;
+    }
+    /**
+     * Whether the mount at `point` states its change model (a feed:
+     * VFS.changes), as the root's SQLite does: false for one with none, or
+     * whose source is absent, which only a walk can list (CompositeFeed.walk).
+     */
+    fedMount(point) {
+        const mount = this.table.mounts.get(point);
+        if (mount === undefined)
+            return false;
+        const files = this.backend(mount);
+        return files !== null && files.changes !== undefined;
+    }
     someMountPoint(wants) {
         for (const mount of this.table.mounts.values()) {
             if (wants(mount.point))
@@ -2523,6 +2534,19 @@ export class CompositeVFS {
     identityOf(r) {
         const operand = r.operand;
         return operand !== undefined && r.spelling !== r.path ? `${operand.point}\0${operand.rel}` : r.path;
+    }
+    /** A fed mount's listed or reported stat at `at`, identified as `stat` there says it (identifyOn): its mount's device, its inode numbered where it has none. */
+    identifyListed(mount, at, stat) {
+        if (mount.dev === null)
+            return stat;
+        let ino = stat.ino;
+        if (ino === 0) {
+            const known = mount.inos.get(at);
+            ino = known ?? mount.inos.size + 1;
+            if (known === undefined)
+                mount.inos.set(at, ino);
+        }
+        return { ...stat, dev: mount.dev, ino };
     }
     /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
     identifyOn(mount, identity, stat) {

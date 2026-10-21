@@ -1159,7 +1159,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // again on its next run, and its text cells are shared, not copied.
     const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
     if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
     }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
@@ -1598,7 +1598,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // staged at, which is right for a cold store and stale for a kept one —
     // the cursor the boot returns describes what the rows actually are.
     if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
     }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
@@ -3929,8 +3929,7 @@ async function gatherPrefetchWithin(vfs, options, creditLimit) {
 async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
-    const admitted = await vfs.acquire(null, 0);
-    const cursor = { epoch: admitted.epoch, rev: admitted.rev };
+    const cursor = (await vfs.acquire(null)).position;
     // Where the build's time went, by phase (ms; the clock moves across its turns): its exec telemetry.
     const phases = {};
     let phaseFrom = Date.now();

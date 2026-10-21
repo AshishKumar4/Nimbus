@@ -62,8 +62,8 @@ export class SqliteFiles {
                     entry.path = absolute(entry.path);
                 return delta;
             },
-            list: (after, limit) => {
-                const page = view.list(after === null ? null : after.replace(/^\/+/, ''), limit);
+            list: (after, limit, options) => {
+                const page = view.list(after === null ? null : after.replace(/^\/+/, ''), limit, options);
                 for (const entry of page.entries)
                     entry.path = absolute(entry.path);
                 return { ...page, next: page.next === null ? null : absolute(page.next) };

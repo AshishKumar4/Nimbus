@@ -157,7 +157,7 @@ export async function readHydrating(hydrated, read) {
  */
 export const SUPERVISOR_OP_ROUTES = {
     setUmask: { method: '_rpcSetUmask', args: [0, 'pid'] },
-    fsAcquire: { method: '_rpcFsAcquire', args: [0, 1, 2, 'pid'] },
+    fsAcquire: { method: '_rpcFsAcquire', args: [0, 1, 'pid'] },
     fsAcquired: { method: '_rpcFsAcquired', args: [0, 1, 2, 'pid'] },
     fsList: { method: '_rpcFsList', args: [0, 1, 2, 'pid'] },
     fsListTree: { method: '_rpcFsListTree', args: [0, 1, 'pid'] },

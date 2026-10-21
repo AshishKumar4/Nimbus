@@ -52,6 +52,7 @@ import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { PackumentReadOptions, PackumentReadThrough, R2CacheClient } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RuntimeReadFileOptions, RuntimeReadOptions, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
@@ -165,7 +166,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * disposal, which targets the returned value. It only reads the
      * invalidation log, so a dropped call is repeated like any other read.
      */
-    fsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Promise<VfsAcquireResult>;
+    fsAcquire(position: FeedPosition | null, options?: VfsAcquireOptions): Promise<VfsAcquireResult>;
     /** fsAcquire and one read in a single call (session/rpc.ts _rpcFsAcquired). */
     fsAcquired(acquire: unknown, op: string, args: unknown[]): Promise<FsAcquiredAnswer>;
     fsRevision(path?: string): Promise<number>;

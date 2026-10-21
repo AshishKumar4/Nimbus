@@ -27,6 +27,7 @@ import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
 import { type LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { z } from 'zod/v4';
@@ -207,8 +208,19 @@ export type FsReadBatchEntry =
     error: Error;
 };
 declare const FsAcquireArgsSchema: z.ZodObject<{
-    epoch: z.ZodNullable<z.ZodString>;
-    cursor: z.ZodNumber;
+    position: z.ZodNullable<z.ZodPipe<z.ZodObject<{
+        table: z.ZodString;
+        feeds: z.ZodRecord<z.ZodString, z.ZodObject<{
+            epoch: z.ZodString;
+            cursor: z.ZodNumber;
+        }, z.core.$strict>>;
+    }, z.core.$strict>, z.ZodTransform<FeedPosition, {
+        table: string;
+        feeds: Record<string, {
+            epoch: string;
+            cursor: number;
+        }>;
+    }>>>;
     begin: z.ZodOptional<z.ZodNumber>;
     own: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
@@ -231,7 +243,7 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  * survive structured clone across the RPC boundary, so a cursor carried that
  * way would silently arrive as undefined.
  */
-export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
+export declare function _rpcFsAcquire(self: RpcHost, position: unknown, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
 /** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
 export declare const FS_ACQUIRED_READ_OPS: readonly ["stat", "lstat", "fsReadBatch"];
 /**

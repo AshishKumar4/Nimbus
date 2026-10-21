@@ -19,8 +19,12 @@
  * the authority's delta. There is one gate and it is on the only door —
  * `require`, which every read, scan and write goes through.
  */
+import { isFeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
+import { JSONParse, JSONStringify } from '@nimbus-sh/core/_shared/primordials.js';
 export function createCoherence() {
     let t = null;
+    /** The cursor as last parsed, by the text it was parsed from: parsed again only when the text is another. */
+    let read = null;
     let heap = null;
     let isSealed = true;
     /**
@@ -67,13 +71,24 @@ export function createCoherence() {
         cursor() {
             if (t === null)
                 return null;
-            const epoch = t.metaGet('epoch');
-            const rev = t.metaGet('rev');
-            return epoch === undefined || rev === undefined ? null : { epoch, rev: Number(rev) };
+            const text = t.metaGet('position');
+            if (text === undefined)
+                return null;
+            if (read !== null && read.text === text)
+                return read.cursor;
+            let cursor = null;
+            try {
+                const parsed = JSONParse(text);
+                cursor = isFeedPosition(parsed) ? parsed : null;
+            }
+            catch {
+                cursor = null;
+            }
+            read = { text, cursor };
+            return cursor;
         },
         writeCursor(tables, cursor) {
-            tables.metaSet('epoch', String(cursor.epoch));
-            tables.metaSet('rev', String(Number(cursor.rev)));
+            tables.metaSet('position', JSONStringify(cursor));
         },
     };
 }

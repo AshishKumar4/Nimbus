@@ -21,23 +21,13 @@
  * would change what the operation means.
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
-import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry, VfsListOptions } from '../runtime/os-contracts.js';
+import { type FeedPosition } from '../runtime/feed-position.js';
 import { type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
-/**
- * Where a reader of a namespace's feed stands: the mount table as its
- * principal saw it, and each change feed's epoch and cursor.
- */
-export interface FeedPosition<Epoch extends string | null = string> {
-    readonly table: string;
-    readonly feeds: Readonly<Record<string, {
-        readonly epoch: Epoch;
-        readonly cursor: number;
-    }>>;
-}
 /** One answer of the feed: every path changed since the position, or a poison (relist). */
 export interface FeedAnswer {
     readonly position: FeedPosition;
@@ -63,8 +53,9 @@ export type MountWalk = readonly VfsListEntry[];
  */
 export interface CompositeFeed {
     position(): FeedPosition;
-    since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
-    list(after: string | null, limit: number, walked?: MountWalk): {
+    /** What changed since `position`; null (a reader with none) is a poison. */
+    since(position: FeedPosition | null, options?: VfsAcquireOptions): FeedAnswer;
+    list(after: string | null, limit: number, walked?: MountWalk, options?: VfsListOptions): {
         entries: VfsListEntry[];
         next: string | null;
     };
@@ -84,12 +75,6 @@ export interface CompositeFeed {
 }
 /** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
 export { comparePaths };
-/**
- * A namespace entry's stat in the runtime contract's shape: its identity
- * (dev, ino) is the namespace's, and a mounted backend's entries carry no
- * SQLite revision.
- */
-export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
 /** The namespace always offers recursive removal, walking a backend that does not, and copies across filesystems. */
 export interface CompositeSyncVFS extends SyncVFS {
@@ -641,6 +626,18 @@ export declare class CompositeVFS implements VFS {
     /** Content the observers are told of, held in `held` until they are done. */
     private keep;
     /** Whether the table declares an accepted mount point, even if its source is absent. */
+    /**
+     * Whether every live mount's feed but the root's is fixed (VfsChanges.fixed):
+     * a read lease, which the engine's writes recall, follows no other feed
+     * that moves.
+     */
+    movesWithTheRootAlone(): boolean;
+    /**
+     * Whether the mount at `point` states its change model (a feed:
+     * VFS.changes), as the root's SQLite does: false for one with none, or
+     * whose source is absent, which only a walk can list (CompositeFeed.walk).
+     */
+    fedMount(point: string): boolean;
     someMountPoint(wants: (point: string) => boolean): boolean;
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts(): readonly MountInfo[];
@@ -926,6 +923,8 @@ export declare class CompositeVFS implements VFS {
      * never share a number; one reached by two such spellings may get two.
      */
     private identityOf;
+    /** A fed mount's listed or reported stat at `at`, identified as `stat` there says it (identifyOn): its mount's device, its inode numbered where it has none. */
+    private identifyListed;
     /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
     private identifyOn;
     private statAt;

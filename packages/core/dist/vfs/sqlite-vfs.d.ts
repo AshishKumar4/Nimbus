@@ -32,7 +32,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
-import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListOptions, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type GrantCertificate, type VfsAcquireOptions, type VfsDelta, type VfsCred, type VfsListEntry, type VfsListOptions, type VfsBackendPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
 export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
@@ -258,12 +258,12 @@ export interface CredentialedVfs {
      * Enumerate every path this credential can see, in path order, one bounded
      * page at a time. `after` resumes past a previous page's `next`.
      */
-    list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage;
+    list(after?: string | null, limit?: number, options?: VfsListOptions): VfsBackendPage;
     /**
      * The coherence barrier in this credential's path space: `invalidatedSince`
      * with each entry's current stat when `options.namespace` asks for it.
      */
-    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
+    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsDelta;
     unlink(path: string): void;
     rmdir(path: string): void;
     /**
@@ -336,7 +336,7 @@ export interface CredentialedVfs {
      * for it, and without the paths it has no name for (see
      * SqliteVFS.invalidatedSince).
      */
-    invalidatedSince(epoch: string | null, cursor: number): VfsAcquireResult;
+    invalidatedSince(epoch: string | null, cursor: number): VfsDelta;
     /**
      * The key storage holds `path` under for this credential: a confined
      * caller's /tmp/x is var/agents/<p>/tmp/x. For state kept by storage key
@@ -1193,7 +1193,7 @@ export declare class SqliteVFS {
      * goes unreported. Entries naming one path are merged, so a hidden
      * `rm -rf` costs one entry.
      */
-    invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult;
+    invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsDelta;
     /**
      * The directory above `name` that stands between the caller and it, if
      * any: the highest that the caller may not enter now, or whose place went
@@ -2861,7 +2861,7 @@ export declare function pendingChunkError(path: string): Error & {
     path: string;
 };
 /**
- * The byte bound of one listing page (VfsListPage): the page's frame, each
+ * The byte bound of one listing page (VfsBackendPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
  * the last one leaves in `next` (its path in place of `null`). The returned
  * check admits an entry, listed under `path` (its own by default), while the

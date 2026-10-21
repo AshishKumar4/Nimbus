@@ -30,9 +30,16 @@ var __nimbusResidentModule = (() => {
     chownedMode: () => chownedMode,
     confinedModeRefusal: () => confinedModeRefusal,
     createResidentStore: () => createResidentStore,
+    feedFor: () => feedFor,
+    floorFor: () => floorFor,
+    isFeedPosition: () => isFeedPosition,
     namespaceRowBytes: () => namespaceRowBytes,
+    notAfter: () => notAfter,
     posixAccess: () => posixAccess,
     residentFileCost: () => residentFileCost,
+    rootOf: () => rootOf,
+    sameEpochs: () => sameEpochs,
+    samePosition: () => samePosition,
     utimesRefusal: () => utimesRefusal
   });
 
@@ -392,6 +399,105 @@ var __nimbusResidentModule = (() => {
       want,
       { uid: Number(cred.uid), gid: Number(cred.gid), groups: groupsOf(cred) }
     );
+  }
+
+  // ../core/dist/runtime/feed-position.js
+  var ROOT_FEED = "/";
+  function feedsOf(position) {
+    return position.feeds;
+  }
+  function feedOf(position, point) {
+    const feeds = feedsOf(position);
+    return objectHasOwn(feeds, point) ? feeds[point] : void 0;
+  }
+  function rootOf(position) {
+    const root = feedOf(position, ROOT_FEED);
+    if (root === void 0)
+      throw new TypeError2("a feed position holds no root");
+    return root;
+  }
+  function isFeedPosition(value) {
+    if (value === null || typeof value !== "object")
+      return false;
+    const { table, feeds } = value;
+    if (typeof table !== "string" || feeds === null || typeof feeds !== "object")
+      return false;
+    const points = objectKeys(feeds);
+    for (let i = 0; i < points.length; i++) {
+      const feed = feeds[points[i]];
+      if (feed === null || typeof feed !== "object" || typeof feed.epoch !== "string" || typeof feed.cursor !== "number")
+        return false;
+    }
+    return objectHasOwn(feeds, ROOT_FEED);
+  }
+  function samePosition(a, b) {
+    if (a.table !== b.table)
+      return false;
+    const x = feedsOf(a);
+    const y = feedsOf(b);
+    const points = objectKeys(x);
+    if (points.length !== objectKeys(y).length)
+      return false;
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i];
+      if (!objectHasOwn(y, point) || x[point].epoch !== y[point].epoch || x[point].cursor !== y[point].cursor)
+        return false;
+    }
+    return true;
+  }
+  function feedPointOf(position, key) {
+    const path = key.length > 0 && key.charCodeAt(0) === 47 ? key : "/" + key;
+    const points = objectKeys(feedsOf(position));
+    let found = ROOT_FEED;
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i];
+      if (point.length > found.length && (path === point || path.length > point.length && stringStartsWith(path, point) && path.charCodeAt(point.length) === 47))
+        found = point;
+    }
+    return found;
+  }
+  function notAfter(position, held) {
+    if (position.table !== held.table)
+      return false;
+    const feeds = feedsOf(position);
+    const points = objectKeys(feeds);
+    for (let i = 0; i < points.length; i++) {
+      const had = feedOf(held, points[i]);
+      if (had === void 0 || had.epoch !== feeds[points[i]].epoch || had.cursor < feeds[points[i]].cursor)
+        return false;
+    }
+    return true;
+  }
+  function floorFor(position, held, key) {
+    if (position.table !== held.table)
+      return -1;
+    const point = feedPointOf(position, key);
+    const mine = feedOf(position, point);
+    const had = feedOf(held, point);
+    return mine !== void 0 && had !== void 0 && had.epoch === mine.epoch ? had.cursor : -1;
+  }
+  function sameEpochs(a, b) {
+    if (a.table !== b.table)
+      return false;
+    const x = feedsOf(a);
+    const y = feedsOf(b);
+    const points = objectKeys(x);
+    if (points.length !== objectKeys(y).length)
+      return false;
+    for (let i = 0; i < points.length; i++) {
+      if (!objectHasOwn(y, points[i]) || x[points[i]].epoch !== y[points[i]].epoch)
+        return false;
+    }
+    return true;
+  }
+  function feedFor(position, key) {
+    return feedOf(position, feedPointOf(position, key)) ?? rootOf(position);
+  }
+  function sameClock(a, b, key) {
+    const point = feedPointOf(a, key);
+    const x = feedOf(a, point);
+    const y = feedOf(b, point);
+    return x !== void 0 && y !== void 0 && x.epoch === y.epoch;
   }
 
   // src/vfs/resident/tables.ts
@@ -1454,7 +1560,8 @@ var __nimbusResidentModule = (() => {
         if (cursor === null) return;
         const t = coherence.require();
         const held = nsRowAt(t, k);
-        if (held !== void 0 && (written === void 0 ? held.rev >= cursor.rev : held.rev > written)) return;
+        const now = feedFor(cursor, k).cursor;
+        if (held !== void 0 && (written === void 0 ? held.rev >= now : held.rev > written)) return;
         if (stat === null) {
           if (held !== void 0) forget(t, k);
           return;
@@ -1462,7 +1569,7 @@ var __nimbusResidentModule = (() => {
         if (!nsDescribes(stat)) return;
         const target = ownValue(stat, "linkTarget") ?? ownValue(stat, "target") ?? null;
         if (stat.type === "symlink" && target === null) return;
-        tryPut(t, k, stat, written ?? cursor.rev, target);
+        tryPut(t, k, stat, written ?? now, target);
       },
       clear() {
         generation++;
@@ -1675,17 +1782,16 @@ var __nimbusResidentModule = (() => {
       const dropped = new SafeList();
       const relist = new SafeList();
       let kept = 0, pushed = 0;
-      const epoch = result && result.epoch != null ? stringOf(result.epoch) : null;
-      const rev = result && result.rev != null ? NumberOf(result.rev) : null;
-      if (epoch === null || rev === null) {
+      const position = result ? ownValue2(result, "position") : void 0;
+      if (!isFeedPosition(position)) {
         throw new Error2(
           "Nimbus: fsAcquire returned no cursor; the resident store stays sealed rather than serving rows it cannot date"
         );
       }
       const at = coherence.cursor();
-      const floor = at !== null && coherence.sealed() === null && at.epoch === epoch && !(result && result.poison) ? at.rev : null;
-      if (at !== null && floor !== null && rev <= floor) {
-        return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: rev < floor };
+      const floorAt = at !== null && coherence.sealed() === null && !(result && result.poison) ? at : null;
+      if (at !== null && floorAt !== null && notAfter(position, floorAt)) {
+        return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: !samePosition(position, floorAt) };
       }
       const nsOk = namespace.ok;
       const paths = result && arrayIsArray(result.paths) ? result.paths : null;
@@ -1709,7 +1815,7 @@ var __nimbusResidentModule = (() => {
         for (let i = 0; i < paths.length; i++) {
           const entry = paths[i];
           const entryRev = NumberOf(entry.rev);
-          if (floor !== null && entryRev <= floor) continue;
+          if (floorAt !== null && entryRev <= floorFor(position, floorAt, entry.path)) continue;
           const path = entry.path;
           if (namespaced && namespace.ready()) {
             const again = namespace.applyEntry(t, entry);
@@ -1783,9 +1889,9 @@ var __nimbusResidentModule = (() => {
           dropped[dropped.length] = path;
         }
       }
-      coherence.writeCursor(t, { epoch, rev });
+      coherence.writeCursor(t, position);
       coherence.unseal();
-      return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
+      return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: position };
     };
     const get = (path) => {
       if (observeRead !== null) observeRead(nsKey(path));
@@ -2127,6 +2233,7 @@ var __nimbusResidentModule = (() => {
   // src/vfs/resident/coherence.ts
   function createCoherence() {
     let t = null;
+    let read = null;
     let heap = null;
     let isSealed = true;
     let undated = false;
@@ -2175,13 +2282,21 @@ var __nimbusResidentModule = (() => {
       },
       cursor() {
         if (t === null) return null;
-        const epoch = t.metaGet("epoch");
-        const rev = t.metaGet("rev");
-        return epoch === void 0 || rev === void 0 ? null : { epoch, rev: Number(rev) };
+        const text = t.metaGet("position");
+        if (text === void 0) return null;
+        if (read !== null && read.text === text) return read.cursor;
+        let cursor = null;
+        try {
+          const parsed = JSONParse(text);
+          cursor = isFeedPosition(parsed) ? parsed : null;
+        } catch {
+          cursor = null;
+        }
+        read = { text, cursor };
+        return cursor;
       },
       writeCursor(tables, cursor) {
-        tables.metaSet("epoch", String(cursor.epoch));
-        tables.metaSet("rev", String(Number(cursor.rev)));
+        tables.metaSet("position", JSONStringify(cursor));
       }
     };
   }
@@ -2204,19 +2319,19 @@ var __nimbusResidentModule = (() => {
       if (!supervisor || typeof supervisor.fsAcquire !== "function") return false;
       let answer = null;
       try {
-        answer = await supervisor.fsAcquire(null, 0, { namespace: true });
+        answer = await supervisor.fsAcquire(null, { namespace: true });
       } catch {
         return false;
       }
-      if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return false;
-      beginLazy(coherence.tables("bootLazy"), { epoch: answer.epoch, rev: answer.rev });
+      if (!answer || !isFeedPosition(answer.position)) return false;
+      beginLazy(coherence.tables("bootLazy"), answer.position);
       return true;
     };
     const current = (answer) => {
       const cursor = coherence.cursor();
-      if (cursor === null || answer.poison === true || answer.epoch !== cursor.epoch) return answer;
-      if (answer.rev <= cursor.rev) return { ...answer, rev: cursor.rev, paths: [] };
-      const paths = answer.paths.filter((entry) => entry.rev > cursor.rev);
+      if (cursor === null || answer.poison === true) return answer;
+      if (notAfter(answer.position, cursor)) return { ...answer, position: cursor, paths: [] };
+      const paths = answer.paths.filter((entry) => entry.rev > floorFor(answer.position, cursor, entry.path));
       return paths.length === answer.paths.length ? answer : { ...answer, paths };
     };
     const delivered = (given) => {
@@ -2224,8 +2339,7 @@ var __nimbusResidentModule = (() => {
       const { args, answer } = given;
       const cursor = coherence.cursor();
       if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths)) return null;
-      if (typeof answer.rev !== "number" || answer.epoch !== cursor.epoch || args.epoch !== cursor.epoch) return null;
-      if (!(args.cursor <= cursor.rev)) return null;
+      if (!isFeedPosition(answer.position) || !isFeedPosition(args.position) || !notAfter(args.position, cursor)) return null;
       return current(answer);
     };
     return {
@@ -2245,7 +2359,7 @@ var __nimbusResidentModule = (() => {
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
         const argsNow = () => {
           const cursor = coherence.cursor();
-          return cursor === null ? null : { epoch: cursor.epoch, cursor: cursor.rev, options: sync.acquireOptions() };
+          return cursor === null ? null : { position: cursor, options: sync.acquireOptions() };
         };
         const acquire = async (lease) => {
           for (let asks = 0; asks < 2; asks++) {
@@ -2253,12 +2367,13 @@ var __nimbusResidentModule = (() => {
             if (args === null || typeof supervisor.fsAcquire !== "function") return null;
             let answer = null;
             try {
-              answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options);
+              answer = await supervisor.fsAcquire(args.position, lease ? { ...args.options, lease: true } : args.options);
             } catch {
               return null;
             }
-            if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return null;
-            if (coherence.cursor()?.epoch !== args.epoch) continue;
+            if (!answer || !isFeedPosition(answer.position)) return null;
+            const now = coherence.cursor();
+            if (now === null || !sameEpochs(now, args.position)) continue;
             if (lease && answer.readLease) lease.answered(answer.readLease);
             return current(answer);
           }
@@ -2267,7 +2382,7 @@ var __nimbusResidentModule = (() => {
         const restart = async (answer, applied) => {
           if (answer === null) return bootLazy(supervisor);
           if (applied && namespace.ready()) return true;
-          beginLazy(coherence.tables("restart"), applied ? coherence.cursor() : { epoch: answer.epoch, rev: answer.rev });
+          beginLazy(coherence.tables("restart"), applied ? coherence.cursor() : answer.position);
           return true;
         };
         let repairOwed = false;
@@ -2276,14 +2391,14 @@ var __nimbusResidentModule = (() => {
           if (typeof supervisor.fsAcquire !== "function" || !namespace.ready()) return false;
           if (answer !== null && answer.poison === true) return false;
           const floor = coherence.cursor();
-          if (floor === null || answer !== null && answer.epoch !== floor.epoch) return false;
+          if (floor === null || answer !== null && !sameEpochs(answer.position, floor)) return false;
           let delta = null;
           try {
-            delta = await supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true });
+            delta = await supervisor.fsAcquire(floor, { namespace: true });
           } catch {
             return false;
           }
-          if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
+          if (!delta || delta.poison === true || !isFeedPosition(delta.position) || !sameEpochs(delta.position, floor)) return false;
           const applied = await sync.applyAcquire(supervisor, delta);
           if (!namespace.ready()) return false;
           await sync.refillFromNamespace(supervisor, applied.dropped);
@@ -2416,7 +2531,7 @@ var __nimbusResidentModule = (() => {
           async fill(k, entry) {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
-            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry }]);
+            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry }]);
             const bytes = view.content(k, entry.revision);
             return bytes === void 0 ? null : bytes;
           },
@@ -2425,7 +2540,7 @@ var __nimbusResidentModule = (() => {
           async fillMany(files) {
             const cursor = coherence.cursor();
             if (cursor === null || files.length === 0) return;
-            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry })));
+            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry })));
           },
           acquireArgs: () => argsNow(),
           repairOwed: () => repairOwed,
@@ -2491,7 +2606,8 @@ var __nimbusResidentModule = (() => {
     const readWith = async (learning, supervisor, k, rev, size, first, last) => {
       const cursor = coherence.cursor();
       if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
-      const keyed = cursor.epoch + "\0" + k;
+      const epoch = rootOf(cursor).epoch;
+      const keyed = epoch + "\0" + k;
       const out = new Array(last - first + 1);
       const missing = [];
       for (let part = first; part <= last; part++) {
@@ -2504,7 +2620,7 @@ var __nimbusResidentModule = (() => {
         const batch = missing.slice(at, at + perBatch);
         const ranges = batch.map((part) => {
           const offset = part * RESIDENT_PAGE_BYTES;
-          return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+          return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
         });
         await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
         let results;
@@ -2810,9 +2926,10 @@ var __nimbusResidentModule = (() => {
         if (!listed || !arrayIsArray(listed.entries)) {
           throw new Error2("Nimbus: fsList returned no page");
         }
+        if (!isFeedPosition(listed.position)) throw new Error2("Nimbus: fsList returned no position");
         if (cursor === null) {
-          cursor = { epoch: stringOf(listed.epoch), rev: NumberOf(listed.rev) };
-        } else if (stringOf(listed.epoch) !== cursor.epoch) {
+          cursor = listed.position;
+        } else if (!sameEpochs(listed.position, cursor)) {
           return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
         }
         for (let i = 0; i < listed.entries.length; i++) {
@@ -2836,7 +2953,7 @@ var __nimbusResidentModule = (() => {
             throw new Error2("Nimbus: fsList returned unusable metadata for '" + path + "'");
           }
           const contentKey = ownValue3(entry, "contentKey");
-          entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+          entries[entries.length] = { path, size, rev, epoch: rootOf(cursor).epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
         }
         if (listed.next === null || listed.next === void 0) {
           return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };
@@ -3055,11 +3172,11 @@ var __nimbusResidentModule = (() => {
       if (!supervisor || typeof supervisor.fsAcquire !== "function") return cursor;
       let result;
       try {
-        result = await supervisor.fsAcquire(cursor.epoch, cursor.rev, acquireOptions());
+        result = await supervisor.fsAcquire(cursor, acquireOptions());
       } catch {
         result = null;
       }
-      if (!result || result.poison || typeof result.rev !== "number" || typeof result.epoch !== "string") {
+      if (!result || result.poison || !isFeedPosition(result.position)) {
         return cursor;
       }
       const applied = await applyAcquire(supervisor, result);
@@ -3067,7 +3184,7 @@ var __nimbusResidentModule = (() => {
       for (const path of applied.dropped) {
         const found = namespace.resolve(path, false);
         if (!found || found === "ELOOP" || found.row.kind !== NS_FILE) continue;
-        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch, version: versionOf(found.row) });
+        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootOf(applied.cursor).epoch, version: versionOf(found.row) });
       }
       if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
       return applied.cursor;
@@ -3092,8 +3209,9 @@ var __nimbusResidentModule = (() => {
       const held = coherence.cursor();
       const judgeable = listing.complete;
       const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
-      const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;
-      const vouches = (entry, rev) => comparable && entry !== void 0 && entry.rev > 0 && rev >= entry.rev;
+      const at = listing.cursor;
+      const comparable = (path) => judgeable && held !== null && sameClock(held, at, path);
+      const vouches = (entry, rev) => entry !== void 0 && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
       const listed = /* @__PURE__ */ new Map();
       for (const file of listing.entries) listed.set(file.path, file);
       const rows = t.fileRows();
@@ -3107,7 +3225,7 @@ var __nimbusResidentModule = (() => {
           current.add(row.path);
           own.push({
             path: row.path,
-            rev: !comparable ? null : entry !== void 0 ? entry.rev : listing.cursor.rev
+            rev: !comparable(row.path) ? null : entry !== void 0 ? entry.rev : feedFor(at, row.path).cursor
           });
           continue;
         }
@@ -3129,7 +3247,7 @@ var __nimbusResidentModule = (() => {
         const entry = listed.get(path);
         if (rev === RK_OWN_WRITE) {
           current.add(path);
-          own.push({ path, rev: !comparable ? null : entry !== void 0 ? entry.rev : listing.cursor.rev });
+          own.push({ path, rev: !comparable(path) ? null : entry !== void 0 ? entry.rev : feedFor(at, path).cursor });
           continue;
         }
         if (vouches(entry, rev) || !judgeable) {
@@ -3139,7 +3257,7 @@ var __nimbusResidentModule = (() => {
         cells.forget(path);
         dropped.push(path);
       }
-      if (dropped.length > 0 && !comparable && rekeyed === 0) {
+      if (dropped.length > 0 && !comparable("") && rekeyed === 0) {
         t.dropDatedFiles();
       } else {
         for (const path of dropped) {
@@ -3158,7 +3276,7 @@ var __nimbusResidentModule = (() => {
           else fetch.push(file);
           continue;
         }
-        if (plan.has(file.path) || wanted.has(file.path) || pushable(file.path) && (!comparable || file.rev > held.rev)) fetch.push(file);
+        if (plan.has(file.path) || wanted.has(file.path) || pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held, file.path).cursor)) fetch.push(file);
       }
       const heap = coherence.heap;
       const namespaceGrowth = admission.inHeap && describable && heap !== null ? Math.max(0, listing.namespaceBytes - heap.nsBytes()) : 0;
@@ -3194,7 +3312,7 @@ var __nimbusResidentModule = (() => {
         rekeyed,
         dropped: dropped.length,
         own,
-        reconciled: comparable,
+        reconciled: comparable(""),
         complete: listing.complete,
         cursor: judgeable ? listing.cursor : null,
         ...listing.reason ? { incomplete: listing.reason } : {}
@@ -3205,17 +3323,15 @@ var __nimbusResidentModule = (() => {
       if (coherence.cursor() !== null) {
         throw new Error("Nimbus: a module bundle is adopted only into an empty store");
       }
-      const given = moduleCursor;
-      if (!given || given.epoch == null || given.rev == null) {
+      if (!isFeedPosition(moduleCursor)) {
         coherence.setUndated(true);
         coherence.unseal();
         return null;
       }
-      const rev = Number(given.rev);
       for (const path of Object.keys(bundle || {})) {
-        cells.put(t, path, bundle[path], rev);
+        cells.put(t, path, bundle[path], feedFor(moduleCursor, path).cursor);
       }
-      return cells.admit({ poison: false, paths: [], epoch: String(given.epoch), rev }).cursor;
+      return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
     };
     const fail = (pass) => pass && (pass.skipped || pass.incomplete) || null;
     return {
@@ -3329,7 +3445,7 @@ var __nimbusResidentModule = (() => {
           if (cells.has(path)) continue;
           const row = nsRowAt(t, path);
           if (row === void 0 || row.kind !== NS_FILE) continue;
-          fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null, version: versionOf(row) });
+          fetch.push({ path, size: row.size, rev: row.rev, epoch: rootOf(cursor).epoch, ckey: null, version: versionOf(row) });
         }
         return transport.fetchFiles(supervisor, fetch);
       },

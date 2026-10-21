@@ -360,8 +360,8 @@ export function supervisorCalls(base) {
          * disposal, which targets the returned value. It only reads the
          * invalidation log, so a dropped call is repeated like any other read.
          */
-        async fsAcquire(epoch, cursor, options) {
-            return this[CALL](this[FS_READ]('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]));
+        async fsAcquire(position, options) {
+            return this[CALL](this[FS_READ]('fsAcquire', options === undefined ? [position] : [position, options]));
         }
         /** fsAcquire and one read in a single call (session/rpc.ts _rpcFsAcquired). */
         async fsAcquired(acquire, op, args) {

@@ -25,6 +25,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
+import { type FacetVfsCursor } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -350,10 +351,7 @@ interface FacetVfsState {
      * cursor it was actually built at makes that first ACQUIRE an ordinary
      * delta, which is what it always was.
      */
-    cursor?: {
-        epoch: string;
-        rev: number;
-    };
+    cursor?: FacetVfsCursor;
     /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
     reachableCount: number;
     /** Diagnostics: did the snapshot's raw-byte bound evict optional files? */

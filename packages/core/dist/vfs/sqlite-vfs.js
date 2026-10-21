@@ -5062,7 +5062,7 @@ export class SqliteVFS {
         const linkTargets = options.linkTargets !== false;
         // A page is of what is published: one walked while a commit is held waits for it.
         this.recallHeld(null);
-        // Before the walk, deliberately — see VfsListPage.
+        // Before the walk, deliberately — see VfsBackendPage.
         const epoch = this._epoch;
         const rev = this._revision;
         const from = after === null || after === undefined ? '' : this.lexicalKey(after, cred).value;
@@ -11706,7 +11706,7 @@ export function pendingChunkError(path) {
  */
 const entryBytesBesidePath = new WeakMap();
 /**
- * The byte bound of one listing page (VfsListPage): the page's frame, each
+ * The byte bound of one listing page (VfsBackendPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
  * the last one leaves in `next` (its path in place of `null`). The returned
  * check admits an entry, listed under `path` (its own by default), while the

@@ -3,10 +3,19 @@
  *
  * Synchronous and read-only. A file is a generator from the reading
  * principal's credential to text; `register` adds or replaces one, and
- * `name` may be nested (`net/info`), which makes its directories. Nothing
- * here is stored, so nothing here has a revision: a cache never holds it.
+ * `name` may be nested (`net/info`), which makes its directories.
+ *
+ * Its tree changes only by `register`, so its feed is an immutable one
+ * (immutable-changes.ts): a reader that listed it is current until a file
+ * is registered. A file is constant for the tree (the trust store, the
+ * CPUs, the version), its stat its content's size; or volatile (`register`
+ * with `volatile`: the heap, the clock, the network), its stat size 0, as
+ * Linux procfs says, and its content made at each read by whoever reads it.
+ * Every stat's mtime is the tree's: when it was made, or last registered to.
  */
 import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
+import { immutableChanges } from './immutable-changes.js';
+import { PROC_FILES } from './proc-files.js';
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 const enc = new TextEncoder();
@@ -18,21 +27,31 @@ function key(path) {
     return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
 }
 export class ProcVFS {
+    tree;
     cred;
-    files;
     sync;
-    constructor(files, cred = null) {
+    changes;
+    constructor(tree = { files: new Map(), volatile: new Set(), version: 0, mtimeMs: Date.now() }, cred = null) {
+        this.tree = tree;
         this.cred = cred;
-        this.files = files ?? new Map();
         this.sync = this;
+        this.changes = immutableChanges(this, () => tree.version);
     }
-    /** Add or replace `/proc/<name>`. */
-    register(name, generator) {
-        this.files.set(key(name), generator);
+    get files() { return this.tree.files; }
+    /** Add or replace `/proc/<name>`; `volatile`: its content is made at each read (size 0). */
+    register(name, generator, volatile = false) {
+        const k = key(name);
+        this.files.set(k, generator);
+        if (volatile)
+            this.tree.volatile.add(k);
+        else
+            this.tree.volatile.delete(k);
+        this.tree.version++;
+        this.tree.mtimeMs = Date.now();
     }
     /** The same files, generated for `cred`. */
     as(cred) {
-        return new ProcVFS(this.files, cred);
+        return new ProcVFS(this.tree, cred);
     }
     isDir(k) {
         if (k === '')
@@ -53,11 +72,13 @@ export class ProcVFS {
     stat(path) {
         const k = key(path);
         if (this.isDir(k))
-            return DIR;
+            return { ...DIR, mtimeMs: this.tree.mtimeMs };
         if (!this.files.has(k))
             return null;
+        if (this.tree.volatile.has(k))
+            return { size: 0, mtimeMs: this.tree.mtimeMs, ...FILE };
         const content = this.generate(path);
-        return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: Date.now(), ...FILE };
+        return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: this.tree.mtimeMs, ...FILE };
     }
     readFile(path) {
         const content = this.generate(path);
@@ -124,47 +145,8 @@ const CA_CERTIFICATES = enc.encode(CA_CERTIFICATES_PEM);
  */
 export function standardProc() {
     const proc = new ProcVFS();
-    proc.register('cpuinfo', () => {
-        const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 1 : 1;
-        const lines = [];
-        for (let i = 0; i < cores; i++) {
-            lines.push(`processor\t: ${i}`, 'model name\t: Browser Virtual CPU', `cpu cores\t: ${cores}`, '');
-        }
-        return lines.join('\n');
-    });
-    proc.register('meminfo', () => {
-        const memory = globalThis.performance?.memory;
-        if (!memory)
-            return ['MemTotal:       2097152 kB', 'MemFree:        1048576 kB', 'MemUsed:        1048576 kB', ''].join('\n');
-        const totalKB = Math.floor(memory.jsHeapSizeLimit / 1024);
-        const usedKB = Math.floor(memory.usedJSHeapSize / 1024);
-        return [
-            `MemTotal:       ${totalKB} kB`,
-            `MemFree:        ${totalKB - usedKB} kB`,
-            `MemUsed:        ${usedKB} kB`,
-            `HeapTotal:      ${Math.floor(memory.totalJSHeapSize / 1024)} kB`,
-            '',
-        ].join('\n');
-    });
-    proc.register('uptime', () => {
-        const seconds = typeof performance !== 'undefined' ? (performance.now() / 1000).toFixed(2) : '0.00';
-        return `${seconds} ${seconds}\n`;
-    });
-    proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
+    for (const [name, { generate, volatile }] of Object.entries(PROC_FILES))
+        proc.register(name, generate, volatile);
     proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
-    proc.register('net/info', () => {
-        const conn = typeof navigator !== 'undefined'
-            ? navigator.connection
-            : undefined;
-        if (!conn)
-            return 'Network information not available\n';
-        return [
-            `type:          ${conn.type ?? 'unknown'}`,
-            `effectiveType: ${conn.effectiveType ?? 'unknown'}`,
-            `downlink:      ${conn.downlink ?? 0} Mbps`,
-            `rtt:           ${conn.rtt ?? 0} ms`,
-            '',
-        ].join('\n');
-    });
     return proc;
 }

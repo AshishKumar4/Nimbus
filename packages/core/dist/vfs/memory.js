@@ -1,3 +1,5 @@
+import { pageOf, treeListing } from './immutable-changes.js';
+import { runtimeStatOf } from './runtime-stat.js';
 import { syscallError } from './vfs-error.js';
 import { timeAt } from './posix-access.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
@@ -13,16 +15,107 @@ export class MemoryVFS {
     root;
     clock = 0;
     inos = 0;
+    /** Entries in its tree, its root among them: what bounds its tombstones. */
+    count = 0;
+    /** Each changed path's newest change (absolute), in the order of their revisions; `gone`: a removal. */
+    changed = new Map();
+    tombstones = 0;
+    /** The newest pruned removal's revision: a cursor below it is a poison. */
+    floor = 0;
+    listed = null;
+    epoch = `memory:${crypto.randomUUID()}`;
     sync = this;
+    changes;
     constructor(owner = { uid: 0, gid: 0 }) {
         this.owner = owner;
         this.root = this.entry('directory', 0o755);
+        const vfs = this;
+        this.changes = {
+            epoch: this.epoch,
+            revision: () => vfs.clock,
+            since: (epoch, cursor, options) => vfs.since(epoch, cursor, options?.namespace === true),
+            list: (after, limit) => {
+                if (vfs.listed === null || vfs.listed.rev !== vfs.clock)
+                    vfs.listed = { rev: vfs.clock, entries: treeListing(vfs) };
+                return pageOf(vfs.listed.entries, after, limit, vfs.epoch, vfs.clock);
+            },
+        };
     }
     entry(type, mode) {
         const fields = {
             ino: ++this.inos, data: new Uint8Array(0), target: '', mode, mtimeMs: Date.now(), revision: ++this.clock,
         };
+        this.count++;
         return type === 'directory' ? { type, ...fields, children: new Map() } : { type, ...fields, children: null };
+    }
+    /** What changed since `cursor` of `epoch`: each path's newest change after it, with its lstat now where `stats`. */
+    since(epoch, cursor, stats) {
+        const rev = this.clock;
+        if (epoch !== this.epoch || cursor < this.floor || cursor > rev)
+            return { epoch: this.epoch, rev, paths: [], poison: true };
+        const paths = [];
+        for (const [path, change] of this.changed) {
+            if (change.rev <= cursor)
+                continue;
+            const entry = change.structural ? { path, rev: change.rev, structural: true } : { path, rev: change.rev };
+            if (stats) {
+                let stat = null;
+                try {
+                    stat = this.stat(path, { follow: false });
+                }
+                catch {
+                    stat = null;
+                }
+                entry.stat = stat === null ? null : runtimeStatOf(stat);
+                if (stat?.type === 'symlink')
+                    entry.linkTarget = this.readlink(path);
+            }
+            paths.push(entry);
+        }
+        return { epoch: this.epoch, rev, paths, poison: false };
+    }
+    /** `path` changed now (`structural`: a directory removed, moved or given another mode; `gone`: nothing is there). */
+    note(path, structural = false, gone = false) {
+        const key = `/${rootClampedSegments(path).join('/')}`;
+        const had = this.changed.get(key);
+        if (had !== undefined) {
+            this.changed.delete(key);
+            if (had.gone)
+                this.tombstones--;
+        }
+        this.changed.set(key, { rev: this.clock, structural, gone });
+        if (!gone)
+            return;
+        this.tombstones++;
+        // What was under a removed directory is covered by its removal, which is newer.
+        if (structural) {
+            const under = key === '/' ? '/' : `${key}/`;
+            for (const [at, change] of this.changed) {
+                if (at.startsWith(under)) {
+                    this.changed.delete(at);
+                    if (change.gone)
+                        this.tombstones--;
+                }
+            }
+        }
+        for (const [at, change] of this.changed) {
+            if (this.tombstones <= this.count)
+                break;
+            if (!change.gone)
+                continue;
+            this.changed.delete(at);
+            this.tombstones--;
+            if (change.rev > this.floor)
+                this.floor = change.rev;
+        }
+    }
+    /** The entries `entry` holds, itself among them. */
+    static sizeOf(entry) {
+        let n = 1;
+        if (entry.type === 'directory')
+            for (const child of entry.children.values())
+                n += MemoryVFS.sizeOf(child);
+        return n;
     }
     touch(entry) {
         entry.mtimeMs = Date.now();
@@ -103,6 +196,7 @@ export class MemoryVFS {
                 throw fail('EISDIR', call);
             existing.data = bytes;
             this.touch(existing);
+            this.note(path);
             return;
         }
         const { dir, name } = this.parentOf(path, call);
@@ -110,6 +204,8 @@ export class MemoryVFS {
         entry.data = bytes;
         dir.children.set(name, entry);
         this.touch(dir);
+        this.note(path);
+        this.note(`${path}/..`);
     }
     writeRange(path, offset, bytes) {
         const call = { syscall: 'open', path };
@@ -121,6 +217,7 @@ export class MemoryVFS {
         next.set(bytes, offset);
         entry.data = next;
         this.touch(entry);
+        this.note(path);
     }
     truncate(path, size) {
         const entry = this.file(path, { syscall: 'open', path });
@@ -128,6 +225,7 @@ export class MemoryVFS {
         next.set(entry.data.subarray(0, Math.min(size, entry.data.length)));
         entry.data = next;
         this.touch(entry);
+        this.note(path);
     }
     readdir(path) {
         const call = { syscall: 'scandir', path };
@@ -161,6 +259,8 @@ export class MemoryVFS {
         const { dir, name } = this.parentOf(path, call);
         dir.children.set(name, this.entry('directory', options?.mode ?? 0o755));
         this.touch(dir);
+        this.note(path);
+        this.note(`${path}/..`);
     }
     unlink(path) {
         const call = { syscall: 'unlink', path };
@@ -173,7 +273,10 @@ export class MemoryVFS {
         if (entry.type === 'directory')
             throw fail('EISDIR', call);
         dir.children.delete(name);
+        this.count--;
         this.touch(dir);
+        this.note(path, false, true);
+        this.note(`${path}/..`);
     }
     rmdir(path) {
         const call = { syscall: 'rmdir', path };
@@ -186,14 +289,22 @@ export class MemoryVFS {
         if (entry.children.size > 0)
             throw fail('ENOTEMPTY', call);
         dir.children.delete(name);
+        this.count--;
         this.touch(dir);
+        this.note(path, true, true);
+        this.note(`${path}/..`);
     }
     removeRecursive(path) {
         const call = { syscall: 'rm', path };
         const { dir, name } = this.parentOf(path, call);
-        if (!dir.children.delete(name))
+        const entry = dir.children.get(name);
+        if (entry === undefined)
             throw fail('ENOENT', call);
+        dir.children.delete(name);
+        this.count -= MemoryVFS.sizeOf(entry);
         this.touch(dir);
+        this.note(path, entry.type === 'directory', true);
+        this.note(`${path}/..`);
     }
     /**
      * POSIX rename(2): a file target is replaced; a directory replaces an empty
@@ -226,8 +337,14 @@ export class MemoryVFS {
         }
         source.dir.children.delete(source.name);
         target.dir.children.set(target.name, entry);
+        if (replaced !== undefined)
+            this.count--;
         this.touch(source.dir);
         this.touch(target.dir);
+        this.note(from, entry.type === 'directory', true);
+        this.note(to, replaced?.type === 'directory');
+        this.note(`${from}/..`);
+        this.note(`${to}/..`);
     }
     symlink(target, path) {
         const call = { syscall: 'symlink', path: target, dest: path };
@@ -238,6 +355,8 @@ export class MemoryVFS {
         entry.target = target;
         dir.children.set(name, entry);
         this.touch(dir);
+        this.note(path);
+        this.note(`${path}/..`);
     }
     readlink(path) {
         const call = { syscall: 'readlink', path };
@@ -255,6 +374,7 @@ export class MemoryVFS {
             throw fail('ENOENT', call);
         entry.mode = mode & 0o7777;
         this.touch(entry);
+        this.note(path, entry.type === 'directory');
     }
     /** Its entries keep an mtime alone: the atime is taken and dropped. */
     utimes(path, _atime, mtime) {
@@ -264,6 +384,7 @@ export class MemoryVFS {
             throw fail('ENOENT', call);
         entry.mtimeMs = timeAt(mtime, entry.mtimeMs, Date.now());
         entry.revision = ++this.clock;
+        this.note(path);
     }
     describe() {
         return { source: 'memory', type: 'tmpfs', options: ['rw'] };
