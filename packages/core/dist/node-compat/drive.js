@@ -10,16 +10,38 @@
 import { fsError } from '../vfs/vfs-error.js';
 import { syncValue } from '../vfs/vfs.js';
 /**
+ * The synchronous face while an operation is answered now: its steps call
+ * it where they stand, so a failure is thrown once, where the body can
+ * catch it, and nothing is yielded.
+ */
+let answering = null;
+/** A step's answer already in hand: `yield*` of it is its value, with nothing yielded. */
+class Answered {
+    result;
+    constructor(value) {
+        this.result = { done: true, value };
+    }
+    next() {
+        return this.result;
+    }
+    [Symbol.iterator]() {
+        return this;
+    }
+}
+/**
  * `call`, made on whichever face the driver has: the face's methods take
  * the same arguments and differ only in answering now or with a promise.
- * Its answer is kept here and read back after the step.
+ * Answered now, it is called where it stands; answered later, its answer is
+ * kept here and read back after the step.
  */
-export function* step(syscall, path, call) {
+export function step(syscall, path, call) {
+    return answering !== null ? new Answered(syncValue(call(answering))) : waitFor(syscall, path, call);
+}
+function* waitFor(syscall, path, call) {
     const slot = { answer: null };
     yield {
         syscall,
         path,
-        now(files) { slot.answer = { value: syncValue(call(files)) }; },
         async later(files) { slot.answer = { value: await call(files) }; },
     };
     if (slot.answer === null)
@@ -30,20 +52,19 @@ export function* step(syscall, path, call) {
 export function lacks(syscall, path) {
     return fsError('ENOSYS', syscall, path);
 }
-/** `op` answered now, its failures thrown into it as each step's are. */
+/** `op` answered now: each of its steps calls `files` where it stands. */
 function answerNow(op, files) {
-    let next = op.next();
-    while (!next.done) {
-        try {
-            next.value.now(files);
-        }
-        catch (error) {
-            next = op.throw(error);
-            continue;
-        }
-        next = op.next();
+    const outer = answering;
+    answering = files;
+    try {
+        const next = op.next();
+        if (!next.done)
+            throw new Error(`node-compat: ${next.value.syscall} waited where it is answered now`);
+        return next.value;
     }
-    return next.value;
+    finally {
+        answering = outer;
+    }
 }
 /**
  * `op` as its `*Sync` form runs it (`name`, Node's name of that form). With
@@ -53,7 +74,7 @@ function answerNow(op, files) {
 export function runSync(faces, name, op) {
     if (faces.sync !== undefined)
         return answerNow(op, faces.sync);
-    const next = op.next();
+    const next = resumed(() => op.next());
     if (next.done)
         return next.value;
     const base = name.replace(/Sync$/, '');
@@ -71,16 +92,28 @@ export async function runAsync(faces, op) {
 }
 /** `op` over `files`, each step awaited, its failures thrown into it. */
 async function answerLater(op, files) {
-    let next = op.next();
+    let next = resumed(() => op.next());
     while (!next.done) {
+        const step = next.value;
         try {
-            await next.value.later(files);
+            await step.later(files);
         }
         catch (error) {
-            next = op.throw(error);
+            next = resumed(() => op.throw(error));
             continue;
         }
-        next = op.next();
+        next = resumed(() => op.next());
     }
     return next.value;
+}
+/** `resume` run with no synchronous face answering: its steps wait. */
+function resumed(resume) {
+    const outer = answering;
+    answering = null;
+    try {
+        return resume();
+    }
+    finally {
+        answering = outer;
+    }
 }

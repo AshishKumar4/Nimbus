@@ -1,19 +1,21 @@
 import type { FilesFace, NodeFaces } from './faces.js';
-/** One file call an operation makes: answered now, or later; its syscall and path name it in an EAGAIN. */
+/** One file call an operation waits for; its syscall and path name it in an EAGAIN. */
 export interface Step {
     readonly syscall: string;
     readonly path: string | undefined;
-    now(files: FilesFace<'sync'>): void;
     later(files: FilesFace<'async'>): Promise<void>;
 }
 /** An operation: the steps it makes, and what it answers. */
 export type Op<T> = Generator<Step, T, void>;
+/** What a body's `yield*` of a step takes: its answer, now, or the step it waits for. */
+export type Stepping<T> = Iterable<Step, T, void>;
 /**
  * `call`, made on whichever face the driver has: the face's methods take
  * the same arguments and differ only in answering now or with a promise.
- * Its answer is kept here and read back after the step.
+ * Answered now, it is called where it stands; answered later, its answer is
+ * kept here and read back after the step.
  */
-export declare function step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Op<T>;
+export declare function step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Stepping<T>;
 /** ENOSYS: the filesystem has no `syscall`. */
 export declare function lacks(syscall: string, path?: string): Error;
 /**
