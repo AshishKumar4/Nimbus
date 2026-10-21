@@ -205,6 +205,7 @@ export async function transformBundleCells(cells, { host, store, pacer, scope, s
         place(cell.path, result);
         if (result.failed) {
             stats.failed++;
+            (stats.failures ??= []).push({ path: cell.path, diagnostic: result.code });
             return;
         }
         stats.transformed++;

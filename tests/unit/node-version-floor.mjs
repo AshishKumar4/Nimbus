@@ -28,6 +28,8 @@ const atLeast = (version, floor) => {
 assert.equal(NODE_VERSION, `v${NODE_VERSIONS.node}`, 'process.version and process.versions.node agree');
 assert.ok(atLeast(NODE_VERSIONS.node, '22.22.0'),
   `react-router 8.4 requires node >=22.22.0; the shim reports ${NODE_VERSION}`);
+assert.ok(atLeast(NODE_VERSIONS.node, '22.23.4'),
+  `astro 7.4.2 requires node >=22.23.4; the shim reports ${NODE_VERSION}`);
 
 // The oracle: the node on PATH, as the differential tests run it.
 const oracle = spawnSync('node', ['-p', 'JSON.stringify(process.versions)'], { encoding: 'utf8' });

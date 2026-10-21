@@ -12,6 +12,12 @@ for(const [version,newerFingerprint] of [['7.4.2',false],['7.4.1',false],['7.4.2
   try{
     await t.connect();await t.waitForPrompt(60000);
     await t.run(`mkdir -p ${ROOT} && cd ${ROOT}`,15000);
+    if(version==='7.4.2'&&!newerFingerprint){
+      const auditSource=`import process from 'node:process';\nimport tls from 'node:tls';\nimport zlib from 'node:zlib';\nimport dns from 'node:dns/promises';\nconsole.log(JSON.stringify({version:process.version,versions:process.versions,npmUserAgent:process.env.npm_config_user_agent??null,brotliBlockSwitch:zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH??null,tlsNonCanonical:['127.1','0127.0.0.1','0x7f.0.0.1'].map(host=>({host,result:tls.checkServerIdentity(host,{subjectaltname:'DNS:'+host})?.code??'accepted'}))}));\ntry{await dns.resolve4('example.com'+String.fromCharCode(0)+'.invalid');console.log('dnsNul accepted');}catch(e){console.log('dnsNul',e.code,e.message);}\n`;
+      await t.run(heredocCommand(ROOT+'/node-audit.mjs',auditSource),10000);
+      const audit=await t.run(`node --version && node ${ROOT}/node-audit.mjs 2>&1`,60000);
+      console.log(`[astro-diag] runtime audit exit=${audit.exitCode}\n${stripAnsi(audit.output)}`);
+    }
     const create=await t.run('npm create astro@latest mvp -- --template minimal --no-install --no-git --skip-houston --yes 2>&1',240000);
     console.log(`[astro-diag] scaffold version=${version} exit=${create.exitCode}\n${stripAnsi(create.output)}`);
     if(create.exitCode!==0)throw new Error('scaffold failed');
