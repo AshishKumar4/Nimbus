@@ -48,7 +48,8 @@ import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
-  NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
+  NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, TLS_IDENTITY_PREAMBLE,
+  WASM_IMAGE_KEY_PREAMBLE,
 } from '../loaders/workers.generated.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -151,6 +152,7 @@ ${NODE_ERROR_PREAMBLE}
 ${NODE_ARGUMENTS_PREAMBLE}
 ${NODE_WARNING_PREAMBLE}
 ${POSIX_PATH_PREAMBLE}
+${TLS_IDENTITY_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -6444,7 +6446,7 @@ const __fsMod = (() => {
   realpath.native = realpath;
 
   // ── fs.glob ── Node 22's fs.glob, fs.globSync and fs.promises.glob: its
-  // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
+  // Glob, ported from lib/internal/fs/glob.js (v22.23.4; the Linux paths),
   // matching with the minimatch Node vendors (node-minimatch-source.ts),
   // which is evaluated the first time a program globs.
   const _Glob = (() => {
@@ -7877,7 +7879,7 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// util.inspect, format and formatWithOptions are Node v22.23.4's own
 // lib/internal/util/inspect.js (node-lib-source.ts), evaluated the first
 // time a program formats a value, over what node-lib-host.ts gives it in
 // place of Node's internals: what a program prints of a value, through util
@@ -8135,7 +8137,7 @@ Object.defineProperties(__nimbusInspect, {
         throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
       }
     }
-    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // Node's (lib/internal/url.js, v22.23.4), but for showHidden's internal
     // context, which workerd's URL has none of.
     [inspectCustom](depth, opts) {
       if (typeof depth === "number" && depth < 0) return this;
@@ -8173,7 +8175,7 @@ Object.defineProperties(__nimbusInspect, {
   // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
   globalThis.URL = __nimbusFronted(URL, _Orig);
-  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.23.4).
   Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
     value: function (recurseTimes, ctx) {
       if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
@@ -8720,16 +8722,26 @@ const __tlsMod = (() => {
     };
     return socket;
   };
+  // tls.checkServerIdentity is Node's (core _shared/tls-identity.ts):
+  // workerd's is an older Node's, which matched '127.1' against a
+  // certificate for 127.0.0.1. isIP is Node's own (the vendored
+  // lib/internal/net.js), and domainToASCII is workerd's, which runs the
+  // algorithm Node's binding runs.
+  const checkServerIdentity = createCheckServerIdentity({
+    isIP: (input) => __nimbusNodeLib().require("internal/net").isIP(input),
+    domainToASCII: (domain) => __urlMod.domainToASCII(domain),
+  });
   // Anything else node:tls exports that is called or constructed (a
   // TLSSocket, a server) may open a connection: counted too, all but the
   // helpers that only compute.
-  const pure = { createSecureContext: true, getCiphers: true, checkServerIdentity: true, convertALPNProtocols: true };
+  const pure = { createSecureContext: true, getCiphers: true, convertALPNProtocols: true };
   const counted = new Map();
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
       if (p === 'connect') return connect;
+      if (p === 'checkServerIdentity') return checkServerIdentity;
       if (p === 'createServer') {
         return () => {
           throw nodeError(Error, 'ERR_NET_SERVER_NOT_AVAILABLE', 'tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
@@ -9811,7 +9823,7 @@ const __childProcessMod = (() => {
 // constructor ("The Console method is not implemented"), which OpenTUI's
 // console capture calls over streams of its own.
 // Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
-// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// lib/internal/util/colors.js shouldColorize, v22.23.4), for its platform
 // (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
 // TERM=dumb, then the CI and terminal variables. Each stream decides for
 // itself: a terminal's getColorDepth reads the env it is given.
@@ -11260,7 +11272,7 @@ function __nimbusExitAtEnd() {
 }
 
 // ── What nothing caught ──
-// Node 22.22.3's fatal exception (lib/internal/process/execution.js
+// Node 22.23.4's fatal exception (lib/internal/process/execution.js
 // createOnGlobalUncaughtException; lib/internal/process/promises.js
 // throwUnhandledRejectionsMode; src/node_errors.cc TriggerUncaughtException,
 // ReportFatalException, GetErrorSource): 'uncaughtExceptionMonitor' sees it,
@@ -12130,7 +12142,10 @@ builtins.zlib = (() => {
   // \`default\`. workerd exports every constant by name, enumerable, and two
   // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
   // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
-  // Z_MAX_CHUNK are the engine's values, not Node's.
+  // Z_MAX_CHUNK are the engine's values, not Node's, and the Brotli decoder
+  // is the engine's: Node 22.23.4's has a fix (CVE-2026-111497) and its error
+  // code, BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH, which workerd's
+  // constants lack.
   const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
   const constants = Object.create(null);
   for (const [name, value] of Object.entries(__real.constants)) {
@@ -12707,7 +12722,7 @@ function __nimbusIsCommonJSGlobalLikeError(e) {
 }
 
 // Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
-// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// module_job.js, v22.23.4): what a ReferenceError for a CommonJS name says
 // once it escapes the evaluation of an ES module job the loader ran: a
 // program's ES entry, an import(), a require() of an ES module. \`url\` and
 // \`hasTopLevelAwait\` are the job's module's. Thrown anywhere else (in a

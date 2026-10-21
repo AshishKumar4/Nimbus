@@ -1,4 +1,4 @@
-// Node v22.22.3's undici WebSocket/WebIDL entrypoints. Native WebSocket has
+// Node v22.23.4's undici WebSocket/WebIDL entrypoints. Native WebSocket has
 // no message-transport hook; conversions stay here, separate from the relay.
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const toUSVString = (value) => {

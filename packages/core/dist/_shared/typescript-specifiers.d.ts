@@ -49,7 +49,7 @@
 export declare function typescriptLoader(path: string): 'ts' | 'tsx' | null;
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
 export declare function isTypescriptDeclarationFile(path: string): boolean;
-/** What Node 22.22.3's loaders strip the types of: `.ts`, `.mts`, `.cts`, but a declaration file. */
+/** What Node 22.23.4's loaders strip the types of: `.ts`, `.mts`, `.cts`, but a declaration file. */
 export declare function stripsTypeScript(path: string): boolean;
 /**
  * TypeScript sources a specifier may name once every path node itself would

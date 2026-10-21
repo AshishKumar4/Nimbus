@@ -13,6 +13,34 @@ published independently in the `@nimbus-sh` npm scope.
   - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
   - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
 - Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
+- Fixed: `astro dev` runs with Astro 7.4.2. Astro 7.4.2 requires Node
+  22.23.4 or later, and its CLI stopped before its dev server loaded,
+  because a process reported Node v22.22.3. A process now reports
+  v22.23.4: in `process.version` and `process.versions`, `node --version`,
+  the REPL banner and npm's engine check. The unit tests compare Nimbus's
+  node with node 22.23.4, and the shims run that release's own library
+  modules.
+- Fixed (security): a process does what Node 22.23.4, the October 2026
+  security release, does in the checks that Nimbus makes itself:
+  - `tls.checkServerIdentity` refuses a host that is an IP address only
+    after IDNA maps it, such as `127.1` or `0x7f.0.0.1` (CVE-2026-106069,
+    CVE-2026-106072). Before, a certificate for `127.0.0.1` was accepted
+    for the host `127.1`. A DNS name now matches in its ASCII form, an IPv6
+    host matches in its canonical form, and the error has Node's message
+    and fields.
+  - `dns` refuses a name, a hostname or a local address that contains a
+    null byte. It throws `ERR_INVALID_ARG_VALUE` before it sends a query
+    (CVE-2026-105482).
+  - Brotli decoding is workerd's native code, and its patch state is
+    Cloudflare's. Node 22.23.4 fixes its Brotli decoder (CVE-2026-111497)
+    and adds the error code `zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH`.
+    The hosted runtime does not have that code (measured on a throwaway,
+    2026-10-21). workerd's published source, up to v1.20261021.1, builds
+    Brotli 1.2.0, which does not have the fix. Nimbus does not add the
+    code and does not claim the fix.
+  - TLS connections and their certificate checks, node:crypto's X.509
+    parsing and the HTTP client's transport are workerd's and Cloudflare's
+    code. The release's fixes to those parts of Node are theirs to make.
 - Fixed: a WASI program's filesystem answers as the session holds it where it did not:
   - a file read through a descriptor after the program rewrote it and removed its name read the bytes from before the rewrite;
   - a directory made where the program had just moved another away listed the moved one's names;

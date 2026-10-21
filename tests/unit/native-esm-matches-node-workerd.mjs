@@ -1,7 +1,7 @@
 // @serial
 // @tier slow — drives a local workerd session through every scenario.
 // ES modules as the registry evaluates them (core runtime/native-esm.ts,
-// worker facets/esm-stage.ts), against host Node 22.22.3: evaluation order,
+// worker facets/esm-stage.ts), against host Node 22.23.4: evaluation order,
 // cycles and their TDZ, microtask order, live bindings, top-level await,
 // import.meta, import() identity, CommonJS and builtin namespaces, JSON,
 // resolution under exports/imports conditions and its refusals,

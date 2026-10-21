@@ -53,7 +53,9 @@ writeFileSync(GLOBAL_RC, '');
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_/i.test(key) && key !== 'CI'));
 const npmEnv = (extra = {}) => ({ ...baseEnv, HOME, npm_config_globalconfig: GLOBAL_RC, npm_config_update_notifier: 'false', npm_config_cache: join(disk, 'cache'), ...extra });
 const version = spawnSync('npm', ['--version'], { encoding: 'utf8', env: npmEnv() }).stdout.trim();
-assert.equal(version, '10.9.8', 'premise: npm is 10.9.8');
+// The oracle is node 22.23.4's npm, 10.9.9, which differs from 10.9.8 only in
+// its tar (7.5.22, github.com/npm/cli/releases/tag/v10.9.9).
+assert.equal(version, '10.9.9', 'premise: npm is 10.9.9');
 
 // The same files in the session: /home/user is HOME.
 const harness = createSqliteVfsTestHarness();

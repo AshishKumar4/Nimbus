@@ -69,7 +69,7 @@ export function isTypescriptDeclarationFile(path: string): boolean {
   return regExpExec(DECLARATION_FILE, stringSlice(path, stringLastIndexOf(path, '/') + 1)) !== null;
 }
 
-/** What Node 22.22.3's loaders strip the types of: `.ts`, `.mts`, `.cts`, but a declaration file. */
+/** What Node 22.23.4's loaders strip the types of: `.ts`, `.mts`, `.cts`, but a declaration file. */
 export function stripsTypeScript(path: string): boolean {
   return typescriptLoader(path) === 'ts' && !isTypescriptDeclarationFile(path);
 }

@@ -7,17 +7,18 @@
 # PID 1 of a namespace), the en_US.UTF-8 locale the GNU fixture recorder
 # runs its tools under, and GNU coreutils under the `gnu` prefix Ubuntu's
 # gnu-coreutils gives them (gnurealpath next to the default realpath). Then
-# the workstation's node 22 and bun 1.4.0, ahead of the base image's node
-# on PATH, each checked against its release's published sha256. And trust:
+# the node release Nimbus's node reports (core/constants.ts NODE_RELEASE)
+# and bun 1.4.0, ahead of the base image's node on PATH, each checked
+# against its release's published sha256. And trust:
 # ca-certificates at least trixie's 20250419+deb13u1, which distrusts the
 # roots of the eMudhra intermediates found compromised on 2026-10-20; armada
 # keys an environment on this file, so a change here prepares a new one.
 set -eu
 # root's PATH: armada runs setup under its tasks' PATH, which lacks sbin.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-NODE_VERSION=22.22.3
-# nodejs.org/dist/v22.22.3/SHASUMS256.txt
-NODE_SHA256=2e5d13569282d016861fae7c8f935e741693c269101a5bebcf761a5376d1f99f
+NODE_VERSION=22.23.4
+# nodejs.org/dist/v22.23.4/SHASUMS256.txt
+NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
 BUN_VERSION=1.4.0
 # github.com/oven-sh/bun/releases/download/bun-v1.4.0/SHASUMS256.txt
 BUN_SHA256=2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452

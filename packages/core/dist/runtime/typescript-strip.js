@@ -1,4 +1,4 @@
-// Node 22.22.3's TypeScript (lib/internal/modules/typescript.js): amaro's strip
+// Node 22.23.4's TypeScript (lib/internal/modules/typescript.js): amaro's strip
 // replaces types with whitespace, so lines and columns stay put; its transform
 // (--experimental-transform-types) moves code, and with --enable-source-maps
 // the result carries its source map. Runs in the transform facet.

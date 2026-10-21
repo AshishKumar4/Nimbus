@@ -1,4 +1,4 @@
-// What Node 22.22.3 says of a TypeScript file it will not run, and the module
+// What Node 22.23.4 says of a TypeScript file it will not run, and the module
 // that says it when the file is required or imported. Kept apart from
 // typescript-strip.ts, which loads amaro, so that a session never bundles it.
 import { unknownFileExtensionMessage } from '../_shared/esm-resolver.js';

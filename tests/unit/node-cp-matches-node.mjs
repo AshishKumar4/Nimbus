@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // fs.cpSync, fs.promises.cp and fs.cp answer as Node's do, compared against
-// the node on PATH (the oracle, v22.22.3) running the same program over the
+// the node on PATH (the oracle, v22.23.4) running the same program over the
 // same tree.
 //
 // Red before: the shim had two cp walkers of its own. promises.cp told a file

@@ -7,7 +7,7 @@ export function isRedirectStatus(status, policy) {
 }
 /**
  * Apply one followed redirect. Fetch and undici.request are not the same API:
- * Node 22's bundled undici 6.24.1 RedirectHandler rewrites only 303, removes
+ * Node 22's bundled undici 6.29.1 RedirectHandler rewrites only 303, removes
  * Host on every hop and *all* content-* headers on 303 (even for HEAD).
  * Fetch rewrites POST on 301/302 too, and removes body headers on a rewrite.
  * The command walk retains its existing fetch-like body/header semantics.
