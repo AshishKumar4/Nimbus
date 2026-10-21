@@ -14,7 +14,7 @@
 // And a signal it catches while it waits in a synchronous read of stdin (a
 // run Nimbus stops and runs again once the input is there) waits for it, as
 // Node runs a handler once the read returns: Ctrl-C at
-// `(sleep 3; echo x) | node -e '<SIGINT handler>; readFileSync(0)'` ends
+// `(sleep 20; echo x) | node -e '<SIGINT handler>; readFileSync(0)'` ends
 // the writer, the read returns empty, and then the handler runs; the
 // program exits 0. Before, the wait took Ctrl-C as the end (130).
 //
@@ -85,7 +85,7 @@ try {
 
     const t = terminal.terminal;
     t.reset();
-    t.cmd(`(sleep 3; echo x) | node -e "process.on('SIGINT', () => console.log('heard' + ' SIGINT')); console.log('wait' + 'ing'); console.log('read [' + require('fs').readFileSync(0, 'utf8').trim() + ']')"`);
+    t.cmd(`(sleep 20; echo x) | node -e "process.on('SIGINT', () => console.log('heard' + ' SIGINT')); console.log('wait' + 'ing'); console.log('read [' + require('fs').readFileSync(0, 'utf8').trim() + ']')"`);
     await t.waitFor((b) => /\nwaiting/.test(b), 60_000, 'waiting');
     await new Promise((r) => setTimeout(r, 1000));
     t.send('\x03');
