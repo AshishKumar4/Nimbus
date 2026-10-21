@@ -207,17 +207,19 @@ export function encodeExecStream(stream: ExecStream): ReadableStream<Uint8Array>
   }, { highWaterMark: 0 });
 }
 
-/** The inverse of `encodeExecStream`; frames may arrive split or joined in any way. */
-export function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream {
+/** One frame of a frame stream: its kind and its payload. */
+export interface StreamFrame { kind: number; payload: Uint8Array }
+
+/**
+ * The frames of `wire`, one at a time, as its bytes arrive split or joined in
+ * any way: each chunk is queued as it came and a frame copied out of the queue
+ * once whole. `next` answers null at the wire's end (any partial frame left is
+ * dropped: the decoder says what was missing).
+ */
+export function createFrameReader(wire: ReadableStream<Uint8Array>): { next(): Promise<StreamFrame | null>; cancel(reason?: unknown): Promise<void> } {
   const reader = wire.getReader();
   const pending: Uint8Array[] = [];
   let buffered = 0;
-  let finished = false;
-  let resolveExit!: (exit: ExecExit) => void;
-  let rejectExit!: (reason: unknown) => void;
-  const exit = new Promise<ExecExit>((resolve, reject) => { resolveExit = resolve; rejectExit = reject; });
-  exit.catch(() => {});
-
   const take = (n: number): Uint8Array => {
     const head = pending[0];
     if (head.byteLength >= n) {
@@ -252,6 +254,34 @@ export function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream {
     }
     return { kind: header[0], length: new DataView(header.buffer).getUint32(1) };
   };
+  return {
+    async next() {
+      for (;;) {
+        const header = peekHeader();
+        if (header && buffered >= HEADER_BYTES + header.length) {
+          take(HEADER_BYTES);
+          return { kind: header.kind, payload: take(header.length) };
+        }
+        const read = await reader.read();
+        if (read.done) return null;
+        if (read.value.byteLength > 0) {
+          pending.push(read.value);
+          buffered += read.value.byteLength;
+        }
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  };
+}
+
+/** The inverse of `encodeExecStream`; frames may arrive split or joined in any way. */
+export function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream {
+  const frames = createFrameReader(wire);
+  let finished = false;
+  let resolveExit!: (exit: ExecExit) => void;
+  let rejectExit!: (reason: unknown) => void;
+  const exit = new Promise<ExecExit>((resolve, reject) => { resolveExit = resolve; rejectExit = reject; });
+  exit.catch(() => {});
   const fail = (controller: ReadableStreamDefaultController<ExecChunk>, error: Error) => {
     finished = true;
     controller.error(error);
@@ -260,64 +290,53 @@ export function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream {
 
   const output = new ReadableStream<ExecChunk>({
     async pull(controller) {
-      for (;;) {
-        const header = peekHeader();
-        if (header && buffered >= HEADER_BYTES + header.length) {
-          take(HEADER_BYTES);
-          const payload = take(header.length);
-          switch (header.kind) {
-            case FRAME_STDOUT:
-            case FRAME_STDERR:
-              controller.enqueue({ stream: header.kind === FRAME_STDOUT ? 'stdout' : 'stderr', data: payload });
-              return;
-            case FRAME_EXIT:
-            case FRAME_ERROR: {
-              let parsed: ExecExit | { message: string };
-              try {
-                const json = JSON.parse(new TextDecoder().decode(payload));
-                parsed = header.kind === FRAME_EXIT ? ExecExitSchema.parse(json) : ErrorFrameSchema.parse(json);
-              } catch (error) {
-                fail(controller, new Error(`exec stream: malformed ${header.kind === FRAME_EXIT ? 'exit' : 'error'} frame: ${error instanceof Error ? error.message : String(error)}`));
-                await reader.cancel().catch(() => {});
-                return;
-              }
-              if ('message' in parsed) {
-                fail(controller, new Error(parsed.message));
-                return;
-              }
-              finished = true;
-              controller.close();
-              resolveExit(parsed);
-              return;
-            }
-            default:
-              fail(controller, new Error(`exec stream: unknown frame kind ${header.kind}`));
-              await reader.cancel().catch(() => {});
-              return;
+      let next: StreamFrame | null;
+      try {
+        next = await frames.next();
+      } catch (error) {
+        fail(controller, error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      if (next === null) {
+        fail(controller, new Error('exec stream ended before the command exited'));
+        return;
+      }
+      switch (next.kind) {
+        case FRAME_STDOUT:
+        case FRAME_STDERR:
+          controller.enqueue({ stream: next.kind === FRAME_STDOUT ? 'stdout' : 'stderr', data: next.payload });
+          return;
+        case FRAME_EXIT:
+        case FRAME_ERROR: {
+          let parsed: ExecExit | { message: string };
+          try {
+            const json = JSON.parse(new TextDecoder().decode(next.payload));
+            parsed = next.kind === FRAME_EXIT ? ExecExitSchema.parse(json) : ErrorFrameSchema.parse(json);
+          } catch (error) {
+            fail(controller, new Error(`exec stream: malformed ${next.kind === FRAME_EXIT ? 'exit' : 'error'} frame: ${error instanceof Error ? error.message : String(error)}`));
+            await frames.cancel().catch(() => {});
+            return;
           }
-        }
-        let next: ReadableStreamReadResult<Uint8Array>;
-        try {
-          next = await reader.read();
-        } catch (error) {
-          fail(controller, error instanceof Error ? error : new Error(String(error)));
+          if ('message' in parsed) {
+            fail(controller, new Error(parsed.message));
+            return;
+          }
+          finished = true;
+          controller.close();
+          resolveExit(parsed);
           return;
         }
-        if (next.done) {
-          fail(controller, new Error('exec stream ended before the command exited'));
+        default:
+          fail(controller, new Error(`exec stream: unknown frame kind ${next.kind}`));
+          await frames.cancel().catch(() => {});
           return;
-        }
-        if (next.value.byteLength > 0) {
-          pending.push(next.value);
-          buffered += next.value.byteLength;
-        }
       }
     },
     cancel(reason) {
       if (finished) return;
       finished = true;
       rejectExit(reason ?? new Error('exec output cancelled'));
-      return reader.cancel(reason);
+      return frames.cancel(reason);
     },
   }, { highWaterMark: 0 });
 

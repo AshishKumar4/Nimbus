@@ -133,7 +133,11 @@ export class HostedSession extends RpcTarget implements SessionRpc {
   _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
   _rpcCloseTerminal(name: string) { return operations.rpcCloseTerminal(this.#client(), name); }
   _rpcWriteProcessInput(pid: number, data: string | Uint8Array) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
-  _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions) { return operations.rpcStartProgram(this.#client(), argv, options); }
+  _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions) {
+    // A start names no shell and no identity: it would run as the workspace, from its shell's environment.
+    if (this.scope !== null) throw new Error('EPERM: a scoped session starts no program by its argv');
+    return operations.rpcStartProgram(this.#client(), argv, options);
+  }
   _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.#client(), pid); }
   _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return operations.rpcResizeProcess(this.#client(), pid, size); }
   _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.#client(), pid, signal); }

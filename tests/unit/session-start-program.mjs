@@ -8,10 +8,15 @@
 // signal; its stdin is bytes, to their end, with backpressure. Programs are
 // placed by their cwd as every start is: under a delegating mount it is the
 // mount's machine that starts them. Before, a session ran only command
-// lines (exec), whose answer is a shell's status.
+// lines (exec), whose answer is a shell's status. A cancel is heard however
+// early it comes; stdout and stderr are merged fairly; an input source is let
+// go when the program ends; what it ran leaves the process table once read;
+// and only such a program's signals are the broker's (a node child's still
+// reach its handlers through its input).
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { rpcSignalProcess } from '../../packages/worker/src/session/programmatic.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const { sql, transactions } = await hostSqlite();
@@ -27,6 +32,19 @@ async function finish(started) {
 const text = (bytes) => new TextDecoder().decode(bytes);
 const never = new AbortController().signal;
 const program = (argv, extra = {}) => ({ argv, env: { PATH: '/usr/bin:/bin', HOME: '/home/user' }, cwd: '/home/user', stdin: null, ...extra });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** `promise`, or a rejection once `ms` have passed. */
+function within(promise, ms) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`not settled within ${ms} ms`)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+/** Waits, up to two seconds, for `holds()`. */
+async function until(holds, message) {
+  for (let i = 0; i < 200 && !holds(); i++) await sleep(10);
+  assert.ok(holds(), message);
+}
+const running = (pid) => ws.children.isRunning(pid);
 
 try {
   let started = await ws.startProgram(program(['echo', 'hi']), never);
@@ -106,6 +124,82 @@ try {
   for (let i = 0; i < 100 && starts.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   cancel.abort();
   await assert.rejects(pending, { code: 'ECANCELED' });
+
+  // Cancelled at once, while the broker is still placing it: ECANCELED all the same.
+  const early = new AbortController();
+  const placing = ws.startProgram(program(['hold'], { cwd: '/m' }), early.signal);
+  early.abort();
+  await assert.rejects(within(placing, 5000), { code: 'ECANCELED' });
+
+  // stderr is not starved by a stdout that never stops.
+  started = await ws.startProgram(program(['sh', '-c', 'echo err >&2; while true; do echo out; done']), never);
+  const order = [];
+  for await (const chunk of started.output) {
+    order.push(chunk.stream);
+    if (chunk.stream === 'stderr' || order.length >= 50) break;
+    await sleep(1);
+  }
+  started.kill('SIGKILL');
+  assert.ok(order.includes('stderr'), `stderr surfaces while stdout runs on: ${order.join(',')}`);
+  await started.exit;
+
+  // An input source still open when the program ends is let go.
+  let released = false;
+  const idle = new ReadableStream({ pull() { return new Promise(() => {}); }, cancel() { released = true; } });
+  ran = await finish(await ws.startProgram(program(['true'], { stdin: idle }), never));
+  assert.deepEqual(ran.exit, { code: 0, signal: null });
+  await until(() => released, 'its input source is cancelled once it has ended');
+
+  // A cancelled output stops reading: no poll after the ones already waiting.
+  started = await ws.startProgram(program(['sleep', '600']), never);
+  const readOutput = ws.children.readOutput;
+  let reads = 0;
+  ws.children.readOutput = (...args) => { reads++; return readOutput.apply(ws.children, args); };
+  try {
+    const output = started.output.getReader();
+    const first = output.read();
+    await sleep(20);
+    await output.cancel();
+    await first;
+    const after = reads;
+    await sleep(100);
+    assert.ok(reads <= after, `no poll after its cancel (${reads - after} more)`);
+  } finally {
+    ws.children.readOutput = readOutput;
+  }
+  started.kill('SIGKILL');
+  await started.exit;
+
+  // What it ran leaves the process table once it has ended and its output is read.
+  const pids = [];
+  for (let i = 0; i < 5; i++) {
+    started = await ws.startProgram(program(['true']), never);
+    const { pid } = started;
+    pids.push(pid, ws.processes.getAll().find((entry) => entry.pid === pid)?.parentPid);
+    await finish(started);
+  }
+  assert.ok(pids.every((pid) => typeof pid === 'number'), 'each ran under a parent of its own');
+  const left = ws.processes.getAll().filter((entry) => pids.includes(entry.pid));
+  assert.deepEqual(left.map((entry) => entry.command), [], 'no row of what it ran is left');
+
+  // Only a program started by its argv takes the broker's signals across the session; another child of the
+  // broker (a node child) is signalled through its input channel, where its handlers hear it.
+  const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes };
+  started = await ws.startProgram(program(['sleep', '600']), never);
+  assert.equal(ws.isStartedProgram(started.pid), true);
+  assert.deepEqual(await rpcSignalProcess(host, started.pid, 'SIGTERM'), { ok: true, pid: started.pid });
+  assert.deepEqual(await started.exit, { code: null, signal: 'SIGTERM' });
+  await until(() => !ws.isStartedProgram(started.pid), 'it is forgotten once it has ended');
+  const parent = ws.processes.spawn('node', ['node'], '/home/user', {});
+  const { childPid } = await ws.children.spawn({ command: 'sleep', args: ['600'], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+  try {
+    assert.equal(ws.isStartedProgram(childPid), false);
+    await rpcSignalProcess(host, childPid, 'SIGUSR1');
+    await sleep(50);
+    assert.equal(running(childPid), true, 'a signal its handler may take does not end it from outside');
+  } finally {
+    ws.children.kill(childPid, 'SIGKILL');
+  }
 } finally {
   await ws.close();
 }

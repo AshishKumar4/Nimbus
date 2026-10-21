@@ -9,7 +9,7 @@
  */
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
-import { frame } from './exec-stream.js';
+import { createFrameReader, frame } from './exec-stream.js';
 import type { ExecChunk } from './exec-stream.js';
 import type { ExitStatus, StartedSessionProgram } from './program-start.js';
 
@@ -22,7 +22,6 @@ const FRAME_STDOUT = 3;
 const FRAME_STDERR = 4;
 const FRAME_EXIT = 5;
 const FRAME_FAILED = 6;
-const HEADER_BYTES = 5;
 
 const StartedFrameSchema = z.object({ pid: z.number().int() });
 /** Node's spawn error, as its own properties. */
@@ -84,42 +83,19 @@ export function encodeProgramStream(start: (cancel: AbortSignal) => Promise<Star
       }
     },
     async cancel(reason) {
-      if (started === null) return cancel.abort(reason);
-      started.kill('SIGKILL');
-      await output?.cancel(reason);
+      if (started !== null) {
+        started.kill('SIGKILL');
+        await output?.cancel(reason);
+        return;
+      }
+      // Not yet read: a start still pending is cancelled; one that has run is killed.
+      cancel.abort(reason);
+      starting.then((program) => {
+        program.kill('SIGKILL');
+        void program.output.cancel(reason);
+      }, () => {});
     },
   }, { highWaterMark: 0 });
-}
-
-/** One frame at a time from `wire`, as its bytes arrive split or joined in any way; null at its end. */
-function frames(wire: ReadableStream<Uint8Array>): { next(): Promise<{ kind: number; payload: Uint8Array } | null>; cancel(reason: unknown): Promise<void> } {
-  const reader = wire.getReader();
-  let buffered = new Uint8Array(0);
-  return {
-    async next() {
-      for (;;) {
-        if (buffered.byteLength >= HEADER_BYTES) {
-          const length = new DataView(buffered.buffer, buffered.byteOffset).getUint32(1);
-          if (buffered.byteLength >= HEADER_BYTES + length) {
-            const kind = buffered[0];
-            const payload = buffered.slice(HEADER_BYTES, HEADER_BYTES + length);
-            buffered = buffered.subarray(HEADER_BYTES + length);
-            return { kind, payload };
-          }
-        }
-        const read = await reader.read();
-        if (read.done) {
-          if (buffered.byteLength > 0) throw new Error('program stream: it ended inside a frame');
-          return null;
-        }
-        const joined = new Uint8Array(buffered.byteLength + read.value.byteLength);
-        joined.set(buffered);
-        joined.set(read.value, buffered.byteLength);
-        buffered = joined;
-      }
-    },
-    cancel: (reason) => reader.cancel(reason),
-  };
 }
 
 const parse = <T>(schema: z.ZodType<T>, payload: Uint8Array): T => schema.parse(JSON.parse(new TextDecoder().decode(payload)));
@@ -132,9 +108,26 @@ const parse = <T>(schema: z.ZodType<T>, payload: Uint8Array): T => schema.parse(
 export async function decodeProgramStream(
   wire: ReadableStream<Uint8Array>,
   signal: (pid: number, signal: string) => void,
+  cancel?: AbortSignal,
 ): Promise<StartedSessionProgram> {
-  const reading = frames(wire);
-  const first = await reading.next();
+  const reading = createFrameReader(wire);
+  // A caller that gives up before the start's answer cancels the stream: the start, or what it ran.
+  const giveUp = (): void => { void reading.cancel(cancel?.reason); };
+  cancel?.addEventListener('abort', giveUp, { once: true });
+  let first: Awaited<ReturnType<typeof reading.next>>;
+  try {
+    if (cancel?.aborted) throw cancel.reason;
+    first = await reading.next();
+  } catch (error) {
+    if (cancel?.aborted) {
+      giveUp();
+      throw Object.assign(new Error('spawn: operation canceled'), { code: 'ECANCELED', errno: -125 });
+    }
+    throw error;
+  } finally {
+    cancel?.removeEventListener('abort', giveUp);
+  }
+  if (first === null && cancel?.aborted) throw Object.assign(new Error('spawn: operation canceled'), { code: 'ECANCELED', errno: -125 });
   if (first === null) throw new Error('program stream: it ended before the start\'s answer');
   if (first.kind === FRAME_REFUSED) {
     const refused = parse(RefusedFrameSchema, first.payload);

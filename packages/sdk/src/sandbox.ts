@@ -465,9 +465,14 @@ export class NimbusSandbox {
    * is read as you read it; its exit is waitpid's code or signal; `kill`
    * sends it a signal. A cwd under a mount that runs programs on its own
    * machine starts it there. `stdin`'s bytes are its input, to their end;
-   * none: its input ends at once.
+   * none: its input ends at once. `signal` aborted before it runs cancels
+   * the start (ECANCELED), killing what had started.
    */
-  async startProgram(argv: string[], options: { cwd?: string; env?: Record<string, string>; stdin?: ReadableStream<Uint8Array> } = {}): Promise<StartedSessionProgram> {
+  async startProgram(
+    argv: string[],
+    options: { cwd?: string; env?: Record<string, string>; stdin?: ReadableStream<Uint8Array>; signal?: AbortSignal } = {},
+  ): Promise<StartedSessionProgram> {
+    const { signal: cancel, ...start } = options;
     await this.ready();
     const stub = this.stub();
     const signal = (pid: number, sent: string): void => {
@@ -475,27 +480,34 @@ export class NimbusSandbox {
     };
     // Across HTTP no stream rides the request: the bytes follow the start, written with the program's input calls.
     const remote = this.target.kind === 'remote';
-    const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, options)), signal);
-    if (remote && options.stdin !== undefined) void this.feed(started.pid, options.stdin);
+    const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, start)), signal, cancel);
+    if (remote && start.stdin !== undefined) void this.feed(started, start.stdin);
     return started;
   }
 
-  /** `stdin`'s bytes into program `pid`'s input, each write waiting for room, then its end. */
-  private async feed(pid: number, stdin: ReadableStream<Uint8Array>): Promise<void> {
+  /** `stdin`'s bytes into `program`'s input, each write waiting for room, then its end; let go once it has ended. */
+  private async feed(program: StartedSessionProgram, stdin: ReadableStream<Uint8Array>): Promise<void> {
     const stub = this.stub();
+    const reader = stdin.getReader();
+    const gone = program.exit.then(() => null, () => null);
     try {
-      const reader = stdin.getReader();
       for (;;) {
-        const next = await reader.read();
+        const next = await Promise.race([reader.read(), gone]);
+        if (next === null) {
+          await reader.cancel();
+          return;
+        }
         if (next.done) break;
-        if (!(await this.rpc(stub._rpcWriteProcessInput(pid, next.value))).ok) {
+        if (!(await this.rpc(stub._rpcWriteProcessInput(program.pid, next.value))).ok) {
           await reader.cancel();
           return;
         }
       }
-      await this.rpc(stub._rpcEndProcessInput(pid));
+      await this.rpc(stub._rpcEndProcessInput(program.pid));
     } catch (error) {
-      console.error(`Nimbus: the input of program ${pid} could not be written`, error);
+      console.error(`Nimbus: the input of program ${program.pid} could not be written`, error);
+    } finally {
+      reader.releaseLock();
     }
   }
 

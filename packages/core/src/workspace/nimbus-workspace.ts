@@ -327,6 +327,8 @@ export class NimbusWorkspace {
   readonly shellProcessPid: number;
 
   private readonly namedShells: NamedShells;
+  /** Programs startProgram started, until each ends. */
+  private readonly startedPrograms = new Set<number>();
 
   private constructor(
     vfs: SqliteVFS,
@@ -635,6 +637,21 @@ export class NimbusWorkspace {
   }
 
   /**
+   * `program` started by its argv (Kinu ask 67): the start contract a
+   * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
+   * every start is. Its stdin, output, exit and signals are the child
+   * broker's (workspace/start-program.ts).
+   */
+  startProgram(program: Omit<Program, 'stdin'> & { readonly stdin: ProgramInput }, cancel: AbortSignal): Promise<StartedSessionProgram> {
+    return startProgram({ children: this.children, processes: this.processes, cred: this.identity.cred, started: this.startedPrograms }, program, cancel);
+  }
+
+  /** Whether `pid` is a program startProgram started that has not ended: its input and signals are the broker's. */
+  isStartedProgram(pid: number): boolean {
+    return this.startedPrograms.has(pid);
+  }
+
+  /**
    * Run `command` as a process of its own and collect what it printed.
    *
    * Without a `shellId` the call runs in a shell built for it alone (see
@@ -649,15 +666,6 @@ export class NimbusWorkspace {
    * ended, leave the process table when the result is returned; one that ends
    * later (a background job) leaves at the first call to start a minute after.
    */
-  /**
-   * `program` started by its argv (Kinu ask 67): the start contract a
-   * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
-   * every start is. Its stdin, output, exit and signals are the child
-   * broker's (workspace/start-program.ts).
-   */
-  startProgram(program: Omit<Program, 'stdin'> & { readonly stdin: ProgramInput }, cancel: AbortSignal): Promise<StartedSessionProgram> {
-    return startProgram({ children: this.children, processes: this.processes, cred: this.identity.cred }, program, cancel);
-  }
 
   exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
     const { shellId, detach, ...call } = options;

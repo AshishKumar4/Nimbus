@@ -3,9 +3,10 @@
 // encodeProgramStream / decodeProgramStream carry the start's answer (its
 // pid, or Node's spawn error with its own properties), its output as its
 // reader takes it, and its exit (waitpid's code or signal); cancelling the
-// stream before the start cancels the start, after it kills the program.
-// Round-tripped here over a workspace's startProgram, the frames split at
-// every byte boundary on the way.
+// stream before the start cancels the start, after it kills the program,
+// read or not. A caller that gives up on the start (its AbortSignal) cancels
+// the stream. Round-tripped here over a workspace's startProgram, the frames
+// split at every byte boundary on the way.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { decodeProgramStream, encodeProgramStream } from '../../packages/core/src/runtime/program-stream.ts';
@@ -76,6 +77,30 @@ try {
     if (!killed) await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.ok(killed, 'its program ends with its reader');
+
+  const sleeping = () => ws.processes.getAll().some((entry) => entry.command === 'sleep 600' && entry.state === 'running');
+  /** Waits, up to two seconds, for `holds()`. */
+  const until = async (holds) => {
+    for (let i = 0; i < 200 && !holds(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    return holds();
+  };
+
+  // Cancelled unread, after its program has started: the program is killed.
+  const unread = encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel));
+  assert.ok(await until(sleeping), 'it runs before anyone reads');
+  await unread.cancel();
+  assert.ok(await until(() => !sleeping()), 'an unread stream cancelled kills what it started');
+
+  // Given up before the start's answer is read: ECANCELED, and what it started is killed.
+  const gaveUp = new AbortController();
+  gaveUp.abort();
+  await assert.rejects(decodeProgramStream(
+    encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel)),
+    () => {},
+    gaveUp.signal,
+  ), { code: 'ECANCELED' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(await until(() => !sleeping()), 'nothing of it runs on');
 } finally {
   await ws.close();
 }
