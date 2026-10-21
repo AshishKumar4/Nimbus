@@ -13,6 +13,7 @@ import { createHash, X509Certificate } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { interpreterProcessEnv } from '../../packages/core/src/runtime/interpreter-env.ts';
+import { standardProc } from '../../packages/core/src/vfs/proc-vfs.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const PINNED_SHA256 = '796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe'; // curl.se cacert-2026-10-20.pem
@@ -55,6 +56,31 @@ try {
   assert.equal(createHash('sha256').update(await ws.fs.readFile(FILE)).digest('hex'), PINNED_SHA256, 'unchanged by them');
 } finally {
   await ws.close();
+}
+
+// Its bytes are made once per isolate: CPython loads the file for every TLS connection, by stat and ranged reads
+// (OpenSSL's), which neither encode nor copy the whole of it. A whole-file read is a copy, so no reader changes it.
+{
+  const proc = standardProc();
+  const path = FILE.slice('/proc'.length);
+  const encode = TextEncoder.prototype.encode;
+  let encoded = 0;
+  TextEncoder.prototype.encode = function (...args) { encoded++; return encode.apply(this, args); };
+  try {
+    const size = proc.stat(path).size;
+    const ranges = [];
+    for (let offset = 0; offset < size; offset += 4096) ranges.push(proc.readRange(path, offset, 4096));
+    assert.equal(encoded, 0, 'stat and ranged reads encode nothing');
+    const joined = new Uint8Array(size);
+    let at = 0;
+    for (const range of ranges) { joined.set(range, at); at += range.length; }
+    assert.equal(createHash('sha256').update(joined).digest('hex'), PINNED_SHA256, 'the ranged reads are the bundle');
+  } finally {
+    TextEncoder.prototype.encode = encode;
+  }
+  const first = proc.readFile(path);
+  first.fill(0);
+  assert.equal(createHash('sha256').update(proc.readFile(path)).digest('hex'), PINNED_SHA256, 'a reader cannot change it for the next');
 }
 
 // CPython and Ruby carry their own OpenSSL, whose default paths no session has: their environment names the store.
