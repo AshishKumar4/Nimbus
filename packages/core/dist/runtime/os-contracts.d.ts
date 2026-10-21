@@ -817,7 +817,12 @@ export interface ResponseScope {
  */
 export declare class ProcessNotAdmitted extends Error {
     readonly pid: number;
-    constructor(pid: number, cause: unknown);
+    readonly request?: Request | undefined;
+    /**
+     * `request`, when the refusal names it: the request as it was to be sent,
+     * its body unread, which is what a re-run sends (PortRegistry.routeRequest).
+     */
+    constructor(pid: number, cause: unknown, request?: Request | undefined);
 }
 export interface RuntimePortBridge {
     register(port: number, processId: number, handler: (request: Request) => Promise<Response>): Promise<void>;

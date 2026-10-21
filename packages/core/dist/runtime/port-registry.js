@@ -527,6 +527,8 @@ export class PortRegistry {
         // Settled once the client is done with the answer, or at once when nothing was relayed.
         const { scope, owner } = responseScope(request.signal);
         let relayed = false;
+        // What was to be sent: a refusal before it went (ProcessNotAdmitted) leaves its body unread.
+        let forwarded;
         try {
             // Preserve query; replace the pathname with the inner path so
             // the user's HTTP server sees its own URL shape. (Fragments
@@ -575,7 +577,7 @@ export class PortRegistry {
             };
             if (hasBody)
                 init.duplex = 'half';
-            const forwarded = new Request(innerUrl, init);
+            forwarded = new Request(innerUrl, init);
             // HTTP crosses Workers RPC as Request/Response values, streamed with
             // flow control and never materialised. A WebSocket upgrade cannot: its
             // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
@@ -626,9 +628,9 @@ export class PortRegistry {
             return answer;
         }
         catch (error) {
-            // A request the process refused unsent is its caller's to run again.
+            // A request the process refused unsent is its caller's to run again: this one, as it was to be sent.
             if (error instanceof ProcessNotAdmitted)
-                throw error;
+                throw new ProcessNotAdmitted(error.pid, error.cause, forwarded);
             // Server-side triage — users see only the 502 body, operators
             // see the full error + stack in Worker logs.
             console.error('[port-registry] routeRequest failed for port', port, ':', error);

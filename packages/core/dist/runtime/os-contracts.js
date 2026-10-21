@@ -90,9 +90,15 @@ export function launchNamedPaths(cwd, program, argv) {
  */
 export class ProcessNotAdmitted extends Error {
     pid;
-    constructor(pid, cause) {
+    request;
+    /**
+     * `request`, when the refusal names it: the request as it was to be sent,
+     * its body unread, which is what a re-run sends (PortRegistry.routeRequest).
+     */
+    constructor(pid, cause, request) {
         super(`process ${pid} did not take the request: its host was replaced before the request was sent (${errorText(cause)})`, { cause });
         this.pid = pid;
+        this.request = request;
         this.name = 'ProcessNotAdmitted';
     }
 }

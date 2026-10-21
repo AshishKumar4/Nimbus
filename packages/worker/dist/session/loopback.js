@@ -6,26 +6,27 @@ import { ProcessNotAdmitted } from '@nimbus-sh/core/runtime/os-contracts.js';
  * port route does, rather than being refused.
  */
 export async function routeRuntimeLoopback(ports, port, request, ensure) {
-    const route = async () => {
+    const route = async (sent) => {
         if (!ports.has(port) && (ensure === undefined || await ensure(port) !== 'started'))
             return null;
-        return ports.routeRequest(port, request, new URL(request.url).pathname);
+        return ports.routeRequest(port, sent, new URL(sent.url).pathname);
     };
-    return rerunNotAdmitted(route, ensure === undefined ? undefined : route);
+    return rerunNotAdmitted(request, route, ensure === undefined ? undefined : route);
 }
 /**
- * `route`, and `again` once when the process refused the request unsent
- * (ProcessNotAdmitted): it ran nowhere, and its process has ended, so
- * `again` starts the server once more and sends it the request, whole.
- * With no `again`, or refused again, the caller is told, typed.
+ * `request` routed, and routed `again` once when the process refused it
+ * unsent (ProcessNotAdmitted): it ran nowhere, and its process has ended,
+ * so `again` starts the server once more and sends it the request as it was
+ * to be sent, its body unread. With no `again`, or refused again, or a
+ * refusal that names no request, the caller is told, typed.
  */
-export async function rerunNotAdmitted(route, again) {
+export async function rerunNotAdmitted(request, route, again) {
     try {
-        return await route();
+        return await route(request);
     }
     catch (error) {
-        if (!(error instanceof ProcessNotAdmitted) || again === undefined)
+        if (!(error instanceof ProcessNotAdmitted) || again === undefined || error.request === undefined)
             throw error;
-        return again();
+        return again(error.request);
     }
 }
