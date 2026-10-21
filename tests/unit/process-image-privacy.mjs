@@ -145,6 +145,7 @@ function userSession() {
   // As an earlier release left them: the blobs and a process image at the top of the store, readable by every account.
   for (const path of blobs()) kernel.chmod(path, 0o644);
   const earlierImage = `.nimbus/process-images/${'e'.repeat(64)}.js`;
+  kernel.mkdir('.nimbus/process-images', { recursive: true, mode: 0o755 });
   kernel.writeFile(earlierImage, `const token = "${SECRET}";`, { mode: 0o644 });
   assert.ok(readableHolding(session.vfs, outsider, SECRET).length > 0, 'the earlier release\'s files are open to another account');
   session.storage.delete(EARLIER_IMAGES_CLOSED_KEY);
