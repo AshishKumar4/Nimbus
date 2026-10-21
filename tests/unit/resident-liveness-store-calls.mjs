@@ -68,7 +68,7 @@ const bootCalls = { ...handle.log.calls };
 
 await until(() => handle.log.exit !== null, 'the process ends', 10_000);
 const after = Object.fromEntries(Object.entries(handle.log.calls).map(([name, n]) => [name, n - (bootCalls[name] ?? 0)]).filter(([, n]) => n > 0));
-const seen = `calls after boot ${JSON.stringify(after)}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
+const seen = `calls at boot ${JSON.stringify(bootCalls)}, after boot ${JSON.stringify(after)}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
 assert.ok(wrote && grants > 0, `the pushed bytes needed a grant after the read's session call, the case this pins: ${seen}`);
 assert.match(handle.log.stdout, new RegExp(`^READ ${SIZE}$`, 'm'), `the read is answered before the process ends: ${seen}`);
 assert.equal(handle.log.exit.code, 0);
