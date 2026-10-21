@@ -36,7 +36,7 @@ import { acquireSupervisorLoad } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
-import { IsolatePool, noteFacetCall, recentFacetCalls } from './isolate-pool.js';
+import { IsolatePool, recentFacetCalls, recordFacetCall } from './isolate-pool.js';
 import { HostRouteSchema, isolateToken, RESIDENT_READ_RANGE_BYTES, WorkspaceEgressSchema } from './peer-host.js';
 import { hashSource } from './vendor/serialize.js';
 import { PEER_PLACEMENT_MAX_ATTEMPTS } from './process-host.js';
@@ -69,6 +69,8 @@ export function oneShotPoolOptions(spec, network, images) {
 }
 /** What the peer's side answers when the task failed: what the session's own pool would have thrown. */
 const OneShotFailureSchema = z.object({ ok: z.literal(false), message: z.string(), code: z.string().optional(), unsettled: z.boolean() });
+/** The peer's record of a call it ran (FacetCallTime), but its tag and when, which are the session's. */
+const FacetCallSchema = z.object({ cold: z.boolean(), loadMs: z.number().nonnegative(), callMs: z.number().nonnegative() });
 /** The peer's answer to a call that named a preamble it does not hold: the call is sent again carrying it. */
 const PreambleMissingSchema = z.object({ ok: z.literal('preamble missing') });
 /**
@@ -78,7 +80,7 @@ const PreambleMissingSchema = z.object({ ok: z.literal('preamble missing') });
  * cannot.
  */
 function answerSchema() {
-    return z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), value: z.custom(() => true), loadMs: z.number().nonnegative().nullable() }), OneShotFailureSchema, PreambleMissingSchema]);
+    return z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), value: z.custom(() => true), call: FacetCallSchema.nullable() }), OneShotFailureSchema, PreambleMissingSchema]);
 }
 const SupervisorBindingPropsSchema = z.object({
     doId: z.string().min(1),
@@ -204,8 +206,10 @@ export class OneShotPlacement {
                 this.#note(spec.tag, worker, 'peer', began);
                 if (answer.ok !== true)
                     throw failedAs(answer);
-                // The session's own record of its facet calls holds this one too: cold as it was on the peer, its time the session's.
-                noteFacetCall(this.#ctx, spec.tag, answer.loadMs, began);
+                // The session's own record of its facet calls holds this one too, as the peer timed it: from its worker's
+                // hold to its answer, on the clock of the object whose thread ran it, as the session times its own.
+                if (answer.call !== null)
+                    recordFacetCall(this.#ctx, { tag: spec.tag, ...answer.call, at: began });
                 return answer.value;
             },
             dispose: () => local.dispose(),
@@ -505,7 +509,7 @@ export class OneShotHost {
                 ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal,
             });
             const [call] = recentFacetCalls(calls);
-            return { ok: true, value, loadMs: call?.cold === true ? call.loadMs : null };
+            return { ok: true, value, call: call === undefined ? null : { cold: call.cold, loadMs: call.loadMs, callMs: call.callMs } };
         }
         catch (error) {
             const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
