@@ -306,7 +306,8 @@ async function probeRun({ baseline, releases }) {
     const problems = [...run.moved];
     const late = tasks.flatMap((task, at) => (task.lateStart ? [{ at, item: list[task.outcome.index] }] : []));
     if (late.length > 0) {
-      const again = late.map(({ item }) => ({ ...item, task: `${item.task} (started late, run again)` }));
+      // The same tasks, by the same names: what a regrade or a confirmation names them by.
+      const again = late.map(({ item }) => item);
       try {
         const rerun = await mapItems(again, `${label} late start`);
         problems.push(...rerun.moved);
@@ -315,7 +316,7 @@ async function probeRun({ baseline, releases }) {
         problems.push(`the late-started tasks could not run again: ${scrub(error.message)}`);
       }
     }
-    return { base: run.base, tasks, problems };
+    return { base: run.base, jobId: run.mapped.jobId, tasks, problems };
   };
 
   // The paired probes run in a task of their own, one at a time; the parts skip them.
@@ -332,7 +333,7 @@ async function probeRun({ baseline, releases }) {
     console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);
     return 2;
   }
-  const { base, tasks } = run;
+  const { base, jobId, tasks } = run;
   const problems = [...run.problems];
 
   // Red rows a reset or an overload left, attributed from the platform's record.
@@ -422,10 +423,10 @@ async function probeRun({ baseline, releases }) {
   const state = join(NIMBUS_STATE, 'remote-probes');
   try {
     mkdirSync(state, { recursive: true });
-    const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}.json`);
-    writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: mapped.jobId,
+    const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${jobId}.json`);
+    writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: jobId,
       ...(paired.length > 0 ? { paired } : {}), problems, tasks }, null, 2))}\n`);
-    console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${mapped.jobId})`);
+    console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${jobId})`);
     return status;
   } catch (error) {
     console.error(`remote-probes: NOT GRADED — the verdict could not be kept: ${scrub(error.message)}`);
