@@ -31,6 +31,7 @@ import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
+import { refusesDirectory } from '../../vfs/open-rules.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import type { W7Attrs, W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp, ProcessFsReceipt } from '../../_shared/process-fs-client.js';
@@ -1261,7 +1262,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       parent = writableParent(key, path, 'open');
       if (parent === undefined) return undefined;
     } else {
-      if (row.type === 'directory') throw fsError('EISDIR', 'open', path);
+      // A directory as the session's open judges one: refused, or a descriptor of the session's.
+      if (row.type === 'directory' && refusesDirectory(flags)) throw fsError('EISDIR', 'open', path);
       if (row.type !== 'file') return undefined;
       if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', path);
       if (!modeAllows(row, (read ? 4 : 0) | 2, host.cred)) throw fsError('EACCES', 'open', path);
