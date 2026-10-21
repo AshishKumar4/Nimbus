@@ -31,7 +31,7 @@ const server = createServer((request, response) => {
     response.writeHead(404).end();
     return;
   }
-  assert.equal(request.url, PREVIEW_PATH, 'all Cloudflare calls address only the fixture Preview');
+  assert.ok([PREVIEW_PATH, PREVIEW_PATH + '/deployments/latest'].includes(request.url), `all Cloudflare calls address only the fixture Preview, not ${request.url}`);
   assert.equal(request.headers.authorization, 'Bearer ' + TOKEN);
   events.push(request.method);
   if (request.method === 'DELETE') {
