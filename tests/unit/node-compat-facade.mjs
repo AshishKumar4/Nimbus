@@ -117,12 +117,18 @@ try {
     assert.equal((await failure(() => fsPromises.readFile({}))).code, 'ERR_INVALID_ARG_TYPE');
   });
 
-  await check('Node\'s answers for what the session names otherwise', async () => {
+  await check('a forced rm of nothing there', async () => {
     await fsPromises.rm('nothing-here', { force: true });
+  });
+
+  await check('a path\'s truncate', async () => {
     const truncated = await failure(() => fsPromises.truncate('nothing-here', 0));
     assert.deepEqual([truncated.code, truncated.syscall, truncated.path], ['ENOENT', 'open', 'nothing-here'], 'a path\'s truncate fails as its opening would');
     assert.equal((await failure(() => fsPromises.truncate('nothing-here', 1.5))).code, 'ENOENT', 'opened before its length is checked');
     assert.deepEqual(await (async () => { const e = await failure(() => fsPromises.truncate('d', 0)); return [e.code, e.syscall]; })(), ['EISDIR', 'open']);
+  });
+
+  await check('a symlink onto a name taken', async () => {
     const linked = await failure(() => fsPromises.symlink('target', 'a.txt'));
     assert.deepEqual([linked.code, linked.path, linked.dest], ['EEXIST', 'target', 'a.txt'], 'the target, then the link, as given');
   });
