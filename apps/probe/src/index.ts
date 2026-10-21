@@ -32,7 +32,7 @@ import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.j
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
 import { abortFacet, heldFacetName } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { oneShotPlacement, oneShotPlacementDiagnostics } from '@nimbus-sh/fabric/one-shot-peer.js';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.generated.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
 import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { facetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
