@@ -282,6 +282,17 @@ const FOUND = {
     park: 7451,
     schedule: [['root', 'chmod', 'd/e', 0o711], ['own', 'opendir', 'x'], ['root', 'chown', 'd/e', 0], ['release'], ['input'], ['release'], ['sync', 'readFile', 'd/e']],
   },
+  'a file read after the session\'s database restarted is held for a call that cannot wait (7519)': {
+    park: 7519,
+    schedule: [['restart'], ['own', 'readFile', 'd/f'], ['sync', 'readFile', 'd/f']],
+  },
+  'an awaited read of a directory the process lists is answered, not refused (7597)': {
+    park: 7597,
+    schedule: [['own', 'opendir', 'x/e/g'], ['sync', 'write', 'd/f', 'c7597.1'], ['release'], ['input'], ['input'], ['release', 'delivery'], ['own', 'write', 'x/f', 'c7597.2'],
+      ['own', 'stat', 'x/e/g'], ['sync', 'stat', 'top'], ['own', 'readdir', 'z'], ['own', 'readFile', 'x/h'], ['input'], ['sync', 'unlink', 'd/f'], ['own', 'stat', 'z'], ['release'],
+      ['own', 'readFile', 'mid'], ['peer', 'chmod', 'top', 0o644], ['release', 'acquire'], ['own', 'stat', 'd'], ['hold', 'listing'], ['peer', 'chmod', 'd', 0o700], ['root', 'chown', 'x', 0],
+      ['hold', 'listing'], ['peer', 'mkdir', 'z'], ['input'], ['own', 'unlink', 'top'], ['sync', 'readFile', 'z'], ['own', 'readFile', 'x'], ['sync', 'stat', 'z/k'], ['release', 'wave']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
@@ -373,7 +384,19 @@ const GAPS = {
   'a directory the process made beside a mount with no feed is listed at rest (7078) [node]': {
     lacks: 'S lists the directory the process made as its relist after the mount table changed saw it, without the name (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile readdirSync can leave out a directory the program made after a mount appeared',
-    shows: 'sync readdir . answered ["d","mid","top","z"]',
+    shows: 'sync stat z/g answered EAGAIN',
+  },
+  'a directory root shut and took is refused to a read that cannot wait (7451) [node]': {
+    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (main does too; closed by the cutover: RF answers it as the session does)',
+    shows: 'sync readFile d/e answered EISDIR',
+  },
+  'a file read after the session\'s database restarted is held for a call that cannot wait (7519) [eager]': {
+    lacks: 'after the session\'s database restarts, the eager engine does not hold the bytes of a file its process then read awaited (main does the same; found by the mount sweep, its schedule has no mount)',
+    shows: 'sync readFile d/f answered EAGAIN',
+  },
+  'an awaited read of a directory the process lists is answered, not refused (7597) [node]': {
+    lacks: 'S refuses an awaited read of a directory EAGAIN while its listing is held (main does too; closed by the cutover: RF waits for the session)',
+    shows: 'own readFile x answered EAGAIN',
   },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
