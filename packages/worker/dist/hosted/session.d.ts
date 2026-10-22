@@ -95,9 +95,9 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
     _rpcStat(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
         type: string;
         size: number;
+        ctime?: number | undefined;
         mtime: number;
         mode: number;
-        ctime?: number | undefined;
         ino?: number | undefined;
         revision?: number | undefined;
         dev?: number | undefined;
@@ -109,9 +109,9 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
     _rpcLstat(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
         type: string;
         size: number;
+        ctime?: number | undefined;
         mtime: number;
         mode: number;
-        ctime?: number | undefined;
         ino?: number | undefined;
         revision?: number | undefined;
         dev?: number | undefined;
@@ -238,7 +238,7 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
         chunks: {
             seq: number;
             ts: number;
-            stream: "stdout" | "stderr";
+            stream: "stderr" | "stdout";
             data: string;
             binary?: boolean | undefined;
         }[];
@@ -265,7 +265,7 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
         pid: number | null;
         registeredAt: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         owner: string | null;
         name: string | null;
     }>;
@@ -278,8 +278,8 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
         name: string | null;
         port: number | null;
         pid: number | null;
-        status: "running" | "starting" | "stopped" | "failed";
-        visibility: "scoped" | "public";
+        status: "failed" | "running" | "starting" | "stopped";
+        visibility: "public" | "scoped";
         capability: string | null;
         restart: "never" | "on-failure";
         diagnostic: string | null;
@@ -292,7 +292,7 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
         port: number;
         pid: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         url: string | null;
         execId?: string | undefined;
     }>;
@@ -302,14 +302,14 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
         port: number;
         pid: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         url: string | null;
         execId?: string | undefined;
     }>;
     _rpcRemoveApp(target: SessionAppTarget): Promise<{
-        removed: boolean;
         owner: string;
         port: number | null;
+        removed: boolean;
     }>;
     _rpcEnsureDurableApp(input: SessionDurableAppOptions): Promise<{
         port: number;

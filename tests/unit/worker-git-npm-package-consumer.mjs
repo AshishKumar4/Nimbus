@@ -191,6 +191,6 @@ void patched;
       add: (options: Parameters<typeof git.add>[0]) => git.add({...options, filepath:['a','b']}),
     };
   }`);
-  run(join(root, 'node_modules/.bin/tsc'), ['--noEmit','--strict','--module','NodeNext','--moduleResolution','NodeNext','--target','ES2022','consumer.mts','consumer.cts'], consumer);
+  run(join(root, 'node_modules/.bin/tsrs'), ['--noEmit','--strict','--module','NodeNext','--moduleResolution','NodeNext','--target','ES2022','consumer.mts','consumer.cts'], consumer);
   console.log('worker-git-npm-package-consumer: normal installed Node/Bun APIs, Worker import path, and ESM/CJS declaration consumers pass');
 } finally { rmSync(work, {recursive:true,force:true}); }

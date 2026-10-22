@@ -61,7 +61,7 @@ const opened = () => disk.statements.filter((s) => /^\s*CREATE TABLE IF NOT EXIS
 const launch = async () => {
   const pacer = new TurnBudget({ nextTurn: async () => {} }, 2_000_000);
   const modules = await fm._stagedRuntimeCode(learning, launchFs, pacer, 'node', null);
-  return [...(modules ?? new Map()).values()];
+  return [...(modules ?? new Map()).values()].map((module) => module.text);
 };
 
 const first = [];

@@ -68,7 +68,7 @@ export declare function createGitFs<P>(backend: GitFsBackend, packs: P): {
             dev: number;
             ino: number;
             nlink: number;
-            type: "file" | "symlink" | "dir";
+            type: "dir" | "file" | "symlink";
         }>;
         lstat: (filepath: string) => Promise<{
             isFile: () => boolean;
@@ -87,7 +87,7 @@ export declare function createGitFs<P>(backend: GitFsBackend, packs: P): {
             dev: number;
             ino: number;
             nlink: number;
-            type: "file" | "symlink" | "dir";
+            type: "dir" | "file" | "symlink";
         }>;
         chmod(): Promise<void>;
         symlink: (target: string, filepath: string) => Promise<void>;

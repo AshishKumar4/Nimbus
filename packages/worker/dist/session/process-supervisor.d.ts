@@ -3,14 +3,33 @@ import type { SupervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { TRANSPORT, OP, CALLER, FS_OP, FS_READ, FS_MUTATION, RESENT, MUTATION_OWNER, HOST_INCARNATION, REPORTING_PID, CALL, CACHE_READ, INFRASTRUCTURE_CACHE, NETWORK, PID, RUN_ID, type SupervisorTransport } from './supervisor-calls.js';
 declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
+    [TRANSPORT](): SupervisorTransport;
+    [OP]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, 'op' | 'args'>): Promise<T>;
+    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
+    [FS_OP]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[]): Promise<T>;
+    [FS_READ]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
+    [FS_MUTATION]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T>;
+    [RESENT]<T>(envelope: SupervisorOpEnvelope, trace: import("./supervisor-calls.js").Resend['trace'], policy?: import("@nimbus-sh/fabric/do-calls.js").DoCallRetryPolicy): Promise<T>;
+    [MUTATION_OWNER](): string | undefined;
+    [HOST_INCARNATION](): string | undefined;
+    [REPORTING_PID](): number;
+    [CALL]<T>(promise: Promise<T>): Promise<T>;
+    [CACHE_READ]<T>(plan: {
+        ticket?: string;
+        readOnly: boolean;
+    }, produce: (client: import("../npm/r2-cache.js").R2CacheClient, cache: typeof import("../npm/r2-cache.js")) => Promise<T>): Promise<T>;
+    [INFRASTRUCTURE_CACHE](op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args: readonly unknown[]): boolean;
+    [NETWORK](): import("@nimbus-sh/core/_shared/workspace-network.js").WorkspaceNetwork;
+    [PID](): number;
+    [RUN_ID](): string | undefined;
     answer(method: import("@nimbus-sh/core/runtime/vfs-supervisor.js").SupervisorAnsweredMethod, args: unknown[]): Promise<import("@nimbus-sh/core/runtime/vfs-supervisor.js").SupervisorAnswer>;
     readFile(path: string): Promise<string | null>;
     readFileBytes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReadFileOptions): Promise<Uint8Array | null>;
-    writeFile(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, content: string | Uint8Array, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["writeFile"]>[2]): Promise<number>;
+    writeFile(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, content: string | Uint8Array, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['writeFile']>[2]): Promise<number>;
     writeFileStat(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, content: string | Uint8Array): Promise<import("@nimbus-sh/core/workspace/supervisor-op.js").WriteFileStatAnswer>;
     stat(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
         followSymlinks?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["stat"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['stat']>>>;
     lstat(path: string): Promise<any>;
     utimes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, atime: import("@nimbus-sh/platform/w7-frame.js").FsTime, mtime: import("@nimbus-sh/platform/w7-frame.js").FsTime, options?: {
         followSymlinks?: boolean;
@@ -28,7 +47,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         type: string;
     }[]>;
     exists(path: string): Promise<boolean>;
-    mkdir(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["mkdir"]>[1]): Promise<void>;
+    mkdir(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['mkdir']>[1]): Promise<void>;
     rmdir(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<void>;
     rename(from: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, to: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<void>;
     unlink(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<void>;
@@ -48,40 +67,40 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;
     fsOpen(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, flags: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeOpenFlags): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFileHandle>;
-    fsReopen(target: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReopenTarget, flags: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeOpenFlags, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeMutationOwner | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["reopen"]>>>;
+    fsReopen(target: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReopenTarget, flags: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeOpenFlags, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeMutationOwner | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['reopen']>>>;
     fsReadDirectories(request: import("@nimbus-sh/core/runtime/read-directory-batch.js").ReadDirectoryBatchRequest): Promise<import("@nimbus-sh/core/runtime/read-directory-batch.js").ReadDirectoryBatchResult>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
-    fsFstat(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fstat"]>>>;
-    fsDup(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["dup"]>>>;
-    fsSeek(handleId: number, offset: number, whence: "set" | "end" | "current"): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["seek"]>>>;
+    fsFstat(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['fstat']>>>;
+    fsDup(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['dup']>>>;
+    fsSeek(handleId: number, offset: number, whence: "current" | "end" | "set"): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['seek']>>>;
     fsSetStatus(handleId: number, status: {
         append?: boolean;
-    }): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["setStatus"]>>>;
-    fsReaddirHandle(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["readdirHandle"]>>>;
-    fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["ftruncate"]>>>;
-    fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchmod"]>>>;
-    fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchown"]>>>;
-    fsFutimes(handleId: number, atime: import("@nimbus-sh/platform/w7-frame.js").FsTime, mtime: import("@nimbus-sh/platform/w7-frame.js").FsTime): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["futimes"]>>>;
-    fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fsync"]>>>;
-    fsRealpath(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["realpath"]>>>;
-    fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["linkLeadsTo"]>>>;
+    }): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['setStatus']>>>;
+    fsReaddirHandle(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['readdirHandle']>>>;
+    fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['ftruncate']>>>;
+    fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['fchmod']>>>;
+    fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['fchown']>>>;
+    fsFutimes(handleId: number, atime: import("@nimbus-sh/platform/w7-frame.js").FsTime, mtime: import("@nimbus-sh/platform/w7-frame.js").FsTime): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['futimes']>>>;
+    fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['fsync']>>>;
+    fsRealpath(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['realpath']>>>;
+    fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['linkLeadsTo']>>>;
     fsRemove(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
         recursive?: boolean;
         force?: boolean;
         report?: boolean;
         keepVanishedAncestors?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["remove"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['remove']>>>;
     fsCopyFile(from: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, to: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
         keepMode?: boolean;
         preserve?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["copyFile"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['copyFile']>>>;
     fsCopyTree(from: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, to: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
         preserve?: boolean;
         follow?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["copyTree"]>>>;
-    fsAcquireExclusiveMutation(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").ExclusiveMutationRequest | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["acquireExclusiveMutation"]>>>;
-    fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["releaseExclusiveMutation"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['copyTree']>>>;
+    fsAcquireExclusiveMutation(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").ExclusiveMutationRequest | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['acquireExclusiveMutation']>>>;
+    fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['releaseExclusiveMutation']>>>;
     fsAwaitRecall(owner: string, waitMs?: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").RecallKind | null>;
     fsRecalled(owner: string, kind: import("@nimbus-sh/core/runtime/os-contracts.js").RecallKind): Promise<void>;
     fsPublished(options?: {
@@ -91,8 +110,8 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     fsReadRange(path: string, offset: number, length: number, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReadOptions): Promise<Uint8Array | null>;
     fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     fsReadBatch(requests: import("./rpc.js").FsReadBatchRequest[]): Promise<import("./rpc.js").FsReadBatchEntry[]>;
-    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["writeRange"]>[3]): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
-    fsTruncate(path: string, size: number, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["truncate"]>[2]): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
+    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['writeRange']>[3]): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
+    fsTruncate(path: string, size: number, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge['truncate']>[2]): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatch(payload: any): Promise<{
         inodes: number;
         chunks: number;
@@ -135,7 +154,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         size: number;
     }>;
     stdinPrepared(): Promise<void>;
-    netTls(action: "open" | "upgrade", token: string, payload: Record<string, unknown>): Promise<unknown>;
+    netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
     cpReadStdin(childPid: number, waitMs: number, acquire?: import("./rpc.js").FsAcquireArgs, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
@@ -181,25 +200,6 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         frontier: number;
         seq: number;
     }): Promise<void>;
-    [TRANSPORT](): SupervisorTransport;
-    [OP]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
-    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
-    [FS_OP]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[]): Promise<T>;
-    [FS_READ]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
-    [FS_MUTATION]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
-    [RESENT]<T>(envelope: SupervisorOpEnvelope, trace: import("./supervisor-calls.js").Resend["trace"], policy?: import("@nimbus-sh/fabric/do-calls.js").DoCallRetryPolicy): Promise<T>;
-    [MUTATION_OWNER](): string | undefined;
-    [HOST_INCARNATION](): string | undefined;
-    [REPORTING_PID](): number;
-    [CALL]<T>(promise: Promise<T>): Promise<T>;
-    [CACHE_READ]<T>(plan: {
-        ticket?: string;
-        readOnly: boolean;
-    }, produce: (client: import("../npm/r2-cache.js").R2CacheClient, cache: typeof import("../npm/r2-cache.js")) => Promise<T>): Promise<T>;
-    [INFRASTRUCTURE_CACHE](op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args: readonly unknown[]): boolean;
-    [NETWORK](): import("@nimbus-sh/core/_shared/workspace-network.js").WorkspaceNetwork;
-    [PID](): number;
-    [RUN_ID](): string | undefined;
 }) & typeof RpcTarget;
 /**
  * A one-shot's SUPERVISOR as a capability its host hands it in the call that

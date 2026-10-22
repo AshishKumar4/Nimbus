@@ -58,7 +58,7 @@ export declare const NIMBUS_AI_TOKEN_ENV = "NIMBUS_AI_TOKEN";
  * Headers an API credential is carried in, lowercased: `Authorization: Bearer`
  * for OpenAI-shaped clients, `x-api-key` for Anthropic-shaped ones.
  */
-export declare const NIMBUS_AI_CREDENTIAL_HEADERS: readonly ["authorization", "x-api-key"];
+export declare const NIMBUS_AI_CREDENTIAL_HEADERS: readonly ['authorization', 'x-api-key'];
 /**
  * Mint a session's token. Shaped like an OpenAI secret key because tools
  * validate that shape before they will even attempt a request, and unguessable

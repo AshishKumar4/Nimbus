@@ -353,13 +353,13 @@ process.exit(1);
 
 // ── [12] A workspace builds only with its own toolchain ──────────────
 // The same tree as a bun workspace: no node_modules is refused before
-// anything runs, and so is a tsc that is not the version bun.lock pins.
+// anything runs, and so is a tsrs that is not the version bun.lock pins.
 {
   const { root, pkg } = await fixtureAtFixpoint();
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture', private: true, workspaces: ['packages/*'] }));
-  writeFileSync(join(root, 'bun.lock'), '{\n  "packages": {\n    "typescript": ["typescript@5.9.3", "", {}, "sha512-x"],\n  }\n}\n');
+  writeFileSync(join(root, 'bun.lock'), '{\n  "packages": {\n    "tsrs": ["tsrs@0.18.0-ts7.1.0-dev.20260929", "", {}, "sha512-x"],\n  }\n}\n');
   const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
-  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ ...manifest, devDependencies: { typescript: '^5.7.0' } }));
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ ...manifest, devDependencies: { tsrs: '0.18.0-ts7.1.0-dev.20260929' } }));
   const bytesBefore = snapshotBuildOutputs({ root, roots: ROOTS });
   const refused = async () => {
     try {
@@ -372,16 +372,16 @@ process.exit(1);
   };
   assert.match(await refused(), /^refusing to build — .* has no node_modules/);
 
-  // An install whose tsc is not the pinned one: a stale install, or a global stand-in.
-  const ts = join(root, 'node_modules', 'typescript');
-  mkdirSync(join(ts, 'bin'), { recursive: true });
-  writeFileSync(join(ts, 'package.json'), JSON.stringify({ name: 'typescript', version: '5.4.5' }));
-  writeFileSync(join(ts, 'bin', 'tsc'), '#!/bin/sh\nexit 1\n');
+  // An install whose tsrs is not the pinned one: a stale install, or a global stand-in.
+  const tsrs = join(root, 'node_modules', 'tsrs');
+  mkdirSync(join(tsrs, 'bin'), { recursive: true });
+  writeFileSync(join(tsrs, 'package.json'), JSON.stringify({ name: 'tsrs', version: '0.17.0-ts7.1.0-dev.20260929' }));
+  writeFileSync(join(tsrs, 'bin', 'tsrs'), '#!/bin/sh\nexit 1\n');
   mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true });
-  symlinkSync('../typescript/bin/tsc', join(root, 'node_modules', '.bin', 'tsc'));
-  assert.match(await refused(), /tsc is .* \(typescript 5\.4\.5\), but bun\.lock pins typescript 5\.9\.3/);
+  symlinkSync('../tsrs/bin/tsrs', join(root, 'node_modules', '.bin', 'tsrs'));
+  assert.match(await refused(), /tsrs is .* \(tsrs 0\.17\.0-ts7\.1\.0-dev\.20260929\), but bun\.lock pins tsrs 0\.18\.0-ts7\.1\.0-dev\.20260929/);
   assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), bytesBefore, 'a refused build touches nothing');
-  console.log('  ok  [12] a workspace without node_modules, or with a tsc other than the pinned one, is refused before building');
+  console.log('  ok  [12] a workspace without node_modules, or with a tsrs other than the pinned one, is refused before building');
 }
 
 // ── The rollback itself can fail ─────────────────────────────────────

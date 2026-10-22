@@ -91,25 +91,25 @@ export declare function infrastructureSupervisorProps(ctx: {
     route?: HostRoute;
     network: WorkspaceNetwork;
 }): {
+    hostIncarnation?: string;
+    waveWriter?: string;
+    waveWriterMintedAt?: number;
     egress?: undefined;
     networkId?: undefined;
-    bindingKind: "infrastructure";
-    hostIncarnation?: string;
-    waveWriter?: string;
-    waveWriterMintedAt?: number;
     doId: string;
     pid: number;
     route: HostRoute | undefined;
+    bindingKind: 'infrastructure';
 } | {
+    hostIncarnation?: string;
+    waveWriter?: string;
+    waveWriterMintedAt?: number;
     egress: WorkspaceEgress;
     networkId: string;
-    bindingKind: "infrastructure";
-    hostIncarnation?: string;
-    waveWriter?: string;
-    waveWriterMintedAt?: number;
     doId: string;
     pid: number;
     route: HostRoute | undefined;
+    bindingKind: 'infrastructure';
 };
 /** What infrastructureSupervisorProps mints: a binding no run acts through. */
 export type InfrastructureSupervisorProps = ReturnType<typeof infrastructureSupervisorProps>;

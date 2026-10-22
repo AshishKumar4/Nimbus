@@ -10,11 +10,11 @@ import * as services from './services.js';
 import { HostedSession, type HostedSessionScope } from './session.js';
 import { z } from 'zod/v4';
 declare const HostedTask: z.ZodEnum<{
-    "resident-launch": "resident-launch";
-    "resident-keepalive": "resident-keepalive";
+    "hosting-watch": "hosting-watch";
     "log-flush": "log-flush";
     "log-janitor": "log-janitor";
-    "hosting-watch": "hosting-watch";
+    "resident-keepalive": "resident-keepalive";
+    "resident-launch": "resident-launch";
 }>;
 export type HostedRuntimeTask = z.infer<typeof HostedTask>;
 export interface HostedRuntimeLifecycle {
@@ -48,14 +48,6 @@ export interface TerminalSelection {
     readonly terminal?: string;
 }
 export declare function composeHostedRuntime(options: HostedRuntimeOptions): Promise<{
-    supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
-    /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
-    hostedFetch: (request: Request) => Promise<Response | null>;
-    /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
-    session: (scope?: HostedSessionScope) => HostedSession;
-    onScheduled: (task: HostedRuntimeTask) => Promise<void>;
-    terminalClose: (ws: WebSocket, selection?: TerminalSelection) => void;
-    close: () => Promise<void>;
     facets: () => ComposedFacetManager;
     ready: (options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionReadyOptions | undefined) => Promise<{
         ok: true;
@@ -168,7 +160,7 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         chunks: {
             seq: number;
             ts: number;
-            stream: "stdout" | "stderr";
+            stream: "stderr" | "stdout";
             data: string;
             binary?: boolean | undefined;
         }[];
@@ -193,8 +185,8 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         name: string | null;
         port: number | null;
         pid: number | null;
-        status: "running" | "starting" | "stopped" | "failed";
-        visibility: "scoped" | "public";
+        status: "failed" | "running" | "starting" | "stopped";
+        visibility: "public" | "scoped";
         capability: string | null;
         restart: "never" | "on-failure";
         diagnostic: string | null;
@@ -221,14 +213,14 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         port: number;
         pid: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         url: string | null;
         execId?: string | undefined;
     }>;
     removeApp: (target: import("@nimbus-sh/core/runtime/session-protocol.js").SessionAppTarget) => Promise<{
-        removed: boolean;
         owner: string;
         port: number | null;
+        removed: boolean;
     }>;
     rotateLink: (target: import("@nimbus-sh/core/runtime/session-protocol.js").SessionAppTarget) => Promise<{
         owner: string;
@@ -236,7 +228,7 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         port: number;
         pid: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         url: string | null;
         execId?: string | undefined;
     }>;
@@ -274,7 +266,7 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         }[];
     }>;
     spawnWorker: (workerCode: string, command: string, cwd: string, opts?: import("../workspace-host.js").LongRunningWorkerSpawnOptions | undefined) => Promise<import("../facets/manager.js").SpawnedWorker>;
-    routeCapabilityPort: (port: number, capability: string, request: Request<unknown, CfProperties<unknown>>, innerPath: string) => Promise<Response>;
+    routeCapabilityPort: (...args: Parameters<ComposedFacetManager['apps']['routeCapabilityPort']>) => Promise<Response>;
     attachTerminal: (ws: WebSocket, selection?: TerminalSelection) => Promise<void>;
     terminalFrame: (ws: WebSocket, message: string | ArrayBuffer, selection?: TerminalSelection) => Promise<void>;
     listTerminals: () => Promise<{
@@ -291,6 +283,14 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     terminal: WebSocketTerminal;
     files: RuntimeFiles;
     runtimes: import("@nimbus-sh/core/runtime/runtime-manager.js").RuntimeManager;
+    supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+    /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
+    hostedFetch: (request: Request) => Promise<Response | null>;
+    /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
+    session: (scope?: HostedSessionScope) => HostedSession;
+    onScheduled: (task: HostedRuntimeTask) => Promise<void>;
+    terminalClose: (ws: WebSocket, selection?: TerminalSelection) => void;
+    close: () => Promise<void>;
 }>;
 export type HostedRuntime = Awaited<ReturnType<typeof composeHostedRuntime>>;
 export {};

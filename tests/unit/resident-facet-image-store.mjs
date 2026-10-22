@@ -90,8 +90,8 @@ assert.match(imageA, /^\/\.nimbus\/process-images\/1000\/[0-9a-f]{64}\.js$/,
 assert.equal(fs.exists(earlier), false, 'an earlier release\'s image at the top of the store is swept');
 assert.deepEqual(storedImages(), [name(imageA), name(packA)].sort(),
   'the spawn materialized exactly its main module and its code pack in the store');
-assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('const a = 1;')),
-  'the program reached the loader as a { cjs } module out of the pack');
+assert.ok(Object.values(configs().at(-1).modules).some((m) => (m?.cjs ?? m?.js)?.includes('const a = 1;')),
+  'the program reached the loader as a code module out of the pack');
 
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));

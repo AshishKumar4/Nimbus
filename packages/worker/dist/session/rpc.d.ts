@@ -92,13 +92,13 @@ declare const StorageTargetSchema: z.ZodObject<{
 }, z.core.$strip>;
 type StorageTarget = z.infer<typeof StorageTargetSchema>;
 /** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */
-export declare function _rpcKvCall(self: StorageHost, target: StorageTarget, call: KvCall, cred?: VfsCred): Promise<void | import("../bindings/kv.js").KvValue | Map<string, import("@nimbus-sh/fabric/inner-storage-env.js").KvJson> | {
+export declare function _rpcKvCall(self: StorageHost, target: StorageTarget, call: KvCall, cred?: VfsCred): Promise<void | import("../bindings/kv.js").KvListResult | Map<string, import("@nimbus-sh/fabric/inner-storage-env.js").KvJson> | {
     value: import("../bindings/kv.js").KvValue;
     metadata: import("@nimbus-sh/fabric/inner-storage-env.js").KvJson;
     cacheStatus: null;
-} | import("../bindings/kv.js").KvListResult>;
+} | import("../bindings/kv.js").KvValue>;
 /** A call of a `wrangler dev` Worker's R2 binding, on the bucket its props name. */
-export declare function _rpcR2Call(self: StorageHost, target: StorageTarget, call: R2Call, cred?: VfsCred): Promise<void | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObject | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireGetResult | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObjects | null>;
+export declare function _rpcR2Call(self: StorageHost, target: StorageTarget, call: R2Call, cred?: VfsCred): Promise<void | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireGetResult | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObject | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObjects | null>;
 /**
  * A `wrangler dev` Worker's D1 queries, in the database its props name: the
  * project's facet, got in this request.
@@ -247,7 +247,7 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  */
 export declare function _rpcFsAcquire(self: RpcHost, position: unknown, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult>;
 /** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
-export declare const FS_ACQUIRED_READ_OPS: readonly ["stat", "lstat", "fsReadBatch"];
+export declare const FS_ACQUIRED_READ_OPS: readonly ['stat', 'lstat', 'fsReadBatch'];
 /**
  * A process's ACQUIRE and the read it was about to make, in one call.
  *
@@ -481,6 +481,9 @@ export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: nu
  * session's own, and reads the channel it names.
  */
 export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
+    signal: string;
+    ended: boolean;
+} | {
     data: Uint8Array;
     ended: boolean;
     resize?: {
@@ -488,9 +491,6 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
         rows: number;
     };
     signal?: string;
-} | {
-    signal: string;
-    ended: boolean;
 }>;
 /**
  * The next signal sent to `pid` (the caller's own process, whose program
@@ -561,8 +561,8 @@ interface OneShotRpcHost {
 export declare function _rpcOneShotSubmit(self: OneShotRpcHost, spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): Promise<{
     ok: false;
     message: string;
-    unsettled: boolean;
     code?: string | undefined;
+    unsettled: boolean;
 } | {
     ok: "preamble missing";
 } | {

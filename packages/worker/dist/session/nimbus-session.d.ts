@@ -379,15 +379,15 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcKvCall(target: {
         root: string;
         store: string;
-    }, call: KvCall, cred?: VfsCred): Promise<void | import("../bindings/kv.js").KvValue | Map<string, import("@nimbus-sh/fabric/inner-storage-env.js").KvJson> | {
+    }, call: KvCall, cred?: VfsCred): Promise<void | import("../bindings/kv.js").KvListResult | Map<string, import("@nimbus-sh/fabric/inner-storage-env.js").KvJson> | {
         value: import("../bindings/kv.js").KvValue;
         metadata: import("@nimbus-sh/fabric/inner-storage-env.js").KvJson;
         cacheStatus: null;
-    } | import("../bindings/kv.js").KvListResult>;
+    } | import("../bindings/kv.js").KvValue>;
     _rpcR2Call(target: {
         root: string;
         store: string;
-    }, call: R2Call, cred?: VfsCred): Promise<void | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObject | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireGetResult | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObjects | null>;
+    }, call: R2Call, cred?: VfsCred): Promise<void | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireGetResult | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObject | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObjects | null>;
     _rpcD1Query(target: {
         root: string;
         store: string;
@@ -499,6 +499,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     }>;
     _rpcCpStdinEnd(childPid: number, pid?: number): Promise<void>;
     _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
+        signal: string;
+        ended: boolean;
+    } | {
         data: Uint8Array;
         ended: boolean;
         resize?: {
@@ -506,9 +509,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
             rows: number;
         };
         signal?: string;
-    } | {
-        signal: string;
-        ended: boolean;
     }>;
     _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
     _rpcCpDrainOutput(childPid: number, pid?: number): Promise<any>;
@@ -679,7 +679,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         chunks: {
             seq: number;
             ts: number;
-            stream: "stdout" | "stderr";
+            stream: "stderr" | "stdout";
             data: string;
             binary?: boolean | undefined;
         }[];
@@ -706,7 +706,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         pid: number | null;
         registeredAt: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         owner: string | null;
         name: string | null;
     }>;
@@ -716,7 +716,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         port: number;
         pid: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         url: string | null;
         execId?: string | undefined;
     }>;
@@ -725,8 +725,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         name: string | null;
         port: number | null;
         pid: number | null;
-        status: "running" | "starting" | "stopped" | "failed";
-        visibility: "scoped" | "public";
+        status: "failed" | "running" | "starting" | "stopped";
+        visibility: "public" | "scoped";
         capability: string | null;
         restart: "never" | "on-failure";
         diagnostic: string | null;
@@ -739,14 +739,14 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         port: number;
         pid: number | null;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: "public" | "scoped";
         url: string | null;
         execId?: string | undefined;
     }>;
     _rpcRemoveApp(target: SessionAppTarget): Promise<{
-        removed: boolean;
         owner: string;
         port: number | null;
+        removed: boolean;
     }>;
     _rpcEnsureDurableApp(input: SessionDurableAppOptions): Promise<{
         port: number;

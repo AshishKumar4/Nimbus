@@ -52,20 +52,20 @@ export interface PortReservationHost {
 }
 /** 'scoped' is the default: capability-checked but never the public bearer. */
 declare const PortVisibilitySchema: z.ZodEnum<{
-    scoped: "scoped";
     public: "public";
+    scoped: "scoped";
 }>;
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
 export declare const PortRecordSchema: z.ZodObject<{
     kind: z.ZodDefault<z.ZodEnum<{
-        explicit: "explicit";
         derived: "derived";
+        explicit: "explicit";
     }>>;
     capability: z.ZodNullable<z.ZodString>;
     owner: z.ZodNullable<z.ZodString>;
     visibility: z.ZodOptional<z.ZodEnum<{
-        scoped: "scoped";
         public: "public";
+        scoped: "scoped";
     }>>;
     name: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;

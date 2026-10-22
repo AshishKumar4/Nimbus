@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { loadCell } from './lib/cell-module.mjs';
 import { oxcTransforms } from './lib/oxc-engine.mjs';
 const service = new EsbuildService(undefined, oxcTransforms);
 const require = createRequire(import.meta.url);
@@ -22,10 +23,8 @@ const require = createRequire(import.meta.url);
 {
   const source = '#!/usr/bin/env node\nmodule.exports.value = "/ready";';
   const { code } = await service.transform(source, { loader: 'js', format: 'cjs', target: 'esnext' });
-  const registryCell = { exports: {} };
-  new Function('module', wrapCommonJsCell(code, 'block').text)(registryCell);
   const mod = { exports: {} };
-  await registryCell.exports(Function)(mod.exports, require, mod, '/cli.js', '/');
+  await loadCell(wrapCommonJsCell(code, 'block'))(Function)(mod.exports, require, mod, '/cli.js', '/');
   assert.equal(mod.exports.value, '/ready', 'a CommonJS hashbang stays outside the wrapper and the CLI executes');
 }
 console.log('esbuild-hashbang-tla: ok');

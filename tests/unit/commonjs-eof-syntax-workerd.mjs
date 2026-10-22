@@ -31,6 +31,18 @@ const sources = {
   'plus.js': 'x = 1 +',
   'second-line.js': 'a\nb(c',
   'shebang.js': '#!/usr/bin/env node\nconsole.log("ran"\n',
+  // Strict code of its own, which the runner compiles as an ES module (core commonjs-cell.ts THE WRAPPER).
+  'strict-call.js': '"use strict";\nconsole.log("ran"',
+  'strict-mid.js': '"use strict";\nconst x = ;\nconsole.log("ran");\n',
+  'strict-block.js': '"use strict";\nfunction f() {',
+  'strict-shebang.js': '#!/usr/bin/env node\n"use strict";\nf(1,',
+  'strict-required.js': [
+    "for (const name of ['./strict-mid.js', './strict-call.js']) {",
+    '  try { require(name); } catch (error) { console.log(error instanceof SyntaxError, error.message); console.log(error.stack.split(\'\\n\').slice(0, 5).join(\'\\n\')); }',
+    '}',
+    "console.log('after');",
+    '',
+  ].join('\n'),
   // V8 names a parenthesized rest's ellipsis, in the source, where no arrow follows it.
   'rest.js': '(...args',
   'rest-param.js': 'f = (a, ...b',

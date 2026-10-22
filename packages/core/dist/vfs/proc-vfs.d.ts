@@ -36,7 +36,7 @@ export declare class ProcVFS implements VFS {
     describe(): {
         source: string;
         type: string;
-        options: readonly ["ro"];
+        options: readonly ['ro'];
     };
 }
 /**

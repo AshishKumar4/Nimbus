@@ -12,7 +12,8 @@
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import { ModuleKind, ModuleResolutionKind } from 'tsrs/unstable/sync';
+import { ScriptTarget } from 'tsrs/unstable/ast';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { WorkspaceFs } from '../../packages/core/src/workspace/workspace-fs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -20,6 +21,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { programErrors } from './lib/tsrs-program.mjs';
 
 const code = (run) => Promise.resolve().then(run).then(() => 'ok', (error) => error.code);
 const text = (bytes) => new TextDecoder().decode(bytes);
@@ -196,22 +198,12 @@ export const face: WorkspaceFs = ws.fs;
 export const internal: ProcessView = ws.shell.getVfs();
 `;
   const options = {
-    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022, moduleResolution: ts.ModuleResolutionKind.Bundler,
+    target: ScriptTarget.ES2022, module: ModuleKind.ES2022, moduleResolution: ModuleResolutionKind.Bundler,
     lib: ['lib.es2022.d.ts', 'lib.esnext.disposable.d.ts'], types: [], strict: true, noEmit: true, skipLibCheck: true,
     customConditions: ['workspace'],
   };
-  const host = ts.createCompilerHost(options);
-  const readFile = host.readFile.bind(host);
-  const fileExists = host.fileExists.bind(host);
-  const getSourceFile = host.getSourceFile.bind(host);
-  host.readFile = (file) => (file === probe ? source : readFile(file));
-  host.fileExists = (file) => file === probe || fileExists(file);
-  host.getSourceFile = (file, version, ...rest) => (file === probe
-    ? ts.createSourceFile(file, source, version)
-    : getSourceFile(file, version, ...rest));
-  const program = ts.createProgram([probe], options, host);
-  const diagnostics = [...program.getSyntacticDiagnostics(program.getSourceFile(probe)), ...program.getSemanticDiagnostics(program.getSourceFile(probe))];
-  assert.deepEqual(diagnostics.map((d) => `TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`), [], 'the boundary holds in the types');
+  const diagnostics = programErrors({ roots: [probe], options, overlay: { [probe]: source }, cwd: src });
+  assert.deepEqual(diagnostics.map((d) => `TS${d.code}: ${d.message}`), [], 'the boundary holds in the types');
 }
 
 console.log('workspace-fs-cwd: ok');

@@ -115,7 +115,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     depth: z.ZodOptional<z.ZodNumber>;
     policy: z.ZodOptional<z.ZodObject<{
-        kind: z.ZodCustom<"process" | "build" | "esbuild" | "transform" | "git" | "isolate" | "fanout" | "worker", "process" | "build" | "esbuild" | "transform" | "git" | "isolate" | "fanout" | "worker">;
+        kind: z.ZodCustom<"build" | "esbuild" | "fanout" | "git" | "isolate" | "process" | "transform" | "worker", "build" | "esbuild" | "fanout" | "git" | "isolate" | "process" | "transform" | "worker">;
         limits: z.ZodObject<{
             cpuMs: z.ZodNumber;
             subRequests: z.ZodNumber;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * The project scan's lexer (comment-strip.ts maskSourceForImports +
- * importedSpecifiers) against TypeScript's own parser: every module a source
+ * importedSpecifiers) against TypeScript's parser (tsrs's): every module a source
  * imports, statically, by re-export or by `import()`, as the AST names it,
  * the lexer finds too. The lexer may find more (a `from "x"` inside a string
  * is copied verbatim and read), never less: a missed import is a package
@@ -19,8 +19,8 @@
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import ts from 'typescript';
 import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '../../packages/core/src/runtime/comment-strip.ts';
+import { importSpecifiers } from './lib/tsrs-program.mjs';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 
@@ -50,28 +50,9 @@ for (const [name, text] of Object.entries(JSX_SHAPES)) {
   JSX_SHAPES[name.replace(/(\.[a-z]+)$/, '-scoped$1')] = text.replace(/(from\s*|import\(\s*|import\s+)(['"])(?!@)([^'"]+)\2/g, '$1$2@scope/$3$2');
 }
 
-function astSpecifiers(path, text) {
-  const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX
-    : /\.[mc]?ts$/.test(path) ? ts.ScriptKind.TS
-    : path.endsWith('.jsx') ? ts.ScriptKind.JSX
-    : ts.ScriptKind.JS;
-  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, kind);
-  if (file.parseDiagnostics.length > 0) return null;
-  const found = [];
-  const visit = (node) => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-      found.push(node.moduleSpecifier.text);
-    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
-      && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
-      found.push(node.arguments[0].text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return found;
-}
-
-const corpus = Object.entries(JSX_SHAPES);
+// The fixtures stand at paths of their own under the repository, each parsed by its extension.
+const corpus = Object.entries(JSX_SHAPES).map(([name, text]) => [`import-scan-fixtures/${name}`, text]);
+const fixtures = new Set(corpus.map(([path]) => path));
 const listed = execSync(
   "git ls-files 'packages/*/src/*' 'packages/worker/frontend/*' 'packages/*/scripts/*' 'tests/*' 'apps/*'",
   { cwd: ROOT, encoding: 'utf8' },
@@ -81,6 +62,14 @@ for (const path of listed) {
   if (text.length < 1_000_000) corpus.push([path, text]);
 }
 
+// What the parser names in each, in one parse-only program over the corpus.
+// A file that does not parse is left out, as the parser cannot name its imports.
+const named = importSpecifiers({
+  files: corpus.map(([path]) => ROOT + path), cwd: ROOT,
+  overlay: Object.fromEntries(corpus.filter(([path]) => fixtures.has(path)).map(([path, text]) => [ROOT + path, text])),
+});
+const parsed = new Map(corpus.map(([path], i) => [path, named[i]]));
+
 let compared = 0;
 let imports = 0;
 const missed = [];
@@ -88,9 +77,9 @@ const missed = [];
 // scan reads them with the parser. None of the fixtures is one.
 const undecided = [];
 for (const [path, text] of corpus) {
-  const expected = astSpecifiers(path, text);
+  const expected = parsed.get(path);
   if (expected === null) {
-    assert.ok(!(path in JSX_SHAPES), `${path}: the fixture parses`);
+    assert.ok(!fixtures.has(path), `${path}: the fixture parses`);
     continue;
   }
   compared++;
@@ -100,7 +89,7 @@ for (const [path, text] of corpus) {
     view = maskSourceForImports(text, path);
   } catch (error) {
     assert.ok(error instanceof UndecidableSourceError, `${path}: ${error}`);
-    assert.ok(!(path in JSX_SHAPES), `${path}: the lexer decides the fixture`);
+    assert.ok(!fixtures.has(path), `${path}: the lexer decides the fixture`);
     undecided.push(path);
     continue;
   }

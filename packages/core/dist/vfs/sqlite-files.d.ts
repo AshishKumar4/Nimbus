@@ -85,7 +85,7 @@ export declare class SqliteFiles implements VFS {
     describe(): {
         source: string;
         type: string;
-        options: readonly ["rw"];
+        options: readonly ['rw'];
     };
 }
 /** The database as `cred` sees it, as a VFS. */

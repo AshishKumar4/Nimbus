@@ -4394,14 +4394,6 @@ const __fsMod = (() => {
   /** `observe`: a read of the file (the residency predictor learns from it); a copy's look at its bytes is not. */
   function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
-    // A generated /proc file is made here at each read, by the session's own generator (core vfs/proc-files.ts).
-    if (__pathStartsWith(k, "proc/") && _nsActive() && _statLadder(absPath)?.isFile()) {
-      const generate = __nimbusResidentModule.procFileGenerator(__pathSlice(k, 5));
-      if (generate !== undefined) {
-        const made = generate(null);
-        return typeof made === "string" ? made : made.slice();
-      }
-    }
     if (observe && typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
@@ -5639,17 +5631,8 @@ const __fsMod = (() => {
   // barrier.
   const _UNBARRIERED_RESUMPTIONS = [];
 
-  // The namespace's position the store's rows are at (core runtime/feed-position.ts), null before any.
   const _cursor = globalThis.__nimbusVfsCursor
-    || (globalThis.__nimbusVfsCursor = { position: null });
-  /** `k`'s feed's revision at the cursor: the clock its fills and reports are dated by. */
-  function _feedRev(k) { return _feedRevAt(_cursor.position, k); }
-  /** Whether the cursor is still at `at` (a position it held): the same place, every feed. */
-  function _atCursor(at) {
-    return at === _cursor.position || (at !== null && _cursor.position !== null && __nimbusResidentModule.samePosition(at, _cursor.position));
-  }
-  /** `k`'s feed's revision at `at` (a position the cursor held), 0 before the cursor has one. */
-  function _feedRevAt(at, k) { return at === null || typeof __nimbusResidentModule === "undefined" ? 0 : __nimbusResidentModule.feedFor(at, k).cursor; }
+    || (globalThis.__nimbusVfsCursor = { epoch: null, rev: 0 });
   // Admissions under way: from a delta's admission until the last directory
   // it made searchable is relisted, the cursor can be past rows the
   // namespace does not hold yet. Nothing is answered from the view then (_heldStat).
@@ -5763,7 +5746,7 @@ const __fsMod = (() => {
    * and before its RPC.
    */
   function _beginFill(k) {
-    const fill = { k, rev: _feedRev(k), at: _cursor.position, reported: -1 };
+    const fill = { k, rev: _cursor.rev, reported: -1 };
     let live = _fillReports.get(k);
     if (!live) {
       live = new __NimbusSafeSet();
@@ -5924,12 +5907,12 @@ const __fsMod = (() => {
     if (!supervisor || typeof supervisor.fsAcquire !== "function" || !_nsActive()) return false;
     if (result !== null && result.poison === true) return false;
     const floor = __resident.coherence.cursor();
-    if (floor === null || (result !== null && !__nimbusResidentModule.sameEpochs(result.position, floor))) return false;
+    if (floor === null || (result !== null && result.epoch !== floor.epoch)) return false;
     let delta;
     try {
-      delta = await __nimbusUseRpcResult(supervisor.fsAcquire(floor, { namespace: true }), (r) => r);
+      delta = await __nimbusUseRpcResult(supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true }), (r) => r);
     } catch { return false; }
-    if (!delta || delta.poison === true || !__nimbusResidentModule.isFeedPosition(delta.position) || !__nimbusResidentModule.sameEpochs(delta.position, floor)) return false;
+    if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
     if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
     await __resident.admission.roomForPushed(delta);
     const applied = await _admitting(async () => {
@@ -5938,7 +5921,8 @@ const __fsMod = (() => {
       return admitted;
     });
     if (!_nsActive()) return false;
-    _cursor.position = applied.cursor;
+    _cursor.epoch = applied.cursor.epoch;
+    _cursor.rev = applied.cursor.rev;
     _stats.invalidations += applied.dropped.length;
     // What it should hold and lost (dropped by this delta, or by the barrier
     // that could not vouch for its rows), refetched by the namespace's stats.
@@ -5977,7 +5961,8 @@ const __fsMod = (() => {
       _admissions++;
       if (result) {
         __resident.cells.admit(result);
-        _cursor.position = result.position;
+        _cursor.epoch = result.epoch;
+        _cursor.rev = result.rev;
       } else {
         __resident.cells.dropDated();
       }
@@ -5990,7 +5975,8 @@ const __fsMod = (() => {
     _settleSkippedReports(ownAtStart, repaired);
     _storeRepairOwed = !(repaired && repaired.cursor);
     if (_storeRepairOwed) return;
-    _cursor.position = repaired.cursor;
+    _cursor.epoch = repaired.cursor.epoch;
+    _cursor.rev = repaired.cursor.rev;
     _stats.invalidations += repaired.dropped;
     _stats.fills += repaired.filled;
     _stats.filledBytes += repaired.bytes;
@@ -6176,7 +6162,8 @@ const __fsMod = (() => {
       await __resident.admission.roomForPushed(result);
       const applied = await _admitting(async () => {
         const admitted = __resident.cells.admit(result);
-        _cursor.position = admitted.cursor;
+        _cursor.epoch = admitted.cursor.epoch;
+        _cursor.rev = admitted.cursor.rev;
         // A directory that became searchable has descendants no delta names.
         for (let i = 0; i < admitted.relist.length; i++) await __resident.transport.relist(supervisor, admitted.relist[i]);
         return admitted;
@@ -6228,8 +6215,8 @@ const __fsMod = (() => {
     const begin = ++_barrierBegins;
     const options = _residentStorePresent() ? __resident.sync.acquireOptions() : undefined;
     return options
-      ? { position: _cursor.position, begin, options }
-      : { position: _cursor.position, begin };
+      ? { epoch: _cursor.epoch, cursor: _cursor.rev, begin, options }
+      : { epoch: _cursor.epoch, cursor: _cursor.rev, begin };
   }
   /**
    * When the arguments a delivered answer answers were built (_acquireArgs):
@@ -6266,10 +6253,10 @@ const __fsMod = (() => {
       const ask = __nimbusReplay && !__nimbusReplay.final ? null : __nimbusProcessFs().readLeaseAsk();
       const options = ask ? { ...(args.options || {}), lease: true } : args.options;
       const result = await __nimbusUseRpcResult(
-        options ? supervisor.fsAcquire(args.position, options) : supervisor.fsAcquire(args.position),
+        options ? supervisor.fsAcquire(args.epoch, args.cursor, options) : supervisor.fsAcquire(args.epoch, args.cursor),
         (r) => r,
       );
-      if (!result || !__nimbusResidentModule.isFeedPosition(result.position)) {
+      if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
         throw new Error("fsAcquire answered without a cursor");
       }
       // Held from now, whatever this barrier does with the answer: its recalls are this process's to answer.
@@ -6291,14 +6278,13 @@ const __fsMod = (() => {
    * whichever answer took the cursor past it — an answer is complete from
    * the cursor it was asked from, which is never ahead of the cursor now, and
    * names each path at its newest revision in its range. So only the entries
-   * above each feed's cursor are news (floorFor), and the cursor never moves
-   * back. A poison is left as it is.
+   * above the cursor are news, and the cursor never moves back. An answer in
+   * another epoch, or a poison, is left as it is.
    */
   function _currentAnswer(result) {
-    const held = _cursor.position;
-    if (result.poison === true || held === null) return result;
-    if (__nimbusResidentModule.notAfter(result.position, held)) return { ...result, position: held, paths: [] };
-    const paths = result.paths.filter((entry) => entry.rev > __nimbusResidentModule.floorFor(result.position, held, entry.path));
+    if (result.poison === true || result.epoch !== _cursor.epoch) return result;
+    if (result.rev <= _cursor.rev) return { ...result, rev: _cursor.rev, paths: [] };
+    const paths = result.paths.filter((entry) => entry.rev > _cursor.rev);
     return paths.length === result.paths.length ? result : { ...result, paths };
   }
 
@@ -6316,8 +6302,9 @@ const __fsMod = (() => {
   function _deliveredAnswer(delivered) {
     if (!delivered || typeof delivered !== "object") return null;
     const { args, answer } = delivered;
-    if (!args || !answer || answer.poison === true || !Array.isArray(answer.paths) || _cursor.position === null) return null;
-    if (!__nimbusResidentModule.isFeedPosition(answer.position) || !__nimbusResidentModule.isFeedPosition(args.position) || !__nimbusResidentModule.notAfter(args.position, _cursor.position)) return null;
+    if (!args || !answer || answer.poison === true || !Array.isArray(answer.paths)) return null;
+    if (typeof answer.rev !== "number" || answer.epoch !== _cursor.epoch || args.epoch !== _cursor.epoch) return null;
+    if (!(args.cursor <= _cursor.rev)) return null;
     return _currentAnswer(answer);
   }
 
@@ -7027,9 +7014,8 @@ const __fsMod = (() => {
         // reported it unheard, so a cursor that moved spoils it.
         if (first.path !== undefined && _strip(first.path) !== _strip(absPath)) {
           reachedFill = _beginFill(_strip(first.path));
-          // Dated where the read's barrier left the cursor, on the reached file's own feed.
-          reachedFill.rev = _feedRevAt(fill.at, reachedFill.k);
-          if (fill.reported > fill.rev || !_atCursor(fill.at)) reachedFill.reported = Infinity;
+          reachedFill.rev = fill.rev;
+          if (fill.reported > fill.rev || _cursor.rev !== fill.rev) reachedFill.reported = Infinity;
         }
       } catch (error) {
         _endFill(fill);
@@ -7199,11 +7185,9 @@ const __fsMod = (() => {
     await _acquireBarrier(supervisor, acquired, true);
     if (fill) {
       const dated = acquired && acquired.answer;
-      if (dated && dated.poison !== true && __nimbusResidentModule.isFeedPosition(dated.position)
-          && _cursor.position !== null && __nimbusResidentModule.samePosition(dated.position, _cursor.position)) {
-        // Dated where the answer leaves the cursor: a file the read reached through a link is dated there too.
-        const rev = __nimbusResidentModule.feedFor(dated.position, fill.k).cursor;
-        if (rev > fill.rev) { fill.rev = rev; fill.at = dated.position; }
+      if (dated && dated.poison !== true && typeof dated.rev === "number"
+          && dated.epoch === _cursor.epoch && dated.rev === _cursor.rev) {
+        if (dated.rev > fill.rev) fill.rev = dated.rev;
       } else {
         fill.reported = Infinity;
       }
@@ -7230,15 +7214,13 @@ const __fsMod = (() => {
     const client = __nimbusProcessFs();
     // The name as asked must be held before anything is walked: most are not, and they cost nothing here.
     const k = _strip(_resolve(p));
-    if (_cursor.position === null) return undefined;
-    const root = __nimbusResidentModule.rootOf(_cursor.position);
-    if (client.vouch(k, root) !== "held" || /(^|\/)\.\.(\/|$)/.test(String(p))) return undefined;
+    if (client.vouch(k, _cursor) !== "held" || /(^|\/)\.\.(\/|$)/.test(String(p))) return undefined;
     const ns = __resident.namespace;
     // An entry whose device is one the namespace gave a mount is on that mount, which no grant covers.
     const mounted = (row) => Number(row.dev) >= __nimbusResidentModule.ANONYMOUS_DEV;
     let vouched = true;
     const visit = (name) => {
-      if (!vouched || _own.has(name) || client.vouch(name, root) === undefined) return (vouched = false);
+      if (!vouched || _own.has(name) || client.vouch(name, _cursor) === undefined) return (vouched = false);
       const searched = ns.rowAt(name.slice(0, Math.max(0, name.lastIndexOf("/"))));
       const row = ns.rowAt(name);
       vouched = searched !== undefined && !mounted(searched) && _modeAllows(_nsRowMeta(searched), 1)
@@ -7249,7 +7231,7 @@ const __fsMod = (() => {
       const found = ns.lookup(k, follow, undefined, visit);
       if (!vouched || found === "ELOOP" || found === "EACCES" || found.row === undefined || found.own !== undefined) return undefined;
       const at = found.path;
-      if (client.vouch(at, root) !== "held" || _own.has(at)) return undefined;
+      if (client.vouch(at, _cursor) !== "held" || _own.has(at)) return undefined;
       if ((__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, at)) || __nimbusAncestorTails("/" + at).length > 0) return undefined;
       return _statObject(_nsRowMeta(found.row));
     } catch {
@@ -16455,7 +16437,7 @@ function __nimbusFatalArrow(error, fromPromise) {
       const text = module === null ? null : textOf(module);
       if (text === null) continue;
       const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
-      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", offset);
+      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, module.goal, offset);
       if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }
@@ -16474,7 +16456,7 @@ globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, 
 };
 function __nimbusCompileArrow(module, error) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
-  const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
+  const place = text === null ? null : __nimbusFatalLocation(text, module.goal, -1);
   if (place === null) return null;
   if (module.esModule) return __nimbusArrowOf(module, text, place[0], place[1]);
   // A CommonJS cell's source is followed by its wrapper's tail, which V8
@@ -16535,7 +16517,7 @@ function __nimbusEvalIllegalReturn(text, at) {
   const entry = __nimbusEntryModule();
   const error = new __nimbusRealmSyntaxError("Illegal return statement");
   if (entry === null) return error;
-  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, hashbang: false };
+  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, goal: "script", hashbang: false };
   const arrow = __nimbusEvalArrow(entry, __nimbusArrowOf(source, text, at, at + "return".length));
   // A program's Error.prepareStackTrace may make the stack anything: only a
   // string's frames are trimmed, this function's and the code's that throws.

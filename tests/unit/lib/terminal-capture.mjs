@@ -25,7 +25,7 @@ export function captureTerminal(Terminal, { shown = (text) => text, timeoutMs = 
       let listener;
       try {
         await bounded(new Promise((resolve) => {
-          listener = () => { if (matches(text())) resolve(); };
+          listener = () => { if (matches(text())) resolve(undefined); };
           listeners.add(listener);
         }), `missing ${label}`, timeoutMs);
       } finally { listeners.delete(listener); }

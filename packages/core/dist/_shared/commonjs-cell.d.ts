@@ -18,6 +18,8 @@ export type CommonJsCellScope = 'function' | 'block';
 export interface WrappedCommonJsCell {
     /** The module text. */
     text: string;
+    /** Whether the text is an ES module (`{ js }`, its export the default) and not a `{ cjs }` one (strictModuleCell). */
+    esModule: boolean;
     /** Characters of wrapper before the cell. */
     head: number;
     /** Characters of wrapper after the cell. */
@@ -26,10 +28,12 @@ export interface WrappedCommonJsCell {
     hashbang: boolean;
 }
 /**
- * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
- * module's `Function`, is Node's module wrapper function, in the given scope
- * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * Wrap a CommonJS cell as a module whose export, given the module's
+ * `Function`, is Node's module wrapper function, in the given scope (THE
+ * WRAPPER): an ES module when the cell is strict code that reads the same
+ * there (strictModuleCell), else a `{ cjs }` module. A leading shebang
+ * becomes a line comment of the same length (Node strips it too; `#!` is not
+ * valid inside a function).
  */
 export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
@@ -53,14 +57,16 @@ export declare function declaresWrapperBinding(source: string): boolean;
 export declare function opensWithUseStrict(source: string): boolean;
 /**
  * One row of the table a launch's main module carries for its cells:
- * `[key, moduleName, head, tail, hashbang, adopt, esModule]`. `adopt` is 1
- * when the process's store takes the cell's file content from the module text
- * (read back from the bundle filesystem) rather than from a data cell: the
- * store's one copy of that file, and the map's only. `esModule` is 1 for an
- * ES module the registry evaluates itself (core runtime/native-esm.ts): its
- * module is staged text, never a wrapper, and its ColumnMap is beside it.
+ * `[key, moduleName, head, tail, hashbang, adopt, esModule, moduleGoal]`.
+ * `adopt` is 1 when the process's store takes the cell's file content from
+ * the module text (read back from the bundle filesystem) rather than from a
+ * data cell: the store's one copy of that file, and the map's only.
+ * `esModule` is 1 for an ES module the registry evaluates itself (core
+ * runtime/native-esm.ts): its module is staged text, never a wrapper, and its
+ * ColumnMap is beside it. `moduleGoal` is 1 when the module's text parses as
+ * an ES module: such a module, or a strict cell's wrapper (THE WRAPPER).
  */
-export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1, esModule: 0 | 1];
+export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1, esModule: 0 | 1, moduleGoal: 0 | 1];
 /** Bytes of runtime code one launch records, and the supervisor keeps. */
 export declare const RUNTIME_CODE_MAX_BYTES: number;
 /** Pieces of runtime code one launch records, and the supervisor keeps. */

@@ -96,7 +96,7 @@ export interface ChildProcessOptions {
 export declare function createNodeChildProcess(start: NodeStart | undefined, { cwd }: ChildProcessOptions): {
     ChildProcess: typeof ChildProcess;
     spawn: (file: string, args?: readonly string[] | SpawnOptions | null, options?: SpawnOptions) => ChildProcess;
-    exec: (command: string, options?: ExecOptions | ExecCallback | null | undefined, callback?: ExecCallback | undefined) => ChildProcess;
+    exec: (command: string, options?: ExecCallback | ExecOptions | null | undefined, callback?: ExecCallback | undefined) => ChildProcess;
     execFile: (file: string, args?: readonly string[] | ExecOptions | ExecCallback | null, options?: ExecOptions | ExecCallback | null, callback?: ExecCallback) => ChildProcess;
     fork: (modulePath: string) => never;
     execSync: (command: string) => never;

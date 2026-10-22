@@ -85,7 +85,7 @@ export declare class ReadProfile {
     private readonly onConflict?;
     private index;
     /** onConflict reports a change after every conditional write fails. */
-    constructor(bucket: ReadProfileBucket, now?: () => number, onConflict?: ((key: string, kind: "observe" | "settle") => void) | undefined);
+    constructor(bucket: ReadProfileBucket, now?: () => number, onConflict?: ((key: string, kind: 'observe' | 'settle') => void) | undefined);
     private static key;
     /** Group paths under their package's profile key. */
     private static byPackage;

@@ -57,5 +57,5 @@ export declare function stripsTypeScript(path: string): boolean;
  */
 export declare function typescriptFallbackCandidates(base: string): string[];
 /** Nimbus source-policy entries, probed after Node's `index.{js,json,node}`. */
-export declare const TYPESCRIPT_INDEX_CANDIDATES: readonly ["/index.ts", "/index.tsx"];
+export declare const TYPESCRIPT_INDEX_CANDIDATES: readonly ['/index.ts', '/index.tsx'];
 //# sourceMappingURL=typescript-specifiers.d.ts.map

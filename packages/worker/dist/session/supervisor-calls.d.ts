@@ -110,6 +110,78 @@ type Class = abstract new (...args: any[]) => object;
  * the call that runs it (ProcessSupervisor).
  */
 export declare function supervisorCalls<Base extends Class>(base: Base): (abstract new (...args: any[]) => {
+    [TRANSPORT](): SupervisorTransport;
+    [OP]<T>(op: SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, 'op' | 'args'>): Promise<T>;
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
+    /** Stamp filesystem credentials from the binding, not the supplied arguments. */
+    [FS_OP]<T>(op: SupervisorOpName, args?: readonly unknown[]): Promise<T>;
+    /**
+     * A filesystem read changes nothing on the host, so a call the platform
+     * dropped on the way to it is repeated on a fresh stub. Measured: the
+     * host's `stat` failing with "Network connection lost." (`retryable`) is
+     * what failed CPython's start in about one fresh session in twenty.
+     *
+     * A read can also never answer: under concurrent sessions a burst of reads
+     * from one facet left some attempts pending for minutes without reaching
+     * the host, and the program waiting on them never exited
+     * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
+     * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
+     * stub, the first attempt left running, the first answer taken.
+     *
+     * A read can equally be slow at the session — queued behind the read
+     * budget, a lazy import, a busy input gate — and a hedge must not make it
+     * read again there. So every attempt carries the one read id minted here,
+     * and the session joins a repeat to the read it is still serving
+     * (`SupervisorDeliveries.joinRead`): a hedge that did arrive costs the
+     * session nothing but a second copy of the answer. Mutations are not
+     * hedged: their repeats stay bounded by the delivery retry window.
+     */
+    [FS_READ]<T>(op: SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
+    /**
+     * A filesystem mutation, delivered exactly once. The platform drops this
+     * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
+     * write loop, each failing "Network connection lost." (`retryable`) as
+     * EIO — and a dropped mutation may or may not have run.
+     *
+     * So on a binding whose host names its incarnation, every attempt carries
+     * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
+     * host instance applies the id at most once: a repeat of a mutation that
+     * ran is answered from its receipt and never applied again, even over
+     * another writer's newer write; one that never arrived applies on the
+     * repeat. Any other instance, and any host that predates delivery, refuses
+     * the envelope outright, and that refusal is never repeated. Repeats stop
+     * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
+     * receipt retention.
+     *
+     * A binding minted by a host that dedupes nothing names no incarnation,
+     * and its mutations are sent once.
+     *
+     * The id is random because this entrypoint keeps nothing between calls and
+     * may answer from any isolate; the pid still comes from the binding.
+     */
+    [FS_MUTATION]<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T>;
+    /** `envelope`, sent as `trace.kind`, and re-sent as `policy` says where the platform can drop it. */
+    [RESENT]<T>(envelope: SupervisorOpEnvelope, trace: Resend['trace'], policy?: DoCallRetryPolicy): Promise<T>;
+    [MUTATION_OWNER](): string | undefined;
+    [HOST_INCARNATION](): string | undefined;
+    [REPORTING_PID](): number;
+    [CALL]<T>(promise: Promise<T>): Promise<T>;
+    [CACHE_READ]<T>(plan: {
+        ticket?: string;
+        readOnly: boolean;
+    }, produce: (client: R2CacheClient, cache: NpmCache) => Promise<T>): Promise<T>;
+    [INFRASTRUCTURE_CACHE](op: SupervisorOpName, args: readonly unknown[]): boolean;
+    /**
+     * The network this binding's process reaches out through: its workspace's
+     * egress when its host supplied one (SupervisorBindingProps.egress), else
+     * this isolate's own. Every request the binding makes for the process —
+     * its fetch, its sockets, its packument reads — goes through it.
+     */
+    [NETWORK](): WorkspaceNetwork;
+    [PID](): number;
+    /** The run of the process this binding was minted for, when it has one. */
+    [RUN_ID](): string | undefined;
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
      * refusal answered as a value: a facet's client (core vfs-supervisor.ts
@@ -125,12 +197,12 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * object/pack files where the text readFile would corrupt content.
      */
     readFileBytes(path: RuntimeFsPath, options?: RuntimeReadFileOptions): Promise<Uint8Array | null>;
-    writeFile(path: RuntimeFsPath, content: string | Uint8Array, options?: Parameters<RuntimeFsBridge["writeFile"]>[2]): Promise<number>;
+    writeFile(path: RuntimeFsPath, content: string | Uint8Array, options?: Parameters<RuntimeFsBridge['writeFile']>[2]): Promise<number>;
     /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
     writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<WriteFileStatAnswer>;
     stat(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
-    }): Promise<Awaited<ReturnType<RuntimeFsBridge["stat"]>>>;
+    }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>>;
     lstat(path: string): Promise<any>;
     utimes(path: RuntimeFsPath, atime: import("@nimbus-sh/platform/w7-frame.js").FsTime, mtime: import("@nimbus-sh/platform/w7-frame.js").FsTime, options?: {
         followSymlinks?: boolean;
@@ -148,7 +220,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         type: string;
     }[]>;
     exists(path: string): Promise<boolean>;
-    mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge["mkdir"]>[1]): Promise<void>;
+    mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge['mkdir']>[1]): Promise<void>;
     rmdir(path: RuntimeFsPath): Promise<void>;
     rename(from: RuntimeFsPath, to: RuntimeFsPath): Promise<void>;
     unlink(path: RuntimeFsPath): Promise<void>;
@@ -208,41 +280,41 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;
     fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
-    fsReopen(target: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeMutationOwner | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["reopen"]>>>;
+    fsReopen(target: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeMutationOwner | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge['reopen']>>>;
     fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
     /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
-    fsFstat(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fstat"]>>>;
-    fsDup(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["dup"]>>>;
-    fsSeek(handleId: number, offset: number, whence: "set" | "end" | "current"): Promise<Awaited<ReturnType<RuntimeFsBridge["seek"]>>>;
+    fsFstat(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>>;
+    fsDup(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>>;
+    fsSeek(handleId: number, offset: number, whence: "current" | "end" | "set"): Promise<Awaited<ReturnType<RuntimeFsBridge['seek']>>>;
     fsSetStatus(handleId: number, status: {
         append?: boolean;
-    }): Promise<Awaited<ReturnType<RuntimeFsBridge["setStatus"]>>>;
-    fsReaddirHandle(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["readdirHandle"]>>>;
-    fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<RuntimeFsBridge["ftruncate"]>>>;
-    fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fchmod"]>>>;
-    fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<RuntimeFsBridge["fchown"]>>>;
-    fsFutimes(handleId: number, atime: import("@nimbus-sh/platform/w7-frame.js").FsTime, mtime: import("@nimbus-sh/platform/w7-frame.js").FsTime): Promise<Awaited<ReturnType<RuntimeFsBridge["futimes"]>>>;
-    fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["fsync"]>>>;
-    fsRealpath(path: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge["realpath"]>>>;
-    fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<RuntimeFsBridge["linkLeadsTo"]>>>;
+    }): Promise<Awaited<ReturnType<RuntimeFsBridge['setStatus']>>>;
+    fsReaddirHandle(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge['readdirHandle']>>>;
+    fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<RuntimeFsBridge['ftruncate']>>>;
+    fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<RuntimeFsBridge['fchmod']>>>;
+    fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<RuntimeFsBridge['fchown']>>>;
+    fsFutimes(handleId: number, atime: import("@nimbus-sh/platform/w7-frame.js").FsTime, mtime: import("@nimbus-sh/platform/w7-frame.js").FsTime): Promise<Awaited<ReturnType<RuntimeFsBridge['futimes']>>>;
+    fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge['fsync']>>>;
+    fsRealpath(path: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>>;
+    fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<RuntimeFsBridge['linkLeadsTo']>>>;
     fsRemove(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         force?: boolean;
         report?: boolean;
         keepVanishedAncestors?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["remove"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>>;
     fsCopyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         keepMode?: boolean;
         preserve?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["copyFile"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge['copyFile']>>>;
     fsCopyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;
         follow?: boolean;
-    } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["copyTree"]>>>;
-    fsAcquireExclusiveMutation(path: RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").ExclusiveMutationRequest | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["acquireExclusiveMutation"]>>>;
-    fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<RuntimeFsBridge["releaseExclusiveMutation"]>>>;
+    } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge['copyTree']>>>;
+    fsAcquireExclusiveMutation(path: RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").ExclusiveMutationRequest | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>>;
+    fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>>;
     /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
     fsAwaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null>;
     /** The holder has answered recall `kind`: delivered once. */
@@ -282,8 +354,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * a short result, which a caller could mistake for a short file.
      */
     fsReadBatch(requests: FsReadBatchRequest[]): Promise<FsReadBatchEntry[]>;
-    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<RuntimeFsBridge["writeRange"]>[3]): Promise<VfsMutationReceipt>;
-    fsTruncate(path: string, size: number, options?: Parameters<RuntimeFsBridge["truncate"]>[2]): Promise<VfsMutationReceipt>;
+    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<RuntimeFsBridge['writeRange']>[3]): Promise<VfsMutationReceipt>;
+    fsTruncate(path: string, size: number, options?: Parameters<RuntimeFsBridge['truncate']>[2]): Promise<VfsMutationReceipt>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
      * Used by facets that buffer writes locally (git clone/fetch/pull).
@@ -456,7 +528,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         size: number;
     }>;
     stdinPrepared(): Promise<void>;
-    netTls(action: "open" | "upgrade", token: string, payload: Record<string, unknown>): Promise<unknown>;
+    netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
     cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
@@ -520,78 +592,6 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         frontier: number;
         seq: number;
     }): Promise<void>;
-    [TRANSPORT](): SupervisorTransport;
-    [OP]<T>(op: SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
-    /** Every path (including resent reads/mutations) uses the bound caller. */
-    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
-    /** Stamp filesystem credentials from the binding, not the supplied arguments. */
-    [FS_OP]<T>(op: SupervisorOpName, args?: readonly unknown[]): Promise<T>;
-    /**
-     * A filesystem read changes nothing on the host, so a call the platform
-     * dropped on the way to it is repeated on a fresh stub. Measured: the
-     * host's `stat` failing with "Network connection lost." (`retryable`) is
-     * what failed CPython's start in about one fresh session in twenty.
-     *
-     * A read can also never answer: under concurrent sessions a burst of reads
-     * from one facet left some attempts pending for minutes without reaching
-     * the host, and the program waiting on them never exited
-     * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
-     * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
-     * stub, the first attempt left running, the first answer taken.
-     *
-     * A read can equally be slow at the session — queued behind the read
-     * budget, a lazy import, a busy input gate — and a hedge must not make it
-     * read again there. So every attempt carries the one read id minted here,
-     * and the session joins a repeat to the read it is still serving
-     * (`SupervisorDeliveries.joinRead`): a hedge that did arrive costs the
-     * session nothing but a second copy of the answer. Mutations are not
-     * hedged: their repeats stay bounded by the delivery retry window.
-     */
-    [FS_READ]<T>(op: SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
-    /**
-     * A filesystem mutation, delivered exactly once. The platform drops this
-     * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
-     * write loop, each failing "Network connection lost." (`retryable`) as
-     * EIO — and a dropped mutation may or may not have run.
-     *
-     * So on a binding whose host names its incarnation, every attempt carries
-     * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
-     * host instance applies the id at most once: a repeat of a mutation that
-     * ran is answered from its receipt and never applied again, even over
-     * another writer's newer write; one that never arrived applies on the
-     * repeat. Any other instance, and any host that predates delivery, refuses
-     * the envelope outright, and that refusal is never repeated. Repeats stop
-     * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
-     * receipt retention.
-     *
-     * A binding minted by a host that dedupes nothing names no incarnation,
-     * and its mutations are sent once.
-     *
-     * The id is random because this entrypoint keeps nothing between calls and
-     * may answer from any isolate; the pid still comes from the binding.
-     */
-    [FS_MUTATION]<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
-    /** `envelope`, sent as `trace.kind`, and re-sent as `policy` says where the platform can drop it. */
-    [RESENT]<T>(envelope: SupervisorOpEnvelope, trace: Resend["trace"], policy?: DoCallRetryPolicy): Promise<T>;
-    [MUTATION_OWNER](): string | undefined;
-    [HOST_INCARNATION](): string | undefined;
-    [REPORTING_PID](): number;
-    [CALL]<T>(promise: Promise<T>): Promise<T>;
-    [CACHE_READ]<T>(plan: {
-        ticket?: string;
-        readOnly: boolean;
-    }, produce: (client: R2CacheClient, cache: NpmCache) => Promise<T>): Promise<T>;
-    [INFRASTRUCTURE_CACHE](op: SupervisorOpName, args: readonly unknown[]): boolean;
-    /**
-     * The network this binding's process reaches out through: its workspace's
-     * egress when its host supplied one (SupervisorBindingProps.egress), else
-     * this isolate's own. Every request the binding makes for the process —
-     * its fetch, its sockets, its packument reads — goes through it.
-     */
-    [NETWORK](): WorkspaceNetwork;
-    [PID](): number;
-    /** The run of the process this binding was minted for, when it has one. */
-    [RUN_ID](): string | undefined;
 }) & Base;
 export {};
 //# sourceMappingURL=supervisor-calls.d.ts.map
