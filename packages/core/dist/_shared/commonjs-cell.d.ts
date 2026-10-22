@@ -36,6 +36,12 @@ export interface WrappedCommonJsCell {
  * valid inside a function).
  */
 export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
+/**
+ * A sloppy entry's wrapper as an expression, for the launch to compile as it
+ * loads (programEntry, the guest's __nimbusEntryLoaded): the same function,
+ * with no module around it.
+ */
+export declare function commonJsEntryExpression(cell: string, scope: CommonJsCellScope): Omit<WrappedCommonJsCell, 'esModule'>;
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
 export declare function columnMapModuleName(name: string): string;
 /**

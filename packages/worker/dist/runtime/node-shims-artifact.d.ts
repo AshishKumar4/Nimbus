@@ -21,10 +21,11 @@ export interface NodeFacetSources extends NodeSourceTexts {
 }
 export declare function nodeFacetSource(sources: NodeFacetSources, name: keyof NodeSourceTexts): string | ImmutableModuleSource;
 /** The registry bootstrap and its modules, for every runner that hosts node shims. */
-export declare function createNodeFacetRuntime(sources: NodeFacetSources, { codeCells, runtimeCode, stackEntry, esm, }?: {
+export declare function createNodeFacetRuntime(sources: NodeFacetSources, { codeCells, runtimeCode, stackEntry, entryText, esm, }?: {
     codeCells?: string;
     runtimeCode?: string;
     stackEntry?: string;
+    entryText?: string;
     esm?: string;
 }): {
     imports: string;
