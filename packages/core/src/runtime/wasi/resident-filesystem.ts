@@ -52,7 +52,7 @@ import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf, type FeedPosition } from '../feed-position.js';
-import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
+import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -911,12 +911,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
-   * A volatile /proc file's bytes, made here by the session's own generator
+   * A generated /proc file's bytes, made here by the session's own generator
    * (proc-files.ts) where this process has it; undefined where only the
    * session makes it (/proc/mounts).
    */
   const generated = (key: string): Uint8Array | undefined => {
-    const generate = volatileProcFile(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
+    const generate = procFileGenerator(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
     if (generate === undefined) return undefined;
     const content = generate({ ...store.cred, umask: 0 });
     return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();

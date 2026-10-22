@@ -1,10 +1,11 @@
 /**
- * The /proc every workspace has, but its trust store: each file's generator
- * and whether it is volatile (made at each read: the heap, the clock, the
- * network). One source for the session's /proc (proc-vfs.ts standardProc)
- * and for a process's resident filesystem, which makes a volatile file
- * itself at each read rather than ask the session for bytes that are stale
- * once they arrive.
+ * The /proc every workspace has, but its trust store: each file's generator,
+ * a pure function of the isolate reading it (its CPUs, heap, clock,
+ * network, runtime). Every one is made at each read, its stat size 0, as
+ * Linux procfs says. One source for the session's /proc (proc-vfs.ts
+ * standardProc) and for a process's filesystem (the resident filesystem,
+ * Node's shims), which makes each itself at each read: a call that cannot
+ * wait answers it, and nothing is fetched that is stale once it arrives.
  */
 import type { VfsCred } from './vfs.js';
 
@@ -18,9 +19,8 @@ export type ProcGenerator = (cred: VfsCred | null) => string | Uint8Array;
 /** Where the kernel mounts /proc. */
 export const PROC_MOUNT_POINT = '/proc';
 
-export const PROC_FILES: Readonly<Record<string, { readonly generate: ProcGenerator; readonly volatile: boolean }>> = {
+export const PROC_FILES: Readonly<Record<string, { readonly generate: ProcGenerator }>> = {
   cpuinfo: {
-    volatile: false,
     generate: () => {
       const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 1 : 1;
       const lines: string[] = [];
@@ -31,7 +31,6 @@ export const PROC_FILES: Readonly<Record<string, { readonly generate: ProcGenera
     },
   },
   meminfo: {
-    volatile: true,
     generate: () => {
       const memory = ((globalThis as { performance?: unknown }).performance as {
         memory?: { jsHeapSizeLimit: number; usedJSHeapSize: number; totalJSHeapSize: number };
@@ -49,18 +48,15 @@ export const PROC_FILES: Readonly<Record<string, { readonly generate: ProcGenera
     },
   },
   uptime: {
-    volatile: true,
     generate: () => {
       const seconds = typeof performance !== 'undefined' ? (performance.now() / 1000).toFixed(2) : '0.00';
       return `${seconds} ${seconds}\n`;
     },
   },
   version: {
-    volatile: false,
     generate: () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`,
   },
   'net/info': {
-    volatile: true,
     generate: () => {
       const conn = typeof navigator !== 'undefined'
         ? (navigator as unknown as { connection?: { effectiveType?: string; downlink?: number; rtt?: number; type?: string } }).connection
@@ -77,8 +73,7 @@ export const PROC_FILES: Readonly<Record<string, { readonly generate: ProcGenera
   },
 };
 
-/** The generator of /proc/<name> where it is volatile: made by whoever reads it, at each read. */
-export function volatileProcFile(name: string): ProcGenerator | undefined {
-  const file = Object.hasOwn(PROC_FILES, name) ? PROC_FILES[name] : undefined;
-  return file?.volatile ? file.generate : undefined;
+/** The generator of /proc/<name>, made by whoever reads it, at each read; undefined for a file only the session makes (/proc/mounts, the trust store). */
+export function procFileGenerator(name: string): ProcGenerator | undefined {
+  return Object.hasOwn(PROC_FILES, name) ? PROC_FILES[name].generate : undefined;
 }

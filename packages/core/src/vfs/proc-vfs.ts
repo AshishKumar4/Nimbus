@@ -7,10 +7,10 @@
  *
  * Its tree changes only by `register`, so its feed is an immutable one
  * (immutable-changes.ts): a reader that listed it is current until a file
- * is registered. A file is constant for the tree (the trust store, the
- * CPUs, the version), its stat its content's size; or volatile (`register`
- * with `volatile`: the heap, the clock, the network), its stat size 0, as
- * Linux procfs says, and its content made at each read by whoever reads it.
+ * is registered. A file is generated (`register` with `volatile`: the
+ * standard ones, proc-files.ts, and /proc/mounts), its stat size 0, as
+ * Linux procfs says, its content made at each read; or held (the trust
+ * store), its stat its content's size.
  * Every stat's mtime is the tree's: when it was made, or last registered to.
  */
 import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
@@ -156,7 +156,7 @@ const CA_CERTIFICATES = enc.encode(CA_CERTIFICATES_PEM);
  */
 export function standardProc(): ProcVFS {
   const proc = new ProcVFS();
-  for (const [name, { generate, volatile }] of Object.entries(PROC_FILES)) proc.register(name, generate, volatile);
+  for (const [name, { generate }] of Object.entries(PROC_FILES)) proc.register(name, generate, true);
   proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
   return proc;
 }

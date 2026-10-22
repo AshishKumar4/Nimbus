@@ -1149,6 +1149,14 @@ const __fsMod = (() => {
   /** \`observe\`: a read of the file (the residency predictor learns from it); a copy's look at its bytes is not. */
   function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
+    // A generated /proc file is made here at each read, by the session's own generator (core vfs/proc-files.ts).
+    if (k.startsWith("proc/") && _nsActive() && _statLadder(absPath)?.isFile()) {
+      const generate = __nimbusResidentModule.procFileGenerator(k.slice(5));
+      if (generate !== undefined) {
+        const made = generate(null);
+        return typeof made === "string" ? made : made.slice();
+      }
+    }
     if (observe && typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
