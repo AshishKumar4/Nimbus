@@ -140,6 +140,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   const PATH = 1024, PATH2 = 1536, OUT = 2048, IOV = 3072, DATA = 4096;
   const putPath = (name) => { const b = enc.encode(name); bytesAt().set(b, PATH); return b.length; };
   const RIGHTS_ALL = 0x1fffffffn;
+  /** @returns {[bigint, bigint, number]} The access and modify times (ns) and the fst_flags that say which to set. */
   const times = (atime, mtime) => [
     typeof atime === 'number' ? BigInt(atime) * 1_000_000n : 0n,
     typeof mtime === 'number' ? BigInt(mtime) * 1_000_000n : 0n,
