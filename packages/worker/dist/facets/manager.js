@@ -833,9 +833,11 @@ function entryModule(userCode, filename, cwd, esModule, bundleSource, preamble, 
     // The preamble, a module of its own, then the entry: `(preamble, entry)`.
     const name = commonJsEntryModuleName('[preamble]');
     const importer = entryImporterUrl(filename, cwd);
+    const wrapped = wrapCommonJsCell(preamble);
     return {
         ...entry,
-        modules: { ...entry.modules, [name]: wrapCommonJsCell(preamble).text },
+        modules: wrapped.esModule ? entry.modules : { ...entry.modules, [name]: wrapped.text },
+        esCells: wrapped.esModule ? { ...entry.esCells, [name]: wrapped.text } : entry.esCells,
         evaluate: `(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)})({}, __nimbusMakeRequire(mod), mod, filename || "/home/user/script.js", dirname || "/home/user"), ${entry.evaluate})`,
     };
 }
@@ -846,14 +848,14 @@ function programEntry(userCode, filename, cwd, esModule, bundleSource, check) {
     const cell = commonJsCellModuleName(key);
     const importer = entryImporterUrl(filename, cwd);
     if (esModule === true && bundleSource.esModules[cell] !== undefined) {
-        return { name: '', esModule: true, modules: {}, evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
+        return { name: '', esModule: true, modules: {}, esCells: {}, evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
     }
     // TypeScript or JSX the launch compiled to CommonJS (or the diagnostic of
     // one it could not): its cell, whose frames are its file's.
-    if (esModule === true && bundleSource.codeModules[cell] !== undefined) {
+    if (esModule === true && (bundleSource.codeModules[cell] ?? bundleSource.esCells[cell]) !== undefined) {
         const path = JSON.stringify('/' + key);
         return {
-            name: cell, esModule: false, modules: {}, stackEntry: 'null',
+            name: cell, esModule: false, modules: {}, esCells: {}, stackEntry: 'null',
             evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(cell)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
         };
     }
@@ -868,7 +870,8 @@ function programEntry(userCode, filename, cwd, esModule, bundleSource, check) {
     return {
         name,
         esModule: false,
-        modules: { [name]: wrapped.text },
+        modules: wrapped.esModule ? {} : { [name]: wrapped.text },
+        esCells: wrapped.esModule ? { [name]: wrapped.text } : {},
         evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
         // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
         stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail]),
@@ -1301,7 +1304,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         immutableModules: runtime.immutableModules,
         modules: bundleSource.modules,
         codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
-        esModules: bundleSource.esModules,
+        esModules: { ...bundleSource.esModules, ...bundleSource.esCells, ...entry.esCells },
     };
 }
 /**
@@ -1829,7 +1832,7 @@ export class NimbusProcess extends DurableObject {
         immutableModules: runtime.immutableModules,
         modules: bundleSource.modules,
         codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
-        esModules: bundleSource.esModules,
+        esModules: { ...bundleSource.esModules, ...bundleSource.esCells, ...entry.esCells },
     };
 }
 /** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
@@ -2120,6 +2123,8 @@ function retainedVfsStateBytes(state) {
             bytes += moduleSource.length;
         for (const [name, text] of Object.entries(source.codeModules))
             bytes += name.length + text.length;
+        for (const [name, text] of Object.entries(source.esCells))
+            bytes += name.length + text.length;
         for (const [name, text] of Object.entries(source.esModules))
             bytes += name.length + text.length;
         bytes += source.esm.length;
@@ -2340,10 +2345,11 @@ function isCodeCellPath(path) {
 export async function buildFacetVfsBundleSource(bundle, pacer, { consume = false, emits, esm, codeOnly, dataModules, runtimeCode, } = {}) {
     const storageBytes = moduleMapStorageBytes(bundle, codeOnly);
     const codeModules = {};
+    const esCells = {};
     const esModules = { ...esm?.members };
     const rows = [];
-    for (const [key, text] of runtimeCode ?? [])
-        codeModules[runtimeCodeModuleName(key)] = text;
+    for (const [key, module] of runtimeCode ?? [])
+        (module.esModule ? esCells : codeModules)[runtimeCodeModuleName(key)] = module.text;
     // The facades' names, read only by a graph a program produces after its launch began (core esm-late-link.ts).
     if (esm !== undefined)
         codeModules[ESM_BINDINGS_MODULE] = JSON.stringify(esm.bindings);
@@ -2372,7 +2378,7 @@ export async function buildFacetVfsBundleSource(bundle, pacer, { consume = false
         if (code !== undefined) {
             const wrapped = wrapCommonJsCell(code);
             const name = commonJsCellModuleName(path);
-            codeModules[name] = wrapped.text;
+            (wrapped.esModule ? esCells : codeModules)[name] = wrapped.text;
             rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, 0]);
             if (pacer)
                 await pacer.spend(code.length);
@@ -2388,6 +2394,7 @@ export async function buildFacetVfsBundleSource(bundle, pacer, { consume = false
     return {
         ...await serializeFacetVfsData(data, pacer, consume),
         codeModules,
+        esCells,
         esModules,
         codeCells: JSON.stringify(rows),
         esm: esm === undefined ? 'null' : JSON.stringify({ table: esm.table, missing: esm.missing }),
@@ -6231,23 +6238,30 @@ export class FacetManager {
             }
             const source = vfsState.bundleSource;
             const keys = source ? JSON.parse(source.runtimeCode) : [];
-            const learned = keys.map((key) => [key, utf8Length(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
+            const learned = keys.map((key) => {
+                const name = runtimeCodeModuleName(key);
+                return [key, utf8Length(generated.codeModules[name] ?? generated.esModules[name] ?? '')];
+            });
             generated = undefined;
             const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
             if (over > 0 || !source)
                 throw new ModuleMapOverCeilingError(over);
             const keep = new Set(kept);
             const codeModules = { ...source.codeModules };
-            for (const key of keys)
-                if (!keep.has(key))
-                    delete codeModules[runtimeCodeModuleName(key)];
+            const esCells = { ...source.esCells };
+            for (const key of keys) {
+                if (keep.has(key))
+                    continue;
+                delete codeModules[runtimeCodeModuleName(key)];
+                delete esCells[runtimeCodeModuleName(key)];
+            }
             const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
                 + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
                 + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
             console.warn(`[facet-manager] pid ${pid}: ${message}`);
             if (this.debugEnabled)
                 this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
-            const trimmed = await generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+            const trimmed = await generate({ ...vfsState, bundleSource: { ...source, codeModules, esCells, runtimeCode: JSON.stringify(kept) } });
             keptForRebuild = keepAdmission;
             return trimmed;
         }
@@ -6374,11 +6388,11 @@ export class FacetManager {
             if (entry.kind === 'wasm')
                 continue;
             if (entry.kind === 'expression') {
-                modules.set(codeKey, runtimeExpressionModule(entry.code));
+                modules.set(codeKey, { text: runtimeExpressionModule(entry.code), esModule: false });
                 continue;
             }
             if (entry.kind !== 'module') {
-                modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
+                modules.set(codeKey, { text: runtimeFunctionModule(entry.kind, entry.params, entry.body), esModule: false });
                 continue;
             }
             if (entry.path.startsWith('data:'))
@@ -6402,7 +6416,7 @@ export class FacetManager {
             catch {
                 // Unparseable: it stays as written, and requiring it says why.
             }
-            modules.set(codeKey, wrapCommonJsCell(code).text);
+            modules.set(codeKey, wrapCommonJsCell(code));
         }
         return modules.size > 0 ? modules : undefined;
     }
@@ -7485,7 +7499,8 @@ export class FacetManager {
             for (const member of [...Object.values(sqliteModules), ...Object.values(wasmModules)])
                 diagSink.moduleMapBytes += member.wasm.byteLength;
             diagSink.bundleBytes = utf8Length(vfsState.bundleSource?.expression ?? '');
-            for (const text of [...Object.values(vfsState.bundleSource?.modules ?? {}), ...Object.values(vfsState.bundleSource?.codeModules ?? {})]) {
+            for (const text of [...Object.values(vfsState.bundleSource?.modules ?? {}), ...Object.values(vfsState.bundleSource?.codeModules ?? {}),
+                ...Object.values(vfsState.bundleSource?.esCells ?? {})]) {
                 diagSink.bundleBytes += utf8Length(text);
             }
         }

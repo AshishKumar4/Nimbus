@@ -18,6 +18,8 @@ export type CommonJsCellScope = 'function' | 'block';
 export interface WrappedCommonJsCell {
     /** The module text. */
     text: string;
+    /** Whether the text is an ES module (`{ js }`, its export the default) and not a `{ cjs }` one (strictModuleCell). */
+    esModule: boolean;
     /** Characters of wrapper before the cell. */
     head: number;
     /** Characters of wrapper after the cell. */
@@ -26,10 +28,12 @@ export interface WrappedCommonJsCell {
     hashbang: boolean;
 }
 /**
- * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
- * module's `Function`, is Node's module wrapper function, in the given scope
- * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * Wrap a CommonJS cell as a module whose export, given the module's
+ * `Function`, is Node's module wrapper function, in the given scope (THE
+ * WRAPPER): an ES module when the cell is strict code that reads the same
+ * there (strictModuleCell), else a `{ cjs }` module. A leading shebang
+ * becomes a line comment of the same length (Node strips it too; `#!` is not
+ * valid inside a function).
  */
 export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
