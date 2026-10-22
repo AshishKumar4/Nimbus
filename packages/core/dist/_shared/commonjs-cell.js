@@ -639,7 +639,7 @@ function __nimbusModuleNamed(name) {
   let module = __nimbusModules.get(name);
   if (module !== undefined) return module;
   if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
-    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, goal: __nimbusStackEntry[5] === 1 ? "module" : "script", hashbang: false };
   } else {
     if (__nimbusCellsByName === null) {
       __nimbusCellsByName = new __NimbusCellMap();
@@ -647,7 +647,7 @@ function __nimbusModuleNamed(name) {
     }
     const row = __nimbusCellsByName.get(name);
     if (row === undefined) return null;
-    module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, hashbang: row[4] === 1 };
+    module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, goal: row[7] === 1 ? "module" : "script", hashbang: row[4] === 1 };
   }
   __nimbusModules.set(name, module);
   return module;
@@ -820,7 +820,7 @@ class __NimbusInterpretedCallSite {
     this.#file = frame.unit.esModule && !__nimbusStackStartsWith(frame.unit.file, "data:") && !__nimbusStackStartsWith(frame.unit.file, "file:") ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
     const module = {
       name: this.#file, path: frame.unit.file, file: this.#file, frameFile: this.#file,
-      head: 0, tail: 0, esModule: frame.unit.esModule, hashbang: false, columns: null, source: frame.unit.source,
+      head: 0, tail: 0, esModule: frame.unit.esModule, goal: frame.unit.esModule ? "module" : "script", hashbang: false, columns: null, source: frame.unit.source,
     };
     __nimbusInterpretedModules.set(this.#file, module);
     __nimbusInterpretedLocations.set(this, {
