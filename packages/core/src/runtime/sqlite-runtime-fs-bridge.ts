@@ -395,9 +395,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         const namespace = located.namespace;
         // The synchronous face looks up through synchronous faces only (an asynchronous mount refused above): its answer is a value.
-        // A file it makes is made as the engine makes one: its mode less the caller's umask.
         return syncValue(this.descriptors.open(syncValue(openMounted({
-          name: located.path, flags: normalizedFlags, mode: flags.mode === undefined ? undefined : flags.mode & ~(flags.umask ?? this.vfs.cred.umask),
+          name: located.path, flags: normalizedFlags, mode: flags.mode,
           refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
           sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes, ...(this.binding.signal === undefined ? {} : { signal: this.binding.signal }),
         })), normalizedFlags));
@@ -496,10 +495,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       } else {
         located = this.locateMutation(operand, false, 'mkdir', owner);
       }
-      if (located.mount) {
-        located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: (options.mode ?? 0o777) & ~(options.umask ?? this.vfs.cred.umask) });
-        return;
-      }
+      if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
       // mkdir of what is there is EEXIST, as mkdir(2) says, before any
       // permission check on its parent (`/` has none).
       if (this.mayExist(located)) throw fsError('EEXIST', 'mkdir', path);
