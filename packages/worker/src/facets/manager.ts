@@ -1226,7 +1226,7 @@ function programEntry(
     esCells: wrapped.esModule ? { [name]: wrapped.text } : {},
     evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-    stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail]),
+    stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail, wrapped.esModule ? 1 : 0]),
   };
 }
 
@@ -3006,7 +3006,7 @@ export async function buildFacetVfsBundleSource(
     const name = commonJsCellModuleName(key);
     esModules[name] = staged.text;
     if (staged.columns.length > 0) codeModules[columnMapModuleName(name)] = JSON.stringify(staged.columns);
-    rows.push([key, name, staged.head, staged.tail, staged.hashbang ? 1 : 0, 0, 1]);
+    rows.push([key, name, staged.head, staged.tail, staged.hashbang ? 1 : 0, 0, 1, 1]);
     if (pacer) await pacer.spend(staged.text.length);
   }
   // `consume`: the caller releases the raw cells right after (a launch's
@@ -3024,7 +3024,7 @@ export async function buildFacetVfsBundleSource(
       const wrapped = wrapCommonJsCell(code);
       const name = commonJsCellModuleName(path);
       (wrapped.esModule ? esCells : codeModules)[name] = wrapped.text;
-      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, 0]);
+      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, 0, wrapped.esModule ? 1 : 0]);
       if (pacer) await pacer.spend(code.length);
     }
     if (adopt || codeOnly?.has(path)) {
