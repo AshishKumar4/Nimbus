@@ -14,6 +14,11 @@ published independently in the `@nimbus-sh` npm scope.
   - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
   - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
   - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
+- Fixed: Ctrl-C ends a python one-shot (`python -c`, `python -`, a pipe) as it ends CPython on Linux: a `KeyboardInterrupt`, which the program may catch, and exit 130 if it does not. This needs cpython 3.13.14-4 (`nimbus install cpython@3.13.14-4`; the catalog's default stays 3.13.14-1 until a release moves it).
+  - A computing run (a loop, a recursion) used to go on after Ctrl-C until it ended by itself; a 20 s loop ended 27-59 s after it. Now it ends 0.4-0.8 s after Ctrl-C, in the session or on its peer. The interpreter asks the host for its signals every 1e4 of its breaker checks, which costs about 0.1% of a computing run.
+  - A sleeping run (`time.sleep`) used to end 7.5-9 s after Ctrl-C. Now it ends at once with a `KeyboardInterrupt`.
+  - While a python one-shot computes in the session, the session now answers between two of its asks: a request to the session waited up to 3.3-5.3 s during a 5 s loop, and now waits 0.1-1.8 s.
+  - A script (`python file.py`) and `python -m` still run as a resident process, which Ctrl-C ends without a `KeyboardInterrupt`.
 - Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 - Fixed: `astro dev` runs with Astro 7.4.2. Astro 7.4.2 requires Node
   22.23.4 or later, and its CLI stopped before its dev server loaded,
