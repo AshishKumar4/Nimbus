@@ -67,7 +67,7 @@ function session({
     cursor: () => {
       const rev = engine.revision();
       if (cursorAt?.rev !== rev) {
-        base ??= (() => { try { return bridge.acquire(null).position; } catch { return null; } })();
+        base ??= (() => { try { return bridge.acquire(null).position ?? null; } catch { return null; } })();
         cursorAt = base === null ? { epoch: engine.epoch, rev } : { table: base.table, feeds: { ...base.feeds, '/': { epoch: engine.epoch, cursor: rev } }, epoch: engine.epoch, rev };
       }
       return cursorAt;

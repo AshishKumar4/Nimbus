@@ -302,6 +302,14 @@ const FOUND = {
     schedule: [['input'], ['release'], ['peer', 'mount', '', 'unfed', { d: null, x: null, 'd/e': null, top: 'm7696.4', 'x/h': 'm7696.5', 'x/f': 'm7696.6' }], ['own', 'readFile', 'd/e'],
       ['own', 'stat', 'new'], ['sync', 'stat', 'x']],
   },
+  'a fed mount made over a directory a peer and the process wrote in shows the mount\'s files at rest (8134)': {
+    park: 8134,
+    schedule: [['hold', 'acquire'], ['own', 'readdir', 'new'], ['sync', 'chmod', 'd/e/g', 0o644], ['own', 'readdir', 'x/e'], ['sync', 'mkdir', 'x/e'], ['own', 'stat', 'd/n'],
+      ['own', 'stat', 'x/e'], ['release', 'listing'], ['release'], ['sync', 'readFile', 'mid'], ['peer', 'write', 'x/e/g', 'c8134.1'], ['peer', 'mount', 'd/e', 'fed', { g: 'm8134.2' }],
+      ['input'], ['release', 'listing'], ['root', 'chmod', 'x/e', 0o750], ['own', 'stat', 'x'], ['sync', 'stat', 'top'], ['release', 'listing'], ['own', 'readFile', 'd/n'],
+      ['sync', 'chmod', 'x/h', 0o600], ['stall'], ['release', 'wave'], ['input'], ['release'], ['peer', 'write', 'x/f', 'c8134.3'], ['sync', 'stat', 'x/e/g'], ['hold', 'delivery'],
+      ['release'], ['own', 'stat', 'd/e/g'], ['own', 'pread', 'big', 4200000]],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
@@ -402,6 +410,10 @@ const GAPS = {
   'a file read after the session\'s database restarted is held for a call that cannot wait (7519) [eager]': {
     lacks: 'after the session\'s database restarts, the eager engine does not hold the bytes of a file its process then read awaited (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/f answered EAGAIN',
+  },
+  'a fed mount made over a directory a peer and the process wrote in shows the mount\'s files at rest (8134) [node]': {
+    lacks: 'S answers a file of the session\'s own that a fed mount then covered, at rest (closed by the cutover: RF follows the mount\'s feed)',
+    shows: 'at rest, sync stat d/e/g answered',
   },
   'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [holder]': {
     lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
