@@ -23,8 +23,8 @@
  */
 
 /**
- * @param {{ __wasiMakeImports: (options: import('../../../packages/core/src/runtime/wasi/types.ts').WasiMakeImportsOptions) => import('../../../packages/core/src/runtime/wasi/types.ts').WasiInstanceBundle }} preamble
- * @param {import('../../../packages/core/src/runtime/wasi/types.ts').WasiMakeImportsOptions} options  Forwarded to __wasiMakeImports unchanged.
+ * @param {{ __wasiMakeImports: (options: object) => import('../../../packages/core/src/runtime/wasi/types.ts').WasiInstanceBundle }} preamble
+ * @param {object} options  Forwarded to __wasiMakeImports unchanged.
  */
 export function makeImportsWithoutJSPI(preamble, options) {
   const wasm = /** @type {any} */ (WebAssembly);
@@ -45,8 +45,8 @@ export function makeImportsWithoutJSPI(preamble, options) {
  * filesystem the bodies answer from is chosen when they are called, by the
  * engine's real JSPI.
  *
- * @param {{ __wasiMakeImports: (options: import('../../../packages/core/src/runtime/wasi/types.ts').WasiMakeImportsOptions) => import('../../../packages/core/src/runtime/wasi/types.ts').WasiInstanceBundle }} preamble
- * @param {import('../../../packages/core/src/runtime/wasi/types.ts').WasiMakeImportsOptions} options  Forwarded to __wasiMakeImports unchanged.
+ * @param {{ __wasiMakeImports: (options: object) => import('../../../packages/core/src/runtime/wasi/types.ts').WasiInstanceBundle }} preamble
+ * @param {object} options  Forwarded to __wasiMakeImports unchanged.
  */
 export function makeParkingImports(preamble, options) {
   const wasm = /** @type {any} */ (WebAssembly);

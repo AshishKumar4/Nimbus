@@ -40,14 +40,16 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/**
- * The module the guest runs: preamble.ts, with the two of its functions the
- * export line below adds to its exports.
- *
- * @typedef {typeof import('../../../packages/worker/src/runtime/wasi/preamble.ts') & {
- *   __wasiSettleFirst: (body: () => import('../../../packages/core/src/runtime/wasi/types.ts').SyscallResult) => import('../../../packages/core/src/runtime/wasi/types.ts').SyscallResult,
- *   __wasiInbound: <T>(result: T) => T }} Preamble
- */
+/** The preamble a guest runs, with `source` after it, imported as the module it is. */
+async function importPreamble(source) {
+  const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem, __wasiInbound, __wasiSettleFirst };`);
+  try {
+    return await import(pathToFileURL(modulePath).href);
+  } finally {
+    rmSync(modulePath, { force: true });
+  }
+}
 
 /** A session for guests: its store, its supervisor and the op handler a process's binding calls. */
 function residentSession() {
@@ -67,15 +69,10 @@ function residentSession() {
 
 /**
  * @param {{ refuse?: (path: string) => boolean, of?: { session: ReturnType<typeof residentSession> },
- *   after?: { P: Preamble, session: ReturnType<typeof residentSession> }, cred?: typeof USER, source?: string }} [options]
+ *   after?: { P: Awaited<ReturnType<typeof importPreamble>>, session: ReturnType<typeof residentSession> }, cred?: typeof USER, source?: string }} [options]
  */
 export async function residentGuest({ refuse = () => false, of, after, cred = USER, source = '' } = {}) {
-  let P = after?.P;
-  if (P === undefined) {
-    const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem, __wasiInbound, __wasiSettleFirst };`);
-    try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
-  }
+  const P = after?.P ?? await importPreamble(source);
 
   const session = (of ?? after)?.session ?? residentSession();
   const { harness, raw, kernel, processes, authority } = session;

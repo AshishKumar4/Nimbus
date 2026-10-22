@@ -23,6 +23,7 @@ import { inNode, RUNS_TSRS_API } from '../../../scripts/lib/tsrs-api.mjs';
  */
 export function withTsrs({ cwd = process.cwd(), overlay = {} }, use) {
   const virtual = new Map(Object.entries(overlay));
+  /** @type {import('tsrs/unstable/fs').FileSystemCallbacks | undefined} */
   const fs = virtual.size === 0 ? undefined : {
     readFile: (/** @type {string} */ name) => virtual.get(name) ?? serverFS.useOS,
     fileExists: (/** @type {string} */ name) => (virtual.has(name) ? true : serverFS.useOS),
