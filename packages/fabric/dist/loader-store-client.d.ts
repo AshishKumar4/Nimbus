@@ -36,6 +36,6 @@ export declare function loaderStore(env: object, ref: LoaderStoreRef): {
     /** Each of `modules` the owner does not hold already (or adopt from another owner), put. */
     keep(modules: readonly StoredModule[]): Promise<void>;
     /** A stored module's bytes, read in frames into one buffer, verified against its digest. */
-    read(module: Pick<StoredModule, "digest" | "size">): Promise<Uint8Array>;
+    read(module: Pick<StoredModule, 'digest' | 'size'>): Promise<Uint8Array>;
 };
 //# sourceMappingURL=loader-store-client.d.ts.map

@@ -6,7 +6,7 @@ import { type SupervisorRefusal } from './filesystem-methods.js';
 export { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './filesystem-mirrors.generated.js';
 export type { FilesystemSupervisor } from './filesystem-methods.js';
 /** The calls node's shims make that the bridge does not name. */
-declare const NODE_SHIM_RPC_METHODS: readonly ["readFile", "writeFileStat", "lstat", "exists", "setUmask", "fsAcquired", "fsStorageGrant", "fsReadRangeUncached", "fsReadBatch", "fsListTree", "fsReadDirectories"];
+declare const NODE_SHIM_RPC_METHODS: readonly ['readFile', 'writeFileStat', 'lstat', 'exists', 'setUmask', 'fsAcquired', 'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsListTree', 'fsReadDirectories'];
 /**
  * The SupervisorRPC methods `answer` runs: the filesystem surface, every
  * table entry but a streamed one (a stream does not travel inside

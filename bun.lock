@@ -13,7 +13,7 @@
         "exsolve": "^1.1.1",
         "partyserver": "^0.5.10",
         "puppeteer-core": "^24.42.0",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
         "wabt": "^1.0.39",
         "wrangler": "^4.145.0",
         "zod": "^4.4.3",
@@ -74,7 +74,7 @@
       },
       "devDependencies": {
         "@types/node": "^22.0.0",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/computesdk-nimbus": {
@@ -86,14 +86,14 @@
         "computesdk": "^4.1.4",
       },
       "devDependencies": {
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/config": {
       "name": "@nimbus-sh/config",
       "version": "0.3.2",
       "devDependencies": {
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/core": {
@@ -125,7 +125,7 @@
         "amaro": "1.1.8",
         "es-module-lexer": "2.3.1",
         "esbuild": "^0.27.0",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/create-nimbus-app": {
@@ -148,7 +148,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/loom": {
@@ -162,7 +162,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/platform": {
@@ -170,7 +170,7 @@
       "version": "0.15.0",
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
     },
     "packages/react": {
@@ -179,7 +179,7 @@
       "devDependencies": {
         "@nimbus-sh/sdk": "^0.20.0",
         "@types/react": "^19.0.0",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
       "peerDependencies": {
         "@nimbus-sh/sdk": "^0.20.0",
@@ -198,7 +198,7 @@
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
         "@nimbus-sh/worker": "^0.24.0",
-        "typescript": "^5.7.0",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
       },
       "peerDependencies": {
         "@nimbus-sh/core": "^0.26.0",
@@ -258,6 +258,7 @@
         "react-refresh": "0.14.2",
         "rolldown": "1.2.11",
         "scheduler": "0.23.2",
+        "tsrs": "0.18.0-ts7.1.0-dev.20260929",
         "typescript": "^5.7.0",
         "vite": "6.4.2",
         "yargs": "18.1.0",
@@ -782,6 +783,16 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@tootallnate/quickjs-emscripten": ["@tootallnate/quickjs-emscripten@0.23.0", "", {}, "sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA=="],
+
+    "@tsrs/darwin-arm64": ["@tsrs/darwin-arm64@0.18.0-ts7.1.0-dev.20260929", "", { "os": "darwin", "cpu": "arm64" }, "sha512-sAirMpaGA9uRQm2W+t4zC7PjnijNuFa4PCSIfLKKo0JyAUCRfnMeev0UGBQ9F3g+9Nz187tvikUs5Irh5+eajA=="],
+
+    "@tsrs/linux-arm64-gnu": ["@tsrs/linux-arm64-gnu@0.18.0-ts7.1.0-dev.20260929", "", { "os": "linux", "cpu": "arm64" }, "sha512-zm9/z9yylig68JiZF4Aq0Cm26n09KEU8YoQRlG7tdDWTBNAIViYw8knxnWYsjMWVZ2XiU4mYq1xdrOKuOgABHg=="],
+
+    "@tsrs/linux-arm64-musl": ["@tsrs/linux-arm64-musl@0.18.0-ts7.1.0-dev.20260929", "", { "os": "linux", "cpu": "arm64" }, "sha512-Lw7VVU/YQ9JcarODICEiwzMLdFqZprqh5RGTgbS5Uc6I95P635/g5xA1pOC8RVs4efBvAR30J54iDG3l5JEYiw=="],
+
+    "@tsrs/linux-x64-gnu": ["@tsrs/linux-x64-gnu@0.18.0-ts7.1.0-dev.20260929", "", { "os": "linux", "cpu": "x64" }, "sha512-EdBwBgNICGu1r1h23ixdcKwsMo6E9ll7ZsY3mNERNYqE1Pwdtcat99d5E7zB1J+oy/Xk6YqiizaB6nolIjpDTw=="],
+
+    "@tsrs/linux-x64-musl": ["@tsrs/linux-x64-musl@0.18.0-ts7.1.0-dev.20260929", "", { "os": "linux", "cpu": "x64" }, "sha512-LHk+AOAtXuTlhJhOJ2+elriEIX17ycXljojeNxrrzckOipTG1LksoVWuCSas2nu00EnWAzrdKpt9oqPylUKZfQ=="],
 
     "@tsrs/wasm": ["@tsrs/wasm@0.18.0-ts7.1.0-dev.20260929", "", { "bin": { "tsrs-wasm": "bin/tsrs-wasm.js" } }, "sha512-1Wv0GU3OIsY1x37cUykxrDLTeCWb81lWS/BCuw2ZfYcB6E7cno3mgfZvOA/3uV1hKs6fBN94LEntmMjULNaRTw=="],
 
@@ -1906,6 +1917,8 @@
     "trough": ["trough@2.2.0", "", {}, "sha512-tmMpK00BjZiUyVyvrBK7knerNgmgvcV/KLVyuma/SC+TQN167GrMRciANTz09+k3zW8L8t60jWO1GpfkZdjTaw=="],
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
+
+    "tsrs": ["tsrs@0.18.0-ts7.1.0-dev.20260929", "", { "optionalDependencies": { "@tsrs/darwin-arm64": "0.18.0-ts7.1.0-dev.20260929", "@tsrs/linux-arm64-gnu": "0.18.0-ts7.1.0-dev.20260929", "@tsrs/linux-arm64-musl": "0.18.0-ts7.1.0-dev.20260929", "@tsrs/linux-x64-gnu": "0.18.0-ts7.1.0-dev.20260929", "@tsrs/linux-x64-musl": "0.18.0-ts7.1.0-dev.20260929" }, "bin": { "tsrs": "./bin/tsrs" } }, "sha512-9T0b4Uam/yMFIK16GUx0fUrJqYZnJ/gvSmV9JB8NTyDePvwCI45WFWxyEV/UMV3KfdNRJG/PBsm3fSIB9WmWsA=="],
 
     "type-is": ["type-is@2.1.0", "", { "dependencies": { "content-type": "^2.0.0", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA=="],
 

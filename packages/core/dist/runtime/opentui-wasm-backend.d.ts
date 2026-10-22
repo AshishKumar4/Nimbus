@@ -32,7 +32,7 @@
  * The opencode facet backend embeds this implementation into the patched
  * @opentui/core bundle.
  */
-export declare const OPENTUI_FFI_TYPES: readonly ["void", "bool", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64", "usize", "ptr", "pointer", "cstring"];
+export declare const OPENTUI_FFI_TYPES: readonly ['void', 'bool', 'u8', 'u16', 'u32', 'u64', 'i8', 'i16', 'i32', 'i64', 'f32', 'f64', 'usize', 'ptr', 'pointer', 'cstring'];
 export type OpenTUIFfiType = (typeof OPENTUI_FFI_TYPES)[number];
 /** A single symbol's signature, exactly the shape zig.ts builds. */
 export interface OpenTUIFfiFunction {

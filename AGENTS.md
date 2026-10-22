@@ -699,7 +699,7 @@ Agent-specific probes:
 
 The root `predev` script regenerates worker bundles.
 
-**Lanes do not build on the workstation.** No typecheck, tsc, bundling or
+**Lanes do not build on the workstation.** No typecheck, tsrs, bundling or
 `dist-integrity` runs there: `remote-build`, `remote-probes --deploy`,
 `release.mjs staging` and `promote.mjs` do that work on CI (Tests § CI) and
 only upload from here. Install a fresh worktree's dependencies with

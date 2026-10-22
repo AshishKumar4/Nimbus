@@ -1,1 +1,1 @@
-{"version":3,"file":"tty.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/tty.ts"],"names":[],"mappings":"AAUA,QAAA,MAAM,GAAG,sCAGA,CAAC;AAEV,eAAO,MAAQ,UAAU,sDAAE,WAAW,sDAAE,MAAM,yBAAQ,CAAC;AACvD,eAAe,GAAG,CAAC"}
+{"version":3,"file":"tty.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/tty.ts"],"names":[],"mappings":"AAUA,QAAA,MAAM,GAAG,sCAGA,CAAC;AAEV,eAAO,MAAM,EAAE,UAAU,EAAE,WAAW,EAAE,MAAM,EAAE,sCAAM,CAAC;AACvD,eAAe,GAAG,CAAC"}

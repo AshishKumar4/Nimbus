@@ -54,6 +54,22 @@
  * A block is not a directive prologue, so code that opens with "use strict"
  * has the directive restated in the function body, where it applies.
  *
+ * A cell that is strict code of its own (its directive prologue says "use
+ * strict") is the same function in an ES module, its export the default:
+ *
+ *   export default (0, function (Function) { return function (exports, require, module, __filename, __dirname) {<cell>
+ *   }; });
+ *
+ * workerd compiles a `{ cjs }` module's function so that each read of a
+ * global in it costs ~140 ns, against ~1.5 in an ES module: a loop reading
+ * `Math` 2e7 times took 2.9-3.1 s as `{ cjs }` and 28-54 ms as an ES module,
+ * either registry (2026-10-21, verdict 20261021T224745-d95ed4dfaace). Strict
+ * function code means the same in a script and in a module but for three
+ * things the module goal parses differently: `await` is reserved, HTML-like
+ * comments are not, and `import.meta` is. A cell whose text holds none of
+ * those words is the same program either way (strictModuleCell); any other
+ * stays `{ cjs }`. A sloppy cell has no ES form at all.
+ *
  * The wrapper is on the cell's first line, so a stack frame carries the
  * cell's own line numbers under the module's `file:///bundle/vfs/<name>`
  * name; a column on the first line is shifted by the wrapper's head. A
@@ -184,21 +200,42 @@ export function commonJsCellReadsBack(key) {
 }
 // `(0, …)` keeps V8 from naming the wrapper `module.exports`: a frame reads
 // `Object.<anonymous>`, as Node's does.
-const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {';
+const WRAPPER_FUNCTION = '(0, function (Function) { return function (exports, require, module, __filename, __dirname) {';
+const COMMONJS_HEAD = 'module.exports = ' + WRAPPER_FUNCTION;
+const ES_MODULE_HEAD = 'export default ' + WRAPPER_FUNCTION;
 /**
- * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
- * module's `Function`, is Node's module wrapper function, in the given scope
- * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * What the module goal reads otherwise in strict function code: `await`, in
+ * any spelling (a letter of it written as a \u escape), an HTML-like comment.
+ */
+const MODULE_GOAL_WORDS = /await|<!--|-->|\\u\{?0*(?:61|77|69|74)/i;
+/**
+ * Whether `body`, strict code of its own, is the same function body in an ES
+ * module as in a script (THE WRAPPER): it holds none of the words the module
+ * goal reads otherwise, anywhere, a comment or a string included, nor both
+ * `import` and `meta` (`import.meta`, whatever lies between). One of those
+ * leaves it `{ cjs }`, which is exact, and slower.
+ */
+function strictModuleCell(body) {
+    return opensWithUseStrict(body) && !MODULE_GOAL_WORDS.test(body) && !(/\bimport\b/.test(body) && /\bmeta\b/.test(body));
+}
+/**
+ * Wrap a CommonJS cell as a module whose export, given the module's
+ * `Function`, is Node's module wrapper function, in the given scope (THE
+ * WRAPPER): an ES module when the cell is strict code that reads the same
+ * there (strictModuleCell), else a `{ cjs }` module. A leading shebang
+ * becomes a line comment of the same length (Node strips it too; `#!` is not
+ * valid inside a function).
  */
 export function wrapCommonJsCell(cell, scope = 'function') {
     const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
     const body = hashbang ? '//' + cell.slice(2) : cell;
+    const esModule = strictModuleCell(body);
+    const opening = esModule ? ES_MODULE_HEAD : COMMONJS_HEAD;
     const head = scope === 'function'
-        ? WRAPPER_HEAD
-        : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
+        ? opening
+        : opening + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
     const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-    return { text: head + body + tail, head: head.length, tail: tail.length, hashbang };
+    return { text: head + body + tail, esModule, head: head.length, tail: tail.length, hashbang };
 }
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
 export function columnMapModuleName(name) {
@@ -537,6 +574,11 @@ const {
   runtimeCodeSourceCharge: __nimbusRuntimeCodeSourceCharge,
   sourceColumn: __nimbusEditedSourceColumn,
 } = ${COMMONJS_CELL_HELPERS_SOURCE};
+// A cell module's export (THE WRAPPER): a { cjs } cell's module.exports, an ES cell's default.
+function __nimbusCellFactory(name) {
+  const exported = __nimbusRegistryRequire("./" + name);
+  return typeof exported === "function" ? exported : exported.default;
+}
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
 // null when the launch's map has no such cell. A cell that does not compile
@@ -549,7 +591,7 @@ function __nimbusModuleCell(key) {
   // A staged ES module is the registry's to evaluate (node-shims' __nimbusEsmImport).
   if (!__row || __row[6] === 1) return null;
   try {
-    return __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
+    return __nimbusCellFactory(__row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
   } catch (e) {
     const error = e instanceof __nimbusSyntaxError ? new __nimbusSyntaxError(e.message) : e;
     __nimbusDecorateSyntaxError(error, __row[1]);
@@ -562,7 +604,7 @@ function __nimbusModuleCell(key) {
 // stack leads with where it is, as Node's does (__nimbusDecorateSyntaxError).
 function __nimbusEntryWrapper(name, importer) {
   try {
-    return __nimbusRegistryRequire("./" + name)(globalThis.__nimbusCodeOrigin(importer).Function);
+    return __nimbusCellFactory(name)(globalThis.__nimbusCodeOrigin(importer).Function);
   } catch (e) {
     __nimbusDecorateSyntaxError(e, name);
     throw e;
@@ -597,7 +639,7 @@ function __nimbusModuleNamed(name) {
   let module = __nimbusModules.get(name);
   if (module !== undefined) return module;
   if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
-    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, goal: __nimbusStackEntry[5] === 1 ? "module" : "script", hashbang: false };
   } else {
     if (__nimbusCellsByName === null) {
       __nimbusCellsByName = new __NimbusCellMap();
@@ -605,7 +647,7 @@ function __nimbusModuleNamed(name) {
     }
     const row = __nimbusCellsByName.get(name);
     if (row === undefined) return null;
-    module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, hashbang: row[4] === 1 };
+    module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, goal: row[7] === 1 ? "module" : "script", hashbang: row[4] === 1 };
   }
   __nimbusModules.set(name, module);
   return module;
@@ -778,7 +820,7 @@ class __NimbusInterpretedCallSite {
     this.#file = frame.unit.esModule && !__nimbusStackStartsWith(frame.unit.file, "data:") && !__nimbusStackStartsWith(frame.unit.file, "file:") ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
     const module = {
       name: this.#file, path: frame.unit.file, file: this.#file, frameFile: this.#file,
-      head: 0, tail: 0, esModule: frame.unit.esModule, hashbang: false, columns: null, source: frame.unit.source,
+      head: 0, tail: 0, esModule: frame.unit.esModule, goal: frame.unit.esModule ? "module" : "script", hashbang: false, columns: null, source: frame.unit.source,
     };
     __nimbusInterpretedModules.set(this.#file, module);
     __nimbusInterpretedLocations.set(this, {
@@ -1107,7 +1149,7 @@ function __nimbusRuntimeCodeStaged(key) {
   if (!__nimbusRuntimeKeys.has(key)) return undefined;
   const __env = globalThis.process && globalThis.process.env;
   if (__env && __env.NIMBUS_RUNTIME_CODE === "interpret") return undefined;
-  return __nimbusRegistryRequire("./gen/" + key + ".js");
+  return __nimbusCellFactory("gen/" + key + ".js");
 }
 function __nimbusRuntimeCodeRecord({ source, key }, entry) {
   const __charge = __nimbusRuntimeCodeSourceCharge(source, entry);

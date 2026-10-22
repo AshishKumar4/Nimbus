@@ -17,7 +17,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
-import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { type RuntimeCodeEntry, type WrappedCommonJsCell } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
@@ -501,6 +501,8 @@ export declare function learnedRuntimeCodeWithin(bytes: number, learned: Readonl
     kept: string[];
     over: number;
 };
+/** A module of the map that runs code: its text, and whether it is an ES module or a `{ cjs }` one. */
+type CellModule = Pick<WrappedCommonJsCell, 'text' | 'esModule'>;
 interface FacetVfsBundleSource {
     /** The data cells: an inline expression, or one joining the side modules. */
     expression: string;
@@ -508,6 +510,8 @@ interface FacetVfsBundleSource {
     modules: Record<string, string>;
     /** The code cells as `{ cjs }` module texts, by module name. */
     codeModules: Record<string, string>;
+    /** The code cells that are strict code of their own, as `{ js }` module texts, by module name (commonjs-cell.ts THE WRAPPER). */
+    esCells: Record<string, string>;
     /** The staged ES modules and what they link to, as `{ js }` module texts, by module name (esm-stage.ts). */
     esModules: Record<string, string>;
     /** The JSON of the launch's CommonJsCellRow table. */
@@ -550,8 +554,8 @@ export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, pacer?
     codeOnly?: ReadonlySet<string>;
     /** ES modules carried as files only (FacetVfsState.dataModules): never a `{ cjs }` module. */
     dataModules?: ReadonlySet<string>;
-    /** Runtime code staged for this launch: `{ cjs }` module text by key. */
-    runtimeCode?: ReadonlyMap<string, string>;
+    /** Runtime code staged for this launch: its module text by key, an ES module's or a `{ cjs }` one's. */
+    runtimeCode?: ReadonlyMap<string, CellModule>;
 }): Promise<FacetVfsBundleSource>;
 /**
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
@@ -2335,12 +2339,12 @@ export declare class FacetManager {
     /** Poll for a port registration the in-flight launch has not made yet. */
     private _waitForPort;
     get stats(): {
-        readProfileConflicts: number;
         total: number;
         running: number;
         exited: number;
         killed: number;
         nextPid: number;
+        readProfileConflicts: number;
     };
 }
 export {};

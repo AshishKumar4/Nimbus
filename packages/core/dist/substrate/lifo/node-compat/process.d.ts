@@ -116,21 +116,21 @@ export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     binding: (name: string) => {
         errname: (code: number) => string;
         UV_EOF: number;
-        os?: undefined;
-        fs?: undefined;
-        crypto?: undefined;
+        os?: {};
+        fs?: {};
+        crypto?: {};
     } | {
         errname?: undefined;
         UV_EOF?: undefined;
-        os?: undefined;
-        fs?: undefined;
-        crypto?: undefined;
+        os?: {};
+        fs?: {};
+        crypto?: {};
     } | {
+        errname?: undefined;
+        UV_EOF?: undefined;
         os: {};
         fs: {};
         crypto: {};
-        errname?: undefined;
-        UV_EOF?: undefined;
     };
     allowedNodeEnvironmentFlags: Set<string>;
     features: {

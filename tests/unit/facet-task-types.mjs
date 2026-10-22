@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import ts from 'typescript';
+import { configOptions, programErrors } from './lib/tsrs-program.mjs';
 
 const repo = new URL('../../', import.meta.url).pathname;
 const root = mkdtempSync(join(tmpdir(), 'nimbus-task-types-'));
@@ -31,14 +31,9 @@ pool.submitRequest((request: Request) => new Response(request.url), new Request(
 // @ts-expect-error a fanout task cannot be a live closure
 fanout.submitMany([{key:'one',args:1}], (value: number) => value);
 `);
-  const configPath = join(repo, 'tsconfig.json');
-  const config = ts.readConfigFile(configPath, ts.sys.readFile);
-  assert.equal(config.error, undefined);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, repo);
-  const program = ts.createProgram([entry], { ...parsed.options, noEmit: true, allowImportingTsExtensions: true });
-  const source = program.getSourceFile(entry);
-  const errors = [...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source)];
-  assert.deepEqual(errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n')), [], 'every accepted value and rejected closure is checked');
+  const options = { ...configOptions(join(repo, 'tsconfig.json')), noEmit: true, allowImportingTsExtensions: true };
+  const errors = programErrors({ roots: [entry], options, cwd: repo });
+  assert.deepEqual(errors.map((error) => error.message), [], 'every accepted value and rejected closure is checked');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

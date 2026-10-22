@@ -7,7 +7,7 @@
  */
 import { type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 /** The names a vite.config is looked for under, in order. */
-export declare const VITE_CONFIG_NAMES: readonly ["vite.config.ts", "vite.config.js", "vite.config.mjs"];
+export declare const VITE_CONFIG_NAMES: readonly ['vite.config.ts', 'vite.config.js', 'vite.config.mjs'];
 /** What a vite.config is read through: a project's view, or the dev server's own. */
 export interface ViteConfigReadFs {
     exists(path: string): boolean | Promise<boolean>;

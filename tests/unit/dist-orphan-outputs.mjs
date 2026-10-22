@@ -38,8 +38,8 @@ try {
   writeFileSync(join(pkgDir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { module: 'esnext', target: 'es2022', moduleResolution: 'bundler', skipLibCheck: true }, include: ['src'] }));
   writeFileSync(join(pkgDir, 'src', 'kept.ts'), 'export const kept = 1;\n');
   writeFileSync(join(pkgDir, 'src', 'gone.ts'), 'export const gone = 1;\n');
-  const tsc = join(repo, 'node_modules', '.bin');
-  const run = () => execFileSync('sh', ['-c', build], { cwd: pkgDir, env: { ...process.env, PATH: `${tsc}:${process.env.PATH}` }, stdio: 'pipe' });
+  const bin = join(repo, 'node_modules', '.bin');
+  const run = () => execFileSync('sh', ['-c', build], { cwd: pkgDir, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: 'pipe' });
   run();
   assert.ok(existsSync(join(pkgDir, 'dist', 'gone.js')));
   rmSync(join(pkgDir, 'src', 'gone.ts'));

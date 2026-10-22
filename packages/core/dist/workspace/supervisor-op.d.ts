@@ -211,8 +211,8 @@ declare const NATIVE_OPS: {
     fsFutimes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsSync: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsRealpath: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<string>;
-    fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | import("../vfs/vfs.js").VfsRemoval | Promise<void | import("../vfs/vfs.js").VfsRemoval>;
-    fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number | void>;
+    fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void | import("../vfs/vfs.js").VfsRemoval> | import("../vfs/vfs.js").VfsRemoval;
+    fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void | number>;
     fsCopyTree: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").ExclusiveMutationGrant>;
     fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;

@@ -84,16 +84,16 @@ export declare const DEFAULT_HOSTNAME = "nimbus";
  * honest: the code that runs is wasm, not x86_64.
  */
 export declare const SYSTEM_IDENTITY: {
-    readonly sysname: "Linux";
+    readonly sysname: 'Linux';
     readonly nodename: "nimbus";
-    readonly release: "6.0.0-nimbus";
-    readonly version: "#1 Nimbus";
-    readonly machine: "wasm";
+    readonly release: '6.0.0-nimbus';
+    readonly version: '#1 Nimbus';
+    readonly machine: 'wasm';
 };
 /** What node reports of that system (process.platform and arch, os.platform() and arch()), and npm reads. */
 export declare const NODE_SYSTEM: {
-    readonly platform: "linux";
-    readonly arch: "x64";
+    readonly platform: 'linux';
+    readonly arch: 'x64';
 };
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";

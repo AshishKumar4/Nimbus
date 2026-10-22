@@ -6,15 +6,20 @@
  * Walked from what a build runs: every file under each package's scripts,
  * every script a package.json command names, and the root script files among
  * the inputs. From each, through what it names by a literal (parsed by
- * TypeScript, so comments and spacing cannot hide an edge): a static or
+ * tsrs, so comments and spacing cannot hide an edge): a static or
  * dynamic import, a re-export, a require, and a `new URL(<literal>,
  * import.meta.url)`, the way a script names a file it reads. A reference it
  * cannot resolve to a literal (an import or URL built at run time) is
  * returned as unresolved, for the caller to account for.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
+import {
+  isCallExpression, isExportDeclaration, isIdentifier, isImportDeclaration, isMetaProperty, isNewExpression,
+  isNoSubstitutionTemplateLiteral, isPropertyAccessExpression, isStringLiteral, SyntaxKind,
+} from 'tsrs/unstable/ast';
+import { API } from 'tsrs/unstable/sync';
+import { inNode, RUNS_TSRS_API } from './tsrs-api.mjs';
 
 const SCRIPT = /\.(?:mjs|cjs|js|ts|mts|cts)$/;
 
@@ -23,7 +28,7 @@ const SCRIPT = /\.(?:mjs|cjs|js|ts|mts|cts)$/;
  * @returns {{ reads: string[], uncovered: string[], unresolved: Array<{ file: string, line: number, text: string }> }}
  */
 export function buildReads({ root, packages, inputs }) {
-  const ts = createRequire(import.meta.url)('typescript');
+  if (!RUNS_TSRS_API) return inNode(import.meta.url, 'buildReads', { root, packages, inputs });
   const covered = (rel) => inputs.some((input) => rel === input || rel.startsWith(`${input}/`));
   // A built package's dist is an output the build writes first (generate-wrangler-configs reads config's).
   const output = (rel) => packages.some((pkg) => rel.startsWith(`packages/${pkg}/dist/`));
@@ -54,13 +59,22 @@ export function buildReads({ root, packages, inputs }) {
   }
   for (const input of inputs) if (input.startsWith('scripts/') && SCRIPT.test(input)) visit(join(root, input));
 
-  const literal = (node) => node !== undefined && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : null;
-  const importMetaUrl = (node) => node !== undefined && ts.isPropertyAccessExpression(node) && node.name.text === 'url'
-    && ts.isMetaProperty(node.expression) && node.expression.keywordToken === ts.SyntaxKind.ImportKeyword;
-  while (queue.length > 0) {
-    const rel = queue.shift();
-    if (!SCRIPT.test(rel)) continue;
-    const source = ts.createSourceFile(rel, readFileSync(join(root, rel), 'utf8'), ts.ScriptTarget.Latest, true);
+  const literal = (node) => node !== undefined && (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) ? node.text : null;
+  const importMetaUrl = (node) => node !== undefined && isPropertyAccessExpression(node) && node.name.text === 'url'
+    && isMetaProperty(node.expression) && node.expression.keywordToken === SyntaxKind.ImportKeyword;
+  const api = new API({ cwd: root });
+  try {
+    while (queue.length > 0) walkFile(queue.shift());
+  } finally {
+    api.close();
+  }
+  const reads = [...seen].sort();
+  return { reads, uncovered: reads.filter((rel) => !covered(rel)), unresolved };
+
+  function walkFile(rel) {
+    if (!SCRIPT.test(rel)) return;
+    // Each file parsed by tsrs as its extension says.
+    const source = api.createSourceFile(join(root, rel), readFileSync(join(root, rel), 'utf8')).sourceFile;
     const refer = (specifier, node) => {
       if (specifier === null) {
         unresolved.push({ file: rel, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1, text: node.getText(source).slice(0, 120) });
@@ -69,19 +83,17 @@ export function buildReads({ root, packages, inputs }) {
       }
     };
     const walk = (node) => {
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined) {
+      if ((isImportDeclaration(node) || isExportDeclaration(node)) && node.moduleSpecifier !== undefined) {
         refer(literal(node.moduleSpecifier), node);
-      } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
-        || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
+      } else if (isCallExpression(node) && (node.expression.kind === SyntaxKind.ImportKeyword
+        || (isIdentifier(node.expression) && node.expression.text === 'require'))) {
         refer(literal(node.arguments[0]), node);
-      } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'URL'
+      } else if (isNewExpression(node) && isIdentifier(node.expression) && node.expression.text === 'URL'
         && importMetaUrl(node.arguments?.[1])) {
         refer(literal(node.arguments[0]), node);
       }
-      ts.forEachChild(node, walk);
+      node.forEachChild(walk);
     };
     walk(source);
   }
-  const reads = [...seen].sort();
-  return { reads, uncovered: reads.filter((rel) => !covered(rel)), unresolved };
 }

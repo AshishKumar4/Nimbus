@@ -130,8 +130,8 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     vfsComposedModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     assetModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
         kind: z.ZodEnum<{
-            js: "js";
             cjs: "cjs";
+            js: "js";
         }>;
         source: z.ZodObject<{
             path: z.ZodString;
@@ -170,8 +170,8 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         vfsComposedModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         assetModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
             kind: z.ZodEnum<{
-                js: "js";
                 cjs: "cjs";
+                js: "js";
             }>;
             source: z.ZodObject<{
                 path: z.ZodString;
