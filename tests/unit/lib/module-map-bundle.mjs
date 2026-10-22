@@ -57,8 +57,8 @@ export function moduleMapBundle(modules, entry = modules['worker.js'] ? 'worker.
   const bundle = new Function(...aliases, `return (${declared[1]});`)(...parts);
   for (const [key, name, head, tail, hashbang, adopt] of moduleMapCodeCells(modules, entry)) {
     if (!adopt) continue;
-    const text = cjsText(modules[name]);
-    if (text === undefined) throw new Error(`the map names cell ${name} and carries no such { cjs } module`);
+    const text = cjsText(modules[name]) ?? jsText(modules[name]);
+    if (text === undefined) throw new Error(`the map names cell ${name} and carries no such module`);
     const cell = text.slice(head, text.length - tail);
     bundle[key] = hashbang ? '#!' + cell.slice(2) : cell;
   }

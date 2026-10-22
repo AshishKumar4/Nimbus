@@ -32,6 +32,7 @@ import { RESIDENT_STORE_ENTRY } from '../../../packages/worker/src/node-shims-ar
 import { RUNTIME_NODE_CP_MODULE, RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 import { generateNodeCpModule, generateNodeDnsModule, generateNodeLibModule, generateNodeLibRestModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
+import { loadCell } from './cell-module.mjs';
 
 const PUBLIC = fileURLToPath(new URL('../../../packages/worker/public', import.meta.url));
 const RESIDENT_STORE = readFileSync(join(PUBLIC, RESIDENT_STORE_ENTRY), 'utf8');
@@ -124,14 +125,12 @@ export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
  * The guest's module registry, for a standalone shims factory: every code
  * file the test's bundle holds is one of the launch's module cells, compiled
  * from the store's text with the wrapper a launch gives it
- * (core/_shared/commonjs-cell.ts), as the registry compiles its `{ cjs }`
- * module, once, and given its module's own Function as the guest gives it.
+ * (core/_shared/commonjs-cell.ts), as the registry compiles a module of its
+ * kind (lib/cell-module.mjs), once, and given its module's own Function as
+ * the guest gives it.
  */
 globalThis.__nimbusTestCompileCell = (text, key) => {
-  /** @type {{ exports: unknown }} */
-  const moduleObject = { exports: {} };
-  new Function('module', 'exports', wrapCommonJsCell(text, declaresWrapperBinding(text) ? 'block' : 'function').text)(moduleObject, moduleObject.exports);
-  const factory = /** @type {(moduleFunction: unknown) => unknown} */ (moduleObject.exports);
+  const factory = /** @type {(moduleFunction: unknown) => unknown} */ (loadCell(wrapCommonJsCell(text, declaresWrapperBinding(text) ? 'block' : 'function')));
   return factory(globalThis.__nimbusCodeOrigin(moduleImporterUrl(key)).Function);
 };
 const MODULE_CELLS = `
