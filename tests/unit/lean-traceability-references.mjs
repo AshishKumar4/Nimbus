@@ -4,8 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { isClassDeclaration, isIdentifier } from 'tsrs/unstable/ast';
-import { withTsrs } from './lib/tsrs-program.mjs';
+import { classMemberSpans } from './lib/tsrs-program.mjs';
 
 const repo = new URL('../../', import.meta.url).pathname;
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-composite-references-'));
@@ -26,14 +25,7 @@ try {
   const path = join(scratch, 'packages/core/src/vfs/composite.ts');
   const source = readFileSync(path, 'utf8');
   // Each member's declarations, as [full start, end]: the text a mutation removes.
-  const spans = withTsrs({}, (api) => {
-    const parsed = api.createSourceFile(path, source).sourceFile;
-    const composite = parsed.statements.find((node) => isClassDeclaration(node) && node.name?.text === 'CompositeVFS');
-    assert.ok(composite);
-    return Object.fromEntries(['route', 'feedList'].map((member) => [member, composite.members
-      .filter((node) => node.name && isIdentifier(node.name) && node.name.text === member)
-      .map((node) => [node.getFullStart(), node.end])]));
-  });
+  const spans = classMemberSpans({ path, text: source, className: 'CompositeVFS', members: ['route', 'feedList'] });
   for (const [member, declarations] of Object.entries(spans)) {
     assert.ok(declarations.length > 0, `the mutation target ${member} exists`);
     let without = source;

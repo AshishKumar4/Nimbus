@@ -251,6 +251,7 @@ export const INPUT_ROOTS = [
   'scripts/lib/flock.mjs',
   'scripts/lib/fs-walk.mjs',
   'scripts/lib/output-transaction.mjs',
+  'scripts/lib/tsrs-api.mjs',
   'scripts/clean-dist.mjs',
   'scripts/compile-facet-bodies.mjs',
   'scripts/lib/compiled-bodies.mjs',

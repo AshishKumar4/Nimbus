@@ -19,10 +19,8 @@
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { isCallExpression, isExportDeclaration, isImportDeclaration, isStringLiteral, isStringLiteralLike, SyntaxKind } from 'tsrs/unstable/ast';
-import { JsxEmit } from 'tsrs/unstable/sync';
 import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '../../packages/core/src/runtime/comment-strip.ts';
-import { withTsrs } from './lib/tsrs-program.mjs';
+import { importSpecifiers } from './lib/tsrs-program.mjs';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 
@@ -52,22 +50,6 @@ for (const [name, text] of Object.entries(JSX_SHAPES)) {
   JSX_SHAPES[name.replace(/(\.[a-z]+)$/, '-scoped$1')] = text.replace(/(from\s*|import\(\s*|import\s+)(['"])(?!@)([^'"]+)\2/g, '$1$2@scope/$3$2');
 }
 
-/** The modules `file` imports, as its AST names them. */
-function astSpecifiers(file) {
-  const found = [];
-  const visit = (node) => {
-    if ((isImportDeclaration(node) || isExportDeclaration(node)) && node.moduleSpecifier && isStringLiteral(node.moduleSpecifier)) {
-      found.push(node.moduleSpecifier.text);
-    } else if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword
-      && node.arguments.length > 0 && isStringLiteralLike(node.arguments[0])) {
-      found.push(node.arguments[0].text);
-    }
-    node.forEachChild(visit);
-  };
-  visit(file);
-  return found;
-}
-
 // The fixtures stand at paths of their own under the repository, each parsed by its extension.
 const corpus = Object.entries(JSX_SHAPES).map(([name, text]) => [`import-scan-fixtures/${name}`, text]);
 const fixtures = new Set(corpus.map(([path]) => path));
@@ -80,12 +62,13 @@ for (const path of listed) {
   if (text.length < 1_000_000) corpus.push([path, text]);
 }
 
-// One parse-only program over the corpus: each file's syntax errors and AST.
+// What the parser names in each, in one parse-only program over the corpus.
 // A file that does not parse is left out, as the parser cannot name its imports.
-const parsed = withTsrs({ cwd: ROOT, overlay: Object.fromEntries(corpus.filter(([path]) => fixtures.has(path)).map(([path, text]) => [ROOT + path, text])) }, (api) => {
-  const program = api.createProgram(corpus.map(([path]) => ROOT + path), { allowJs: true, jsx: JsxEmit.Preserve, noResolve: true, noLib: true, types: [], noEmit: true });
-  return new Map(corpus.map(([path]) => [path, program.getSyntacticDiagnostics(ROOT + path).length > 0 ? null : astSpecifiers(program.getSourceFile(ROOT + path))]));
+const named = importSpecifiers({
+  files: corpus.map(([path]) => ROOT + path), cwd: ROOT,
+  overlay: Object.fromEntries(corpus.filter(([path]) => fixtures.has(path)).map(([path, text]) => [ROOT + path, text])),
 });
+const parsed = new Map(corpus.map(([path], i) => [path, named[i]]));
 
 let compared = 0;
 let imports = 0;

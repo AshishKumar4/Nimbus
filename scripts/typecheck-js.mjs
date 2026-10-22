@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 // Type-checks the repo's own JavaScript: the root scripts, every package's
 // scripts and the unit-test helpers (tsconfig.scripts.json: checkJs, with
 // bun's and node's types). Nothing else type-checks them, so an undefined
@@ -11,9 +11,10 @@
 // two environments, not errors.
 //
 // The checker is tsrs, through its API (tsrs/unstable/sync), as the root
-// typecheck is tsrs on the command line.
+// typecheck is tsrs on the command line. The API runs in Node
+// (scripts/lib/tsrs-api.mjs).
 //
-// Usage: bun scripts/typecheck-js.mjs   (exit 1 on any error)
+// Usage: node scripts/typecheck-js.mjs   (exit 1 on any error)
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { API, formatDiagnostics, formatDiagnosticsWithColorAndContext } from 'tsrs/unstable/sync';

@@ -79,7 +79,7 @@ function layout(name, { index, linkTo }) {
   for (const dep of readdirSync(storeSiblings)) {
     if (dep !== '@ashishkumar472') symlinkSync(join(storeSiblings, dep), join(siblings, dep));
   }
-  for (const tool of ['esbuild', 'typescript']) {
+  for (const tool of ['esbuild', 'tsrs']) {
     symlinkSync(realpathSync(join(repoRoot, 'node_modules', tool)), join(root, 'node_modules', tool));
   }
   mkdirSync(join(root, 'packages/worker/node_modules'));
