@@ -8,7 +8,8 @@
 //   browser  a Vite dev module (vite-dev-server.ts): ESM, automatic JSX, the
 //            dev defines, no import() or import.meta support, inline map
 //
-// Each output is compiled and run in Nimbus's CommonJS cell wrapper with every
+// Each output is compiled and run in Nimbus's CommonJS cell wrapper, as the
+// registry evaluates its kind (lib/cell-module.mjs), with every
 // require mocked, and what a program can observe is compared: the requires in
 // order, what it threw, module.exports' keys and each value's type, function
 // name and arity, and __esModule. Text is not compared: the printers differ.
@@ -22,6 +23,7 @@ import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-i
 import { readEsModule } from '../../packages/core/src/runtime/native-esm.ts';
 import { rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/provided-packages.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { loadCell } from './lib/cell-module.mjs';
 import { programLaunchesServer } from '../../packages/core/src/runtime/server-launch.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
@@ -65,9 +67,9 @@ function describe(value) {
  * side effects and its dependencies' is compared too.
  */
 async function observe(code, dependencies = null) {
-  const holder = {};
+  let factory;
   try {
-    new Function('module', wrapCommonJsCell(code, 'block').text)(holder);
+    factory = loadCell(wrapCommonJsCell(code, 'block'));
   } catch (error) {
     return { compiles: false, error: error.name };
   }
@@ -79,7 +81,7 @@ async function observe(code, dependencies = null) {
   const log = console.log;
   console.log = () => {};
   try {
-    const returned = holder.exports(Function).call(module.exports, module.exports, (s) => {
+    const returned = factory(Function).call(module.exports, module.exports, (s) => {
       requires.push(s);
       if (dependencies === null) return anything();
       assert.ok(Object.hasOwn(dependencies, s), `the fixture supplies ${s}`);
