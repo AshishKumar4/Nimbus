@@ -891,6 +891,17 @@ export declare const BASH_RUNNER_CONTRACTS: Readonly<Record<string, {
  * BASH_RUNNER's do.
  */
 export declare const CPYTHON_RUNNER = "cpython-runner@3";
+/** What a CPython build asks of its host (CPYTHON_RUNNER_CONTRACTS). */
+export interface CPythonRunnerContract {
+    /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */
+    readonly restartsWaits: boolean;
+    /**
+     * Its libc raises the signals the host sends it (NIMBUS_ESIGNAL), and its
+     * interpreter asks for them while it computes (nimbus_proc.signal_check):
+     * its process takes its own.
+     */
+    readonly takesSignals: boolean;
+}
 /**
  * The contracts this tree's CPython runner implements, the keys it is
  * registered under, and what each build asks of its host: each build's
@@ -898,9 +909,7 @@ export declare const CPYTHON_RUNNER = "cpython-runner@3";
  * and nimbus_proc since @2), and an instantiation ignores the ones a module
  * does not import.
  */
-export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, {
-    readonly restartsWaits: boolean;
-}>>;
+export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, CPythonRunnerContract>>;
 /** What a git build asks of its host (GIT_RUNNER_CONTRACTS). */
 export interface GitRunnerContract {
     /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */

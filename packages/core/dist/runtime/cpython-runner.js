@@ -326,7 +326,7 @@ export function makeCPythonRunnerFactory(deps) {
                 supervisorPid: ctx.pid,
                 // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
                 cred,
-                restartsWaits: deps.restartsWaits,
+                restartsWaits: deps.contract.restartsWaits,
             };
             // A script or `-m` can bind a port and keep serving, and such a program
             // is not finished when it stops producing output — it is finished when it
@@ -358,7 +358,7 @@ export function makeCPythonRunnerFactory(deps) {
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's write credential.
-            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin' });
+            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin', takesSignals: deps.contract.takesSignals });
             facetArgs.supervisorPid = stdio.pid;
             let exitCode = 1;
             let facet = null;
@@ -389,7 +389,9 @@ export function makeCPythonRunnerFactory(deps) {
                 });
                 // Killed while its image was read: it never starts.
                 stdio.signal.throwIfAborted();
-                const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
+                // A one-shot's process takes its own signals (its stdio's takesSignals); a
+                // resident's is ended by the session, and its image asks for none.
+                const result = await facet.submit(CPYTHON_RUN_TASK, { ...facetArgs, takesSignals: deps.contract.takesSignals }, {
                     signal: stdio.signal,
                 });
                 keys.give(warm, { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted });

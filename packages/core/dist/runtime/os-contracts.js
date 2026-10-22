@@ -177,9 +177,12 @@ export const CPYTHON_RUNNER = 'cpython-runner@3';
  * does not import.
  */
 export const CPYTHON_RUNNER_CONTRACTS = Object.freeze({
-    'cpython-runner': { restartsWaits: false },
-    'cpython-runner@2': { restartsWaits: false },
-    [CPYTHON_RUNNER]: { restartsWaits: true },
+    'cpython-runner': { restartsWaits: false, takesSignals: false },
+    'cpython-runner@2': { restartsWaits: false, takesSignals: false },
+    [CPYTHON_RUNNER]: { restartsWaits: true, takesSignals: false },
+    // A build that takes the signals sent to its process (nimbus-libc's signal
+    // raiser, and CPython's periodic check, nimbus_proc.signal_check).
+    'cpython-runner@4': { restartsWaits: true, takesSignals: true },
 });
 /**
  * Git's runner keys, and what each build asks of its host. The first imports
