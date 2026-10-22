@@ -310,6 +310,19 @@ const FOUND = {
       ['sync', 'chmod', 'x/h', 0o600], ['stall'], ['release', 'wave'], ['input'], ['release'], ['peer', 'write', 'x/f', 'c8134.3'], ['sync', 'stat', 'x/e/g'], ['hold', 'delivery'],
       ['release'], ['own', 'stat', 'd/e/g'], ['own', 'pread', 'big', 4200000]],
   },
+  'a name beneath a mount with no feed made over directories the process read is the session\'s (8474)': {
+    park: 8474,
+    schedule: [['own', 'readFile', 'x'], ['own', 'pread', 'big', 0], ['peer', 'mount', '', 'unfed', { d: null, x: null, top: 'm8474.4', new: 'm8474.5', 'd/n': 'm8474.6', 'x/h': 'm8474.7', 'x/f': 'm8474.8' }],
+      ['own', 'stat', 'd/e'], ['own', 'stat', 'd/e/g'], ['sync', 'stat', 'x/h']],
+  },
+  'a directory the process made again lists no name before its write is made (8576)': {
+    park: 8576,
+    schedule: [['sync', 'chmod', 'd', 0o750], ['own', 'mkdir', 'z'], ['own', 'chmod', 'z', 0o700], ['sync', 'rmdir', 'z'], ['own', 'mkdir', 'z'], ['own', 'write', 'z/g', 'c8576.3'], ['sync', 'readdir', 'z']],
+  },
+  'a directory root shut and took is refused to a read that cannot wait (8354)': {
+    park: 8354,
+    schedule: [['root', 'chmod', 'x', 0o700], ['own', 'readdir', 'd/n'], ['release'], ['root', 'chown', 'x', 0], ['input'], ['input'], ['own', 'pread', 'big', 8400000], ['sync', 'readFile', 'x']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
@@ -418,6 +431,18 @@ const GAPS = {
   'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [holder]': {
     lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
     shows: 'sync stat x answered null',
+  },
+  'a name beneath a mount with no feed made over directories the process read is the session\'s (8474) [holder]': {
+    lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over directories it had read, absent (7696\'s class, open)',
+    shows: 'sync stat x/h answered null',
+  },
+  'a directory the process made again lists no name before its write is made (8576) [node]': {
+    lacks: 'S lists, in a directory the process removed and made again, a name its own write in flight has not made yet (5891\'s class; closed by the cutover: one own state, RF\'s)',
+    shows: 'sync readdir z answered ["g"]',
+  },
+  'a directory root shut and took is refused to a read that cannot wait (8354) [node]': {
+    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (7451\'s class, which main has; closed by the cutover)',
+    shows: 'sync readFile x answered EISDIR',
   },
   'a file read after a peer changed its mode is held for a call that cannot wait (7896) [eager]': {
     lacks: 'the eager engine reads a file a peer just changed the mode of by its old revision (ESTALE) and holds no bytes for the next call that cannot wait (main does the same; found by the mount sweep, its schedule has no mount)',
