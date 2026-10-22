@@ -65,7 +65,7 @@ import { type SupervisorAllocationBudgetStats } from './heavy-alloc-coord.js';
  * events against the well-known set.
  *
  */
-export declare const WORKERD_EVICTION_LABELS: readonly ["lru", "condemned", "inactive", "dynamic_worker", "dynamic_worker_banned"];
+export declare const WORKERD_EVICTION_LABELS: readonly ['lru', 'condemned', 'inactive', 'dynamic_worker', 'dynamic_worker_banned'];
 /**
  * A supervisor allocation site the estimator cannot see.
  *

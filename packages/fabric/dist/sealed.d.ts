@@ -54,7 +54,7 @@ export declare function sealRpcSurface<Instance extends object>(instance: Instan
  * exposes nothing new; the WebSocket handlers' arguments cannot cross an
  * RPC boundary anyway.
  */
-export declare const PLATFORM_RPC_SURFACE: readonly ["fetch", "setName", "_initAndFetch", "alarm", "webSocketMessage", "webSocketClose", "webSocketError"];
+export declare const PLATFORM_RPC_SURFACE: readonly ['fetch', 'setName', '_initAndFetch', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError'];
 /**
  * The Agents SDK's own cross-stub facet protocol at agents@0.20.1: every
  * `_cf_` method the SDK calls on a receiver that is not `this`, derived
@@ -63,7 +63,7 @@ export declare const PLATFORM_RPC_SURFACE: readonly ["fetch", "setName", "_initA
  * cross-called). An Agent that hosts SDK facets must keep these; one that
  * does not (Proteus's UserDO) should not carry them at all.
  */
-export declare const AGENTS_FACET_RPC_SURFACE: readonly ["_cf_acquireFacetKeepAlive", "_cf_broadcastToSubAgent", "_cf_cancelScheduleForFacet", "_cf_checkRunFibersForFacet", "_cf_cleanupFacetPrefix", "_cf_closeSubAgentConnection", "_cf_destroyDescendantFacet", "_cf_dispatchScheduledCallback", "_cf_getScheduleForFacet", "_cf_handleSubAgentWebSocketClose", "_cf_handleSubAgentWebSocketConnect", "_cf_handleSubAgentWebSocketMessage", "_cf_initAsFacet", "_cf_listSchedulesForFacet", "_cf_registerFacetRun", "_cf_releaseFacetKeepAlive", "_cf_scheduleEveryForFacet", "_cf_scheduleForFacet", "_cf_sendToSubAgentConnection", "_cf_setSubAgentConnectionState", "_cf_subAgentConnectionMetas", "_cf_unregisterFacetRun"];
+export declare const AGENTS_FACET_RPC_SURFACE: readonly ['_cf_acquireFacetKeepAlive', '_cf_broadcastToSubAgent', '_cf_cancelScheduleForFacet', '_cf_checkRunFibersForFacet', '_cf_cleanupFacetPrefix', '_cf_closeSubAgentConnection', '_cf_destroyDescendantFacet', '_cf_dispatchScheduledCallback', '_cf_getScheduleForFacet', '_cf_handleSubAgentWebSocketClose', '_cf_handleSubAgentWebSocketConnect', '_cf_handleSubAgentWebSocketMessage', '_cf_initAsFacet', '_cf_listSchedulesForFacet', '_cf_registerFacetRun', '_cf_releaseFacetKeepAlive', '_cf_scheduleEveryForFacet', '_cf_scheduleForFacet', '_cf_sendToSubAgentConnection', '_cf_setSubAgentConnectionState', '_cf_subAgentConnectionMetas', '_cf_unregisterFacetRun'];
 /**
  * Cross-stub `_cf_` members deliberately absent from EVERY surface: each
  * takes a method NAME and calls it on the receiver, which would re-open
@@ -74,5 +74,5 @@ export declare const AGENTS_FACET_RPC_SURFACE: readonly ["_cf_acquireFacetKeepAl
  * only ever self-called in the pinned dist, but it is prototype-defined, so
  * it is named here and sealed.)
  */
-export declare const AGENTS_INVOKE_BRIDGES: readonly ["_cf_invokeAgentPath", "_cf_invokeStubMethod", "_cf_invokeSubAgent", "_cf_invokeSubAgentPath"];
+export declare const AGENTS_INVOKE_BRIDGES: readonly ['_cf_invokeAgentPath', '_cf_invokeStubMethod', '_cf_invokeSubAgent', '_cf_invokeSubAgentPath'];
 //# sourceMappingURL=sealed.d.ts.map

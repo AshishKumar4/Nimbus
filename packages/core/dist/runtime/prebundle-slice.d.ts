@@ -54,9 +54,9 @@ export declare const PREBUNDLE_DEFINE: Readonly<Record<string, string>>;
 /** A pre-bundle's build options, but its entry: what its output is a function of, beside its slice and externals. */
 export declare function prebundleBuildOptions(define: Readonly<Record<string, string>> | undefined): {
     bundle: boolean;
-    format: "esm";
+    format: 'esm';
     target: string;
-    platform: "browser";
+    platform: 'browser';
     conditions: string[];
     mainFields: string[];
     define: {

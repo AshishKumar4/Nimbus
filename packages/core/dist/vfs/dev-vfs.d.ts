@@ -32,7 +32,7 @@ export declare class DevVFS implements VFS {
     describe(): {
         source: string;
         type: string;
-        options: readonly ["rw"];
+        options: readonly ['rw'];
     };
 }
 //# sourceMappingURL=dev-vfs.d.ts.map

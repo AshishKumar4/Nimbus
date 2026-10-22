@@ -36,7 +36,7 @@ export declare function hopInit(hop: RedirectHop<string>, signal: AbortSignal): 
  * supplied one). With no kernel, every hop goes through the isolate's own
  * network.
  */
-export declare function sendHop(kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback' | 'network'> & Partial<Pick<Kernel, 'dns'>> | undefined, pid: number, url: URL, init: RequestInit): Promise<WorkspaceRequestResult>;
+export declare function sendHop(kernel: (Pick<Kernel, 'portRegistry' | 'routeLoopback' | 'network'> & Partial<Pick<Kernel, 'dns'>>) | undefined, pid: number, url: URL, init: RequestInit): Promise<WorkspaceRequestResult>;
 /** Where a command's walk ended: its final response and the URL it came from, the hop that failed, or the cap. */
 export type RedirectWalkResult = RedirectWalk<'refused' | 'aborted' | 'timeout'>;
 /**

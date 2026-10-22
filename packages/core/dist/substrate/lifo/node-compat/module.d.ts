@@ -10,7 +10,7 @@
  * npm packages the module map serves itself (index.ts): required by name, as
  * a built-in is, but no part of Node's core, so not in builtinModules.
  */
-export declare const PROVIDED_PACKAGES: readonly ["rimraf", "esbuild"];
+export declare const PROVIDED_PACKAGES: readonly ['rimraf', 'esbuild'];
 /** Whether the module map's `name` is a provided npm package rather than a core module. */
 export declare function isProvidedPackage(name: string): boolean;
 /**

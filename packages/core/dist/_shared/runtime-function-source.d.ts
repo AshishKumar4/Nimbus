@@ -10,10 +10,10 @@
 import { type FunctionExpression, type Options } from 'acorn';
 /** The constructors whose text a program can hand in at runtime. */
 export declare const RUNTIME_FUNCTION_HEADS: {
-    readonly function: "function";
-    readonly async: "async function";
-    readonly generator: "function*";
-    readonly asyncGenerator: "async function*";
+    readonly function: 'function';
+    readonly async: 'async function';
+    readonly generator: 'function*';
+    readonly asyncGenerator: 'async function*';
 };
 export type RuntimeFunctionKind = keyof typeof RUNTIME_FUNCTION_HEADS;
 /** The built-ins this module's checks use, as the caller has them. */

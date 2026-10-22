@@ -6,8 +6,8 @@ import { z } from 'zod/v4';
  */
 export declare const OpencodeStageSpecSchema: z.ZodObject<{
     mode: z.ZodEnum<{
-        oneshot: "oneshot";
         attached: "attached";
+        oneshot: "oneshot";
         server: "server";
     }>;
     argv: z.ZodArray<z.ZodString>;

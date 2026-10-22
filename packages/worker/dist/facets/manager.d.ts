@@ -2339,12 +2339,12 @@ export declare class FacetManager {
     /** Poll for a port registration the in-flight launch has not made yet. */
     private _waitForPort;
     get stats(): {
-        readProfileConflicts: number;
         total: number;
         running: number;
         exited: number;
         killed: number;
         nextPid: number;
+        readProfileConflicts: number;
     };
 }
 export {};

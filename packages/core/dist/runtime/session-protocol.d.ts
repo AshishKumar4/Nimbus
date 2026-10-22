@@ -115,8 +115,8 @@ export declare const RuntimeStatSchema: z.ZodObject<{
     ino: z.ZodNumber;
     nlink: z.ZodNumber;
     type: z.ZodEnum<{
-        file: "file";
         directory: "directory";
+        file: "file";
         symlink: "symlink";
     }>;
     size: z.ZodNumber;
@@ -176,8 +176,8 @@ export declare const SessionProcessLogChunkSchema: z.ZodObject<{
     seq: z.ZodNumber;
     ts: z.ZodNumber;
     stream: z.ZodEnum<{
-        stdout: "stdout";
         stderr: "stderr";
+        stdout: "stdout";
     }>;
     data: z.ZodString;
     binary: z.ZodOptional<z.ZodBoolean>;
@@ -201,8 +201,8 @@ export declare const SessionProcessLogsSchema: z.ZodObject<{
         seq: z.ZodNumber;
         ts: z.ZodNumber;
         stream: z.ZodEnum<{
-            stdout: "stdout";
             stderr: "stderr";
+            stdout: "stdout";
         }>;
         data: z.ZodString;
         binary: z.ZodOptional<z.ZodBoolean>;
@@ -218,8 +218,8 @@ export declare const SessionProcessLogsSchema: z.ZodObject<{
 }, z.core.$strip>;
 export type SessionProcessLogs = z.infer<typeof SessionProcessLogsSchema>;
 export declare const SessionVisibilitySchema: z.ZodEnum<{
-    scoped: "scoped";
     public: "public";
+    scoped: "scoped";
 }>;
 export type SessionAppVisibility = z.infer<typeof SessionVisibilitySchema>;
 export declare const SessionRestartPolicySchema: z.ZodEnum<{
@@ -234,8 +234,8 @@ export declare const SessionExposedPortSchema: z.ZodObject<{
     registeredAt: z.ZodNullable<z.ZodNumber>;
     capability: z.ZodNullable<z.ZodString>;
     visibility: z.ZodOptional<z.ZodEnum<{
-        scoped: "scoped";
         public: "public";
+        scoped: "scoped";
     }>>;
     owner: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
@@ -248,8 +248,8 @@ export declare const SessionExposedAppSchema: z.ZodObject<{
     pid: z.ZodNullable<z.ZodNumber>;
     capability: z.ZodNullable<z.ZodString>;
     visibility: z.ZodEnum<{
-        scoped: "scoped";
         public: "public";
+        scoped: "scoped";
     }>;
     url: z.ZodNullable<z.ZodString>;
     execId: z.ZodOptional<z.ZodString>;
@@ -261,14 +261,14 @@ export declare const SessionAppSchema: z.ZodObject<{
     port: z.ZodNullable<z.ZodNumber>;
     pid: z.ZodNullable<z.ZodNumber>;
     status: z.ZodEnum<{
+        failed: "failed";
         running: "running";
         starting: "starting";
         stopped: "stopped";
-        failed: "failed";
     }>;
     visibility: z.ZodEnum<{
-        scoped: "scoped";
         public: "public";
+        scoped: "scoped";
     }>;
     capability: z.ZodNullable<z.ZodString>;
     restart: z.ZodEnum<{
@@ -513,8 +513,8 @@ declare const SessionResultSchemas: {
             seq: z.ZodNumber;
             ts: z.ZodNumber;
             stream: z.ZodEnum<{
-                stdout: "stdout";
                 stderr: "stderr";
+                stdout: "stdout";
             }>;
             data: z.ZodString;
             binary: z.ZodOptional<z.ZodBoolean>;
@@ -542,8 +542,8 @@ declare const SessionResultSchemas: {
         registeredAt: z.ZodNullable<z.ZodNumber>;
         capability: z.ZodNullable<z.ZodString>;
         visibility: z.ZodOptional<z.ZodEnum<{
-            scoped: "scoped";
             public: "public";
+            scoped: "scoped";
         }>>;
         owner: z.ZodOptional<z.ZodNullable<z.ZodString>>;
         name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
@@ -556,8 +556,8 @@ declare const SessionResultSchemas: {
         pid: z.ZodNullable<z.ZodNumber>;
         capability: z.ZodNullable<z.ZodString>;
         visibility: z.ZodEnum<{
-            scoped: "scoped";
             public: "public";
+            scoped: "scoped";
         }>;
         url: z.ZodNullable<z.ZodString>;
         execId: z.ZodOptional<z.ZodString>;
@@ -568,14 +568,14 @@ declare const SessionResultSchemas: {
         port: z.ZodNullable<z.ZodNumber>;
         pid: z.ZodNullable<z.ZodNumber>;
         status: z.ZodEnum<{
+            failed: "failed";
             running: "running";
             starting: "starting";
             stopped: "stopped";
-            failed: "failed";
         }>;
         visibility: z.ZodEnum<{
-            scoped: "scoped";
             public: "public";
+            scoped: "scoped";
         }>;
         capability: z.ZodNullable<z.ZodString>;
         restart: z.ZodEnum<{
@@ -593,8 +593,8 @@ declare const SessionResultSchemas: {
         pid: z.ZodNullable<z.ZodNumber>;
         capability: z.ZodNullable<z.ZodString>;
         visibility: z.ZodEnum<{
-            scoped: "scoped";
             public: "public";
+            scoped: "scoped";
         }>;
         url: z.ZodNullable<z.ZodString>;
         execId: z.ZodOptional<z.ZodString>;
@@ -608,8 +608,8 @@ declare const SessionResultSchemas: {
         port: z.ZodNumber;
         capability: z.ZodNullable<z.ZodString>;
         visibility: z.ZodEnum<{
-            scoped: "scoped";
             public: "public";
+            scoped: "scoped";
         }>;
     }, z.core.$strip>;
     removeDurableApp: z.ZodObject<{

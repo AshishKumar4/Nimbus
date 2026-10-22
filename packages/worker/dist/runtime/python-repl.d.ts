@@ -79,7 +79,6 @@ export interface PythonReplDeps {
  * shell's working directory, which the facet runs once per interpreter.
  */
 export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid' | 'cred' | 'restartsWaits'>, pythonHome: string, userCode: string): {
-    enter?: string | undefined;
     userCode: string;
     cred: Readonly<VfsCred> | undefined;
     restartsWaits: boolean;
@@ -100,6 +99,7 @@ export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'star
         PYTHONUNBUFFERED: string;
     };
     progName: string;
+    enter?: string | undefined;
 };
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
 /**

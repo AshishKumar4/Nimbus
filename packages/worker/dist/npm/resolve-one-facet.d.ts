@@ -188,14 +188,14 @@ export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
          */
         getPackument: (name: string, options: PackumentReadOptions) => Promise<{
             json: string | null;
-            source: "r2-cache" | "network";
+            source: 'r2-cache' | 'network';
             events: Array<{
-                kind: "hit";
+                kind: 'hit';
                 tier: string;
                 cacheKind: string;
                 bytes: number;
             } | {
-                kind: "miss";
+                kind: 'miss';
                 tier: string;
                 cacheKind: string;
             }>;

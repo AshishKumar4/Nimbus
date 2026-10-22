@@ -219,7 +219,7 @@ export declare function rpcProcessLogs(self: ProgrammaticHost, pid: number, opti
     chunks: {
         seq: number;
         ts: number;
-        stream: "stdout" | "stderr";
+        stream: "stderr" | "stdout";
         data: string;
         binary?: boolean | undefined;
     }[];
@@ -262,7 +262,7 @@ export declare function rpcExposePort(self: ProgrammaticHost, port: number, opti
     pid: number | null;
     registeredAt: number | null;
     capability: string | null;
-    visibility: "scoped" | "public";
+    visibility: "public" | "scoped";
     owner: string | null;
     name: string | null;
 }>;
@@ -289,9 +289,9 @@ export declare function rpcListApps(self: ProgrammaticHost): Promise<SessionApp[
  * directory — `removeDurableApp`, addressed by any target.
  */
 export declare function rpcRemoveApp(self: ProgrammaticHost, target: SessionAppTarget): Promise<{
-    removed: boolean;
     owner: string;
     port: number | null;
+    removed: boolean;
 }>;
 /**
  * The embedder's durable-application seam: reserve (or re-answer) the port

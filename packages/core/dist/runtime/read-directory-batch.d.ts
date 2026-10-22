@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
-export declare const DIRECTORY_READ_RPC: "fsReadDirectories";
+export declare const DIRECTORY_READ_RPC: 'fsReadDirectories';
 declare const Request: z.ZodObject<{
     channel: z.ZodString;
     sequence: z.ZodNumber;

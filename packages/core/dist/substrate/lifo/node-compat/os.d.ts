@@ -30,7 +30,7 @@ export declare function createOs(env: Record<string, string>): {
         shell: string;
     };
     EOL: string;
-    endianness: () => "LE";
+    endianness: () => 'LE';
     constants: {
         signals: Record<string, number>;
         errno: Record<string, number>;

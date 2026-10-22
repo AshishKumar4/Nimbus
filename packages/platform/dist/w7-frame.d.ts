@@ -339,9 +339,9 @@ export declare const W7_MAX_RECORD_BYTES: number;
 export declare function w7ChunkCount(size: number): number;
 /** `data`, the content at `path`, as its wire chunks (w7ChunkCount): views of it, not copies. */
 export declare function w7Chunks(path: string, data: Uint8Array): BatchChunkEntry[];
-declare const MODE: "program-order-committed-prefix";
+declare const MODE: 'program-order-committed-prefix';
 /** v3's batch mode. Delete with v3 decoding. */
-declare const MODE_V3: "path-atomic-committed-prefix";
+declare const MODE_V3: 'path-atomic-committed-prefix';
 type W7Mode = typeof MODE | typeof MODE_V3;
 export interface W7BatchSummary {
     recordCount: number;

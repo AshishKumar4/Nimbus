@@ -327,19 +327,19 @@ export declare class NimbusSandbox {
          * a dev server, a python resident — is written port-only as before.
          */
         expose: (port: number, options?: {
-            visibility?: "scoped" | "public";
+            visibility?: 'scoped' | 'public';
             name?: string;
         }) => Promise<{
-            url: string | undefined;
             port: number;
             listening: boolean;
             pid: number | null;
             registeredAt: number | null;
             capability: string | null;
-            visibility?: "scoped" | "public" | undefined;
+            visibility?: "public" | "scoped" | undefined;
             owner?: string | null | undefined;
             name?: string | null | undefined;
             execId?: string | undefined;
+            url: string | undefined;
         }>;
         unexpose: (port: number) => Promise<{
             port: number;
@@ -353,7 +353,7 @@ export declare class NimbusSandbox {
         ensureDurableApp: (input: NimbusDurableAppOptions) => Promise<{
             port: number;
             capability: string | null;
-            visibility: "scoped" | "public";
+            visibility: "public" | "scoped";
         }>;
         /**
          * End a durable application's contract: its launch is killed, the journal
@@ -367,7 +367,7 @@ export declare class NimbusSandbox {
             port: number | null;
         }>;
         url: (port: number, options?: {
-            visibility?: "scoped" | "public";
+            visibility?: 'scoped' | 'public';
             capability?: string;
             name?: string;
         }) => string | undefined;
@@ -382,7 +382,7 @@ export declare class NimbusSandbox {
     apps: {
         list: () => Promise<NimbusApp[]>;
         expose: (target: NimbusAppTarget, options?: {
-            visibility?: "scoped" | "public";
+            visibility?: 'scoped' | 'public';
             name?: string;
         }) => Promise<NimbusExposedApp>;
         rotateLink: (target: NimbusAppTarget) => Promise<NimbusExposedApp>;
@@ -417,7 +417,7 @@ export declare class NimbusSandbox {
                 }>;
             };
             runCode: {
-                execute: (code: string, opts?: Parameters<NimbusSandbox["runCode"]>[1]) => Promise<{
+                execute: (code: string, opts?: Parameters<NimbusSandbox['runCode']>[1]) => Promise<{
                     command: string;
                     exitCode: number;
                     success: boolean;
@@ -543,7 +543,7 @@ export declare class NimbusSandbox {
                     chunks: {
                         seq: number;
                         ts: number;
-                        stream: "stdout" | "stderr";
+                        stream: "stderr" | "stdout";
                         data: string;
                         binary?: boolean | undefined;
                     }[];
@@ -561,16 +561,16 @@ export declare class NimbusSandbox {
                 execute: (input: number | {
                     port: number;
                 }) => Promise<{
-                    url: string | undefined;
                     port: number;
                     listening: boolean;
                     pid: number | null;
                     registeredAt: number | null;
                     capability: string | null;
-                    visibility?: "scoped" | "public" | undefined;
+                    visibility?: "public" | "scoped" | undefined;
                     owner?: string | null | undefined;
                     name?: string | null | undefined;
                     execId?: string | undefined;
+                    url: string | undefined;
                 }>;
             };
             unexposePort: {
@@ -593,7 +593,7 @@ export declare class NimbusSandbox {
             exposeApp: {
                 execute: (input: NimbusAppTarget | {
                     target: NimbusAppTarget;
-                    visibility?: "scoped" | "public";
+                    visibility?: 'scoped' | 'public';
                     name?: string;
                 }) => Promise<NimbusExposedApp>;
             };
