@@ -293,6 +293,10 @@ const FOUND = {
       ['own', 'readFile', 'mid'], ['peer', 'chmod', 'top', 0o644], ['release', 'acquire'], ['own', 'stat', 'd'], ['hold', 'listing'], ['peer', 'chmod', 'd', 0o700], ['root', 'chown', 'x', 0],
       ['hold', 'listing'], ['peer', 'mkdir', 'z'], ['input'], ['own', 'unlink', 'top'], ['sync', 'readFile', 'z'], ['own', 'readFile', 'x'], ['sync', 'stat', 'z/k'], ['release', 'wave']],
   },
+  'a file read after a peer changed its mode is held for a call that cannot wait (7896)': {
+    park: 7896,
+    schedule: [['peer', 'chmod', 'd/e/g', 0o644], ['own', 'readFile', 'd/e/g'], ['input'], ['sync', 'readFile', 'd/e/g']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
@@ -393,6 +397,10 @@ const GAPS = {
   'a file read after the session\'s database restarted is held for a call that cannot wait (7519) [eager]': {
     lacks: 'after the session\'s database restarts, the eager engine does not hold the bytes of a file its process then read awaited (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/f answered EAGAIN',
+  },
+  'a file read after a peer changed its mode is held for a call that cannot wait (7896) [eager]': {
+    lacks: 'the eager engine reads a file a peer just changed the mode of by its old revision (ESTALE) and holds no bytes for the next call that cannot wait (main does the same; found by the mount sweep, its schedule has no mount)',
+    shows: 'sync readFile d/e/g answered EAGAIN',
   },
   'an awaited read of a directory the process lists is answered, not refused (7597) [node]': {
     lacks: 'S refuses an awaited read of a directory EAGAIN while its listing is held (main does too; closed by the cutover: RF waits for the session)',
