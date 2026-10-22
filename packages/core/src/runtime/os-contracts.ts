@@ -960,11 +960,13 @@ export const BASH_RUNNER_CONTRACTS: Readonly<Record<string, { readonly restartsW
  * which an older runner does not give the module, so it is `@2`; 3.13.14-1
  * and before were published under `cpython-runner`. 3.13.14-3 asks again a
  * read or write its host gave up on (nimbus-libc's restart wrappers), which
- * a host may answer only to it, so it is `@3`. A rebuild that changes what
- * the module imports, exports or asks of its host takes the next number, as
- * BASH_RUNNER's do.
+ * a host may answer only to it, so it is `@3`. 3.13.14-4 takes the signals
+ * sent to its process (nimbus-libc's signal raiser, and CPython's periodic
+ * check, nimbus_proc.signal_check), which a host sends only to it, so it is
+ * `@4`. A rebuild that changes what the module imports, exports or asks of
+ * its host takes the next number, as BASH_RUNNER's do.
  */
-export const CPYTHON_RUNNER = 'cpython-runner@3';
+export const CPYTHON_RUNNER = 'cpython-runner@4';
 
 /** What a CPython build asks of its host (CPYTHON_RUNNER_CONTRACTS). */
 export interface CPythonRunnerContract {
@@ -988,10 +990,8 @@ export interface CPythonRunnerContract {
 export const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, CPythonRunnerContract>> = Object.freeze({
   'cpython-runner': { restartsWaits: false, takesSignals: false },
   'cpython-runner@2': { restartsWaits: false, takesSignals: false },
-  [CPYTHON_RUNNER]: { restartsWaits: true, takesSignals: false },
-  // A build that takes the signals sent to its process (nimbus-libc's signal
-  // raiser, and CPython's periodic check, nimbus_proc.signal_check).
-  'cpython-runner@4': { restartsWaits: true, takesSignals: true },
+  'cpython-runner@3': { restartsWaits: true, takesSignals: false },
+  [CPYTHON_RUNNER]: { restartsWaits: true, takesSignals: true },
 });
 
 /** What a git build asks of its host (GIT_RUNNER_CONTRACTS). */
