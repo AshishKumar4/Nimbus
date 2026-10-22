@@ -1150,8 +1150,8 @@ const __fsMod = (() => {
   function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
     // A generated /proc file is made here at each read, by the session's own generator (core vfs/proc-files.ts).
-    if (k.startsWith("proc/") && _nsActive() && _statLadder(absPath)?.isFile()) {
-      const generate = __nimbusResidentModule.procFileGenerator(k.slice(5));
+    if (__pathStartsWith(k, "proc/") && _nsActive() && _statLadder(absPath)?.isFile()) {
+      const generate = __nimbusResidentModule.procFileGenerator(__pathSlice(k, 5));
       if (generate !== undefined) {
         const made = generate(null);
         return typeof made === "string" ? made : made.slice();
@@ -2404,7 +2404,7 @@ const __fsMod = (() => {
     return at === _cursor.position || (at !== null && _cursor.position !== null && __nimbusResidentModule.samePosition(at, _cursor.position));
   }
   /** \`k\`'s feed's revision at \`at\` (a position the cursor held), 0 before the cursor has one. */
-  function _feedRevAt(at, k) { return at === null ? 0 : __nimbusResidentModule.feedFor(at, k).cursor; }
+  function _feedRevAt(at, k) { return at === null || typeof __nimbusResidentModule === "undefined" ? 0 : __nimbusResidentModule.feedFor(at, k).cursor; }
   // Admissions under way: from a delta's admission until the last directory
   // it made searchable is relisted, the cursor can be past rows the
   // namespace does not hold yet. Nothing is answered from the view then (_heldStat).

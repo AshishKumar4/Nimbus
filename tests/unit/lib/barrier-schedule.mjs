@@ -678,6 +678,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const unfedAt = (rel, from, to) => model.worldsSeen(rel, from, to).some((world) => underUnfed(world, rel));
   const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
     if (gaps.unfedMountSnapshot && unfedAt(rel, from, to)) return;
+    // A name beneath a mount with no feed is the session's to answer: a call that cannot wait is refused it.
+    if (answer?.code === 'EAGAIN' && way === 'sync' && unfedAt(rel, from, to)) return;
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     if (gaps.refusedWhileRelisted && way === 'own' && answer?.code === 'EAGAIN' && transport.inFlight('listing') > 0) return;
