@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import ts from 'typescript';
+import { classMemberSpans } from './lib/tsrs-program.mjs';
 
 const repo = new URL('../../', import.meta.url).pathname;
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-composite-references-'));
@@ -24,14 +24,12 @@ try {
   assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
   const path = join(scratch, 'packages/core/src/vfs/composite.ts');
   const source = readFileSync(path, 'utf8');
-  const parsed = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const composite = parsed.statements.find((node) => ts.isClassDeclaration(node) && node.name?.text === 'CompositeVFS');
-  assert.ok(composite);
-  for (const member of ['route', 'feedList']) {
-    const declarations = composite.members.filter((node) => node.name && ts.isIdentifier(node.name) && node.name.text === member);
+  // Each member's declarations, as [full start, end]: the text a mutation removes.
+  const spans = classMemberSpans({ path, text: source, className: 'CompositeVFS', members: ['route', 'feedList'] });
+  for (const [member, declarations] of Object.entries(spans)) {
     assert.ok(declarations.length > 0, `the mutation target ${member} exists`);
     let without = source;
-    for (const declaration of [...declarations].reverse()) without = without.slice(0, declaration.getFullStart()) + without.slice(declaration.end);
+    for (const [start, end] of [...declarations].reverse()) without = without.slice(0, start) + without.slice(end);
     writeFileSync(path, without);
     assert.equal(check().status, 1, `losing ${member} must invalidate the manifest`);
     writeFileSync(path, source);

@@ -25,7 +25,7 @@
  */
 import type { ParsedViteConfig } from './vite-config-parser.js';
 /** The compiler options a tsconfig gives esbuild through Vite: what changes a module's output. */
-export declare const MEANINGFUL_TSCONFIG_FIELDS: readonly ["alwaysStrict", "experimentalDecorators", "importsNotUsedAsValues", "jsx", "jsxFactory", "jsxFragmentFactory", "jsxImportSource", "preserveValueImports", "target", "useDefineForClassFields", "verbatimModuleSyntax"];
+export declare const MEANINGFUL_TSCONFIG_FIELDS: readonly ['alwaysStrict', 'experimentalDecorators', 'importsNotUsedAsValues', 'jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource', 'preserveValueImports', 'target', 'useDefineForClassFields', 'verbatimModuleSyntax'];
 /** What Vite keeps supported whatever the target: `import()` and `import.meta` stay as written. */
 export declare const DEFAULT_ESBUILD_SUPPORTED: Readonly<Record<string, boolean>>;
 /** What the dev server knows of a project's vite.config for the esbuild plugin. */

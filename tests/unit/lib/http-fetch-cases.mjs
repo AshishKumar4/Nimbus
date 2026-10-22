@@ -92,7 +92,7 @@ export async function httpFetchCases(http) {
     }
     const signalled = request('/abort', undefined, { signal: AbortSignal.abort('reason') });
     const signalEvents = [];
-    const signalledClose = new Promise((resolve) => signalled.on('close', () => { signalEvents.push('close'); resolve(); }));
+    const signalledClose = new Promise((resolve) => signalled.on('close', () => { signalEvents.push('close'); resolve(undefined); }));
     signalled.on('error', (error) => signalEvents.push([error.name, error.code, error.message, error.cause, Object.keys(error)]));
     signalled.end();
     await signalledClose;

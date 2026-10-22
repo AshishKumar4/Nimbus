@@ -40,9 +40,9 @@
     "NOTICE.md"
   ],
   "scripts": {
-    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",
+    "build": "node ../../scripts/clean-dist.mjs && tsrs -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "dependencies": {
     "@nimbus-sh/config": "^0.3.2",
@@ -54,7 +54,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   },
   "publishConfig": {
     "access": "public"

@@ -107,12 +107,12 @@ export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
         getCachedTarball?: (integrity: string) => Promise<{
             bytes: Uint8Array | null;
             events: Array<{
-                kind: "hit";
+                kind: 'hit';
                 tier: string;
                 cacheKind: string;
                 bytes: number;
             } | {
-                kind: "miss";
+                kind: 'miss';
                 tier: string;
                 cacheKind: string;
             }>;

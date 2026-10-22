@@ -77,7 +77,7 @@ function settle(printed) {
   return new Promise((resolve) => {
     let waited = 0;
     const poll = () => {
-      if (printed.some((line) => line.startsWith('Test262:Async')) || waited >= 2000) return resolve();
+      if (printed.some((line) => line.startsWith('Test262:Async')) || waited >= 2000) return resolve(undefined);
       waited += 10;
       setTimeout(poll, 10);
     };

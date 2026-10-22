@@ -12,6 +12,8 @@ export interface ReplayPolicy {
     /** Only these fields have a separate input-tape contract. */
     inputFields?: readonly string[];
 }
+declare const acquire: (value: unknown) => unknown;
+declare const withAcquire: (value: unknown) => unknown;
 /**
  * The complete session-boundary policy. New operations fail closed both at
  * compile time (the Record) and at runtime (a missing entry is an effect).
@@ -24,77 +26,77 @@ export interface ReplayPolicy {
  */
 export declare const REPLAY_OPERATION_POLICY: {
     readFile: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     readFileBytes: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     writeFile: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     writeFileStat: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     stat: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     lstat: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     utimes: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     chmod: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     access: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     chown: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     setUmask: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     readdir: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     exists: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     mkdir: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     rmdir: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     rename: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     unlink: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     readlink: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsLinkLeadsTo: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     symlink: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsAcquire: {
         kind: "observation";
-        answer: (value: unknown) => unknown;
+        answer: typeof acquire;
         args: () => never[];
     };
     fsAcquired: {
         kind: "observation";
-        answer: (value: unknown) => unknown;
+        answer: typeof withAcquire;
         args: (a: readonly unknown[]) => unknown[];
     };
     fsRevision: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsList: {
         kind: "observation";
@@ -114,16 +116,16 @@ export declare const REPLAY_OPERATION_POLICY: {
         answer: (value: unknown) => unknown;
     };
     wsOpen: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     wsPoll: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     wsSend: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     wsClose: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsOpen: {
         kind: "open";
@@ -132,82 +134,82 @@ export declare const REPLAY_OPERATION_POLICY: {
         kind: "open";
     };
     fsRead: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsWrite: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsClose: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsReadDirectories: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsReadRange: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsReadRangeUncached: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsReadBatch: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsWriteRange: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsTruncate: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     writeBatch: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     writeBatchStream: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     openWaveWriter: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     retireWaveWriter: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     stdout: {
-        readonly kind: "output";
+        readonly kind: 'output';
     };
     stderr: {
-        readonly kind: "output";
+        readonly kind: 'output';
     };
     prefetch: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     registerPort: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     allocatePort: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     unregisterPort: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     reportExit: {
-        readonly kind: "output";
+        readonly kind: 'output';
     };
     routeLoopback: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     transform: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     cpSpawn: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     reportRuntimeCode: {
-        readonly kind: "output";
+        readonly kind: 'output';
     };
     cpStdinWrite: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     cpStdinEnd: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     cpReadStdin: {
         kind: "input";
@@ -218,180 +220,180 @@ export declare const REPLAY_OPERATION_POLICY: {
         inputFields: string[];
     };
     stdinPrepared: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
     getCachedTarball: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     getPackument: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     putCachedTarball: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     cacheResult: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
     cpReadOutput: {
         kind: "observation";
-        answer: (value: unknown) => unknown;
+        answer: typeof withAcquire;
         args: (a: readonly unknown[]) => unknown[];
     };
     cpDrainOutput: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     cpCloseOutput: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     cpKill: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     cpBlocked: {
         kind: "control";
     };
     cpNextSignal: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     cpTakeSignal: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
     cpCatchSignals: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
     cpWait: {
         kind: "observation";
-        answer: (value: unknown) => unknown;
+        answer: typeof withAcquire;
         args: (a: readonly unknown[]) => unknown[];
     };
     fsFstat: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsDup: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsSeek: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsSetStatus: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsReaddirHandle: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsFtruncate: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsFchmod: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsFchown: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsFutimes: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsSync: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsRealpath: {
-        readonly kind: "observation";
+        readonly kind: 'observation';
     };
     fsRemove: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsCopyFile: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsCopyTree: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fsAcquireExclusiveMutation: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     fsReleaseExclusiveMutation: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     fsAwaitRecall: {
         kind: "input";
     };
     fsRecalled: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     fsPublished: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
     innerDoCall: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     kvCall: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     r2Call: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     d1Query: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     fanoutExecute: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     processHostProbe: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     loaderCodeStore: {
-        readonly kind: "mutation";
+        readonly kind: 'mutation';
     };
     hostProcess: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     awaitHostedBoot: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     routeHostedHttp: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     abandonHostedHttp: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     cancelHostProcess: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     hmrRelay: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     oneShotSubmit: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     oneShotWarm: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     oneShotCancel: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     hmrNextEvent: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     replayBoundary: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
     netTls: {
-        readonly kind: "effect";
+        readonly kind: 'effect';
     };
     outbound: {
-        readonly kind: "control";
+        readonly kind: 'control';
     };
 };
 export declare function operationPolicy(op: string): ReplayPolicy | undefined;
 /** Public RPC methods that deliberately delegate or implement a protocol. */
 export declare const REPLAY_PUBLIC_METHOD_POLICY: {
     readonly answer: {
-        readonly kind: "validated-filesystem-delegation";
+        readonly kind: 'validated-filesystem-delegation';
     };
     readonly fetch: {
-        readonly kind: "journaled-outbound-protocol";
+        readonly kind: 'journaled-outbound-protocol';
     };
     readonly connect: {
-        readonly kind: "effectful-outbound-protocol";
+        readonly kind: 'effectful-outbound-protocol';
     };
 };
 export declare const SUPERVISOR_CALLS_WITHOUT_EFFECTS: readonly string[];

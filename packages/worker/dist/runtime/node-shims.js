@@ -11436,7 +11436,7 @@ function __nimbusFatalArrow(error, fromPromise) {
       const text = module === null ? null : textOf(module);
       if (text === null) continue;
       const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
-      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", offset);
+      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, module.goal, offset);
       if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }
@@ -11455,7 +11455,7 @@ globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, 
 };
 function __nimbusCompileArrow(module, error) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
-  const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
+  const place = text === null ? null : __nimbusFatalLocation(text, module.goal, -1);
   if (place === null) return null;
   if (module.esModule) return __nimbusArrowOf(module, text, place[0], place[1]);
   // A CommonJS cell's source is followed by its wrapper's tail, which V8
@@ -11516,7 +11516,7 @@ function __nimbusEvalIllegalReturn(text, at) {
   const entry = __nimbusEntryModule();
   const error = new __nimbusRealmSyntaxError("Illegal return statement");
   if (entry === null) return error;
-  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, hashbang: false };
+  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, goal: "script", hashbang: false };
   const arrow = __nimbusEvalArrow(entry, __nimbusArrowOf(source, text, at, at + "return".length));
   // A program's Error.prepareStackTrace may make the stack anything: only a
   // string's frames are trimmed, this function's and the code's that throws.

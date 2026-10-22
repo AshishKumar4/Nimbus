@@ -57,8 +57,8 @@ export function moduleMapBundle(modules, entry = modules['worker.js'] ? 'worker.
   const bundle = new Function(...aliases, `return (${declared[1]});`)(...parts);
   for (const [key, name, head, tail, hashbang, adopt] of moduleMapCodeCells(modules, entry)) {
     if (!adopt) continue;
-    const text = cjsText(modules[name]);
-    if (text === undefined) throw new Error(`the map names cell ${name} and carries no such { cjs } module`);
+    const text = cjsText(modules[name]) ?? jsText(modules[name]);
+    if (text === undefined) throw new Error(`the map names cell ${name} and carries no such module`);
     const cell = text.slice(head, text.length - tail);
     bundle[key] = hashbang ? '#!' + cell.slice(2) : cell;
   }
@@ -99,10 +99,15 @@ const registry = new Map();
 const wasmRegistry = new Map();
 const NativeWasmModule = WebAssembly.Module;
 const builtinRequire = nativeCreateRequire(import.meta.url);
+// The registry evaluates a { js } member as an ES module, whatever package it
+// sits in: each is required by an .mjs twin, as an ES module whatever its
+// directory's package.json says (writeModuleSet).
+const esMembers = new Map();
 const createRequire = (base) => (specifier) => {
   if (isBuiltin(specifier)) return builtinRequire(specifier);
   const file = fileURLToPath(new URL(specifier, base));
   if (!registry.has(file) && wasmRegistry.has(file)) registry.set(file, wasmRegistry.get(file)());
+  if (!registry.has(file) && esMembers.has(file)) registry.set(file, builtinRequire(esMembers.get(file)));
   if (!registry.has(file)) {
     const moduleObject = { exports: {} };
     new Function('module', 'exports', 'require', '__filename', '__dirname', readFileSync(file, 'utf8'))(
@@ -146,6 +151,8 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
       const file = join(dir, decodeURIComponent(name));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, member.js);
+      writeFileSync(`${file}.mjs`, member.js);
+      esMembers.set(file, `${file}.mjs`);
     } else if ('cjs' in member) {
       // A module name is a URL path: the file is where the registry's URL
       // resolution — the stand-in's fileURLToPath — finds it.

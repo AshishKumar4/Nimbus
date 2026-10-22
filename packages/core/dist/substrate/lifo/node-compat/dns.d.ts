@@ -39,6 +39,62 @@ declare function setServers(_servers: string[]): void;
 declare function getServers(): string[];
 /** The dns module, its lookups answered from `resolver` (one holding the default /etc/hosts, without a kernel). */
 export declare function createDns(resolver?: DNSResolver): {
+    lookup: {
+        (hostname: string, options: {
+            all: true;
+        }, cb: LookupAllCallback): void;
+        (hostname: string, options: LookupOptions, cb: LookupCallback): void;
+        (hostname: string, cb: LookupCallback): void;
+    };
+    resolve: typeof resolve;
+    resolve4: typeof resolve4;
+    resolve6: typeof resolve6;
+    resolveMx: typeof resolveMx;
+    resolveTxt: typeof resolveTxt;
+    resolveSrv: typeof resolveSrv;
+    resolveNs: typeof resolveNs;
+    resolveCname: typeof resolveCname;
+    reverse: typeof reverse;
+    setServers: typeof setServers;
+    getServers: typeof getServers;
+    promises: {
+        resolve: (hostname: string, _rrtype?: string) => Promise<string[]>;
+        resolve4: (hostname: string) => Promise<string[]>;
+        resolve6: (hostname: string) => Promise<string[]>;
+        reverse: (ip: string) => Promise<string[]>;
+        setServers: (_servers: string[]) => void;
+        getServers: () => string[];
+        lookup: (hostname: string, options?: LookupOptions) => Promise<{
+            address: string;
+            family: number;
+        } | Array<{
+            address: string;
+            family: number;
+        }>>;
+    };
+    NOTFOUND: string;
+    ADDRGETNETWORKPARAMS: string;
+    BADFAMILY: string;
+    BADFLAGS: string;
+    BADHINTS: string;
+    BADNAME: string;
+    BADQUERY: string;
+    BADRESP: string;
+    BADSTR: string;
+    CANCELLED: string;
+    CONNREFUSED: string;
+    DESTRUCTION: string;
+    EOF: string;
+    FILE: string;
+    FORMERR: string;
+    LOADIPHLPAPI: string;
+    NODATA: string;
+    NOMEM: string;
+    NONAME: string;
+    NOTINITIALIZED: string;
+    REFUSED: string;
+    SERVFAIL: string;
+    TIMEOUT: string;
     default: {
         lookup: {
             (hostname: string, options: {
@@ -59,6 +115,12 @@ export declare function createDns(resolver?: DNSResolver): {
         setServers: typeof setServers;
         getServers: typeof getServers;
         promises: {
+            resolve: (hostname: string, _rrtype?: string) => Promise<string[]>;
+            resolve4: (hostname: string) => Promise<string[]>;
+            resolve6: (hostname: string) => Promise<string[]>;
+            reverse: (ip: string) => Promise<string[]>;
+            setServers: (_servers: string[]) => void;
+            getServers: () => string[];
             lookup: (hostname: string, options?: LookupOptions) => Promise<{
                 address: string;
                 family: number;
@@ -66,12 +128,6 @@ export declare function createDns(resolver?: DNSResolver): {
                 address: string;
                 family: number;
             }>>;
-            resolve: (hostname: string, _rrtype?: string) => Promise<string[]>;
-            resolve4: (hostname: string) => Promise<string[]>;
-            resolve6: (hostname: string) => Promise<string[]>;
-            reverse: (ip: string) => Promise<string[]>;
-            setServers: (_servers: string[]) => void;
-            getServers: () => string[];
         };
         NOTFOUND: string;
         ADDRGETNETWORKPARAMS: string;
@@ -97,62 +153,6 @@ export declare function createDns(resolver?: DNSResolver): {
         SERVFAIL: string;
         TIMEOUT: string;
     };
-    lookup: {
-        (hostname: string, options: {
-            all: true;
-        }, cb: LookupAllCallback): void;
-        (hostname: string, options: LookupOptions, cb: LookupCallback): void;
-        (hostname: string, cb: LookupCallback): void;
-    };
-    resolve: typeof resolve;
-    resolve4: typeof resolve4;
-    resolve6: typeof resolve6;
-    resolveMx: typeof resolveMx;
-    resolveTxt: typeof resolveTxt;
-    resolveSrv: typeof resolveSrv;
-    resolveNs: typeof resolveNs;
-    resolveCname: typeof resolveCname;
-    reverse: typeof reverse;
-    setServers: typeof setServers;
-    getServers: typeof getServers;
-    promises: {
-        lookup: (hostname: string, options?: LookupOptions) => Promise<{
-            address: string;
-            family: number;
-        } | Array<{
-            address: string;
-            family: number;
-        }>>;
-        resolve: (hostname: string, _rrtype?: string) => Promise<string[]>;
-        resolve4: (hostname: string) => Promise<string[]>;
-        resolve6: (hostname: string) => Promise<string[]>;
-        reverse: (ip: string) => Promise<string[]>;
-        setServers: (_servers: string[]) => void;
-        getServers: () => string[];
-    };
-    NOTFOUND: string;
-    ADDRGETNETWORKPARAMS: string;
-    BADFAMILY: string;
-    BADFLAGS: string;
-    BADHINTS: string;
-    BADNAME: string;
-    BADQUERY: string;
-    BADRESP: string;
-    BADSTR: string;
-    CANCELLED: string;
-    CONNREFUSED: string;
-    DESTRUCTION: string;
-    EOF: string;
-    FILE: string;
-    FORMERR: string;
-    LOADIPHLPAPI: string;
-    NODATA: string;
-    NOMEM: string;
-    NONAME: string;
-    NOTINITIALIZED: string;
-    REFUSED: string;
-    SERVFAIL: string;
-    TIMEOUT: string;
 };
 export {};
 //# sourceMappingURL=dns.d.ts.map

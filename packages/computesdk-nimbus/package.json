@@ -19,9 +19,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "build": "tsrs -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepack": "npm run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "keywords": [
     "computesdk",
@@ -38,6 +38,6 @@
     "computesdk": "^4.1.4"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   }
 }

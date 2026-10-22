@@ -26,193 +26,193 @@ import type { VfsRemoval } from '../vfs/vfs.js';
 export type FilesystemAnswer = 'value' | 'bytes' | 'stream' | 'removal';
 export declare const FILESYSTEM_METHODS: {
     readonly stat: {
-        readonly rpc: "stat";
-        readonly answer: "value";
+        readonly rpc: 'stat';
+        readonly answer: 'value';
     };
     readonly readFile: {
-        readonly rpc: "readFileBytes";
-        readonly answer: "bytes";
+        readonly rpc: 'readFileBytes';
+        readonly answer: 'bytes';
     };
     readonly writeFile: {
-        readonly rpc: "writeFile";
-        readonly answer: "value";
+        readonly rpc: 'writeFile';
+        readonly answer: 'value';
     };
     readonly readRange: {
-        readonly rpc: "fsReadRange";
-        readonly answer: "bytes";
+        readonly rpc: 'fsReadRange';
+        readonly answer: 'bytes';
     };
     readonly writeRange: {
-        readonly rpc: "fsWriteRange";
-        readonly answer: "value";
+        readonly rpc: 'fsWriteRange';
+        readonly answer: 'value';
     };
     readonly truncate: {
-        readonly rpc: "fsTruncate";
-        readonly answer: "value";
+        readonly rpc: 'fsTruncate';
+        readonly answer: 'value';
     };
     readonly utimes: {
-        readonly rpc: "utimes";
-        readonly answer: "value";
+        readonly rpc: 'utimes';
+        readonly answer: 'value';
     };
     readonly chmod: {
-        readonly rpc: "chmod";
-        readonly answer: "value";
+        readonly rpc: 'chmod';
+        readonly answer: 'value';
     };
     readonly access: {
-        readonly rpc: "access";
-        readonly answer: "value";
+        readonly rpc: 'access';
+        readonly answer: 'value';
     };
     readonly chown: {
-        readonly rpc: "chown";
-        readonly answer: "value";
+        readonly rpc: 'chown';
+        readonly answer: 'value';
     };
     readonly open: {
-        readonly rpc: "fsOpen";
-        readonly answer: "value";
+        readonly rpc: 'fsOpen';
+        readonly answer: 'value';
     };
     readonly reopen: {
-        readonly rpc: "fsReopen";
-        readonly answer: "value";
+        readonly rpc: 'fsReopen';
+        readonly answer: 'value';
     };
     readonly read: {
-        readonly rpc: "fsRead";
-        readonly answer: "bytes";
+        readonly rpc: 'fsRead';
+        readonly answer: 'bytes';
     };
     readonly write: {
-        readonly rpc: "fsWrite";
-        readonly answer: "value";
+        readonly rpc: 'fsWrite';
+        readonly answer: 'value';
     };
     readonly close: {
-        readonly rpc: "fsClose";
-        readonly answer: "value";
+        readonly rpc: 'fsClose';
+        readonly answer: 'value';
     };
     readonly readdir: {
-        readonly rpc: "readdir";
-        readonly answer: "value";
+        readonly rpc: 'readdir';
+        readonly answer: 'value';
     };
     readonly mkdir: {
-        readonly rpc: "mkdir";
-        readonly answer: "value";
+        readonly rpc: 'mkdir';
+        readonly answer: 'value';
     };
     readonly unlink: {
-        readonly rpc: "unlink";
-        readonly answer: "value";
+        readonly rpc: 'unlink';
+        readonly answer: 'value';
     };
     readonly rmdir: {
-        readonly rpc: "rmdir";
-        readonly answer: "value";
+        readonly rpc: 'rmdir';
+        readonly answer: 'value';
     };
     readonly rename: {
-        readonly rpc: "rename";
-        readonly answer: "value";
+        readonly rpc: 'rename';
+        readonly answer: 'value';
     };
     readonly readlink: {
-        readonly rpc: "readlink";
-        readonly answer: "value";
+        readonly rpc: 'readlink';
+        readonly answer: 'value';
     };
     readonly linkLeadsTo: {
-        readonly rpc: "fsLinkLeadsTo";
-        readonly answer: "value";
+        readonly rpc: 'fsLinkLeadsTo';
+        readonly answer: 'value';
     };
     readonly symlink: {
-        readonly rpc: "symlink";
-        readonly answer: "value";
+        readonly rpc: 'symlink';
+        readonly answer: 'value';
     };
     readonly fsync: {
-        readonly rpc: "fsSync";
-        readonly answer: "value";
+        readonly rpc: 'fsSync';
+        readonly answer: 'value';
     };
     readonly revision: {
-        readonly rpc: "fsRevision";
-        readonly answer: "value";
+        readonly rpc: 'fsRevision';
+        readonly answer: 'value';
     };
     readonly acquire: {
-        readonly rpc: "fsAcquire";
-        readonly answer: "value";
+        readonly rpc: 'fsAcquire';
+        readonly answer: 'value';
     };
     readonly list: {
-        readonly rpc: "fsList";
-        readonly answer: "value";
+        readonly rpc: 'fsList';
+        readonly answer: 'value';
     };
     readonly realpath: {
-        readonly rpc: "fsRealpath";
-        readonly answer: "value";
+        readonly rpc: 'fsRealpath';
+        readonly answer: 'value';
     };
     readonly remove: {
-        readonly rpc: "fsRemove";
-        readonly answer: "removal";
+        readonly rpc: 'fsRemove';
+        readonly answer: 'removal';
     };
     readonly copyFile: {
-        readonly rpc: "fsCopyFile";
-        readonly answer: "value";
+        readonly rpc: 'fsCopyFile';
+        readonly answer: 'value';
     };
     readonly copyTree: {
-        readonly rpc: "fsCopyTree";
-        readonly answer: "value";
+        readonly rpc: 'fsCopyTree';
+        readonly answer: 'value';
     };
     readonly fstat: {
-        readonly rpc: "fsFstat";
-        readonly answer: "value";
+        readonly rpc: 'fsFstat';
+        readonly answer: 'value';
     };
     readonly dup: {
-        readonly rpc: "fsDup";
-        readonly answer: "value";
+        readonly rpc: 'fsDup';
+        readonly answer: 'value';
     };
     readonly seek: {
-        readonly rpc: "fsSeek";
-        readonly answer: "value";
+        readonly rpc: 'fsSeek';
+        readonly answer: 'value';
     };
     readonly setStatus: {
-        readonly rpc: "fsSetStatus";
-        readonly answer: "value";
+        readonly rpc: 'fsSetStatus';
+        readonly answer: 'value';
     };
     readonly readdirHandle: {
-        readonly rpc: "fsReaddirHandle";
-        readonly answer: "value";
+        readonly rpc: 'fsReaddirHandle';
+        readonly answer: 'value';
     };
     readonly ftruncate: {
-        readonly rpc: "fsFtruncate";
-        readonly answer: "value";
+        readonly rpc: 'fsFtruncate';
+        readonly answer: 'value';
     };
     readonly fchmod: {
-        readonly rpc: "fsFchmod";
-        readonly answer: "value";
+        readonly rpc: 'fsFchmod';
+        readonly answer: 'value';
     };
     readonly fchown: {
-        readonly rpc: "fsFchown";
-        readonly answer: "value";
+        readonly rpc: 'fsFchown';
+        readonly answer: 'value';
     };
     readonly futimes: {
-        readonly rpc: "fsFutimes";
-        readonly answer: "value";
+        readonly rpc: 'fsFutimes';
+        readonly answer: 'value';
     };
     readonly writeBatch: {
-        readonly rpc: "writeBatch";
-        readonly answer: "value";
+        readonly rpc: 'writeBatch';
+        readonly answer: 'value';
     };
     readonly writeStream: {
-        readonly rpc: "writeBatchStream";
-        readonly answer: "stream";
+        readonly rpc: 'writeBatchStream';
+        readonly answer: 'stream';
     };
     readonly acquireExclusiveMutation: {
-        readonly rpc: "fsAcquireExclusiveMutation";
-        readonly answer: "value";
+        readonly rpc: 'fsAcquireExclusiveMutation';
+        readonly answer: 'value';
     };
     readonly releaseExclusiveMutation: {
-        readonly rpc: "fsReleaseExclusiveMutation";
-        readonly answer: "value";
+        readonly rpc: 'fsReleaseExclusiveMutation';
+        readonly answer: 'value';
     };
     readonly awaitRecall: {
-        readonly rpc: "fsAwaitRecall";
-        readonly answer: "value";
+        readonly rpc: 'fsAwaitRecall';
+        readonly answer: 'value';
         readonly waits: true;
     };
     readonly recalled: {
-        readonly rpc: "fsRecalled";
-        readonly answer: "value";
+        readonly rpc: 'fsRecalled';
+        readonly answer: 'value';
     };
     readonly published: {
-        readonly rpc: "fsPublished";
-        readonly answer: "value";
+        readonly rpc: 'fsPublished';
+        readonly answer: 'value';
     };
 };
 export type FilesystemMethod = keyof typeof FILESYSTEM_METHODS;

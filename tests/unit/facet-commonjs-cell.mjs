@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-// facet-commonjs-cell — a node process's module cell as the `{ cjs }` module
-// its guest's registry compiles on first require. The module's export, given
+// facet-commonjs-cell — a node process's module cell as the module its
+// guest's registry compiles on first require: an ES module when the cell is
+// strict code that reads the same there, else a `{ cjs }` module. The module's export, given
 // the module's own Function, is Node's module wrapper function; the shims call
 // it with their own exports, require, module, __filename and __dirname. What must hold is Node's meaning of a
 // CommonJS cell, an ES module lowered to CommonJS keeping its own top-level
@@ -8,6 +9,7 @@
 // stable under the registry's URL parsing, and runtime code that builds what
 // the Function constructor would build and nothing else.
 import assert from 'node:assert/strict';
+import { loadCell, loadCommonJs as load } from './lib/cell-module.mjs';
 import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
@@ -20,14 +22,6 @@ import {
 } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { parseRuntimeFunction, runtimeFunctionSource } from '../../packages/core/src/_shared/runtime-function-source.ts';
 
-// Evaluate a `{ cjs }` module body as workerd's CommonJS handler does: a
-// sloppy function body with `module` and `exports` in scope.
-function load(text) {
-  const moduleObject = { exports: {} };
-  new Function('module', 'exports', text)(moduleObject, moduleObject.exports);
-  return moduleObject.exports;
-}
-
 /** This realm's built-ins, as runtime-function-source's checks take them. */
 const REALM = { SyntaxError, messageOf: (e) => e.message, scriptOptions: { ecmaVersion: 'latest', sourceType: 'script' } };
 
@@ -36,7 +30,7 @@ const MODULE_FUNCTION = function ModuleFunction() {};
 
 function run(cell, scope = 'function', requireImpl = () => 'required') {
   const mod = { exports: {} };
-  load(wrapCommonJsCell(cell, scope).text)(MODULE_FUNCTION)(mod.exports, requireImpl, mod, '/app/cell.js', '/app');
+  loadCell(wrapCommonJsCell(cell, scope))(MODULE_FUNCTION)(mod.exports, requireImpl, mod, '/app/cell.js', '/app');
   return mod.exports;
 }
 
@@ -108,6 +102,32 @@ function staged(text, origin = ORIGIN) {
     }
   }
   console.log('  [5] head and tail frame the cell exactly');
+}
+
+// Which cells are ES modules: strict code of its own that holds none of the
+// words the module goal reads otherwise. Each runs as its kind is evaluated.
+{
+  const kind = (cell, scope = 'function') => wrapCommonJsCell(cell, scope).esModule;
+  assert.equal(kind('"use strict";\nmodule.exports = 1;'), true, 'a strict cell');
+  assert.equal(kind("'use strict'\nmodule.exports = 1;"), true, 'a directive ended by its line');
+  assert.equal(kind('// licence\n/* more */\n"use client";\n"use strict";\nmodule.exports = 1;'), true, 'after comments and another directive');
+  assert.equal(kind('#!/usr/bin/env node\n"use strict";\nmodule.exports = 1;'), true, 'after a shebang');
+  assert.equal(kind('module.exports = 1;'), false, 'a sloppy cell');
+  assert.equal(kind('"use strict" + x;\nmodule.exports = 1;'), false, 'a string that is not a directive');
+  assert.equal(kind('x;\n"use strict";\nmodule.exports = 1;'), false, 'a directive after a statement is none');
+  assert.equal(kind('"use strict";\nasync function f() { await g(); }'), false, 'await, a keyword here');
+  assert.equal(kind('"use strict";\nvar await = 1;'), false, 'await, an identifier in a script');
+  assert.equal(kind('"use strict";\nvar \\u0061wait = 1;'), false, 'await, escaped');
+  assert.equal(kind('"use strict";\n<!-- x\nmodule.exports = 1;'), false, 'an HTML-like comment');
+  assert.equal(kind('"use strict";\nx = y\n--> z\nmodule.exports = 1;'), false, 'an HTML-like closing comment');
+  assert.equal(kind('"use strict";\nmodule.exports = import.meta;'), false, 'import.meta, a SyntaxError in a script');
+  assert.equal(kind('"use strict";\nmodule.exports = import /**/ . /**/ meta;'), false, 'however spelled');
+  assert.equal(kind('"use strict";\nconst require = 1;\nmodule.exports = require;', 'block'), true, 'a lowered strict module in its block');
+  assert.equal(run('"use strict";\nmodule.exports = (function () { return this; })();'), undefined, 'an ES cell is strict, as its prologue says');
+  assert.equal(run('"use strict";\nmodule.exports = arguments.length;\nreturn;\nmodule.exports = "unreached";'), 5, 'top-level return and the five arguments');
+  assert.equal(run('"use strict";\nmodule.exports = Function;'), MODULE_FUNCTION, 'its Function is its module\'s own');
+  assert.equal(run('"use strict";\nconst require = (id) => "own:" + id;\nmodule.exports = require("z");', 'block'), 'own:z');
+  console.log('  [5b] a strict cell is an ES module when the module goal reads it the same, and runs as one');
 }
 
 // Module names are distinct for distinct paths and stable under the WHATWG

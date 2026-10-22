@@ -40,29 +40,41 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/** @param {{ refuse?: (path: string) => boolean, of?: object, after?: object, cred?: typeof USER, source?: string }} [options] */
-export async function residentGuest({ refuse = () => false, of, after, cred = USER, source = '' } = {}) {
-  let P = after?.P;
-  if (P === undefined) {
-    const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem, __wasiInbound, __wasiSettleFirst };`);
-    try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
+/** The preamble a guest runs, with `source` after it, imported as the module it is. */
+async function importPreamble(source) {
+  const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem, __wasiInbound, __wasiSettleFirst };`);
+  try {
+    return await import(pathToFileURL(modulePath).href);
+  } finally {
+    rmSync(modulePath, { force: true });
   }
+}
 
-  const session = (of ?? after)?.session ?? (() => {
-    const harness = createSqliteVfsTestHarness();
-    const raw = new SqliteVFS(harness.sql, harness.ctx);
-    const kernel = raw.as(CRED_KERNEL);
-    kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
-    kernel.chown('home/user', USER.uid, USER.gid);
-    const processes = new SessionProcessSupervisor();
-    const authority = new ProcessFiles(raw);
-    const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-    // Fenced waves, as a process's binding sends them: a refusal answers its own op.
-    const deliveries = new SupervisorDeliveries();
-    const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
-    return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch, retired: [] };
-  })();
+/** A session for guests: its store, its supervisor and the op handler a process's binding calls. */
+function residentSession() {
+  const harness = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = raw.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', USER.uid, USER.gid);
+  const processes = new SessionProcessSupervisor();
+  const authority = new ProcessFiles(raw);
+  const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
+  // Fenced waves, as a process's binding sends them: a refusal answers its own op.
+  const deliveries = new SupervisorDeliveries();
+  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
+  return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch, retired: [] };
+}
+
+/**
+ * @param {{ refuse?: (path: string) => boolean, of?: { session: ReturnType<typeof residentSession> },
+ *   after?: { P: Awaited<ReturnType<typeof importPreamble>>, session: ReturnType<typeof residentSession> }, cred?: typeof USER, source?: string }} [options]
+ */
+export async function residentGuest({ refuse = () => false, of, after, cred = USER, source = '' } = {}) {
+  const P = after?.P ?? await importPreamble(source);
+
+  const session = (of ?? after)?.session ?? residentSession();
   const { harness, raw, kernel, processes, authority } = session;
   const boundIncarnation = session.deliveries.incarnation;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred });
@@ -128,6 +140,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   const PATH = 1024, PATH2 = 1536, OUT = 2048, IOV = 3072, DATA = 4096;
   const putPath = (name) => { const b = enc.encode(name); bytesAt().set(b, PATH); return b.length; };
   const RIGHTS_ALL = 0x1fffffffn;
+  /** @returns {[bigint, bigint, number]} The access and modify times (ns) and the fst_flags that say which to set. */
   const times = (atime, mtime) => [
     typeof atime === 'number' ? BigInt(atime) * 1_000_000n : 0n,
     typeof mtime === 'number' ? BigInt(mtime) * 1_000_000n : 0n,

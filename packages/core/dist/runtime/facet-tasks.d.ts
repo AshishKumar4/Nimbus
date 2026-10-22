@@ -44,7 +44,7 @@ export declare const rubyFacetCall: (inArgs: RubyFacetCallArgs, facetEnv: {
     SUPERVISOR?: unknown;
 }) => Promise<unknown>;
 export declare const wasmFacetCall: (args: {
-    mode: "direct" | "wasi";
+    mode: 'direct' | 'wasi';
     processPid?: number;
     exportName?: string;
     intArgs?: number[];

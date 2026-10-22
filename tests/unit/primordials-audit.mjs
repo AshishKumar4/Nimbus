@@ -42,158 +42,17 @@
 // runs the bundled parser in a realm that logs every built-in it reaches.
 
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { primordialViolations } from './lib/primordials-scan.mjs';
 
-const require = createRequire(import.meta.url);
-const ts = require('typescript');
 const CORE = fileURLToPath(new URL('../../packages/core/', import.meta.url));
-const DIR = join(CORE, 'src/interpreter');
-/**
- * Not checked: primordials.ts, where the captures are made, and host-ops.ts,
- * whose code runs at build time to make the source text of the host module
- * (which takes its built-ins from the runtime it is bound to).
- */
-const UNCHECKED = new Set(['primordials.ts', 'host-ops.ts']);
-/** The mark of a line that reaches the program's realm because Node's own code does (posix-path.ts: lib/path.js join's push). */
-const LIVE_AS_NODE = /\/\/ as Node's, live:/;
-/** The guest's module loading, as it is converted: node:path's posix half, the module resolvers, their package maps and TypeScript rules, Node's errors. */
-const GUEST_LOADING = [
-  ...['posix-path.ts', 'esm-resolver.ts', 'package-map.ts', 'node-error.ts', 'commonjs-resolver.ts', 'typescript-specifiers.ts']
-    .map((file) => join(CORE, 'src/_shared', file)),
-  // The late graph's link and the wasm images a module names.
-  join(CORE, 'src/runtime/esm-late-link.ts'),
-  // What identifies the code a program produces, keyed as it compiles.
-  join(CORE, 'src/_shared/runtime-code-identity.ts'),
-  join(CORE, 'src/_shared/relative-wasm-paths.ts'),
-  // The filesystem reads it makes: the resident namespace's walk.
-  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace-lookup.ts', import.meta.url)),
-  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace.ts', import.meta.url)),
-  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/transport.ts', import.meta.url)),
-  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/cells.ts', import.meta.url)),
-  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/cell-cost.ts', import.meta.url)),
-];
-const FILES = [
-  ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
-  join(CORE, 'src/_shared/runtime-function-source.ts'),
-  join(CORE, 'src/_shared/importer-url.ts'),
-  join(CORE, 'src/runtime/binding-pattern.ts'),
-  join(CORE, 'src/runtime/esm-interop.ts'),
-  ...GUEST_LOADING,
-];
-/** Globals that are not writable or configurable, so nothing can replace them. */
-const FIXED_GLOBALS = new Set(['undefined', 'NaN', 'Infinity']);
-/** Library properties that are own data properties of the objects that have them. */
-const OWN_PROPERTIES = new Set(['length', 'prototype']);
-/**
- * Library types whose members are own data properties of every object the
- * interpreter reads them on: descriptors it makes (dataDescriptor,
- * accessorDescriptor) or [[GetOwnProperty]] returns, the results of its
- * own generators' next(), and what RegExp.prototype.exec returns (each
- * element, `index`).
- */
-const OWN_RECORDS = /^(PropertyDescriptor|TypedPropertyDescriptor|IteratorResult|IteratorYieldResult|IteratorReturnResult|RegExpExecArray)$/;
-/** What gives a generator function SafeGeneratorPrototype. */
-const SAFE_GENERATOR_MAKERS = new Set(['safeGenerator', 'genCode']);
-/** Collections whose methods primordials.ts copies onto their own prototypes. */
-const SAFE = /^Safe(Map|Set|WeakMap|WeakSet)$/;
-
-const config = ts.getParsedCommandLineOfConfigFile(join(CORE, 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
-const program = ts.createProgram(FILES, config.options);
-const checker = program.getTypeChecker();
-
-const library = (declaration) => {
-  const file = declaration.getSourceFile();
-  return program.isSourceFileDefaultLibrary(file) || /[\\/]@types[\\/]node[\\/]/.test(file.fileName);
-};
-const fromLibrary = (symbol) => !!symbol && !!symbol.declarations && symbol.declarations.length > 0 && symbol.declarations.every(library);
-const ours = (symbol) => !!symbol && !!symbol.declarations
-  && symbol.declarations.some((d) => d.getSourceFile().fileName.startsWith(DIR) || GUEST_LOADING.includes(d.getSourceFile().fileName));
-
-function isValueName(node) {
-  const p = node.parent;
-  if (ts.isPropertyAccessExpression(p) && p.name === node) return false;
-  if ((ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p) || ts.isMethodDeclaration(p) || ts.isPropertySignature(p)
-    || ts.isGetAccessor(p) || ts.isSetAccessor(p) || ts.isEnumMember(p)) && p.name === node) return false;
-  if ((ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isNamespaceImport(p) || ts.isImportClause(p)) ) return false;
-  if (ts.isBindingElement(p) && p.propertyName === node) return false;
-  if (ts.isQualifiedName(p) || ts.isTypeReferenceNode(p) || ts.isExpressionWithTypeArguments(p) && ts.isHeritageClause(p.parent) && p.parent.token === ts.SyntaxKind.ImplementsKeyword) return false;
-  if (ts.isLabeledStatement(p) || ts.isBreakOrContinueStatement(p)) return false;
-  for (let a = node; a; a = a.parent) if (ts.isTypeNode(a) && !ts.isExpressionWithTypeArguments(a)) return false;
-  return true;
-}
-
-function receiverIsSafe(expression) {
-  const type = checker.getTypeAtLocation(expression);
-  const symbol = type.aliasSymbol || type.symbol;
-  return !!symbol && SAFE.test(symbol.name);
-}
-
-const violations = [];
-for (const file of FILES) {
-  const source = program.getSourceFile(file);
-  assert.ok(source, `${file} is part of the program`);
-  const at = (node, what) => {
-    const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-    // A call Node's own code makes through the program's realm, which a port of it must make too: marked on its line.
-    if (LIVE_AS_NODE.test(source.text.split('\n')[line - 1])) return;
-    violations.push(`${file.startsWith(CORE) ? file.slice(CORE.length) : file}:${line} ${what}`);
-  };
-  const visit = (node) => {
-    if (ts.isIdentifier(node) && isValueName(node) && !FIXED_GLOBALS.has(node.text)) {
-      const symbol = checker.getSymbolAtLocation(node);
-      if (fromLibrary(symbol)) at(node, `names the global ${node.text}`);
-    }
-    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-      const symbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression);
-      const name = symbol && symbol.name;
-      const owners = symbol && symbol.declarations ? symbol.declarations.map((d) => (d.parent && d.parent.name ? d.parent.name.text : '')) : [];
-      const record = owners.length > 0 && owners.every((owner) => OWN_RECORDS.test(owner));
-      if (fromLibrary(symbol) && !OWN_PROPERTIES.has(name) && !record && !receiverIsSafe(node.expression)) {
-        at(node, `uses the built-in ${checker.typeToString(checker.getTypeAtLocation(node.expression))}.${name}`);
-      }
-      if (ts.isPropertyAccessExpression(node) && symbol && (symbol.flags & ts.SymbolFlags.Optional) && ours(symbol)) {
-        at(node, `reads the optional property ${name}, which may be inherited`);
-      }
-    }
-    if ((ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.asteriskToken) {
-      const call = node.parent;
-      const made = ts.isCallExpression(call) && call.arguments[0] === node && ts.isIdentifier(call.expression)
-        && SAFE_GENERATOR_MAKERS.has(call.expression.text);
-      if (!made) at(node, 'makes a generator function outside safeGenerator');
-    }
-    if (ts.isForOfStatement(node)) at(node, 'iterates with for-of');
-    if (ts.isSpreadElement(node)) at(node, 'spreads with the array iterator');
-    if (ts.isArrayBindingPattern(node)) at(node, 'destructures with the array iterator');
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(node.left)) {
-      at(node, 'destructures with the array iterator');
-    }
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword) at(node, "looks up a key with 'in'");
-    if (ts.isObjectBindingPattern(node)) {
-      const type = checker.getTypeAtLocation(node);
-      for (const element of node.elements) {
-        const key = element.propertyName || element.name;
-        if (!ts.isIdentifier(key)) continue;
-        const property = type.getProperty(key.text);
-        if (property && (property.flags & ts.SymbolFlags.Optional) && ours(property)) at(element, `destructures the optional property ${key.text}`);
-      }
-    }
-    if (ts.isObjectLiteralExpression(node)) {
-      const contextual = checker.getContextualType(node);
-      const parts = !contextual ? [] : contextual.isIntersection() || contextual.isUnion() ? contextual.types : [contextual];
-      const descriptor = parts.some((t) => { const named = t.aliasSymbol || t.symbol; return !!named && /PropertyDescriptor$/.test(named.name); });
-      if (descriptor) at(node, 'makes a property descriptor that inherits (dataDescriptor and accessorDescriptor do not)');
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-}
-
+const { violations, files } = primordialViolations();
 console.log(violations.join('\n'));
 assert.deepEqual(violations, [], `the interpreter and the guest's module loading go through ${violations.length} built-ins a program can replace`);
-console.log(`${FILES.length} files: the interpreter and the guest's module loading call only the built-ins the launch captured`);
+console.log(`${files} files: the interpreter and the guest's module loading call only the built-ins the launch captured`);
 
 const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
 const { primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');

@@ -37,7 +37,7 @@
     "staging:status": "bun tests/behavioral/_staging-target.mjs status",
     "lint": "./node_modules/.bin/biome lint",
     "pretypecheck": "bun packages/config/scripts/generate-facet-limits.mjs",
-    "typecheck": "./node_modules/.bin/tsc --noEmit && bun scripts/typecheck-js.mjs",
+    "typecheck": "./node_modules/.bin/tsrs --noEmit && node scripts/typecheck-js.mjs",
     "test:behavioral": "bun tests/behavioral/run-all.mjs",
     "test:unit": "bun tests/unit/run-all.mjs",
     "postinstall": "bun scripts/install-deps.mjs --patch-only"
@@ -52,7 +52,7 @@
     "exsolve": "^1.1.1",
     "partyserver": "^0.5.10",
     "puppeteer-core": "^24.42.0",
-    "typescript": "^5.7.0",
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "wabt": "^1.0.39",
     "wrangler": "^4.145.0",
     "zod": "^4.4.3"

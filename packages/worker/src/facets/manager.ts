@@ -34,6 +34,7 @@ import {
   wrapCommonJsCell,
   type CommonJsCellRow,
   type RuntimeCodeEntry,
+  type WrappedCommonJsCell,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile, stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
@@ -1159,15 +1160,17 @@ export function entryEsModuleKey(filename: string | undefined, cwd: string): str
 function entryModule(
   userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
   preamble?: string, check = false,
-): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
+): ProgramEntry {
   const entry = programEntry(userCode, filename, cwd, esModule, bundleSource, check);
   if (preamble === undefined) return entry;
   // The preamble, a module of its own, then the entry: `(preamble, entry)`.
   const name = commonJsEntryModuleName('[preamble]');
   const importer = entryImporterUrl(filename, cwd);
+  const wrapped = wrapCommonJsCell(preamble);
   return {
     ...entry,
-    modules: { ...entry.modules, [name]: wrapCommonJsCell(preamble).text },
+    modules: wrapped.esModule ? entry.modules : { ...entry.modules, [name]: wrapped.text },
+    esCells: wrapped.esModule ? { ...entry.esCells, [name]: wrapped.text } : entry.esCells,
     evaluate: `(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)})({}, __nimbusMakeRequire(mod), mod, filename || "/home/user/script.js", dirname || "/home/user"), ${entry.evaluate})`,
   };
 }
@@ -1175,22 +1178,36 @@ function entryModule(
 /** `node -c`'s entry cell begins with this, on the wrapper's line: its compile succeeds, and nothing of it runs. */
 const CHECKED_HEAD = `throw ${JSON.stringify(ENTRY_CHECKED)};`;
 
+/**
+ * The entry as the runner evaluates it: its modules, `{ cjs }` (`modules`)
+ * or ES (`esCells`), the expression that evaluates it, and how its frames
+ * are named.
+ */
+interface ProgramEntry {
+  name: string;
+  esModule: boolean;
+  modules: Record<string, string>;
+  esCells: Record<string, string>;
+  evaluate: string;
+  stackEntry: string;
+}
+
 function programEntry(
   userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
   check: boolean,
-): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
+): ProgramEntry {
   const key = entryEsModuleKey(filename, cwd);
   const cell = commonJsCellModuleName(key);
   const importer = entryImporterUrl(filename, cwd);
   if (esModule === true && bundleSource.esModules[cell] !== undefined) {
-    return { name: '', esModule: true, modules: {}, evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
+    return { name: '', esModule: true, modules: {}, esCells: {}, evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
   }
   // TypeScript or JSX the launch compiled to CommonJS (or the diagnostic of
   // one it could not): its cell, whose frames are its file's.
-  if (esModule === true && bundleSource.codeModules[cell] !== undefined) {
+  if (esModule === true && (bundleSource.codeModules[cell] ?? bundleSource.esCells[cell]) !== undefined) {
     const path = JSON.stringify('/' + key);
     return {
-      name: cell, esModule: false, modules: {}, stackEntry: 'null',
+      name: cell, esModule: false, modules: {}, esCells: {}, stackEntry: 'null',
       evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(cell)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
     };
   }
@@ -1205,10 +1222,11 @@ function programEntry(
   return {
     name,
     esModule: false,
-    modules: { [name]: wrapped.text },
+    modules: wrapped.esModule ? {} : { [name]: wrapped.text },
+    esCells: wrapped.esModule ? { [name]: wrapped.text } : {},
     evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-    stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail]),
+    stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail, wrapped.esModule ? 1 : 0]),
   };
 }
 
@@ -1658,7 +1676,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     immutableModules: runtime.immutableModules,
     modules: bundleSource.modules,
     codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
-    esModules: bundleSource.esModules,
+    esModules: { ...bundleSource.esModules, ...bundleSource.esCells, ...entry.esCells },
   };
 }
 
@@ -2228,7 +2246,7 @@ export class NimbusProcess extends DurableObject {
     immutableModules: runtime.immutableModules,
     modules: bundleSource.modules,
     codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
-    esModules: bundleSource.esModules,
+    esModules: { ...bundleSource.esModules, ...bundleSource.esCells, ...entry.esCells },
   };
 }
 
@@ -2633,6 +2651,9 @@ async function facetVfsBundleSourceFor(
     );
 }
 
+/** A module of the map that runs code: its text, and whether it is an ES module or a `{ cjs }` one. */
+type CellModule = Pick<WrappedCommonJsCell, 'text' | 'esModule'>;
+
 interface FacetVfsBundleSource {
   /** The data cells: an inline expression, or one joining the side modules. */
   expression: string;
@@ -2640,6 +2661,8 @@ interface FacetVfsBundleSource {
   modules: Record<string, string>;
   /** The code cells as `{ cjs }` module texts, by module name. */
   codeModules: Record<string, string>;
+  /** The code cells that are strict code of their own, as `{ js }` module texts, by module name (commonjs-cell.ts THE WRAPPER). */
+  esCells: Record<string, string>;
   /** The staged ES modules and what they link to, as `{ js }` module texts, by module name (esm-stage.ts). */
   esModules: Record<string, string>;
   /** The JSON of the launch's CommonJsCellRow table. */
@@ -2743,6 +2766,7 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
     bytes += source.expression.length + source.imports.length + source.codeCells.length + source.runtimeCode.length;
     for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
     for (const [name, text] of Object.entries(source.codeModules)) bytes += name.length + text.length;
+    for (const [name, text] of Object.entries(source.esCells)) bytes += name.length + text.length;
     for (const [name, text] of Object.entries(source.esModules)) bytes += name.length + text.length;
     bytes += source.esm.length;
   } else if (state.esm) {
@@ -2964,15 +2988,16 @@ export async function buildFacetVfsBundleSource(
     codeOnly?: ReadonlySet<string>;
     /** ES modules carried as files only (FacetVfsState.dataModules): never a `{ cjs }` module. */
     dataModules?: ReadonlySet<string>;
-    /** Runtime code staged for this launch: `{ cjs }` module text by key. */
-    runtimeCode?: ReadonlyMap<string, string>;
+    /** Runtime code staged for this launch: its module text by key, an ES module's or a `{ cjs }` one's. */
+    runtimeCode?: ReadonlyMap<string, CellModule>;
   } = {},
 ): Promise<FacetVfsBundleSource> {
   const storageBytes = moduleMapStorageBytes(bundle, codeOnly);
   const codeModules: Record<string, string> = {};
+  const esCells: Record<string, string> = {};
   const esModules: Record<string, string> = { ...esm?.members };
   const rows: CommonJsCellRow[] = [];
-  for (const [key, text] of runtimeCode ?? []) codeModules[runtimeCodeModuleName(key)] = text;
+  for (const [key, module] of runtimeCode ?? []) (module.esModule ? esCells : codeModules)[runtimeCodeModuleName(key)] = module.text;
   // The facades' names, read only by a graph a program produces after its launch began (core esm-late-link.ts).
   if (esm !== undefined) codeModules[ESM_BINDINGS_MODULE] = JSON.stringify(esm.bindings);
   // An ES module's text is never its file's (its prologue, its specifiers):
@@ -2981,7 +3006,7 @@ export async function buildFacetVfsBundleSource(
     const name = commonJsCellModuleName(key);
     esModules[name] = staged.text;
     if (staged.columns.length > 0) codeModules[columnMapModuleName(name)] = JSON.stringify(staged.columns);
-    rows.push([key, name, staged.head, staged.tail, staged.hashbang ? 1 : 0, 0, 1]);
+    rows.push([key, name, staged.head, staged.tail, staged.hashbang ? 1 : 0, 0, 1, 1]);
     if (pacer) await pacer.spend(staged.text.length);
   }
   // `consume`: the caller releases the raw cells right after (a launch's
@@ -2998,8 +3023,8 @@ export async function buildFacetVfsBundleSource(
     if (code !== undefined) {
       const wrapped = wrapCommonJsCell(code);
       const name = commonJsCellModuleName(path);
-      codeModules[name] = wrapped.text;
-      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, 0]);
+      (wrapped.esModule ? esCells : codeModules)[name] = wrapped.text;
+      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, 0, wrapped.esModule ? 1 : 0]);
       if (pacer) await pacer.spend(code.length);
     }
     if (adopt || codeOnly?.has(path)) {
@@ -3011,6 +3036,7 @@ export async function buildFacetVfsBundleSource(
   return {
     ...await serializeFacetVfsData(data, pacer, consume),
     codeModules,
+    esCells,
     esModules,
     codeCells: JSON.stringify(rows),
     esm: esm === undefined ? 'null' : JSON.stringify({ table: esm.table, missing: esm.missing }),
@@ -7308,19 +7334,27 @@ export class FacetManager {
       }
       const source = vfsState.bundleSource;
       const keys: string[] = source ? JSON.parse(source.runtimeCode) : [];
-      const learned = keys.map((key) => [key, utf8Length(generated!.codeModules[runtimeCodeModuleName(key)] ?? '')] as const);
+      const learned = keys.map((key) => {
+        const name = runtimeCodeModuleName(key);
+        return [key, utf8Length(generated!.codeModules[name] ?? generated!.esModules[name] ?? '')] as const;
+      });
       generated = undefined;
       const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
       if (over > 0 || !source) throw new ModuleMapOverCeilingError(over);
       const keep = new Set(kept);
       const codeModules = { ...source.codeModules };
-      for (const key of keys) if (!keep.has(key)) delete codeModules[runtimeCodeModuleName(key)];
+      const esCells = { ...source.esCells };
+      for (const key of keys) {
+        if (keep.has(key)) continue;
+        delete codeModules[runtimeCodeModuleName(key)];
+        delete esCells[runtimeCodeModuleName(key)];
+      }
       const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
         + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
         + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
       console.warn(`[facet-manager] pid ${pid}: ${message}`);
       if (this.debugEnabled) this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
-      const trimmed = await generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+      const trimmed = await generate({ ...vfsState, bundleSource: { ...source, codeModules, esCells, runtimeCode: JSON.stringify(kept) } });
       keptForRebuild = keepAdmission;
       return trimmed;
     } catch (error) {
@@ -7446,17 +7480,17 @@ export class FacetManager {
    */
   private async _stagedRuntimeCode(
     learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget, moduleScope: ModuleScope, stripTypes: NodeTypeScript | null,
-  ): Promise<Map<string, string> | undefined> {
-    const modules = new Map<string, string>();
+  ): Promise<Map<string, CellModule> | undefined> {
+    const modules = new Map<string, CellModule>();
     for (const [codeKey, entry] of learning.code) {
       // An image is carried as a wasm member (learnedWasmImages), not as code.
       if (entry.kind === 'wasm') continue;
       if (entry.kind === 'expression') {
-        modules.set(codeKey, runtimeExpressionModule(entry.code));
+        modules.set(codeKey, { text: runtimeExpressionModule(entry.code), esModule: false });
         continue;
       }
       if (entry.kind !== 'module') {
-        modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
+        modules.set(codeKey, { text: runtimeFunctionModule(entry.kind, entry.params, entry.body), esModule: false });
         continue;
       }
       if (entry.path.startsWith('data:')) continue;
@@ -7475,7 +7509,7 @@ export class FacetManager {
       } catch {
         // Unparseable: it stays as written, and requiring it says why.
       }
-      modules.set(codeKey, wrapCommonJsCell(code).text);
+      modules.set(codeKey, wrapCommonJsCell(code));
     }
     return modules.size > 0 ? modules : undefined;
   }
@@ -8585,7 +8619,8 @@ export class FacetManager {
       for (const source of Object.values(generated.immutableModules)) diagSink.moduleMapBytes += source.byteLength;
       for (const member of [...Object.values(sqliteModules), ...Object.values(wasmModules)]) diagSink.moduleMapBytes += member.wasm.byteLength;
       diagSink.bundleBytes = utf8Length(vfsState.bundleSource?.expression ?? '');
-      for (const text of [...Object.values(vfsState.bundleSource?.modules ?? {}), ...Object.values(vfsState.bundleSource?.codeModules ?? {})]) {
+      for (const text of [...Object.values(vfsState.bundleSource?.modules ?? {}), ...Object.values(vfsState.bundleSource?.codeModules ?? {}),
+        ...Object.values(vfsState.bundleSource?.esCells ?? {})]) {
         diagSink.bundleBytes += utf8Length(text);
       }
     }

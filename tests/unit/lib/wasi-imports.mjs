@@ -23,7 +23,7 @@
  */
 
 /**
- * @param {{ __wasiMakeImports: (options: object) => object }} preamble
+ * @param {{ __wasiMakeImports: (options: object) => import('../../../packages/core/src/runtime/wasi/types.ts').WasiInstanceBundle }} preamble
  * @param {object} options  Forwarded to __wasiMakeImports unchanged.
  */
 export function makeImportsWithoutJSPI(preamble, options) {
@@ -45,7 +45,7 @@ export function makeImportsWithoutJSPI(preamble, options) {
  * filesystem the bodies answer from is chosen when they are called, by the
  * engine's real JSPI.
  *
- * @param {{ __wasiMakeImports: (options: object) => object }} preamble
+ * @param {{ __wasiMakeImports: (options: object) => import('../../../packages/core/src/runtime/wasi/types.ts').WasiInstanceBundle }} preamble
  * @param {object} options  Forwarded to __wasiMakeImports unchanged.
  */
 export function makeParkingImports(preamble, options) {

@@ -86,7 +86,7 @@
  *   the build, and the gate throws BuildFailure (exit 2 on the CLI), never
  *   a drift report (exit 1). And in a bun workspace it refuses to build at
  *   all with any toolchain but the workspace's own: node_modules installed,
- *   and the tsc each package resolves being the lockfile's.
+ *   and the tsrs each package resolves being the lockfile's.
  *
  * ONE GATE PER CHECKOUT AT A TIME
  *   Two gates on one checkout would read each other's half-built tree: B
@@ -251,6 +251,7 @@ export const INPUT_ROOTS = [
   'scripts/lib/flock.mjs',
   'scripts/lib/fs-walk.mjs',
   'scripts/lib/output-transaction.mjs',
+  'scripts/lib/tsrs-api.mjs',
   'scripts/clean-dist.mjs',
   'scripts/compile-facet-bodies.mjs',
   'scripts/lib/compiled-bodies.mjs',
@@ -480,7 +481,7 @@ function runSteps({ root, steps, log, roots, before }) {
 
 /**
  * PATH for a step: the package's and the workspace's node_modules/.bin
- * ahead of everything else, as `bun run` orders them, so no other tsc on
+ * ahead of everything else, as `bun run` orders them, so no other tsrs on
  * the machine can stand in for the workspace's.
  */
 function workspacePath(root, cwd) {
@@ -491,11 +492,11 @@ function workspacePath(root, cwd) {
 /**
  * In a bun workspace, refuse to build with anything but its own toolchain:
  * node_modules must be installed, and every step's package that compiles
- * with TypeScript must resolve a tsc inside the workspace that is the
- * version bun.lock pins. A global tsc (one without --noCheck, say) or an
- * install older than the lockfile otherwise fails mid-build, or builds
- * different bytes. A tree that is not a workspace (a unit fixture) has
- * nothing to check.
+ * with tsrs must resolve a tsrs inside the workspace that is the version
+ * bun.lock pins (bun checks the package's integrity when it installs it).
+ * A global compiler or an install older than the lockfile otherwise fails
+ * mid-build, or builds different bytes. A tree that is not a workspace (a
+ * unit fixture) has nothing to check.
  *
  * @param {{ root?: string, steps?: Array<{ cwd: string }> }} [options]
  */
@@ -509,7 +510,7 @@ export function assertWorkspaceToolchain({ root = REPO_ROOT, steps = BUILD_FIXPO
   if (!manifest?.workspaces) return;
   const install = 'run `bun install --frozen-lockfile` at the repo root, then build again';
   if (!existsSync(join(root, 'node_modules'))) {
-    throw new BuildFailure(`refusing to build — ${root} has no node_modules, so its build would run whatever tsc is on PATH; ${install}`);
+    throw new BuildFailure(`refusing to build — ${root} has no node_modules, so its build would run whatever compiler is on PATH; ${install}`);
   }
   let pinned = null;
   for (const cwd of new Set(steps.map((step) => step.cwd))) {
@@ -519,31 +520,31 @@ export function assertWorkspaceToolchain({ root = REPO_ROOT, steps = BUILD_FIXPO
     } catch {
       continue;
     }
-    if (!pkg?.devDependencies?.typescript && !pkg?.dependencies?.typescript) continue;
-    pinned ??= lockedTypescript(root);
-    const bin = [join(root, cwd, 'node_modules', '.bin', 'tsc'), join(root, 'node_modules', '.bin', 'tsc')].find((p) => existsSync(p));
-    if (!bin) throw new BuildFailure(`refusing to build — ${cwd} compiles with tsc, and no tsc is installed in the workspace for it; ${install}`);
+    if (!pkg?.devDependencies?.tsrs && !pkg?.dependencies?.tsrs) continue;
+    pinned ??= lockedTsrs(root);
+    const bin = [join(root, cwd, 'node_modules', '.bin', 'tsrs'), join(root, 'node_modules', '.bin', 'tsrs')].find((p) => existsSync(p));
+    if (!bin) throw new BuildFailure(`refusing to build — ${cwd} compiles with tsrs, and no tsrs is installed in the workspace for it; ${install}`);
     const binary = realpathSync(bin);
     const inside = relative(realpathSync(root), binary);
     const installed = JSON.parse(readFileSync(join(dirname(binary), '..', 'package.json'), 'utf8')).version;
     if (inside.startsWith('..') || installed !== pinned) {
       throw new BuildFailure(
-        `refusing to build — ${cwd}'s tsc is ${binary} (typescript ${installed}), but bun.lock pins typescript ${pinned}; ${install}`,
+        `refusing to build — ${cwd}'s tsrs is ${binary} (tsrs ${installed}), but bun.lock pins tsrs ${pinned}; ${install}`,
       );
     }
   }
 }
 
-/** The typescript version bun.lock resolves for the workspace. */
-function lockedTypescript(root) {
+/** The tsrs version bun.lock resolves for the workspace. */
+function lockedTsrs(root) {
   let lock = '';
   try {
     lock = readFileSync(join(root, 'bun.lock'), 'utf8');
   } catch {
     // Reported below.
   }
-  const match = /^ {4}"typescript": \["typescript@([^"]+)"/m.exec(lock);
-  if (!match) throw new BuildFailure(`refusing to build — ${join(root, 'bun.lock')} pins no typescript, so the workspace's tsc cannot be told from any other`);
+  const match = /^ {4}"tsrs": \["tsrs@([^"]+)"/m.exec(lock);
+  if (!match) throw new BuildFailure(`refusing to build — ${join(root, 'bun.lock')} pins no tsrs, so the workspace's tsrs cannot be told from any other`);
   return match[1];
 }
 
@@ -793,14 +794,14 @@ function logUncommittedOutputs({ root = REPO_ROOT, log = silent } = {}) {
 
 /** What a package's source file may be named, for an output stem. */
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
-/** tsc's outputs for one source, longest suffix first. */
+/** The compiler's outputs for one source, longest suffix first. */
 const OUTPUT_SUFFIXES = ['.d.ts.map', '.d.mts.map', '.d.cts.map', '.js.map', '.mjs.map', '.cjs.map', '.d.ts', '.d.mts', '.d.cts', '.js', '.mjs', '.cjs'];
 
 /**
  * Build outputs nothing in the tree produces any more, by path.
  *
  * - `packages/<pkg>/dist/**`: a compiled file whose source (same path under
- *   src/, any source extension) is gone. tsc never deletes an output, and a
+ *   src/, any source extension) is gone. tsrs never deletes an output, and a
  *   package's `./*.js` export would still serve the old module.
  * - `packages/worker/public/_assets`: a versioned asset (`<family>/<x.y.z>/…`
  *   or `<name>-<x.y.z>.<ext>`) that no generated artifact under

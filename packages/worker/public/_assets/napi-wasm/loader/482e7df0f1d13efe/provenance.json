@@ -46,10 +46,10 @@
       "bun.lock#@esbuild/win32-ia32": "bf86282659172e0bd98aa767e66cc1f2d2e22a87467eb4cd2f0fdaba56868a0a",
       "bun.lock#@esbuild/win32-x64": "fab96a9b3da5d6d290e01b96354bf5059b42ce1faade63672fed0084ec14c231",
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
-      "package.json": "a0d482519e26833358f20cc67a3d24067c15c173e0c0c753423d415a62aa483a",
-      "packages/core/package.json": "d3a481d0442c0dd5ff61065bda69a5695b02ebf75b179f93879c24bbc4789513",
-      "packages/platform/package.json": "a747888a19282e5bcd5b014c8bbcba11b6ccf1570f52d4a80e6cd2b2d964f38f",
-      "packages/worker/package.json": "edd63d207dcf480e5fdf899b00c83a17b2855cb6f7b126a5716f7d379f3e6570"
+      "package.json": "21c78f85c27342445ee62474498e32c2221731cf0e0bed20667a96cb0fb89449",
+      "packages/core/package.json": "a567ed1c4781dd14ca8131f5b1a9f04f243492249555d1ba969b0aff8cfe9e44",
+      "packages/platform/package.json": "af468dc05934ef6373d71020dcbc8703ce293aa97f3b1d7ef6ee4a1b94a089b5",
+      "packages/worker/package.json": "70b48bc414d80f2025b7aa5d6114c70718130597290579366c1b33513311384c"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",

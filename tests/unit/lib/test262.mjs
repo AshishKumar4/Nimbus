@@ -146,6 +146,8 @@ function checkout() {
 /**
  * The tests the interpreter claims among the files `include` accepts
  * (relative to test/language), in path order, and each skipped one with why.
+ *
+ * @param {(file: string) => boolean} [include]
  */
 export function collectTests(include = () => true) {
   checkout();
@@ -222,7 +224,7 @@ export async function runTest262Slice(name) {
     });
     child.on('exit', (code, signal) => {
       if (code !== 0) crashes.push(`worker ${i} exited ${code ?? signal}`);
-      resolve();
+      resolve(undefined);
     });
   })));
 

@@ -11,29 +11,20 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import ts from 'typescript';
+import { ModuleKind, ModuleResolutionKind } from 'tsrs/unstable/sync';
+import { ScriptTarget } from 'tsrs/unstable/ast';
 import { FILESYSTEM_METHODS } from '../../packages/core/src/runtime/filesystem-methods.ts';
 import { FILESYSTEM_MIRRORS_GENERATED, filesystemMirrorsSource } from '../../packages/core/scripts/generate-filesystem-mirrors.mjs';
+import { programErrors } from './lib/tsrs-program.mjs';
 
 const committed = readFileSync(FILESYSTEM_MIRRORS_GENERATED, 'utf8');
 assert.equal(filesystemMirrorsSource(FILESYSTEM_METHODS), committed, "the committed mirrors are the table's (run core's build)");
 
 /** The compiler's errors in the mirrors file, were it `text`. */
 function mirrorErrors(text) {
-  const options = { strict: true, noEmit: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, skipLibCheck: true, lib: ['lib.es2022.d.ts', 'lib.dom.d.ts'] };
-  const host = ts.createCompilerHost(options);
-  const readFile = host.readFile.bind(host);
-  const getSourceFile = host.getSourceFile.bind(host);
-  host.readFile = (name) => (name === FILESYSTEM_MIRRORS_GENERATED ? text : readFile(name));
-  host.getSourceFile = (name, version, onError, create) => (name === FILESYSTEM_MIRRORS_GENERATED
-    ? ts.createSourceFile(name, text, version)
-    : getSourceFile(name, version, onError, create));
-  const program = ts.createProgram([FILESYSTEM_MIRRORS_GENERATED], options, host);
-  const file = program.getSourceFile(FILESYSTEM_MIRRORS_GENERATED);
-  return ts.getPreEmitDiagnostics(program, file).map((d) => {
-    const { line } = file.getLineAndCharacterOfPosition(d.start ?? 0);
-    return { line: text.split('\n')[line].trim(), message: ts.flattenDiagnosticMessageText(d.messageText, '\n') };
-  });
+  const options = { strict: true, noEmit: true, target: ScriptTarget.ES2022, module: ModuleKind.ESNext, moduleResolution: ModuleResolutionKind.Bundler, skipLibCheck: true, lib: ['lib.es2022.d.ts', 'lib.dom.d.ts'] };
+  const errors = programErrors({ roots: [FILESYSTEM_MIRRORS_GENERATED], options, overlay: { [FILESYSTEM_MIRRORS_GENERATED]: text } });
+  return errors.map(({ line, message }) => ({ line: text.split('\n')[line ?? 0].trim(), message }));
 }
 
 assert.deepEqual(mirrorErrors(committed), [], 'the generated mirrors type-check');

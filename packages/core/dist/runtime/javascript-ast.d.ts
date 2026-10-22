@@ -4,7 +4,7 @@ export type AstNode = AnyNode & Record<string, unknown>;
 export declare const MODULE_PARSE_OPTIONS: Options;
 /** How a program Node would run is parsed (as a module, else as a CommonJS script): what either allows. */
 export declare const PROGRAM_PARSE_OPTIONS: {
-    readonly ecmaVersion: "latest";
+    readonly ecmaVersion: 'latest';
     readonly allowHashBang: true;
     readonly allowReturnOutsideFunction: true;
     readonly allowAwaitOutsideFunction: true;
