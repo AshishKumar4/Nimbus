@@ -19,7 +19,7 @@
       "packages/worker/scripts/opencode/stubs/parser-worker-threads.ts": "cff7a27dafe59ab26b760db346c1f620fd50ef7d7adc28b6bc0ca2726add5c8d",
       "packages/worker/scripts/opencode/stubs/pty-stub.ts": "b169c1ff0bd8cdfbacedb36bea2eedc8fec30e09bdbcd3eb8fd2647185fa8772",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
-      "scripts/ci/rebuild-opencode.mjs": "3455d7b72f0125d5a7a18754fde8b0108d4d517a0756ab871d8b198bdd4efa1b",
+      "scripts/ci/rebuild-opencode.mjs": "6c3ccf16b02582a128fbd28ca62c8861ad8c8c53f8b646f6d406509b05027dda",
       "bun.lock#@tsrs/linux-x64-gnu": "0d316975e0e6228e501751bffb603c7e921a001a59d2a9921958cdd5a97f8782",
       "bun.lock#tsrs": "0d94a33c5b6a176f58f9eee6286c1ce690306693ca8a6e06831dfc51a93b56f2",
       "toolchain#bun": "74b860b3270666137a4d543c3e3d1e4e473d54636f7593d1c17bf693e6540bbe"
