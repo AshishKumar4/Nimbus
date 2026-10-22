@@ -205,6 +205,8 @@ async function guest({ stdin, takesSignals = false } = {}) {
   };
   return {
     P, sup, control, stdout,
+    /** CPython's periodic check for its signals (nimbus_proc.signal_check). */
+    check: () => proc.signal_check(),
     buffered: (fd) => P.fdTable.get(fd)?.pipe?.buffered,
     pipe() {
       const at = scratch();
@@ -780,6 +782,26 @@ for (const takesSignals of [true, false]) {
   checks++;
 }
 
+// A computing guest asks for its signals (CPython's periodic check,
+// nimbus_proc.signal_check): each check yields a turn and answers the signal
+// held for its process, taken, or SUCCESS; from its first check, its signals
+// are watched for the rest of its run, not only while it waits.
+{
+  const g = await guest({ takesSignals: true });
+  assert.equal(await g.check(), E.SUCCESS, 'none sent: SUCCESS');
+  g.control.signal('SIGINT');
+  let answer = E.SUCCESS;
+  for (let i = 0; i < 100 && answer === E.SUCCESS; i++) answer = await g.check();
+  assert.equal(answer, ESIGINT, 'one sent while the guest computes reaches a check');
+  assert.equal(await g.check(), E.SUCCESS, 'taken: the next check answers SUCCESS');
+  g.control.signal('SIGTERM');
+  answer = E.SUCCESS;
+  for (let i = 0; i < 100 && answer === E.SUCCESS; i++) answer = await g.check();
+  assert.equal(answer, ESIGTERM, 'and so does the next one sent');
+  g.dispose();
+  checks++;
+}
+
 // A guest that does not take them is never asked for them.
 {
   const g = await guest();
@@ -791,6 +813,7 @@ for (const takesSignals of [true, false]) {
   assert.equal(await g.write(w, 'x'), E.SUCCESS);
   assert.deepEqual(await reading, { errno: E.SUCCESS, text: 'x' }, 'its wait goes on');
   assert.equal(await g.sleep(30), E.SUCCESS, 'and its poll on a clock');
+  assert.equal(g.check(), E.SUCCESS, 'its check answers SUCCESS at once, yielding nothing');
   assert.equal(g.sup.signalWaits, 0, 'nothing asked the session for a signal');
   g.dispose();
   checks++;
