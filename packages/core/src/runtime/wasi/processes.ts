@@ -264,6 +264,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   let pendingSignal: SignalErrno | null = null;
   const interruptible = new Set<() => void>();
   let watching = false;
+  /** The guest checks for its signals while it computes (signal_check): they are watched for the rest of its run. */
+  let checking = false;
 
   /** A signal arrived: every wait in progress ends, for the guest to take it. */
   const signalled = (name: string | null | undefined): void => {
@@ -281,7 +283,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     watching = true;
     void (async () => {
       try {
-        while (interruptible.size > 0 && pendingSignal === null && !disposed) signalled(await sup.cpNextSignal?.(LONG_POLL_MS));
+        while ((interruptible.size > 0 || checking) && pendingSignal === null && !disposed) signalled(await sup.cpNextSignal?.(LONG_POLL_MS));
       } catch {
         // The session is gone, and its signals with it.
       } finally {
@@ -663,6 +665,22 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (options & WNOHANG) { view().setInt32(waitedPtr, 0, true); return E.SUCCESS; }
       if (!opts.parks) return refused('wait');
       return opts.park(parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? unanswered(E.INTR)));
+    },
+
+    /**
+     * A computing guest's check for its signals (CPython's periodic check,
+     * python/nimbus-signal-check.c): nothing reaches a guest that makes no
+     * host call, so every so many of its interpreter's breaker checks it asks
+     * here. The host yields its event loop a turn, so a signal sent while the
+     * guest computed gets in (in the session, the terminal's Ctrl-C itself; on
+     * its peer, the session's answer to cpNextSignal), then answers the signal
+     * held for the process, taken (NIMBUS_ESIGNAL + its number), else SUCCESS.
+     */
+    signal_check() {
+      if (!opts.takesSignals || !opts.parks) return E.SUCCESS;
+      checking = true;
+      watchSignals();
+      return opts.park(new Promise<void>((resolve) => { setTimeout(resolve, 0); }).then(() => unanswered(E.SUCCESS)));
     },
 
     kill(pid, signal) {
