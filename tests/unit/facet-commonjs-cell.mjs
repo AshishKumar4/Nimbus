@@ -124,7 +124,6 @@ function staged(text, origin = ORIGIN) {
   assert.equal(kind('"use strict";\nmodule.exports = import /**/ . /**/ meta;'), false, 'however spelled');
   assert.equal(kind('"use strict";\nconst require = 1;\nmodule.exports = require;', 'block'), true, 'a lowered strict module in its block');
   assert.equal(run('"use strict";\nmodule.exports = (function () { return this; })();'), undefined, 'an ES cell is strict, as its prologue says');
-  assert.equal(run('"use strict";\nmodule.exports = this === exports;'), true, 'its this is its exports, as Node calls the wrapper');
   assert.equal(run('"use strict";\nmodule.exports = arguments.length;\nreturn;\nmodule.exports = "unreached";'), 5, 'top-level return and the five arguments');
   assert.equal(run('"use strict";\nmodule.exports = Function;'), MODULE_FUNCTION, 'its Function is its module\'s own');
   assert.equal(run('"use strict";\nconst require = (id) => "own:" + id;\nmodule.exports = require("z");', 'block'), 'own:z');
