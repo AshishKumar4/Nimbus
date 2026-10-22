@@ -5,8 +5,8 @@
 // dist's: { head, sourceCommit, assets, patch, blobs } (lib/output-patch.mjs),
 // which scripts/ci/remote-opencode.mjs checks and applies.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, cpSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { assertCurrentInputs, digestInputs } from '../../packages/worker/scripts/artifact-inputs.mjs';
@@ -40,13 +40,14 @@ if (sourceVersion !== OPENCODE_SOURCE.version) throw new Error(`OpenCode's sourc
 for (const file of ['build-node.ts', 'bundle-patches.ts']) copyFileSync(join(recipe, file), join(packageRoot, file));
 for (const file of readdirSync(join(recipe, 'stubs'))) copyFileSync(join(recipe, 'stubs', file), join(packageRoot, file));
 // bundle-patches.ts parses with this tree's tsrs (its bun.lock entries are
-// inputs): the package beside opencode's own, and its native binary, which
-// tsrs's own getExePath finds here, named inside the sandbox by TSRS_BINARY.
+// inputs): the package beside opencode's own, and its native package (the
+// binary, which tsrs's own getExePath finds here, and the lib.*.d.ts files it
+// reads beside itself), named inside the sandbox by TSRS_BINARY.
 const tsrs = realpathSync(join(repo, 'node_modules/tsrs'));
 cpSync(tsrs, join(upstream, 'node_modules/tsrs'), { recursive: true });
 const { default: tsrsBinary } = await import(pathToFileURL(join(tsrs, 'lib/getExePath.js')).href);
-copyFileSync(tsrsBinary(), join(scratch, 'tsrs'));
-chmodSync(join(scratch, 'tsrs'), 0o755);
+const native = realpathSync(tsrsBinary());
+cpSync(dirname(native), join(scratch, 'tsrs-native'), { recursive: true });
 
 // Reuse the committed catalog snapshot, not whichever catalog models.dev
 // happens to serve today: the literal in ModelsDev's sync thunk
@@ -80,7 +81,7 @@ run('bwrap', [
   '--setenv', 'NIMBUS_OPENCODE_ROOT', '/src/opencode/packages/opencode',
   '--setenv', 'NIMBUS_OPENCODE_DIST', '/build/dist', '--setenv', 'MODELS_DEV_API_JSON', '/build/models.json',
   '--setenv', 'HOME', '/tmp', '--setenv', 'BUN_INSTALL_CACHE_DIR', '/build/bun-cache',
-  '--setenv', 'TMPDIR', '/tmp', '--setenv', 'TSRS_BINARY', '/build/tsrs',
+  '--setenv', 'TMPDIR', '/tmp', '--setenv', 'TSRS_BINARY', `/build/tsrs-native/${basename(native)}`,
   'bun', 'build-node.ts',
 ], repo, env);
 assertCurrentInputs('OpenCode', inputs, await opencodeInputs(), 'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
