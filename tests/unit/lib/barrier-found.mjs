@@ -394,9 +394,9 @@ const GAPS = {
     shows: 'at rest, the program\'s misses are []; unanswered are [home/user/app/d/e/g]',
   },
   'a fed mount beneath one with no feed answers as the session holds it [node]': {
-    lacks: 'S lists a mount with no change feed only where its launch named it, and refuses the rest (closed by the cutover: such a mount is the session\'s to answer, awaited); '
-      + 'meanwhile readdirSync of a directory on such a mount can be refused EAGAIN',
-    shows: 'sync readdir . answered EAGAIN',
+    lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (closed by the cutover: such a mount is the session\'s to answer, awaited); '
+      + 'meanwhile readFileSync of a missing file on such a mount can be refused EAGAIN',
+    shows: 'sync readFile z answered {"code":"EAGAIN"}',
   },
   'a directory the process made beside a mount with no feed is listed at rest (7078) [node]': {
     lacks: 'S lists the directory the process made as its relist after the mount table changed saw it, without the name (closed by the cutover: one own state, RF\'s); '
