@@ -5636,6 +5636,10 @@ const __fsMod = (() => {
     || (globalThis.__nimbusVfsCursor = { position: null });
   /** `k`'s feed's revision at the cursor: the clock its fills and reports are dated by. */
   function _feedRev(k) { return _feedRevAt(_cursor.position, k); }
+  /** Whether the cursor is still at `at` (a position it held): the same place, every feed. */
+  function _atCursor(at) {
+    return at === _cursor.position || (at !== null && _cursor.position !== null && _nsActive() && __nimbusResidentModule.samePosition(at, _cursor.position));
+  }
   /** `k`'s feed's revision at `at` (a position the cursor held), 0 before the store answers. */
   function _feedRevAt(at, k) { return at === null || !_nsActive() ? 0 : __nimbusResidentModule.feedFor(at, k).cursor; }
   // Admissions under way: from a delta's admission until the last directory
@@ -7017,7 +7021,7 @@ const __fsMod = (() => {
           reachedFill = _beginFill(_strip(first.path));
           // Dated where the read's barrier left the cursor, on the reached file's own feed.
           reachedFill.rev = _feedRevAt(fill.at, reachedFill.k);
-          if (fill.reported > fill.rev || fill.at !== _cursor.position) reachedFill.reported = Infinity;
+          if (fill.reported > fill.rev || !_atCursor(fill.at)) reachedFill.reported = Infinity;
         }
       } catch (error) {
         _endFill(fill);

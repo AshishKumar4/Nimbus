@@ -2247,6 +2247,7 @@ var __nimbusResidentModule = (() => {
       bind(tables, heapTables2) {
         t = tables;
         heap = heapTables2;
+        read = null;
       },
       bound: () => t !== null,
       serving: () => t !== null && !isSealed,
@@ -2274,6 +2275,7 @@ var __nimbusResidentModule = (() => {
       seal(reason) {
         isSealed = true;
         sealReason = String(reason || "resealed");
+        read = null;
       },
       unseal() {
         isSealed = false;
@@ -2287,21 +2289,23 @@ var __nimbusResidentModule = (() => {
       },
       cursor() {
         if (t === null) return null;
+        if (read !== null && read.tables === t) return read.cursor;
         const text = t.metaGet("position");
-        if (text === void 0) return null;
-        if (read !== null && read.text === text) return read.cursor;
         let cursor = null;
-        try {
-          const parsed = JSONParse(text);
-          cursor = isFeedPosition(parsed) ? parsed : null;
-        } catch {
-          cursor = null;
+        if (text !== void 0) {
+          try {
+            const parsed = JSONParse(text);
+            cursor = isFeedPosition(parsed) ? parsed : null;
+          } catch {
+            cursor = null;
+          }
         }
-        read = { text, cursor };
+        read = { tables: t, cursor };
         return cursor;
       },
       writeCursor(tables, cursor) {
         tables.metaSet("position", JSONStringify(cursor));
+        read = { tables, cursor };
       }
     };
   }
