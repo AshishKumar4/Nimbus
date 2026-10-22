@@ -665,7 +665,7 @@ const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
 const __nimbusEntryText = typeof __NIMBUS_ENTRY_TEXT === "undefined" ? null : __NIMBUS_ENTRY_TEXT;
 const __nimbusEntryLoaded = __nimbusEntryText === null ? null : (() => {
   try {
-    return { factory: (0, eval)(__nimbusEntryText + "\n//# sourceURL=" + __NIMBUS_BUNDLE_URL + __nimbusStackEntry[0]), error: null };
+    return { factory: (0, eval)(__nimbusEntryText + "\\n//# sourceURL=" + __NIMBUS_BUNDLE_URL + __nimbusStackEntry[0]), error: null };
   } catch (error) {
     return { factory: null, error };
   }
