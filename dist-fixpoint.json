@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "18b14ecf118fc1b501c01eaaeb1718fcdf6abd26d32f0cbe92e475c3ff93b483",
+  "fingerprint": "08dad2dea6c887b623314ded01449bba7953746eb0a30b78ae028d5eb0f89f88",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.23.4"
@@ -3187,7 +3187,7 @@
     "packages/worker/public/_assets/opencode/1.16.2/nope-03-2z8weyjw.mp3": "9832805f84dcdb4a8ccb46a98cc75def72b52509610837938ed8343b2537df0c",
     "packages/worker/public/_assets/opencode/1.16.2/parser.worker.js": "24e596e4183d72c977b1a6a83c8296146736ecc15d932e2465b26e459e10135d",
     "packages/worker/public/_assets/opencode/1.16.2/photon_rs_bg-bq08arze.wasm": "10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c",
-    "packages/worker/public/_assets/opencode/1.16.2/provenance.json": "d7dcdea8e8cd8c44b514dd17e1958850413158d384faa22c9ff4fe7e5ce38627",
+    "packages/worker/public/_assets/opencode/1.16.2/provenance.json": "2591d7347dc035b9361bd9f5441cb09893c9900415cb8e7ad05f701eb4937a51",
     "packages/worker/public/_assets/opencode/1.16.2/staplebops-06-rz29m246.mp3": "eb87d63312ac11b1ceb1a8b348057dfe4d1166d5a85dc79778fe69d458f4c097",
     "packages/worker/public/_assets/opencode/1.16.2/tree-sitter-3jzf13jk.wasm": "f38dcc4b43b818f9a0785bc1c6d5611a75ac4cdd428ff3f02757c34ca4e46d7f",
     "packages/worker/public/_assets/opencode/1.16.2/tree-sitter-bash-hq5s6fxb.wasm": "364f0a2cd385c792239423026ef442dbd073d34c396b7bc9e5932426b8e4aa5d",
