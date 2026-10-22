@@ -8,7 +8,7 @@
 // - two execs, under one credential, write at once with their awaits
 //   interleaved: each event names its own exec (redirections, mkdir, mv,
 //   rm, and a durable coreutils command, setfacl);
-// - an exec's children (sh -c, a pipeline, a background job) name it;
+// - an exec's children (a subshell, a pipeline, a background job) name it;
 // - interleaved appends to one file make separate events, each its own exec's;
 // - a host lease's write is null; an exec with no execId is undefined;
 // - a mount that does not report its own writes names the exec too, even
@@ -82,7 +82,7 @@ await check('an exec\'s children', async () => {
   let ran;
   const events = await observed(async () => {
     ran = await ws.exec([
-      "sh -c 'echo x > /home/user/kids/sh'",
+      '( echo x > /home/user/kids/sub )',
       'echo y | tee /home/user/kids/pipe > /dev/null',
       '(sleep 0.05; echo z > /home/user/kids/bg) &',
       'wait',
@@ -90,7 +90,7 @@ await check('an exec\'s children', async () => {
     assert.equal(ran.exitCode, 0, ran.stderr);
   });
   assert.deepEqual(byPath(events, '/home/user/kids/'), {
-    '/home/user/kids/sh': ['exec-kids'], '/home/user/kids/pipe': ['exec-kids'], '/home/user/kids/bg': ['exec-kids'],
+    '/home/user/kids/sub': ['exec-kids'], '/home/user/kids/pipe': ['exec-kids'], '/home/user/kids/bg': ['exec-kids'],
   }, `stderr: ${ran.stderr}; all: ${JSON.stringify(events.filter((event) => event.path.includes('kids')))}`);
 });
 
@@ -134,7 +134,8 @@ await check('a mount that does not report its own writes', async () => {
       if (typeof value !== 'function') return value;
       return async (...args) => {
         const done = value.apply(target, args);
-        if (gate !== null) await gate;
+        // A mkdir made, its answer held.
+        if (gate !== null && key === 'mkdir') await gate;
         return done;
       };
     },
@@ -151,7 +152,7 @@ await check('a mount that does not report its own writes', async () => {
     let open;
     gate = new Promise((resolve) => { open = resolve; });
     const late = await observed(async () => {
-      const running = ws.exec('echo late > /home/user/m/late', { execId: 'exec-late' });
+      const running = ws.exec('mkdir /home/user/m/late', { execId: 'exec-late' });
       await sleep(100);
       const entry = ws.processes.getAll().find((process) => process.execId === 'exec-late' && process.state === 'running');
       assert.ok(entry !== undefined, 'its process runs while the mount\'s write is pending');

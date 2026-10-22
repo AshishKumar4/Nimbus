@@ -543,7 +543,8 @@ function aclTriple(bits: number): string {
 function mkSetfacl(sqliteVfs: SqliteVFS): Command {
   return async (ctx) => {
     const cred = requireVfsCred(ctx.cred, 'setfacl');
-    const vfs = sqliteVfs.as(cred);
+    // Its writes are the command's process's (VfsWriteEvent.execId).
+    const vfs = sqliteVfs.as(cred, { pid: ctx.pid });
     let remove = false;
     let spec: string | null = null;
     let isDefault = false;
@@ -592,7 +593,8 @@ function mkSetfacl(sqliteVfs: SqliteVFS): Command {
 function mkGetfacl(sqliteVfs: SqliteVFS): Command {
   return async (ctx) => {
     const cred = requireVfsCred(ctx.cred, 'getfacl');
-    const vfs = sqliteVfs.as(cred);
+    // Its writes are the command's process's (VfsWriteEvent.execId).
+    const vfs = sqliteVfs.as(cred, { pid: ctx.pid });
     let status = 0;
     for (const target of ctx.args.filter((arg) => !arg.startsWith('-'))) {
       const path = operandPath(ctx.cwd, target);

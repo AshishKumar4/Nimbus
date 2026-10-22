@@ -9897,6 +9897,7 @@ export class SqliteVFS {
     const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(owner, () => asWriter(fn)));
     return {
       cred,
+      writer: origin?.pid,
       signal,
       mutationOwner: owner,
       deviceId: this.deviceId,
@@ -10922,6 +10923,15 @@ export class SqliteVFS {
    */
   attributeWrites(attribution: WriteAttribution): void {
     this.attribution = attribution;
+  }
+
+  /**
+   * Keep process `pid` attributable (WriteAttribution.retain) until the
+   * returned release: for work that writes on its behalf after it may have
+   * ended, as a background pass of its command does.
+   */
+  retainWriter(pid: number): () => void {
+    return this.attribution?.retain(pid) ?? (() => {});
   }
 
   /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
