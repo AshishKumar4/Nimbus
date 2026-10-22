@@ -241,7 +241,7 @@ stage_deps() {
 stage_nimbus() {
 	log "libnimbuswasi.a"
 	mkdir -p "$WORK/nimbus"
-	for unit in nimbus-net nimbus-wasi-compat; do
+	for unit in nimbus-net nimbus-wasi-compat nimbus-signal-check; do
 		"$CC" $TARGET_CFLAGS -std=c11 -Wall -Wextra -Werror \
 		  -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN \
 		  -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
@@ -259,6 +259,10 @@ stage_nimbus() {
 	# cpython-runner@3's, whose host answers such a wait NIMBUS_ERESTART).
 	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -Wall -Wextra -Werror \
 	  -c "$NIMBUS_LIBC/nimbus-restart.c" -o "$WORK/nimbus/nimbus-restart.o"
+	# A signal the host sends the process is raised where a wait or a check
+	# returns (the image is cpython-runner@4's, whose host answers so).
+	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -D_WASI_EMULATED_SIGNAL -Wall -Wextra -Werror \
+	  -c "$NIMBUS_LIBC/nimbus-signal.c" -o "$WORK/nimbus/nimbus-signal.o"
 	"$AR" rcs "$DEPS/lib/libnimbuswasi.a" "$WORK/nimbus"/*.o
 }
 
@@ -268,7 +272,8 @@ stage_hostpy() {
 	log "build-python $PYTHON_VERSION (native)"
 	rm -rf "$PYSRC"
 	tar xf "$SRC/Python-$PYTHON_VERSION.tar.xz" -C "$WORK"
-	( cd "$PYSRC" && patch -p1 -s < "$HERE/patches/0001-pthread-stubs-support-tls-destructors.patch" )
+	( cd "$PYSRC" && patch -p1 -s < "$HERE/patches/0001-pthread-stubs-support-tls-destructors.patch" \
+	  && patch -p1 -s < "$HERE/patches/0004-wasi-periodic-signal-checks.patch" )
 	mkdir -p "$PYSRC/build-host"
 	( cd "$PYSRC/build-host"
 	  ../configure --prefix="$BUILD/hostpy" --with-ensurepip=no >/dev/null
@@ -299,11 +304,13 @@ stage_wasi() {
 	    -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS \
 	    -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID"
 	  # --wrap lets nimbus-net own accept and close without colliding with the
-	  # wasi-libc definitions that are still in the archive, and nimbus-restart
-	  # read and write (wasi-libc's stdio included).
+	  # wasi-libc definitions that are still in the archive, nimbus-restart
+	  # read and write (wasi-libc's stdio included), and nimbus-signal the
+	  # host calls a signal ends and raise.
 	  export LDFLAGS="--target=wasm32-wasi -L$DEPS/lib \
 	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4 \
-	    -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev"
+	    -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev \
+	    -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_write -Wl,--wrap=__wasi_poll_oneoff -Wl,--wrap=raise"
 	  export LIBS="-lnimbuswasi -lwasi-emulated-signal -lwasi-emulated-process-clocks \
 	    -lwasi-emulated-mman -lwasi-emulated-getpid"
 	  mkdir -p Modules && cp "$HERE/Setup.local" Modules/Setup.local

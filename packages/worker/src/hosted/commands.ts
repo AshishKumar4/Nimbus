@@ -6,7 +6,7 @@ import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/com
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, type CPythonRunnerContract } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -219,8 +219,8 @@ workspace.runtimes.registerRunner(
 // no flags that would consume args) drops into an interactive
 // REPL. The wrap is purely additive — args-bearing invocations
 // pass through to the existing handler unchanged.
-const cpythonFactories = new Map<boolean, Promise<CPythonRunnerFactory>>();
-const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
+const cpythonFactories = new Map<CPythonRunnerContract, Promise<CPythonRunnerFactory>>();
+const cpython = (contract: CPythonRunnerContract): RunnerFactory => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
   const argv: string[] = ctx.args || [];
   // No args at all → REPL session. Hand off to runPythonRepl
   // which builds its own IsolatePool (separate from the
@@ -244,14 +244,15 @@ const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoo
       // it the prompt cannot write to the session filesystem.
       pid: ctx.pid,
       cred: requireVfsCred(ctx.cred, 'Python REPL'),
-      restartsWaits,
+      // The prompt's own interrupt ends a busy line (repl-session.ts); its image is sent no signals.
+      restartsWaits: contract.restartsWaits,
       start: { cwd: ctx.cwd || from.shell.getCwd(), binName },
     });
   }
   // Args present (one-shot mode: -c, script, -m, -). Fall through to the
   // canonical handler, one per runner contract for the session (imported
   // lazily on first use): it holds the session's warm CPython workers' keys.
-  let factory = cpythonFactories.get(restartsWaits);
+  let factory = cpythonFactories.get(contract);
   if (!factory) {
     factory = (async () => {
       const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
@@ -263,17 +264,17 @@ const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoo
         processes: self.processes,
         startResident: cpythonResidentStart(facetMgr),
         network: workspace.network,
-        restartsWaits,
+        contract,
         session: self.ctx.id.toString(),
       });
     })();
-    factory.catch(() => cpythonFactories.delete(restartsWaits));
-    cpythonFactories.set(restartsWaits, factory);
+    factory.catch(() => cpythonFactories.delete(contract));
+    cpythonFactories.set(contract, factory);
   }
   return await (await factory)(manifest, installRoot, binName, binKind)(ctx);
 };
 // Each runner key's build, on its own contract (CPYTHON_RUNNER_CONTRACTS).
-for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS)) workspace.runtimes.registerRunner(key, cpython(restartsWaits));
+for (const [key, contract] of Object.entries(CPYTHON_RUNNER_CONTRACTS)) workspace.runtimes.registerRunner(key, cpython(contract));
 // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
 // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map; each
 // one-shot boots a VM of its own on the session's warm Ruby workers (one

@@ -73,6 +73,9 @@ async function __nimbusPyBoot(args) {
     stderrBytes: __nimbusPyOutput.stderrBytes,
     // An image whose libc asks again a wait the host gave up on (cpython-runner@3).
     restartsWaits: args.restartsWaits === true,
+    // A one-shot whose process takes its own signals (cpython-runner@4): its
+    // waits end on one, and its interpreter asks for them while it computes.
+    takesSignals: args.takesSignals === true,
   });
   if (typeof __wasiPrepareFilesystem === 'function') {
     await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
