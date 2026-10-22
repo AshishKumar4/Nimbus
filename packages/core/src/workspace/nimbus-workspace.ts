@@ -49,7 +49,7 @@ import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '..
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
-import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
+import { PID_GEN_STRIDE, parseExecId, type ProcessEntry } from '../runtime/process-table.js';
 import { isKillRefusal, SessionProcessSupervisor, type IdentityChangePolicy } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
@@ -88,6 +88,12 @@ export interface WorkspaceExecOptions extends RunOptions {
   readonly shellId?: string;
   /** Release a named shell without ending this process or saving its later state. */
   readonly detach?: AbortSignal;
+  /**
+   * The caller's name for this exec, which every process it starts carries
+   * and each write it makes names (VfsWriteEvent.execId): 1 to 160
+   * characters from `A-Z a-z 0-9 . _ : -`, starting with a letter or digit.
+   */
+  readonly execId?: string;
 }
 
 export interface NimbusWorkspaceOptions {
@@ -413,6 +419,10 @@ export class NimbusWorkspace {
     // place the table and the filesystem meet.
     processes.setRelease((pid) => filesystem.releaseProcess(pid), (pid) => filesystem.processEnded(pid));
     filesystem.holdOutput(processes);
+    // Each write event names the exec its process is the work of, read from this table as it commits (ask 69).
+    const attribution = { execIdOf: (pid: number) => processes.execIdOf(pid), retain: (pid: number) => processes.retainAttribution(pid) };
+    vfs.attributeWrites(attribution);
+    filesystem.vfs.attributeWrites(attribution);
 
     const env = { ...defaultEnv(home), ...options.env };
     let workspace: NimbusWorkspace | null = null;
@@ -677,17 +687,18 @@ export class NimbusWorkspace {
    */
 
   exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
-    const { shellId, detach, ...call } = options;
-    if (shellId === undefined) return this.runProcess(command, call, null);
-    return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named));
+    const { shellId, detach, execId, ...call } = options;
+    const exec = execId === undefined ? undefined : parseExecId(execId);
+    if (shellId === undefined) return this.runProcess(command, call, null, exec);
+    return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named, exec));
   }
 
-  private async runProcess(command: string, options: RunOptions, named: NamedShell | null): Promise<CommandResult> {
+  private async runProcess(command: string, options: RunOptions, named: NamedShell | null, execId: string | undefined): Promise<CommandResult> {
     // The table is pruned as a launch begins, as a hosted session's is: what
     // ended more than a minute ago, a job that outlived its exec among them.
     await this.processes.reap();
     const cwd = options.cwd ?? named?.cwd ?? this.shell.getCwd();
-    const { pid } = this.processes.spawn(command, [command], cwd, { cred: this.identity.cred });
+    const { pid } = this.processes.spawn(command, [command], cwd, { cred: this.identity.cred, ...(execId === undefined ? {} : { execId }) });
     // A shell of the call's own already starts from its cwd and env. A named
     // shell takes them for the call only: passed as its state they would pin
     // it there, and its `cd` would not survive the call.

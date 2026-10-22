@@ -79,7 +79,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 interface LexicalVfsKey { readonly kind: 'lexical'; readonly value: string; readonly spelling: string }
 interface PhysicalVfsKey { readonly kind: 'physical'; readonly value: string }
 interface DeletionVfsKey { readonly key: PhysicalVfsKey; readonly literal: INode | undefined }
-import { copiedPermissions, copySetsMode, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
+import { copiedPermissions, copySetsMode, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent, type WriteAttribution } from './vfs.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
@@ -1476,7 +1476,7 @@ const KERNEL_ORIGIN: Principal = Object.freeze({ cred: null });
 /** Whether two calls are the same principal's: one credential (sameCred) and one actor. */
 function samePrincipal(a: Principal | null, b: Principal | null): boolean {
   if (a === b) return true;
-  if (a === null || b === null || a.actor !== b.actor) return false;
+  if (a === null || b === null || a.actor !== b.actor || a.pid !== b.pid) return false;
   return a.cred === null || b.cred === null ? a.cred === b.cred : sameCred(a.cred, b.cred);
 }
 
@@ -1781,6 +1781,8 @@ export class SqliteVFS {
   private captureTransactions = 0;
   /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
   private activeOrigin: Principal | null = null;
+  /** The process table its write events are attributed by (attributeWrites); none, an embedder's without one. */
+  private attribution: WriteAttribution | null = null;
   /**
    * Appends held in memory, one run per file by inode number (appendThrough).
    * Invisible: anything that looks at the store first writes them
@@ -3349,7 +3351,7 @@ export class SqliteVFS {
    * answers at its commit, ahead of its publication (its process's effects
    * wait for that instead: ProcessFiles.continueAtCommit).
    */
-  as(cred: VfsCred, options?: { mutationOwner?: string; actor?: string; holds?: () => ReadonlySet<string>; landed?: boolean; continues?: () => boolean }): CredentialedVfs {
+  as(cred: VfsCred, options?: { mutationOwner?: string; actor?: string; pid?: number; holds?: () => ReadonlySet<string>; landed?: boolean; continues?: () => boolean }): CredentialedVfs {
     const engine = this;
     const mutationOwner = options?.mutationOwner;
     const bound = Object.freeze({
@@ -3358,7 +3360,11 @@ export class SqliteVFS {
       groups: Object.freeze([...cred.groups]),
       umask: cred.umask & 0o777,
     });
-    const origin: Principal = Object.freeze(options?.actor === undefined ? { cred: bound } : { cred: bound, actor: options.actor });
+    const origin: Principal = Object.freeze({
+      cred: bound,
+      ...(options?.actor === undefined ? {} : { actor: options.actor }),
+      ...(options?.pid === undefined ? {} : { pid: options.pid }),
+    });
     const view: CredentialedVfs = {
       cred: bound,
       principal: origin,
@@ -10909,6 +10915,15 @@ export class SqliteVFS {
     return () => { this.writeObservers.delete(entry); };
   }
 
+  /**
+   * The process table each write event's exec id is read from as it commits
+   * (VfsWriteEvent.execId): the table's word for the pid of the view that
+   * made it. None set, a process's write is `undefined`: there is no table.
+   */
+  attributeWrites(attribution: WriteAttribution): void {
+    this.attribution = attribution;
+  }
+
   /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
   private writeEvent(key: string, oldKey: string | undefined, change: { before: INode | null; after: INode | null }): PendingWrite {
     const origin = this.activeOrigin ?? KERNEL_ORIGIN;
@@ -10940,6 +10955,7 @@ export class SqliteVFS {
       before,
       after,
       principal: origin,
+      execId: origin.pid === undefined ? null : this.attribution?.execIdOf(origin.pid),
     };
     const release = (): void => {
       for (const opened of held) {

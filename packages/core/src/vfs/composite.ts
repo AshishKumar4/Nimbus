@@ -22,7 +22,7 @@
  */
 import type {
   Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsOpenFile, VfsRemoval,
-  VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
+  VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants, WriteAttribution,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { LOCAL_PLACEMENT, type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
@@ -572,6 +572,8 @@ interface Table {
   lastDev: number;
   /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
   writes?: WriteWatches;
+  /** The process table its write events are attributed by (attributeWrites). */
+  attribution?: WriteAttribution;
   /** watchChanges: who is told. */
   changes?: ChangeWatches;
   /** Each principal's view of a backend, to the backend it views (storeBehind). */
@@ -764,9 +766,11 @@ interface ViewShare {
 }
 
 function principalKey(principal: Principal): string {
-  const { cred, actor } = principal;
+  const { cred, actor, pid } = principal;
   const id = cred === null ? '-' : `${cred.uid}:${cred.gid}:${[...cred.groups].join(',')}:${cred.umask}`;
-  return actor === undefined ? id : `${id}@${actor}`;
+  // A process's views are its own: one made for another process, or for none, attributes its writes elsewhere.
+  const of = pid === undefined ? id : `${id}#${pid}`;
+  return actor === undefined ? of : `${of}@${actor}`;
 }
 
 export class CompositeVFS implements VFS {
@@ -1170,6 +1174,16 @@ export class CompositeVFS implements VFS {
    * writeFile or a compare-and-write leaves is the bytes it was given, so
    * its after costs no read.
    */
+  /**
+   * The process table the events it makes for its mounts are attributed by
+   * (VfsWriteEvent.execId), read as each backend call returns. A backend
+   * that reports its own writes (SQLite) attributes them itself; one whose
+   * reports name no process the table knows gives `undefined`.
+   */
+  attributeWrites(attribution: WriteAttribution): void {
+    this.table.attribution = attribution;
+  }
+
   observeWrites(observer: VfsWriteObserver, options?: { wants?: (path: string, principal: Principal) => VfsWriteWants }): () => void {
     const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), turn: { tail: Promise.resolve(), busy: false } };
     const watch: WriteWatch = { observer, wants: options?.wants ?? (() => true) };
@@ -1215,7 +1229,7 @@ export class CompositeVFS implements VFS {
 
   /** This table as `principal` sees it (the embedder's own view for a principal with no credential). */
   private viewOf(principal: Principal): CompositeVFS {
-    if (principal.cred !== null) return this.as(principal.cred, principal.actor);
+    if (principal.cred !== null) return this.as(principal.cred, principal.actor, principal.pid === undefined ? undefined : { pid: principal.pid });
     if (this.viewer.cred === null && this.viewer.actor === principal.actor) return this;
     const key = principalKey(principal);
     let view = this.views.refs.get(key)?.deref();
@@ -1744,6 +1758,39 @@ export class CompositeVFS implements VFS {
   }
 
   /** reportWrite's report of `spec`'s mutation, `run`, in its turn. */
+  /**
+   * The exec `principal`'s write is the work of (VfsWriteEvent.execId), told
+   * to `resolved` as `run`, the backend's call, returns: when it committed.
+   * A process's entry is held in the table from before the call until then,
+   * so a kill and a reap while it is pending leave it answering. No process
+   * made it: null.
+   */
+  private attributed<T>(principal: Principal, run: () => Awaitable<T>, resolved: (execId: string | null | undefined) => void): Awaitable<T> {
+    const { pid } = principal;
+    if (pid === undefined) {
+      resolved(null);
+      return run();
+    }
+    const attribution = this.table.attribution;
+    const release = attribution?.retain(pid);
+    const settle = (): void => {
+      resolved(attribution?.execIdOf(pid));
+      release?.();
+    };
+    let result: Awaitable<T>;
+    try {
+      result = run();
+    } catch (error) {
+      release?.();
+      throw error;
+    }
+    if (!isPromise(result)) {
+      settle();
+      return result;
+    }
+    return result.then((value) => { settle(); return value; }, (error: unknown) => { release?.(); throw error; });
+  }
+
   private reportIn<T>(writes: WriteWatches, spec: WriteSpec<T>, run: () => Awaitable<T>): Awaitable<T> {
     const principal = this.viewer;
     let wantsBefore = false;
@@ -1764,6 +1811,8 @@ export class CompositeVFS implements VFS {
       regular = stat.type === 'file' && !isCharacterDevice(stat.mode);
     });
     const release = (): void => { for (const ref of held) ref.release(); };
+    // Its exec, read from the table as the backend's call returns (attributed).
+    let execId: string | null | undefined;
     // A plain mkdir made what was not there (EEXIST otherwise); mkdir -p looks.
     const before = kind === 'create' && spec.existingIsNoop !== true ? null : capture(wantsBefore);
     return andThen(before, (prior) => {
@@ -1772,7 +1821,7 @@ export class CompositeVFS implements VFS {
         release();
         return run();
       }
-      return andThen(this.landing(spec, run()), (result) => {
+      return andThen(this.landing(spec, this.attributed(principal, run, (resolved) => { execId = resolved; })), (result) => {
         const landed = spec.landed?.(result) ?? [path];
         if (landed.length === 0) { release(); return result; }
         const stores = written !== undefined && wantsAfter && (ops as VFS).storesWrites === true && (prior === null || regular);
@@ -1786,14 +1835,14 @@ export class CompositeVFS implements VFS {
           const known = (ref: VfsContentRef | null | false): VfsContentRef | null | undefined => (ref === false ? undefined : ref);
           if (kind === 'remove') {
             const heard = landed.map((at) => this.deliverWrite({
-              type: 'delete', path: at, before: at === path ? known(prior) : undefined, after: null, principal,
+              type: 'delete', path: at, before: at === path ? known(prior) : undefined, after: null, principal, execId,
             })).filter((done) => done !== undefined);
             if (heard.length === 0) release();
             else void Promise.all(heard).then(release);
             return result;
           }
           const type: VfsWriteEvent['type'] = oldPath !== undefined ? 'rename' : prior === null ? 'create' : 'modify';
-          this.deliverWrite({ type, path, ...(oldPath !== undefined ? { oldPath } : {}), before: known(prior), after: known(now), principal }, release);
+          this.deliverWrite({ type, path, ...(oldPath !== undefined ? { oldPath } : {}), before: known(prior), after: known(now), principal, execId }, release);
           return result;
         }));
       });
@@ -2462,7 +2511,11 @@ export class CompositeVFS implements VFS {
   }
 
   as(cred: VfsCred, actor?: string, options?: VfsViewOptions): CompositeVFS {
-    const principal: Principal = actor === undefined ? { cred } : { cred, actor };
+    const principal: Principal = {
+      cred,
+      ...(actor === undefined ? {} : { actor }),
+      ...(options?.pid === undefined ? {} : { pid: options.pid }),
+    };
     // A process's view (its holds) and a landed one are their own, never the cached one.
     if (options?.holds !== undefined || options?.landed === true) {
       return new CompositeVFS(this.table.mounts.get(ROOT_POINT)!.source, undefined, {
@@ -2553,9 +2606,11 @@ export class CompositeVFS implements VFS {
     let view = this.viewed.get(found);
     // The actor goes with the credential: a backend's write events name the principal (observeWrites).
     if (view === undefined) {
-      const options = this.holds === undefined && !this.landed ? undefined : {
+      const { pid } = this.viewer;
+      const options = this.holds === undefined && !this.landed && pid === undefined ? undefined : {
         ...(this.holds === undefined ? {} : { holds: this.holds }),
         ...(this.landed ? { landed: true } : {}),
+        ...(pid === undefined ? {} : { pid }),
       };
       this.viewed.set(found, view = found.as(cred, this.viewer.actor, options));
       this.table.behind.set(view, found);
