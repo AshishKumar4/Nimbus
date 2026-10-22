@@ -3938,8 +3938,9 @@ const __fsMod = (() => {
       const dated = acquired && acquired.answer;
       if (dated && dated.poison !== true && __nimbusResidentModule.isFeedPosition(dated.position)
           && _cursor.position !== null && __nimbusResidentModule.samePosition(dated.position, _cursor.position)) {
+        // Dated where the answer leaves the cursor: a file the read reached through a link is dated there too.
         const rev = __nimbusResidentModule.feedFor(dated.position, fill.k).cursor;
-        if (rev > fill.rev) fill.rev = rev;
+        if (rev > fill.rev) { fill.rev = rev; fill.at = dated.position; }
       } else {
         fill.reported = Infinity;
       }
