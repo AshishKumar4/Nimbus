@@ -212,6 +212,9 @@ export const SUPERVISOR_OP_ROUTES = {
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
     abandonHostedHttp: { method: '_rpcAbandonHostedHttp', args: [0, 1, 2] },
     cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
+    oneShotSubmit: { method: '_rpcOneShotSubmit', args: [0, 1, 2, 3, 4, 5] },
+    oneShotWarm: { method: '_rpcOneShotWarm', args: [0, 1, 2] },
+    oneShotCancel: { method: '_rpcOneShotCancel', args: [0] },
     hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
     hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
     // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).

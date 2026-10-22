@@ -43,6 +43,8 @@ export declare const SHELL_OWNER_LIVENESS_MS = 120000;
 export interface AutoResponseHost {
     getWebSocketAutoResponseTimestamp?(ws: WebSocket): Date | null;
 }
+/** The terminals a live peer holds among `sockets` (hasLiveShellOwner): undefined for the session's own, a named one's name. */
+export declare function liveTerminals(ctx: AutoResponseHost | undefined, sockets: readonly WebSocket[], now?: number): Set<string | undefined>;
 /** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */
 export declare function shellSocketTerminal(ws: WebSocket): string | undefined;
 /** Tag a freshly accepted terminal socket as its terminal's owner: the session's own, or the named `terminal`. */

@@ -105,21 +105,33 @@ function ownsTerminal(ctx, ws, stamp, now) {
         : (answered === null ? stamp.seenAt : Math.max(stamp.seenAt, answered));
     return heard !== null && now - heard < SHELL_OWNER_LIVENESS_MS;
 }
-/** The open shell sockets, each with the stamp it carries. */
 /** The open shell sockets of one terminal: the session's own (`terminal` undefined) or a named one. */
 function openShellSockets(sockets, now, terminal) {
+    return openShellSocketsOfAny(sockets, now).filter(({ stamp }) => stamp.terminal === terminal);
+}
+function shellAttachment(seenAt, terminal) {
+    return { kind: SHELL_KIND, ...(seenAt === undefined ? {} : { seenAt }), ...(terminal === undefined ? {} : { terminal }) };
+}
+/** The terminals a live peer holds among `sockets` (hasLiveShellOwner): undefined for the session's own, a named one's name. */
+export function liveTerminals(ctx, sockets, now = Date.now()) {
+    const live = new Set();
+    for (const { ws, stamp } of openShellSocketsOfAny(sockets, now)) {
+        if (ownsTerminal(ctx, ws, stamp, now))
+            live.add(stamp.terminal);
+    }
+    return live;
+}
+/** The open shell sockets of every terminal, each with the stamp it carries. */
+function openShellSocketsOfAny(sockets, now) {
     const found = [];
     for (const ws of sockets) {
         if (ws.readyState !== WebSocket.OPEN)
             continue;
         const stamp = readShellStamp(ws, now);
-        if (stamp && stamp.terminal === terminal)
+        if (stamp)
             found.push({ ws, stamp });
     }
     return found;
-}
-function shellAttachment(seenAt, terminal) {
-    return { kind: SHELL_KIND, ...(seenAt === undefined ? {} : { seenAt }), ...(terminal === undefined ? {} : { terminal }) };
 }
 /** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */
 export function shellSocketTerminal(ws) {

@@ -526,7 +526,7 @@ interface FacetManagerEnv {
    * port surface needs isn't a parsed field, and the helpers that reach it
    * take `env` themselves.
    */
-  readonly rawEnv: unknown;
+  readonly rawEnv: object;
 }
 
 interface ProcessRpcResources {
@@ -565,21 +565,17 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
   const loader = ((typeof env === 'object' || typeof env === 'function') && env !== null)
     ? Reflect.get(env, 'LOADER')
     : undefined;
-  if (!isNimbusWorkerLoader(loader)) {
+  if ((typeof env !== 'object' && typeof env !== 'function') || env === null || !isNimbusWorkerLoader(loader)) {
     throw new Error('FacetManager requires an env.LOADER binding with load() and get()');
   }
-  const assetsCandidate = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-    ? Reflect.get(env, 'ASSETS')
-    : undefined;
+  const assetsCandidate = Reflect.get(env, 'ASSETS');
   const assets =
     assetsCandidate !== null &&
     typeof assetsCandidate === 'object' &&
     typeof Reflect.get(assetsCandidate, 'fetch') === 'function'
       ? (assetsCandidate as { fetch(req: Request): Promise<Response> })
       : undefined;
-  const chunkBytes = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-    ? Reflect.get(env, 'NIMBUS_LAUNCH_CHUNK_BYTES')
-    : undefined;
+  const chunkBytes = Reflect.get(env, 'NIMBUS_LAUNCH_CHUNK_BYTES');
   return {
     LOADER: loader,
     ASSETS: assets,
@@ -6351,12 +6347,13 @@ export class FacetManager {
 
   /**
    * What every loader-backed runtime builds its facet pools from: the env and
-   * ctx a pool is constructed over, and the workspace's network its facets go
-   * out through. One narrow accessor rather than every runtime reaching into
-   * the manager's private fields.
+   * ctx a pool is constructed over (the env verbatim: a pool takes its
+   * LOADER from it, and a one-shot's placement its peers' namespace), and the
+   * workspace's network its facets go out through. One narrow accessor
+   * rather than every runtime reaching into the manager's private fields.
    */
-  loaderHost(): { env: unknown; ctx: DurableObjectState; network: WorkspaceNetwork } {
-    return { env: this.env, ctx: this.ctx, network: this.network() };
+  loaderHost(): { env: object; ctx: DurableObjectState; network: WorkspaceNetwork } {
+    return { env: this.env.rawEnv, ctx: this.ctx, network: this.network() };
   }
 
   /**

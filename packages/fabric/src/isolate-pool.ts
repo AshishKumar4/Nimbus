@@ -63,7 +63,7 @@ import {
 } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
-import type { ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
+import type { EntrypointStub, ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
 import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
@@ -134,6 +134,12 @@ export interface IsolatePoolOptions {
    * so each pool's network is chosen where it is made.
    */
   network: WorkspaceNetwork;
+  /**
+   * Whose record of facet calls (recentFacetCalls) this pool's calls are
+   * noted in: its Durable Object's by default. A session's peer notes a call
+   * it runs for the session apart, and the session notes it in its own.
+   */
+  callsOf?: object;
   /**
    * Baked into the loader id. Two pools sharing tag, preamble, wasm and
    * supervisor but differing in `scope` never reuse each other's warm
@@ -375,6 +381,9 @@ export function assembleLoaderWorkerModuleSource(
     `    return ${callExpr};`,
     '  }',
     '',
+    '  // Loads the worker and runs nothing (IsolatePool.warm).',
+    '  warm() {}',
+    '',
     '  // Request/Response transport: the ONE dispatch path whose abort is',
     '  // real. workerd cancels the inner execution context when the request',
     '  // signal aborts while the fn is suspended on I/O; RPC execute() above',
@@ -485,6 +494,11 @@ export function recentFacetCalls(ctx: object): FacetCallTime[] {
 }
 
 function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: number): void {
+  recordFacetCall(ctx, { tag, cold: loadMs !== null, loadMs: loadMs ?? 0, callMs: Date.now() - began, at: began });
+}
+
+/** `call` in `ctx`'s record of facet calls: one a pool of its made, or one its session's peer ran for it, as the peer timed it. */
+export function recordFacetCall(ctx: object, call: FacetCallTime): void {
   let ring = callsByCtx.get(ctx);
   if (ring === undefined) {
     ring = { slots: Array.from({ length: FACET_CALLS_KEPT }, () => ({ tag: '', cold: false, loadMs: 0, callMs: 0, at: 0 })), next: 0, count: 0 };
@@ -492,11 +506,11 @@ function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: n
   }
   const slot = ring.slots[ring.next];
   if (slot === undefined) return;
-  slot.tag = tag;
-  slot.cold = loadMs !== null;
-  slot.loadMs = loadMs ?? 0;
-  slot.callMs = Date.now() - began;
-  slot.at = began;
+  slot.tag = call.tag;
+  slot.cold = call.cold;
+  slot.loadMs = call.loadMs;
+  slot.callMs = call.callMs;
+  slot.at = call.at;
   ring.next = (ring.next + 1) % FACET_CALLS_KEPT;
   ring.count = Math.min(FACET_CALLS_KEPT, ring.count + 1);
 }
@@ -591,6 +605,7 @@ export class IsolatePool {
   private readonly facetKind: FacetKind;
   private readonly defaultRetries: number;
   private readonly tag: string;
+  private readonly callsOf: object;
   private readonly slotGenerations = new Map<number, number>();
   /**
    * Per-slot execution ownership: the tail of each slot's in-flight
@@ -674,6 +689,7 @@ export class IsolatePool {
     this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
     this.defaultRetries = Math.max(0, opts.retries ?? 0);
     this.tag = opts.tag ?? 'facet';
+    this.callsOf = opts.callsOf ?? ctx;
     this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
     this.watchName = `facet ${this.tag}${this.writerPid === undefined ? '' : ` pid ${this.writerPid}`}`;
     this.preamble = opts.preamble;
@@ -829,7 +845,7 @@ export class IsolatePool {
     fnSource: string,
     fnHash: string,
     slotIndex: number,
-    invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
+    invoke: (entrypoint: EntrypointStub, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, FacetImage>,
     signal?: AbortSignal,
@@ -867,7 +883,7 @@ export class IsolatePool {
     fnSource: string,
     fnHash: string,
     slotIndex: number,
-    invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
+    invoke: (entrypoint: EntrypointStub, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm: Record<string, FacetImage> | undefined,
     inFlight: Promise<unknown>[],
@@ -1007,7 +1023,7 @@ export class IsolatePool {
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
         const answer = await invoke(entrypoint, attempt);
-        noteFacetCall(this.ctx, this.tag, loadMs, began);
+        noteFacetCall(this.callsOf, this.tag, loadMs, began);
         return answer;
       } catch (err) {
         // The ledger learns a limit refusal from the hold it ends.
@@ -1188,6 +1204,16 @@ export class IsolatePool {
     } catch (error) {
       throw this.#ended(error);
     }
+  }
+
+  /**
+   * The worker `fn` is submitted to, loaded and left warm without running
+   * `fn`: its images read and compiled and its preamble evaluated, as the
+   * first submit of `fn` would, so that submit finds it warm.
+   */
+  async warm<A, R>(fn: FacetTaskSource<A, R>, opts?: IsolateCallOptions): Promise<void> {
+    const { fnSource, fnHash } = this.#prepare(fn);
+    await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.warm(), this.#resolve(opts), opts?.wasmModules, opts?.signal);
   }
 
   /**

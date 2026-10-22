@@ -130,24 +130,37 @@ function ownsTerminal(
   return heard !== null && now - heard < SHELL_OWNER_LIVENESS_MS;
 }
 
-/** The open shell sockets, each with the stamp it carries. */
 /** The open shell sockets of one terminal: the session's own (`terminal` undefined) or a named one. */
 function openShellSockets(
   sockets: readonly WebSocket[],
   now: number,
   terminal: string | undefined,
 ): { ws: WebSocket; stamp: ShellStamp }[] {
-  const found: { ws: WebSocket; stamp: ShellStamp }[] = [];
-  for (const ws of sockets) {
-    if (ws.readyState !== WebSocket.OPEN) continue;
-    const stamp = readShellStamp(ws, now);
-    if (stamp && stamp.terminal === terminal) found.push({ ws, stamp });
-  }
-  return found;
+  return openShellSocketsOfAny(sockets, now).filter(({ stamp }) => stamp.terminal === terminal);
 }
 
 function shellAttachment(seenAt: number | undefined, terminal: string | undefined): ShellAttachment {
   return { kind: SHELL_KIND, ...(seenAt === undefined ? {} : { seenAt }), ...(terminal === undefined ? {} : { terminal }) };
+}
+
+/** The terminals a live peer holds among `sockets` (hasLiveShellOwner): undefined for the session's own, a named one's name. */
+export function liveTerminals(ctx: AutoResponseHost | undefined, sockets: readonly WebSocket[], now: number = Date.now()): Set<string | undefined> {
+  const live = new Set<string | undefined>();
+  for (const { ws, stamp } of openShellSocketsOfAny(sockets, now)) {
+    if (ownsTerminal(ctx, ws, stamp, now)) live.add(stamp.terminal);
+  }
+  return live;
+}
+
+/** The open shell sockets of every terminal, each with the stamp it carries. */
+function openShellSocketsOfAny(sockets: readonly WebSocket[], now: number): { ws: WebSocket; stamp: ShellStamp }[] {
+  const found: { ws: WebSocket; stamp: ShellStamp }[] = [];
+  for (const ws of sockets) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    const stamp = readShellStamp(ws, now);
+    if (stamp) found.push({ ws, stamp });
+  }
+  return found;
 }
 
 /** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */

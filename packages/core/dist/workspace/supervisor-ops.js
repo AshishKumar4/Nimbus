@@ -118,6 +118,10 @@ export const SUPERVISOR_OP_TABLE = {
     routeHostedHttp: null,
     abandonHostedHttp: null,
     cancelHostProcess: null,
+    // A session's one-shot on its peer (fabric one-shot-peer.ts): sent by the session, never by a process.
+    oneShotSubmit: null,
+    oneShotWarm: null,
+    oneShotCancel: null,
     hmrRelay: null,
     hmrNextEvent: null,
     replayBoundary: null,

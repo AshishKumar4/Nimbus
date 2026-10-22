@@ -1,17 +1,20 @@
 /**
  * The workerd {@link FacetHost}: a facet is a dynamic worker.
  *
- * The whole adapter is the option renames below, because `IsolatePool`
- * already IS the port's shape — `submit` and `dispose`, with the same meanings.
- * The one thing it spells differently is the supervisor capability, which it
- * takes as a pid plus a separate flag saying whether to bind one at all; the
- * port collapses the pair, since a facet with the binding and no pid can read
- * the session and never write to it. `reuse` is the pool's `cacheScope` under
- * the name the port gives it: who a warm facet may answer for; `warm` is its
- * `scope`, with the capability handed per call. The one thing
- * the host binds rather than renames is the network: every facet it opens goes
- * out through the workspace's (its egress, when it has one), so no runtime
- * opening a facet can leave it out.
+ * The adapter is mostly the option renames of oneShotPoolOptions, because
+ * `IsolatePool` already IS the port's shape — `submit` and `dispose`, with
+ * the same meanings. The one thing it spells differently is the supervisor
+ * capability, which it takes as a pid plus a separate flag saying whether to
+ * bind one at all; the port collapses the pair, since a facet with the
+ * binding and no pid can read the session and never write to it. `reuse` is
+ * the pool's `cacheScope` under the name the port gives it: who a warm facet
+ * may answer for; `warm` is its `scope`, with the capability handed per call.
+ * The host binds two things rather than renames them. The network: every
+ * facet it opens goes out through the workspace's (its egress, when it has
+ * one), so no runtime opening a facet can leave it out. And where each call
+ * runs: on the session's warm peer when it has one for the call's worker
+ * (fabric one-shot-peer.ts), since a call here holds the session's thread
+ * for as long as it computes; a stateful facet stays here.
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -29,7 +32,7 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
  * `network`: the workspace's (`workspace.network`, or `workspaceNetwork(egress)`
  * for the egress the workspace is created with).
  */
-export declare function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: WorkspaceNetwork): FacetHost;
+export declare function loaderFacetHost(env: object, ctx: DurableObjectState, network: WorkspaceNetwork): FacetHost;
 /**
  * What an IsolatePool is built from, from a FacetManager: its env and ctx and
  * the workspace's network, via the manager's own `loaderHost()` accessor. The
@@ -38,7 +41,7 @@ export declare function loaderFacetHost(env: unknown, ctx: DurableObjectState, n
  * sentence instead of at the first RPC.
  */
 export declare function getFacetManagerLoaderHost(facetMgr: FacetManager): {
-    env: unknown;
+    env: object;
     ctx: DurableObjectState;
     network: WorkspaceNetwork;
 };

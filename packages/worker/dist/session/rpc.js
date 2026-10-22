@@ -41,6 +41,7 @@ import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { PeerHost } from '@nimbus-sh/fabric/peer-host.js';
+import { oneShotHost } from '@nimbus-sh/fabric/one-shot-peer.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-stage-spec.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -1536,4 +1537,13 @@ export function _rpcAbandonHostedHttp(self, workerKey, capability, id) {
 }
 export function _rpcCancelHostProcess(self, workerKey) {
     return self.peerHost.cancel(workerKey);
+}
+export function _rpcOneShotSubmit(self, spec, callId, fn, args, options, images) {
+    return oneShotHost(self.ctx, self.env).submit(spec, callId, fn, args, options, images);
+}
+export function _rpcOneShotWarm(self, spec, fn, images) {
+    return oneShotHost(self.ctx, self.env).warm(spec, fn, images);
+}
+export function _rpcOneShotCancel(self, callId) {
+    return oneShotHost(self.ctx, self.env).cancel(callId);
 }
