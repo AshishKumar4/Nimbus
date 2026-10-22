@@ -9,31 +9,34 @@
       "../nimbus-libc/nimbus-netdb.h": "22cdb1eb824a2559f404770c830b31d07284a3909711c8afb95506858e2d7278",
       "../nimbus-libc/nimbus-restart.c": "4beb995921f510a9a30ce39ccc24a7ef438184a0454f631102f2c8f8fb5dc907",
       "../nimbus-libc/nimbus-restart.h": "52d0ab05d0eb76ff77091afc5f99a75d5f0a89ee555fae44999cd0d752303df0",
+      "../nimbus-libc/nimbus-signal.c": "dfe884dac8bbee80ca9b6105fe6f4380e0222addddf74e7cf8dac9088430a5b0",
       "../nimbus-libc/verify-imports.mjs": "855e97d27ca8264cee97480748e923ac263906ea9df6969ebac28175c8552eb7",
       "Setup.local": "a7f117c96caaaab335b7bc39c753699d0e96341c6c6dff4cb8c9061f549d1a0f",
       "build-in-bwrap.sh": "de5b0b1b95557392be4be706dcb78350d021dffedc3aad3adfda43f3cd997a22",
-      "build-python.sh": "2f90426beb932b97173bdf2d94e1651885bcf6ab03ead5d84fd2a7a472fe7782",
+      "build-python.sh": "664784200243ea22e08758a67f5a404f651becef4ae48942f5d3adff9eb054c6",
       "config.site-nimbus-wasi": "03c22c8582d316a68beda01c3ff8c7fcce94c344822ce9ac35e6f5dabbc8fab3",
       "include/__struct_sockaddr_un.h": "7356db4435c9aed4f664a64398313627f614b2c70f75bac71f3ec2ec009930ca",
       "include/netdb.h": "1d654b411e58a3fcf92c91c19157e3490ddf9494cfd2eaf7b5904b91925166c9",
       "include/nimbus-ext.h": "f029ba64ebf293a6be74e9f3e6684c72ff0569ad3eb613aa1f380d0b1ff4bede",
       "include/nimbus-net.h": "43f13107d174a4fd911132d7b70bcfcfa6d3e31d9780179c2bd1218238c17267",
       "include/nimbus-wasi-compat.h": "36d2041b76f701517dc890720ad131c801ace227a5acabbb44b7b0b1876aee25",
-      "inputs.mjs": "2a8073961c742687e7a51deac8806dfe91247802dc2177c3dc19667d64ba547e",
+      "inputs.mjs": "71f89b8da7691476e51c564558b2cdceddbe10577f074be3b443141af46ab9ca",
       "meson-wasi-link.py": "8c23ab5124988e1664c35680a5acbc181ec1316b7963dce2e3c9ce0db4037cfd",
       "nimbus-cxx-noeh.c": "1629fcec5c8da61e875684b055a8141d3ff32311422242c0465d2bab4e46b3f1",
       "nimbus-net.c": "fd8289d9265f47d877fc5ade89ad469ac27a0d1855d3ac3b672b46e860409a76",
-      "nimbus-py.c": "f3a6ce880d51ee82efaea30006078b02f079b455d3e2bcf4877f1b9ffb1ceae9",
+      "nimbus-py.c": "fe4c9bf62ef3386ddfbfaaea7aa58f3f026991c573be7456a91fced2801aca7d",
+      "nimbus-signal-check.c": "b35c2ef200fd164992687001456d08de423c730468e98d314c3bf6236006e969",
       "nimbus-wasi-compat.c": "2fe35f16a990687f9de2c2146b54a97f060f2dbd0880b79371ea5833bc179166",
       "patches/0001-pthread-stubs-support-tls-destructors.patch": "6d6b6facc6c418209795884eab7a508b4c09245cbcaeee44f3e6264653dab8be",
       "patches/0002-numpy-share-one-reference-lapack.patch": "58f6724a8436fa67bd7383c4d484c4f5ed8248d18f5d7eb85be5e79b9c527b73",
-      "patches/0003-numpy-namespace-the-legacy-random-build.patch": "84fefd4997223b0698052db81d1236bf9c206f915b83ae4de089169a8d29cfe2"
+      "patches/0003-numpy-namespace-the-legacy-random-build.patch": "84fefd4997223b0698052db81d1236bf9c206f915b83ae4de089169a8d29cfe2",
+      "patches/0004-wasi-periodic-signal-checks.patch": "182b367b78f937ff9d1493ab03434b0021337159b3f867cfaf7de78defc9c8c9"
     }
   },
   "outputs": {
-    "python-sci.wasm": "a64c844f1028d88af9bc473e1d99b954100036e6227e9b676a6a935e6c855dc7",
-    "python.wasm": "dd96259f355428459dd3484fc9c8892827ce3c578e00c72c4a5099d8f289de6a",
-    "python313.zip": "a3b782a8db8292609df4f854ad3e9f6c7f12de8ff63d12aaec11bb8be4f481b7",
+    "python-sci.wasm": "9d0c430dd1dc808b43727ff439d125b0d070a181e7f48c0776f1434910ecc691",
+    "python.wasm": "df1136b514e570278509628fe6ff17f3461b4349ee3061f949498aa583b578b5",
+    "python313.zip": "78d52d790566ff2c36d6a30538626f9476d4d063eecd81dc8197d16bda445ac1",
     "sci-packages.zip": "c8f75fa904af325b5b2bc5c800936cd398bb74ea3df49fd519962dc8bbe6ca19"
   }
 }
