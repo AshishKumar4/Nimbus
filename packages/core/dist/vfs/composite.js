@@ -585,6 +585,12 @@ export class CompositeVFS {
         return [...found.values()].sort((a, b) => comparePaths(a.path, b.path));
     }
     // ── the table ──────────────────────────────────────────────────────────
+    /**
+     * Mount `source` at `point`. What a process's view answers of it follows
+     * the backend's change model (VFS.changes): a fed one's names are listed
+     * and followed by every process, as the root's are; one with none is
+     * walked where a launch named it and is the session's to answer.
+     */
     mount(point, source, options = {}) {
         const at = normalizePath(point);
         if (at === ROOT_POINT)

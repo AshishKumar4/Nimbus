@@ -431,6 +431,12 @@ export declare class CompositeVFS implements VFS {
     private unfedPoints;
     /** CompositeFeed.walk. */
     private walkUnfed;
+    /**
+     * Mount `source` at `point`. What a process's view answers of it follows
+     * the backend's change model (VFS.changes): a fed one's names are listed
+     * and followed by every process, as the root's are; one with none is
+     * walked where a launch named it and is the session's to answer.
+     */
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
     mountGeneration(): number;

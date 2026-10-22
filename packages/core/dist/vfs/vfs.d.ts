@@ -248,9 +248,12 @@ export interface VFS {
     /** The same operations, completing without waiting. Present only when every call can. */
     readonly sync?: SyncVFS;
     /**
-     * What changed since a cursor, and a complete listing: what a cache of
-     * this backend (a node process's staged files) is kept coherent with. A
-     * backend without it is never cached.
+     * The backend's change model: what changed since a cursor, and a complete
+     * listing, which a process's view of it is kept coherent with (its feed in
+     * the namespace's position, runtime/feed-position.ts). One whose tree never
+     * changes states it as fixed (immutableChanges: /dev, /proc). A backend
+     * without it states none: a process never answers for its names, which are
+     * the session's to answer (a call that cannot wait is refused, EAGAIN).
      */
     readonly changes?: VfsChanges;
     /**
