@@ -241,7 +241,7 @@ export interface WaveRouter {
      * lease, is presented to the namespace's lease check, as a group commit
      * presents it here.
      */
-    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
+    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string, writer?: number): Promise<RoutedStat | null>;
     /**
      * open(2) of a name the namespace places on a mount (W7Call open), decided
      * as every open is (openOnMount), `guard` run right before it changes
@@ -250,7 +250,7 @@ export interface WaveRouter {
      */
     open(call: Extract<W7PathCall, {
         call: 'open';
-    }>, cred: VfsCred, guard: () => void, owner?: string): Promise<{
+    }>, cred: VfsCred, guard: () => void, owner?: string, writer?: number): Promise<{
         file: PinnedName;
         stat: RoutedStat;
     }>;
@@ -427,6 +427,8 @@ export interface WaveFileHooks {
  */
 export interface WaveScope {
     readonly cred: VfsCred;
+    /** The process whose wave it is (its origin's pid): what a record placed on a mount is attributed to. */
+    readonly writer: number | undefined;
     /** The wave's cancellation: its caller's signal, and the engine's cut (cancelStreams). */
     readonly signal: AbortSignal;
     /** The exclusive-mutation lease the wave writes under. */

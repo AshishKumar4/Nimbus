@@ -789,7 +789,8 @@ export async function registerHostedCommands(self, workspace) {
         self.nimbusWrangler = running.server = new NimbusWrangler({
             // The dev server's Worker goes out through the network of the command that started it.
             network: workspace.network.forProcess(ctx.pid),
-            vfs: sqliteFs.as(cred),
+            // What it writes, and its Worker's KV and R2, are the dev server's process's (VfsWriteEvent.execId).
+            vfs: sqliteFs.as(cred, { pid: entry.pid }),
             bundleFs: workspace.filesystem.namespaceFs(cred),
             namespace: workspace.filesystem.vfs,
             esbuild: self.esbuildService,

@@ -29,7 +29,7 @@
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
+import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent, type WriteAttribution } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListOptions, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
@@ -511,6 +511,8 @@ export declare class SqliteVFS {
     private captureTransactions;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     private activeOrigin;
+    /** The process table its write events are attributed by (attributeWrites); none, an embedder's without one. */
+    private attribution;
     /**
      * Appends held in memory, one run per file by inode number (appendThrough).
      * Invisible: anything that looks at the store first writes them
@@ -996,6 +998,7 @@ export declare class SqliteVFS {
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
         actor?: string;
+        pid?: number;
         holds?: () => ReadonlySet<string>;
         landed?: boolean;
         continues?: () => boolean;
@@ -2458,6 +2461,18 @@ export declare class SqliteVFS {
      * survives the commit, held for the observers until each is done.
      */
     observeWrites(observer: (event: VfsWriteEvent) => void | Promise<void>): () => void;
+    /**
+     * The process table each write event's exec id is read from as it commits
+     * (VfsWriteEvent.execId): the table's word for the pid of the view that
+     * made it. None set, a process's write is `undefined`: there is no table.
+     */
+    attributeWrites(attribution: WriteAttribution): void;
+    /**
+     * Keep process `pid` attributable (WriteAttribution.retain) until the
+     * returned release: for work that writes on its behalf after it may have
+     * ended, as a background pass of its command does.
+     */
+    retainWriter(pid: number): () => void;
     /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
     private writeEvent;
     /**

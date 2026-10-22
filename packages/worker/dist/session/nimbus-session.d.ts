@@ -880,7 +880,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     usable: Promise<void> | null;
     /** The latest build's shell started: its login files run. */
     shellStarted: Promise<void> | null;
-    ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;
+    ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>, pid?: number): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the
      * sample files, and the Vite starter app.

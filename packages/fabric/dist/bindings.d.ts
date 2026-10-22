@@ -258,6 +258,8 @@ interface NimbusStorageProps {
     store?: string;
     /** What a KV or R2 store's files are read and written as: the process that started the server. */
     cred?: VfsCred;
+    /** That process's pid: what a KV or R2 store's writes are attributed to (VfsWriteEvent.execId). */
+    writer?: number;
 }
 /** env.KV: a KV namespace, the methods of Cloudflare's API and nothing else. */
 export declare class NimbusKVNamespace extends WorkerEntrypoint<object, NimbusStorageProps> {

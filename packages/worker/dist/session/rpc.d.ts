@@ -88,6 +88,7 @@ type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>;
 declare const StorageTargetSchema: z.ZodObject<{
     root: z.ZodString;
     store: z.ZodString;
+    writer: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>;
 type StorageTarget = z.infer<typeof StorageTargetSchema>;
 /** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */

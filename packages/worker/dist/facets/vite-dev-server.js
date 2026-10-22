@@ -1273,7 +1273,8 @@ export class ViteDevServer {
     /** What has been said once (warnOnce). */
     warned = new Set();
     constructor(opts) {
-        this.vfs = opts.vfs.as(opts.cred);
+        // What it writes (its prebundles' entries) is the dev server's process's (VfsWriteEvent.execId).
+        this.vfs = opts.vfs.as(opts.cred, opts.pid === undefined ? undefined : { pid: opts.pid });
         this.configDir = opts.configDir ? normalizeVfsPath(opts.configDir) : null;
         this.onConfigChange = opts.onConfigChange ?? null;
         this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
