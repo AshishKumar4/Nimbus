@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import ts from 'typescript';
+import { configOptions, programErrors } from './lib/tsrs-program.mjs';
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 import { issueNimbusToken } from '../../packages/worker/src/auth/token.ts';
@@ -86,13 +86,9 @@ void box.ports.ensureDurableApp({ owner: 'o', visibility: 'private' });
 // @ts-expect-error a name is a string
 void box.ports.ensureDurableApp({ owner: 'o', name: 7 });
 `);
-  const config = ts.readConfigFile(join(repo, 'tsconfig.json'), ts.sys.readFile);
-  assert.equal(config.error, undefined);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, repo);
-  const program = ts.createProgram([entry], { ...parsed.options, noEmit: true, allowImportingTsExtensions: true });
-  const source = program.getSourceFile(entry);
-  const errors = [...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source)];
-  assert.deepEqual(errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n')), [], 'the SDK takes the protocol\'s input, and every input it took before');
+  const options = { ...configOptions(join(repo, 'tsconfig.json')), noEmit: true, allowImportingTsExtensions: true };
+  const errors = programErrors({ roots: [entry], options, cwd: repo });
+  assert.deepEqual(errors.map((error) => error.message), [], 'the SDK takes the protocol\'s input, and every input it took before');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

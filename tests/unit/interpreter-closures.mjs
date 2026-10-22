@@ -15,13 +15,14 @@
 // checks the same at runtime, on the AST nodes a compile leaves alive.
 
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isArrowFunction, isBindingElement, isFunctionExpression, isFunctionLike, isIdentifier, isParameter, isPropertyAccessExpression,
+  isPropertyAssignment, isSourceFile, isVariableDeclaration, SyntaxKind } from 'tsrs/unstable/ast';
+import { ObjectFlags, TypeFlags } from 'tsrs/unstable/sync';
+import { withTsrs } from './lib/tsrs-program.mjs';
 
-const require = createRequire(import.meta.url);
-const ts = require('typescript');
 const CORE = fileURLToPath(new URL('../../packages/core/', import.meta.url));
 const DIR = join(CORE, 'src/interpreter');
 /** Modules whose closures run only while a unit is analyzed or parsed, or that hold no code. */
@@ -60,100 +61,97 @@ const NODE_NAME = /(Expression|Statement|Declaration|Pattern|Specifier|Element|C
  */
 const RETAINED_ON_PURPOSE = new Set(['LazySite']);
 
-const config = ts.getParsedCommandLineOfConfigFile(join(CORE, 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
-const host = ts.createCompilerHost(config.options);
-const { getSourceFile, fileExists, readFile } = host;
-host.getSourceFile = (name, ...rest) => (name === FIXTURE ? ts.createSourceFile(name, FIXTURE_TEXT, ts.ScriptTarget.Latest, true) : getSourceFile(name, ...rest));
-host.fileExists = (name) => name === FIXTURE || fileExists(name);
-host.readFile = (name) => (name === FIXTURE ? FIXTURE_TEXT : readFile(name));
-const program = ts.createProgram([...FILES, FIXTURE], config.options, host);
-const checker = program.getTypeChecker();
-
 /** Whether a value of `type` is, or holds, something a compiled closure must not keep. */
-function heavy(type, seen = new Set()) {
-  if (!type || seen.has(type)) return false;
-  seen.add(type);
-  if (type.isUnion() || type.isIntersection()) return type.types.some((t) => heavy(t, seen));
-  const symbol = type.aliasSymbol || type.symbol;
+function heavy(checker, type, seen = new Set()) {
+  if (!type || seen.has(type.id)) return false;
+  seen.add(type.id);
+  if (type.flags & (TypeFlags.Union | TypeFlags.Intersection)) return type.getTypes().some((t) => heavy(checker, t, seen));
+  const symbol = type.getAliasSymbol() || type.getSymbol();
   if (symbol && RETAINED_ON_PURPOSE.has(symbol.name)) return false;
   if (symbol && (HEAVY.has(symbol.name) || NODE_NAME.test(symbol.name))) return true;
-  if (checker.isArrayType(type) || checker.isTupleType(type)) return checker.getTypeArguments(type).some((t) => heavy(t, seen));
+  if (checker.isArrayType(type) || checker.isTupleType(type)) return checker.getTypeArguments(type).some((t) => heavy(checker, t, seen));
   // A collection holds what its type arguments are.
-  if ((type.flags & ts.TypeFlags.Object) && (type.objectFlags & ts.ObjectFlags.Reference) && checker.getTypeArguments(type).some((t) => heavy(t, seen))) return true;
+  if ((type.flags & TypeFlags.Object) && (type.objectFlags & ObjectFlags.Reference) && checker.getTypeArguments(type).some((t) => heavy(checker, t, seen))) return true;
   // An object holds what its properties hold; a function's own type says nothing of what it closes over.
-  if (!(type.flags & ts.TypeFlags.Object) || type.getCallSignatures().length > 0) return false;
-  if (symbol && symbol.declarations && symbol.declarations.some((d) => d.getSourceFile().isDeclarationFile)) return false;
-  return type.getProperties().some((p) => heavy(checker.getTypeOfSymbol(p), seen));
+  if (!(type.flags & TypeFlags.Object) || type.getCallSignatures().length > 0) return false;
+  if (symbol && symbol.declarations.some((d) => /\.d\.[mc]?ts$/.test(d.path))) return false;
+  return type.getProperties().some((p) => heavy(checker, checker.getTypeOfSymbol(p), seen));
 }
 
 function enclosingFunction(node) {
   let p = node.parent;
-  while (p && !ts.isFunctionLike(p) && !ts.isSourceFile(p)) p = p.parent;
+  while (p && !isFunctionLike(p) && !isSourceFile(p)) p = p.parent;
   return p;
 }
 
 /** What `closure` captures from the functions around it that a compiled closure must not keep. */
-function heavyCaptures(closure, source) {
+function heavyCaptures(checker, closure, source) {
   const found = new Set();
   const visit = (n) => {
-    if (n.kind === ts.SyntaxKind.ThisKeyword && ts.isArrowFunction(closure)) {
+    if (n.kind === SyntaxKind.ThisKeyword && isArrowFunction(closure)) {
       let p = n.parent;
-      while (p !== closure && !(ts.isFunctionLike(p) && !ts.isArrowFunction(p))) p = p.parent;
+      while (p !== closure && !(isFunctionLike(p) && !isArrowFunction(p))) p = p.parent;
       if (p === closure) found.add('this');
     }
-    const isName = ts.isIdentifier(n)
-      && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n)
-      && !(ts.isPropertyAssignment(n.parent) && n.parent.name === n);
+    const isName = isIdentifier(n)
+      && !(isPropertyAccessExpression(n.parent) && n.parent.name === n)
+      && !(isPropertyAssignment(n.parent) && n.parent.name === n);
     if (isName) {
       const symbol = checker.getSymbolAtLocation(n);
-      const declaration = symbol && symbol.declarations && symbol.declarations[0];
-      const local = declaration && declaration.getSourceFile() === source
-        && (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration) || ts.isBindingElement(declaration));
+      const handle = symbol && symbol.declarations[0];
+      const declaration = handle && handle.path === source.path ? handle.resolve() : undefined;
+      const local = declaration && (isVariableDeclaration(declaration) || isParameter(declaration) || isBindingElement(declaration));
       if (local && !(declaration.pos >= closure.pos && declaration.end <= closure.end)) {
         const owner = enclosingFunction(declaration);
-        if (owner && !ts.isSourceFile(owner) && heavy(checker.getTypeAtLocation(n))) found.add(n.text);
+        if (owner && !isSourceFile(owner) && heavy(checker, checker.getTypeAtLocation(n))) found.add(n.text);
       }
     }
-    ts.forEachChild(n, visit);
+    n.forEachChild(visit);
   };
-  ts.forEachChild(closure, visit);
+  closure.forEachChild(visit);
   return found;
 }
 
 /** The closures of `file` that capture what a compiled closure must not keep, by line. */
-function violationsIn(file) {
+function violationsIn(program, checker, file) {
   const source = program.getSourceFile(file);
   assert.ok(source, `${file} is part of the program`);
   const found = [];
   let closures = 0;
   const walk = (n) => {
-    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) {
+    if (isArrowFunction(n) || isFunctionExpression(n)) {
       closures++;
-      const captured = heavyCaptures(n, source);
+      const captured = heavyCaptures(checker, n, source);
       if (captured.size > 0) {
         const line = source.getLineAndCharacterOfPosition(n.getStart(source)).line + 1;
         found.push(`${file.slice(DIR.length + 1)}:${line} captures ${[...captured].join(', ')}`);
       }
     }
-    ts.forEachChild(n, walk);
+    n.forEachChild(walk);
   };
   walk(source);
   return { found, closures };
 }
 
-assert.deepEqual(violationsIn(FIXTURE).found, [
+// The checker is tsrs's, over the interpreter's modules and the fixture, under core's own settings.
+const { fixture, violations, closures } = withTsrs({ cwd: CORE, overlay: { [FIXTURE]: FIXTURE_TEXT } }, (api) => {
+  const config = api.parseConfigFile(join(CORE, 'tsconfig.json'));
+  const program = api.createProgram([...FILES, FIXTURE], config.options);
+  const checker = program.getProject().checker;
+  const all = FILES.map((file) => violationsIn(program, checker, file));
+  return {
+    fixture: violationsIn(program, checker, FIXTURE).found,
+    violations: all.flatMap((result) => result.found),
+    closures: all.reduce((sum, result) => sum + result.closures, 0),
+  };
+});
+
+assert.deepEqual(fixture, [
   '__closure-guard-fixture__.ts:5 captures node',
   '__closure-guard-fixture__.ts:6 captures box',
   '__closure-guard-fixture__.ts:7 captures all',
   '__closure-guard-fixture__.ts:8 captures list',
 ], 'the guard finds a node however it is held');
-const violations = [];
-let closures = 0;
-for (const file of FILES) {
-  const result = violationsIn(file);
-  violations.push(...result.found);
-  closures += result.closures;
-}
 assert.ok(closures > 300, `the checker saw the interpreter's closures (${closures})`);
 assert.deepEqual(violations, [], `closures that would keep the compile alive:\n${violations.join('\n')}`);
 console.log(`${closures} closures in ${FILES.length} modules, none keeps the compiler, the AST or the analysis`);

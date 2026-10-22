@@ -56,9 +56,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node ../../scripts/clean-dist.mjs && node scripts/generate-filesystem-mirrors.mjs && node scripts/compile-npm-libs.mjs && node ../../scripts/compile-facet-bodies.mjs && node scripts/pin-transform-pipeline.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "build": "node ../../scripts/clean-dist.mjs && node scripts/generate-filesystem-mirrors.mjs && node scripts/compile-npm-libs.mjs && node ../../scripts/compile-facet-bodies.mjs && node scripts/pin-transform-pipeline.mjs && tsrs -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish && node scripts/check-runtime-packages.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "dependencies": {
     "@nimbus-sh/platform": "^0.15.0",
@@ -86,7 +86,7 @@
     "amaro": "1.1.8",
     "es-module-lexer": "2.3.1",
     "esbuild": "^0.27.0",
-    "typescript": "^5.7.0"
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   },
   "publishConfig": {
     "access": "public"

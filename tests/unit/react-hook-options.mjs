@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import ts from 'typescript';
+import { configOptions, programErrors } from './lib/tsrs-program.mjs';
 
 const repo = new URL('../../', import.meta.url).pathname;
 const root = mkdtempSync(join(tmpdir(), 'nimbus-react-hook-options-'));
@@ -26,18 +26,9 @@ void useNimbusSession({ endpoint: 'https://nimbus.test', token: 't', tenant: 'ac
 // @ts-expect-error a token is required
 void useNimbusSession({ endpoint: 'https://nimbus.test' });
 `);
-  const configPath = join(repo, 'packages/react/tsconfig.json');
-  const config = ts.readConfigFile(configPath, ts.sys.readFile);
-  assert.equal(config.error, undefined);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, join(repo, 'packages/react'), undefined, configPath);
-  assert.deepEqual(parsed.errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n')), []);
-  const program = ts.createProgram([entry], { ...parsed.options, noEmit: true, allowImportingTsExtensions: true });
-  const source = program.getSourceFile(entry);
-  const errors = [
-    ...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics(),
-    ...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source),
-  ];
-  assert.deepEqual(errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n')), [],
+  const options = { ...configOptions(join(repo, 'packages/react/tsconfig.json')), noEmit: true, allowImportingTsExtensions: true };
+  const errors = programErrors({ roots: [entry], options, cwd: join(repo, 'packages/react') });
+  assert.deepEqual(errors.map((error) => error.message), [],
     'the headless hook takes its options without an identity, and refuses one');
 } finally {
   rmSync(root, { recursive: true, force: true });

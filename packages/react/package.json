@@ -36,9 +36,9 @@
     "NOTICE.md"
   ],
   "scripts": {
-    "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "build": "node ../../scripts/clean-dist.mjs && tsrs -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "peerDependencies": {
     "@nimbus-sh/sdk": "^0.20.0",
@@ -47,7 +47,7 @@
   "devDependencies": {
     "@nimbus-sh/sdk": "^0.20.0",
     "@types/react": "^19.0.0",
-    "typescript": "^5.7.0"
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   },
   "publishConfig": {
     "access": "public"

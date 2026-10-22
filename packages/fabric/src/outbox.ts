@@ -399,7 +399,7 @@ export class Outbox<M, C = void> {
    * per-call state such as a transport binding resolved by the caller.
    */
   async drain(now = Date.now(), ...rest: OutboxDrainArgs<C>): Promise<OutboxDrainResult> {
-    const opts = rest[0] ?? {};
+    const opts: { budget?: TurnBudget; context?: C } = rest[0] ?? {};
     const result: OutboxDrainResult = { sent: 0, retried: 0, deadLettered: 0 };
     if (this.draining) return result;
     this.draining = true;
