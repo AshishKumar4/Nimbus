@@ -62,7 +62,7 @@ await ws.exec('mkdir -p /home/user/a /home/user/b /home/user/shared /home/user/k
 await check('two execs at once, each its own', async () => {
   const line = (dir) => [
     `echo one > ${dir}/f`, 'sleep 0.05', `mkdir ${dir}/d`, 'sleep 0.05',
-    `echo two >> ${dir}/f`, `mv ${dir}/f ${dir}/g`, 'sleep 0.05', `rm ${dir}/g`, `setfacl -m u:1000:rwx ${dir}/d`,
+    `echo two >> ${dir}/f`, `mv ${dir}/f ${dir}/g`, 'sleep 0.05', `rm ${dir}/g`, `setfacl -d -m u::rwx,g::rwx,o::r-x ${dir}/d`,
   ].join('; ');
   const events = await observed(async () => {
     const [a, b] = await Promise.all([
@@ -79,8 +79,9 @@ await check('two execs at once, each its own', async () => {
 });
 
 await check('an exec\'s children', async () => {
+  let ran;
   const events = await observed(async () => {
-    const ran = await ws.exec([
+    ran = await ws.exec([
       "sh -c 'echo x > /home/user/kids/sh'",
       'echo y | tee /home/user/kids/pipe > /dev/null',
       '(sleep 0.05; echo z > /home/user/kids/bg) &',
@@ -90,7 +91,7 @@ await check('an exec\'s children', async () => {
   });
   assert.deepEqual(byPath(events, '/home/user/kids/'), {
     '/home/user/kids/sh': ['exec-kids'], '/home/user/kids/pipe': ['exec-kids'], '/home/user/kids/bg': ['exec-kids'],
-  });
+  }, `stderr: ${ran.stderr}; all: ${JSON.stringify(events.filter((event) => event.path.includes('kids')))}`);
 });
 
 await check('appends interleaved on one file', async () => {
@@ -122,15 +123,23 @@ await check('a host lease\'s write, and an exec with no name', async () => {
 });
 
 await check('a mount that does not report its own writes', async () => {
-  // A memory filesystem whose writes take a while, so a kill and reap can come while one is pending.
-  const slow = new MemoryVFS();
+  // A memory filesystem behind an awaited face, as a remote backend is, whose calls can be held after they are
+  // made (the write committed, its answer pending), so a kill and a reap can come while one is.
+  const backing = new MemoryVFS();
   let gate = null;
-  const writeFile = slow.writeFile.bind(slow);
-  slow.writeFile = async (...args) => {
-    const done = await writeFile(...args);
-    if (gate !== null) await gate;
-    return done;
-  };
+  const slow = new Proxy(backing, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      return async (...args) => {
+        const done = value.apply(target, args);
+        if (gate !== null) await gate;
+        return done;
+      };
+    },
+    has(target, key) { return key !== 'sync' && key in target; },
+  });
   ws.filesystem.vfs.mount('/home/user/m', slow);
   try {
     const plain = await observed(async () => {
