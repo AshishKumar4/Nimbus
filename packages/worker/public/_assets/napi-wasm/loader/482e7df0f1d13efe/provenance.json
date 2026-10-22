@@ -5,7 +5,7 @@
       "packages/core/src/runtime/wasi/filesystem.ts": "c943a545e7d39575af0a827fcfc2c9fb48089a6545351f60738ba0712847c663",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "d2cd968ce3080d3792d028cf17ac000c1f48ca36be34454ac2111857a49983a6",
-      "packages/core/src/vfs/vfs.ts": "355fec1675a05b3e36ffc9ca3fd5de82b9fb5a079d9b1a9adf37401fd430b62e",
+      "packages/core/src/vfs/vfs.ts": "85248387e018db834a601a862ea0b92e7fd6dea0aed5c2c874e0df584b9f1332",
       "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
       "packages/platform/src/lexical-path.ts": "cf6c5834a0e850007f9289347c79c67a2902bc7daad5711337f1565da3000b2e",
       "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
