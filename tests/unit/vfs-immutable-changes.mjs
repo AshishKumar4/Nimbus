@@ -37,7 +37,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(new DevVFS().changes.epoch, dev.changes.epoch, 'the same devices are the same epoch');
 }
 
-// ── /proc: constant files their size, volatile ones size 0, every time the tree's ──
+// ── /proc: a generated file size 0 (procfs), the trust store its size, every time the tree's ──
 {
   const proc = standardProc();
   assert.ok(proc.changes, '/proc states no change model');
@@ -45,8 +45,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(first.size, 0, 'a volatile file is size 0');
   assert.equal(proc.stat('/meminfo').size, 0);
   assert.equal(proc.stat('/net/info').size, 0);
-  const version = proc.stat('/version');
-  assert.equal(version.size, proc.readFile('/version').byteLength, 'a constant file is its content\'s size');
+  assert.equal(proc.stat('/version').size, 0, 'a generated file is size 0, as procfs says');
+  assert.ok(proc.readFile('/version').byteLength > 0);
+  const trust = proc.stat('/nimbus/ca-certificates.crt');
+  assert.equal(trust.size, proc.readFile('/nimbus/ca-certificates.crt').byteLength, 'a held file is its content\'s size');
   await sleep(5);
   assert.equal(proc.stat('/uptime').mtimeMs, first.mtimeMs, 'a stat\'s time is the tree\'s, not the read\'s');
   assert.equal(proc.stat('/version').mtimeMs, first.mtimeMs);

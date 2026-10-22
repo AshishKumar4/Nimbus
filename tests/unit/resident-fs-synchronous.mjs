@@ -207,12 +207,11 @@ await runScenarios(import.meta.path, {
     const devNull = await answersNow(e, 'stat of /dev/null', () => e.sync.stat('/dev/null'));
     assert.equal(Number(devNull.mode) & 0o170000, 0o020000, 'a character device');
     assert.equal(Number(devNull.dev), Number((await e.authority.files.vfs.stat('/dev/null')).dev));
-    // /proc: a volatile file made here, at each read; a constant one as the session holds it, once read.
+    // /proc: a generated file made here, at each read, as the session makes it.
     const uptime = new TextDecoder().decode(await answersNow(e, 'readFile of /proc/uptime', () => e.sync.readFile('/proc/uptime')));
     assert.match(uptime, /^\d+\.\d\d \d+\.\d\d\n$/);
     assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a volatile file is size 0');
-    const version = await e.fs.readFile('/proc/version');
-    assert.deepEqual(await answersNow(e, 'readFile of /proc/version', () => e.sync.readFile('/proc/version')), version);
+    assert.deepEqual(await answersNow(e, 'readFile of /proc/version', () => e.sync.readFile('/proc/version')), await e.fs.readFile('/proc/version'));
     // A fed mount's file, once read, is held as any; another's change is shown once the input's barrier lands.
     assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/mem/a')), 'MEM');
     assert.equal(new TextDecoder().decode(await answersNow(e, 'readFile of /mnt/mem/a', () => e.sync.readFile('/mnt/mem/a'))), 'MEM');
@@ -312,13 +311,15 @@ await runScenarios(import.meta.path, {
     assert.equal(Number((await answersNow(e, 'stat of /dev/null under a trusted lease', () => e.sync.stat('/dev/null'))).mode) & 0o170000, 0o020000);
   },
 
-  async 'a Node program stats /dev and /proc synchronously as the session holds them'(e = undefined) {
+  async 'a Node program reads /dev and /proc synchronously as the session holds them'(e = undefined) {
     e = await bootEngine('node', {});
     await e.fs.readdir('/proc');
     await e.fs.readdir('/dev');
     assert.equal(Number(e.sync.stat('/dev/null').mode) & 0o170000, 0o020000, 'a character device');
-    assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a volatile file is size 0');
-    assert.ok(Number(e.sync.stat('/proc/version').size) > 0, 'a constant file is its content\'s size');
+    assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a generated file is size 0');
+    // vite's is-wsl, at import: a generated file made here, as the session makes it, not a refused read.
+    assert.deepEqual(e.sync.readFile('/proc/version'), await e.fs.readFile('/proc/version'));
+    assert.match(new TextDecoder().decode(e.sync.readFile('/proc/uptime')), /^\d+\.\d\d \d+\.\d\d\n$/);
   },
 
   async 'an awaited change only the session decides is shown once it returns'(e = undefined) {
