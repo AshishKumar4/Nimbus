@@ -6,7 +6,7 @@ export function nodeFacetSource(sources, name) {
     return sources.immutable[name] ?? sources[name];
 }
 /** The registry bootstrap and its modules, for every runner that hosts node shims. */
-export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode = '[]', stackEntry = 'null', entryText = 'null', esm = 'null', } = {}) {
+export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode = '[]', stackEntry = 'null', esm = 'null', } = {}) {
     const modules = {};
     const immutableModules = {};
     for (const [name, key] of [
@@ -34,7 +34,6 @@ export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode 
         code: moduleSource `const __NIMBUS_CODE_CELLS = ${codeCells};
 const __NIMBUS_RUNTIME_CODE = ${runtimeCode};
 const __NIMBUS_STACK_ENTRY = ${stackEntry};
-const __NIMBUS_ENTRY_TEXT = ${entryText};
 const __NIMBUS_ESM = ${esm};
 ${nodeFacetSource(sources, 'registry')}
 ${nodeFacetSource(sources, 'residentStore')}`,

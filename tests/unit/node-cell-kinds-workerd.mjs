@@ -1,5 +1,5 @@
 // @serial
-// @tier slow — drives a local workerd
+// @tier quiet-cpu — drives a local workerd and compares two programs' compute
 // Node guests on the real registry: a CommonJS cell is an ES module when it
 // is strict code that the module goal reads the same (core commonjs-cell.ts
 // THE WRAPPER), and a program sees no difference. Each fixture runs in the
@@ -13,12 +13,13 @@
 //   - require.cache deletion and a re-require;
 //   - a stack frame's line and column in a strict cell and in a sloppy one, on
 //     its first line and below it, in a required cell and in the entry.
-// And a strict cell's loop that reads a global costs what the same loop
-// reading it once into a local does, timed from outside (a guest's clocks
-// stand still while it computes). In a `{ cjs }` module 2e7 such reads cost
-// 2.9-3.1 s, in an ES module the whole loop 28-54 ms (2026-10-21, verdict
-// 20261021T224745-d95ed4dfaace): the least of three runs each may differ by
-// at most a third of the `{ cjs }` cost (READ_GAP_MS).
+// And a strict cell's loop that reads a global runs as an ES module's does,
+// against the same loop in a sloppy cell (a `{ cjs }` module), in the same
+// run: each timed from outside (a guest's clocks stand still while it
+// computes), less the same launch with no rounds. A `{ cjs }` loop of 2e7
+// reads took 54-111 times an ES module's (2895-3108 ms against 28-54 ms,
+// 2026-10-21, verdict 20261021T224745-d95ed4dfaace); the sloppy cell must
+// take at least SPEEDUP times the strict one's.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -57,16 +58,18 @@ const FILES = {
   'stack.js': top('STACK') + '[require("./stack-strict"), require("./stack-sloppy")]).replaceAll(__dirname, "<dir>"));\n',
   'entry-strict.js': '"use strict"; const first = new Error("e").stack.split("\\n")[1].trim();\nfunction f() {\n  return new Error("e").stack.split("\\n").slice(1, 3).map((l) => l.trim());\n}\n' + top('ENTRYSTRICT') + '[first, f()]).replaceAll(__dirname, "<dir>"));\n',
   'entry-sloppy.js': 'const first = new Error("e").stack.split("\\n")[1].trim();\nfunction f() {\n  return new Error("e").stack.split("\\n").slice(1, 3).map((l) => l.trim());\n}\n' + top('ENTRYSLOPPY') + '[first, f()]).replaceAll(__dirname, "<dir>"));\n',
-  // The loop, as a required strict cell, reading Math each round and once.
-  'loop-strict.js': [
-    '"use strict";',
-    'exports.global = (n) => { let h = 0; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h; };',
-    'exports.local = (n) => { const imul = Math.imul; let h = 0; for (let i = 0; i < n; i++) h = imul(h ^ i, 16777619); return h; };',
-  ].join('\n') + '\n',
-  'loop.js': 'console.log("LOOP " + require("./loop-strict")[process.argv[2]](2e7));\n',
+  // The loop, reading Math each round, as a required strict cell and as a sloppy one.
+  'loop-strict.js': '"use strict";\nmodule.exports = (n) => { let h = 0; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h; };\n',
+  'loop-sloppy.js': 'module.exports = (n) => { var h = 0; for (var i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h; };\n',
+  'loop.js': 'console.log("LOOP " + require("./loop-" + process.argv[2])(Number(process.argv[3])));\n',
 };
-/** A third of what 2e7 global reads cost in a `{ cjs }` module (2.9-3.1 s), and 20x the whole loop's in an ES module. */
-const READ_GAP_MS = 1_000;
+/**
+ * The least the sloppy cell's loop may take against the strict one's, net of
+ * the launch: a tenth of the least measured (54), rounded down, so a strict cell compiled
+ * as `{ cjs }` again (about 1) fails, and noise in the strict loop's tens of
+ * milliseconds does not.
+ */
+const SPEEDUP = 5;
 const DIFFERENTIAL = [['this.js', 'THIS'], ['cycle.js', 'CYCLE'], ['throw.js', 'THROW'], ['recache.js', 'RECACHE'], ['stack.js', 'STACK'],
   ['entry-strict.js', 'ENTRYSTRICT'], ['entry-sloppy.js', 'ENTRYSLOPPY']];
 const line = (stdout, marker) => new RegExp(`^${marker} .*$`, 'm').exec(stdout)?.[0];
@@ -92,19 +95,22 @@ try {
         assert.equal(line(guest.stdout, marker), line(reference.stdout, marker), `${file} answers as node does:\n${guest.stdout}`);
         console.log(`  ok  ${file}: ${line(guest.stdout, marker)}`);
       }
-      const walls = { global: [], local: [] };
+      const ARMS = { none: 'strict 0', strict: 'strict 20000000', sloppy: 'sloppy 20000000' };
+      const walls = { none: [], strict: [], sloppy: [] };
       for (let i = 0; i < 3; i++) {
-        for (const kind of ['global', 'local']) {
+        for (const [arm, args] of Object.entries(ARMS)) {
           const t0 = performance.now();
-          const run = await terminal.run(`cd ${W} && node loop.js ${kind}`);
-          walls[kind].push(Math.round(performance.now() - t0));
+          const run = await terminal.run(`cd ${W} && node loop.js ${args}`);
+          walls[arm].push(Math.round(performance.now() - t0));
           assert.equal(run.status, 0, run.stdout);
           assert.match(run.stdout, /^LOOP -?\d+$/m, run.stdout);
         }
       }
-      const gap = Math.min(...walls.global) - Math.min(...walls.local);
-      assert.ok(gap <= READ_GAP_MS, `a strict cell's global reads cost what reading it once does: ${JSON.stringify(walls)} ms`);
-      console.log(`  ok  a strict cell's 2e7 global reads: ${gap} ms over reading it once (${JSON.stringify(walls)})`);
+      const least = (arm) => Math.min(...walls[arm]);
+      const strict = Math.max(1, least('strict') - least('none'));
+      const sloppy = least('sloppy') - least('none');
+      assert.ok(sloppy >= SPEEDUP * strict, `a strict cell's loop runs as an ES module's, not a { cjs } one's: ${JSON.stringify(walls)} ms`);
+      console.log(`  ok  2e7 global reads: ${strict} ms in a strict cell, ${sloppy} ms in a sloppy one, net of the launch (${JSON.stringify(walls)})`);
     } finally {
       await terminal.close().catch(() => {});
     }
