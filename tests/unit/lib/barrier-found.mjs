@@ -261,7 +261,7 @@ const FOUND = {
       ['hold', 'listing'], ['own', 'chmod', 'd/e', 0o755], ['settle'], ['own', 'opendir', 'x'], ['peer', 'write', 'd/e/g', 'c6614.3'], ['sync', 'readFile', 'd/e/g'],
       ['sync', 'readdir', 'd/n'], ['own', 'rename', 'd/e/g', 'x/h'], ['input']],
   },
-  'a file the process makes on a mount is made less its umask (6614)': {
+  'a file the process makes on a fed mount is there at rest (6614)': {
     park: 6614,
     schedule: [['peer', 'mount', 'd', 'fed', { f: 'm6614.1' }], ['input'], ['own', 'write', 'd/n', 'c6614.5']],
   },

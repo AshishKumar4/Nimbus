@@ -244,7 +244,8 @@ function applied(world, change) {
     case 'write':
       if (parent?.type !== 'dir' || at?.type === 'dir') return null;
       if (!root && (at === undefined ? !mayChangeIn(world, a) : (bits(at) & 2) === 0)) return null;
-      next.set(a, at === undefined ? fileState(b) : { ...at, content: b, size: b.length });
+      // Made on a mount by whoever: as its caller asked (made, statIs).
+      next.set(a, at === undefined ? { ...fileState(b), ...(mountOf(world, a) === null ? {} : { made: true, uid: USER, gid: USER }) } : { ...at, content: b, size: b.length });
       return next;
     case 'unlink':
       if (at?.type !== 'file' || (!root && !mayChangeIn(world, a))) return null;
@@ -252,7 +253,7 @@ function applied(world, change) {
       return next;
     case 'mkdir':
       if (parent?.type !== 'dir' || at !== undefined || (!root && !mayChangeIn(world, a))) return null;
-      next.set(a, dirState());
+      next.set(a, { ...dirState(), ...(mountOf(world, a) === null ? {} : { made: true, uid: USER, gid: USER }) });
       return next;
     case 'rmdir':
       if (at?.type !== 'dir' || a === '' || childrenOf(world, a).length > 0 || (!root && !mayChangeIn(world, a))) return null;
@@ -412,7 +413,9 @@ function laid(world, domain, effect) {
 /** Whether a stat (normalized; null for nothing) describes `state`. */
 function statIs(answer, state) {
   if (state === undefined) return answer === null;
-  if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode || answer.uid !== state.uid) return false;
+  // A name made on a mount (made: a MemoryVFS takes no credential, so it stores the mode its caller asks, no umask) is judged without its mode.
+  const mode = state.made === true ? answer?.mode & 0o777 : state.mode;
+  if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== mode || answer.uid !== state.uid) return false;
   return state.type !== 'file' || answer.size === state.size;
 }
 
