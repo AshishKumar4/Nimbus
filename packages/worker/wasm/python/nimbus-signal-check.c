@@ -12,7 +12,6 @@
  * nimbus-signal.c's raise ends the process on a default action, or runs
  * CPython's handler, whose KeyboardInterrupt the next breaker check raises. */
 #include <signal.h>
-#include <stdlib.h>
 
 #define NIMBUS_ESIGNAL 1024
 
@@ -23,9 +22,15 @@ int __nimbus_signal_check(void);
 int Py_EMSCRIPTEN_SIGNAL_HANDLING = 1;
 int _Py_emscripten_signal_clock = 0;
 
-/* Breaker checks between two asks: NIMBUS_SIGNAL_INTERVAL from the
- * environment, read at the first check; 0 never asks. */
-static int interval = -1;
+/* Breaker checks between two asks. Measured on throwaways (2026-10-22,
+ * verdict 20261022T235009-25265f1e507e): an ask costs 2.2-4.1 us (asking at
+ * every check against never), and a loop's breaker check comes every 0.37 us,
+ * so asking every 1e4 costs about 0.1%, every 1e3 about 1%. A one-shot's wall
+ * showed neither: at 1e3 to 1e6, each paired difference's 95% interval holds
+ * 0. Ctrl-C to the prompt
+ * took 370-781 ms at 1e4, 416-1507 ms at 1e3 and up to 1812 ms at 1e6: the
+ * signal's way to the guest, not the interval, sets it. */
+#define NIMBUS_SIGNAL_INTERVAL 10000
 
 void _Py_CheckEmscriptenSignals(void)
 {
@@ -41,16 +46,6 @@ void _Py_CheckEmscriptenSignalsPeriodically(void)
 		_Py_emscripten_signal_clock -= Py_EMSCRIPTEN_SIGNAL_HANDLING;
 		return;
 	}
-	if (interval < 0) {
-		const char *set = getenv("NIMBUS_SIGNAL_INTERVAL");
-		interval = set == NULL ? 0 : atoi(set);
-	}
-	if (interval <= 0) {
-		/* Never asks: the clock stands still above zero. */
-		Py_EMSCRIPTEN_SIGNAL_HANDLING = 0;
-		_Py_emscripten_signal_clock = 1;
-		return;
-	}
-	_Py_emscripten_signal_clock = interval;
+	_Py_emscripten_signal_clock = NIMBUS_SIGNAL_INTERVAL;
 	_Py_CheckEmscriptenSignals();
 }

@@ -245,11 +245,12 @@ export const SPECS = {
   // and getuid is the session's; and a full name table refuses a new name.
   // -3: nimbus_py_run flushes before every return, its early one too, and
   // the host no longer flushes after it; netdb's records are nimbus-libc's.
-  // -4: takes the signals sent to its process (cpython-runner@4): a wait ends
-  // on one (nimbus-libc's signal raiser), the interpreter asks for them while
-  // it computes (CPython's periodic check, nimbus_proc.signal_check), and its
-  // handlers are CPython's own, so Ctrl-C is a KeyboardInterrupt.
-  'cpython/3.13.14-4-exp.1': {
+  // -4: takes the signals sent to its process (cpython-runner@4): a wait or
+  // a sleep ends on one (nimbus-libc's signal raiser), the interpreter asks
+  // for them while it computes (CPython's periodic check,
+  // nimbus_proc.signal_check), and its handlers are CPython's own, so Ctrl-C
+  // is a KeyboardInterrupt.
+  'cpython/3.13.14-4': {
     cliDefaultSync: true,
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',

@@ -306,11 +306,12 @@ stage_wasi() {
 	  # --wrap lets nimbus-net own accept and close without colliding with the
 	  # wasi-libc definitions that are still in the archive, nimbus-restart
 	  # read and write (wasi-libc's stdio included), and nimbus-signal the
-	  # host calls a signal ends and raise.
+	  # host calls a signal ends, the sleep it ends (time.sleep's) and raise.
 	  export LDFLAGS="--target=wasm32-wasi -L$DEPS/lib \
 	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4 \
 	    -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev \
-	    -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_write -Wl,--wrap=__wasi_poll_oneoff -Wl,--wrap=raise"
+	    -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_write -Wl,--wrap=__wasi_poll_oneoff \
+	    -Wl,--wrap=clock_nanosleep -Wl,--wrap=raise"
 	  export LIBS="-lnimbuswasi -lwasi-emulated-signal -lwasi-emulated-process-clocks \
 	    -lwasi-emulated-mman -lwasi-emulated-getpid"
 	  mkdir -p Modules && cp "$HERE/Setup.local" Modules/Setup.local
