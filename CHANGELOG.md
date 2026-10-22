@@ -150,6 +150,14 @@ published independently in the `@nimbus-sh` npm scope.
   - `fork` is unavailable: there is no IPC channel.
 - Changed: lifo's node runs the same `child_process` with no start face until its realm can wait for one. `exec` and `spawn` refuse every child ENOSYS, as Node reports a spawn it cannot make. Before, its stub said "requires shell interpreter", and `spawn` threw.
 - Fixed: a Node program's signal handlers hear the signals sent to it, as on Linux. A `process.on('SIGTERM')` handler runs when the program is killed: by its Node parent (`child.kill()`), by the shell's `kill`, by the session's `signalProcess`, or by a started program's `kill`. The program then does what its handler says. A signal it has no handler for still takes its default action. A signal it catches while it waits in `fs.readFileSync(0)` reaches it once the read returns, as in Node. A program that has taken a signal cannot afterwards wait at a synchronous read of stdin that has no input yet: Nimbus cannot run it again past a signal. It fails that read with `ERR_NIMBUS_SYNC_STDIN`, naming the signal. Before, every such kill ended the program at once.
+- Added: each write event says which exec made it. `VfsWriteEvent.execId` (from `observeWrites`) is the `execId` the process table held for the writing process when the write committed. Every process an exec starts inherits it, so a command's children, pipelines and background jobs count. It has three possible values:
+  - a string: the exec that made the write;
+  - `null`: no process made it, a host operation (a client's `files.*`, the kernel, seeding, a launch's images);
+  - `undefined`: a process made it, but no exec name is known. Either its exec named none, or the write is one a mount's backend reports from its own machine. Such a write comes from a program on a delegating mount; its attribution waits for a token Kinu's transports must carry (KINU-HANDOFF section 51).
+  - It covers the shell and its redirections, durable coreutils, node programs' fs calls and write waves, write batches and streams, npm (including its background prebundle), git (including a background clone), `wrangler dev`'s files and its Worker's KV and R2, writes to mounts that do not report their own, and write logs drained after a process ended or after a reset.
+  - The attribution never depends on timing. The table entry of a process with a write in flight, or with background work writing for it, is kept until that write commits.
+  - `NimbusWorkspace.exec(command, { execId })` names an exec in a core-only workspace.
+- Changed: appends by two processes to one file no longer share one buffered run, so each process's appends are its own write event.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 
