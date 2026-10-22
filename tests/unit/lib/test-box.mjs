@@ -10,8 +10,9 @@ import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 /**
- * @param {{ harness?: ReturnType<typeof createSqliteVfsTestHarness>, vfs?: SqliteVFS, terminal?: object,
- *   env?: Record<string, string>, cwd?: string, mounts?: Record<string, object> }} [options]
+ * @param {{ harness?: ReturnType<typeof createSqliteVfsTestHarness>, vfs?: SqliteVFS,
+ *   terminal?: import('../../../packages/core/src/substrate/lifo/terminal/ITerminal.ts').ITerminal,
+ *   env?: Record<string, string>, cwd?: string, mounts?: Record<string, import('../../../packages/core/src/vfs/composite.ts').VfsSource> }} [options]
  */
 export async function testBox({ harness = createSqliteVfsTestHarness(), vfs, terminal, env, cwd, mounts = {} } = {}) {
   const engine = vfs ?? new SqliteVFS(harness.sql, harness.ctx);

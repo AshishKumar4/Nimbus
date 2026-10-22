@@ -32,7 +32,7 @@ export async function inlineWebSocketArguments(base) {
     await new Promise((resolve, reject) => {
       next.onerror = (event) => reject(new Error(event.message ?? event.error?.message));
       next.onopen = () => { events.push(['constructor', next.protocol]); next.close(code, reason); };
-      next.onclose = (event) => { events.push(['converted close', event.code, event.reason]); resolve(); };
+      next.onclose = (event) => { events.push(['converted close', event.code, event.reason]); resolve(undefined); };
     });
   }
   const socket = new NativeWebSocket(base + '/headers', { protocols: ['chat'], headers: { 'x-review': 'yes' } });
@@ -73,7 +73,7 @@ export async function inlineWebSocketArguments(base) {
       if (index < values.length) socket.send(values[index++]);
       else socket.close('3000', 42);
     };
-    socket.onclose = (event) => { events.push(['close', event.code, event.reason, event.wasClean]); resolve(); };
+    socket.onclose = (event) => { events.push(['close', event.code, event.reason, event.wasClean]); resolve(undefined); };
   });
   return events;
 }

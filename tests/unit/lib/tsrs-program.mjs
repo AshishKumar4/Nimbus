@@ -3,8 +3,12 @@
 // root files under compiler options, where text a test gives stands in for
 // files on disk. The API runs in Node (scripts/lib/tsrs-api.mjs): from a
 // test, which bun runs, each function here runs in a node process.
-import { isClassDeclaration, isCallExpression, isExportDeclaration, isIdentifier, isImportDeclaration, isStringLiteral, isStringLiteralLike, SyntaxKind } from 'tsrs/unstable/ast';
-import { API, JsxEmit, serverFS } from 'tsrs/unstable/sync';
+import {
+  isCallExpression, isClassDeclaration, isExportDeclaration, isGetAccessorDeclaration, isIdentifier, isImportDeclaration, isMethodDeclaration,
+  isPropertyDeclaration, isSetAccessorDeclaration, isStringLiteral, isStringLiteralLikeNode, SyntaxKind,
+} from 'tsrs/unstable/ast';
+import { serverFS } from 'tsrs/unstable/fs';
+import { API, JsxEmit } from 'tsrs/unstable/sync';
 import { inNode, RUNS_TSRS_API } from '../../../scripts/lib/tsrs-api.mjs';
 
 /**
@@ -113,7 +117,7 @@ export function importSpecifiers({ files, overlay = {}, cwd }) {
         if ((isImportDeclaration(node) || isExportDeclaration(node)) && node.moduleSpecifier && isStringLiteral(node.moduleSpecifier)) {
           found.push(node.moduleSpecifier.text);
         } else if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword
-          && node.arguments.length > 0 && isStringLiteralLike(node.arguments[0])) {
+          && node.arguments.length > 0 && isStringLiteralLikeNode(node.arguments[0])) {
           found.push(node.arguments[0].text);
         }
         node.forEachChild(visit);
@@ -137,8 +141,10 @@ export function classMemberSpans({ path, text, className, members }) {
     const source = api.createSourceFile(path, text).sourceFile;
     const declared = source.statements.find((node) => isClassDeclaration(node) && node.name?.text === className);
     if (!declared || !isClassDeclaration(declared)) throw new Error(`${path} declares no class ${className}`);
+    const named = (node) => (isMethodDeclaration(node) || isPropertyDeclaration(node) || isGetAccessorDeclaration(node) || isSetAccessorDeclaration(node))
+      && isIdentifier(node.name) ? node.name.text : undefined;
     return Object.fromEntries(members.map((member) => [member, declared.members
-      .filter((node) => node.name && isIdentifier(node.name) && node.name.text === member)
+      .filter((node) => named(node) === member)
       .map((node) => [node.getFullStart(), node.end])]));
   });
 }

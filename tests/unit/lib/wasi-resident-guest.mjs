@@ -40,7 +40,35 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/** @param {{ refuse?: (path: string) => boolean, of?: object, after?: object, cred?: typeof USER, source?: string }} [options] */
+/**
+ * The module the guest runs: preamble.ts, with the two of its functions the
+ * export line below adds to its exports.
+ *
+ * @typedef {typeof import('../../../packages/worker/src/runtime/wasi/preamble.ts') & {
+ *   __wasiSettleFirst: (body: () => import('../../../packages/core/src/runtime/wasi/types.ts').SyscallResult) => import('../../../packages/core/src/runtime/wasi/types.ts').SyscallResult,
+ *   __wasiInbound: <T>(result: T) => T }} Preamble
+ */
+
+/** A session for guests: its store, its supervisor and the op handler a process's binding calls. */
+function residentSession() {
+  const harness = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = raw.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', USER.uid, USER.gid);
+  const processes = new SessionProcessSupervisor();
+  const authority = new ProcessFiles(raw);
+  const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
+  // Fenced waves, as a process's binding sends them: a refusal answers its own op.
+  const deliveries = new SupervisorDeliveries();
+  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
+  return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch, retired: [] };
+}
+
+/**
+ * @param {{ refuse?: (path: string) => boolean, of?: { session: ReturnType<typeof residentSession> },
+ *   after?: { P: Preamble, session: ReturnType<typeof residentSession> }, cred?: typeof USER, source?: string }} [options]
+ */
 export async function residentGuest({ refuse = () => false, of, after, cred = USER, source = '' } = {}) {
   let P = after?.P;
   if (P === undefined) {
@@ -49,20 +77,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
     try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   }
 
-  const session = (of ?? after)?.session ?? (() => {
-    const harness = createSqliteVfsTestHarness();
-    const raw = new SqliteVFS(harness.sql, harness.ctx);
-    const kernel = raw.as(CRED_KERNEL);
-    kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
-    kernel.chown('home/user', USER.uid, USER.gid);
-    const processes = new SessionProcessSupervisor();
-    const authority = new ProcessFiles(raw);
-    const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-    // Fenced waves, as a process's binding sends them: a refusal answers its own op.
-    const deliveries = new SupervisorDeliveries();
-    const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
-    return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch, retired: [] };
-  })();
+  const session = (of ?? after)?.session ?? residentSession();
   const { harness, raw, kernel, processes, authority } = session;
   const boundIncarnation = session.deliveries.incarnation;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred });

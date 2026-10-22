@@ -90,7 +90,7 @@ async function putObjects(puts, persist, work, wrangler) {
         const child = spawn(wrangler, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMPDIR: work } });
         let err = '';
         child.stderr.on('data', (d) => { err += d; });
-        child.on('close', (code) => (code === 0 ? done() : fail(new Error(`r2 put ${key}: ${err.slice(-600)}`))));
+        child.on('close', (code) => (code === 0 ? done(undefined) : fail(new Error(`r2 put ${key}: ${err.slice(-600)}`))));
       });
     }
   };
@@ -113,7 +113,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     const task = (async () => {
       const closed = new Promise((done) => {
         let timer;
-        const finish = () => { clearTimeout(timer); process.off('close', finish); done(); };
+        const finish = () => { clearTimeout(timer); process.off('close', finish); done(undefined); };
         process.once('close', finish);
         timer = setTimeout(finish, 5000);
         if (process.exitCode !== null && process.stdout?.destroyed && process.stderr?.destroyed) finish();

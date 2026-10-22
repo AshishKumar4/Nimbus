@@ -8,12 +8,12 @@ import { fileURLToPath } from 'node:url';
 import {
   isArrayBindingPattern, isArrayLiteralExpression, isBinaryExpression, isBindingElement, isBreakOrContinueStatement, isCallExpression,
   isElementAccessExpression, isEnumMember, isExportSpecifier, isExpressionWithTypeArguments, isForOfStatement, isFunctionDeclaration,
-  isFunctionExpression, isGetAccessor, isHeritageClause, isIdentifier, isImportClause, isImportSpecifier, isLabeledStatement,
+  isFunctionExpression, isGetAccessorDeclaration, isHeritageClause, isIdentifier, isImportClause, isImportSpecifier, isLabeledStatement,
   isMethodDeclaration, isNamespaceImport, isObjectBindingPattern, isObjectLiteralExpression, isPropertyAccessExpression,
-  isPropertyAssignment, isPropertyDeclaration, isPropertySignature, isQualifiedName, isSetAccessor, isSpreadElement, isTypeNode,
+  isPropertyAssignment, isPropertyDeclaration, isPropertySignatureDeclaration, isQualifiedName, isSetAccessorDeclaration, isSpreadElement, isTypeNode,
   isTypeReferenceNode, SyntaxKind,
 } from 'tsrs/unstable/ast';
-import { SymbolFlags, TypeFlags } from 'tsrs/unstable/sync';
+import { isIntersectionType, isUnionType, SymbolFlags } from 'tsrs/unstable/sync';
 import { inNode, RUNS_TSRS_API } from '../../../scripts/lib/tsrs-api.mjs';
 import { withTsrs } from './tsrs-program.mjs';
 
@@ -75,8 +75,8 @@ const ours = (symbol) => declared(symbol).some((d) => d.path.startsWith(DIR) || 
 function isValueName(node) {
   const p = node.parent;
   if (isPropertyAccessExpression(p) && p.name === node) return false;
-  if ((isPropertyAssignment(p) || isPropertyDeclaration(p) || isMethodDeclaration(p) || isPropertySignature(p)
-    || isGetAccessor(p) || isSetAccessor(p) || isEnumMember(p)) && p.name === node) return false;
+  if ((isPropertyAssignment(p) || isPropertyDeclaration(p) || isMethodDeclaration(p) || isPropertySignatureDeclaration(p)
+    || isGetAccessorDeclaration(p) || isSetAccessorDeclaration(p) || isEnumMember(p)) && p.name === node) return false;
   if ((isImportSpecifier(p) || isExportSpecifier(p) || isNamespaceImport(p) || isImportClause(p)) ) return false;
   if (isBindingElement(p) && p.propertyName === node) return false;
   if (isQualifiedName(p) || isTypeReferenceNode(p) || isExpressionWithTypeArguments(p) && isHeritageClause(p.parent) && p.parent.token === SyntaxKind.ImplementsKeyword) return false;
@@ -162,7 +162,7 @@ export function primordialViolations() {
         }
         if (isObjectLiteralExpression(node)) {
           const contextual = checker.getContextualType(node);
-          const parts = !contextual ? [] : contextual.flags & (TypeFlags.Union | TypeFlags.Intersection) ? contextual.getTypes() : [contextual];
+          const parts = !contextual ? [] : isUnionType(contextual) || isIntersectionType(contextual) ? contextual.getTypes() : [contextual];
           if (parts.some((t) => /PropertyDescriptor$/.test(typeName(t) ?? ''))) {
             at(node, 'makes a property descriptor that inherits (dataDescriptor and accessorDescriptor do not)');
           }

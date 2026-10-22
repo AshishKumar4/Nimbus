@@ -1,12 +1,13 @@
 // The guard of tests/unit/interpreter-closures.mjs: which closures of the
 // interpreter capture what a compiled closure must not keep, by tsrs's type
 // checker. It runs in Node, where tsrs's API runs (scripts/lib/tsrs-api.mjs).
+import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isArrowFunction, isBindingElement, isFunctionExpression, isFunctionLike, isIdentifier, isParameter, isPropertyAccessExpression,
-  isPropertyAssignment, isSourceFile, isVariableDeclaration, SyntaxKind } from 'tsrs/unstable/ast';
-import { ObjectFlags, TypeFlags } from 'tsrs/unstable/sync';
+import { isArrowFunction, isBindingElement, isFunctionExpression, isFunctionLikeDeclaration, isIdentifier, isParameterDeclaration,
+  isPropertyAccessExpression, isPropertyAssignment, isSourceFile, isVariableDeclaration, SyntaxKind } from 'tsrs/unstable/ast';
+import { isIntersectionType, isUnionType, ObjectFlags, TypeFlags } from 'tsrs/unstable/sync';
 import { inNode, RUNS_TSRS_API } from '../../../scripts/lib/tsrs-api.mjs';
 import { withTsrs } from './tsrs-program.mjs';
 
@@ -52,7 +53,7 @@ const RETAINED_ON_PURPOSE = new Set(['LazySite']);
 function heavy(checker, type, seen = new Set()) {
   if (!type || seen.has(type.id)) return false;
   seen.add(type.id);
-  if (type.flags & (TypeFlags.Union | TypeFlags.Intersection)) return type.getTypes().some((t) => heavy(checker, t, seen));
+  if (isUnionType(type) || isIntersectionType(type)) return type.getTypes().some((t) => heavy(checker, t, seen));
   const symbol = type.getAliasSymbol() || type.getSymbol();
   if (symbol && RETAINED_ON_PURPOSE.has(symbol.name)) return false;
   if (symbol && (HEAVY.has(symbol.name) || NODE_NAME.test(symbol.name))) return true;
@@ -67,7 +68,7 @@ function heavy(checker, type, seen = new Set()) {
 
 function enclosingFunction(node) {
   let p = node.parent;
-  while (p && !isFunctionLike(p) && !isSourceFile(p)) p = p.parent;
+  while (p && !isFunctionLikeDeclaration(p) && !isSourceFile(p)) p = p.parent;
   return p;
 }
 
@@ -77,7 +78,7 @@ function heavyCaptures(checker, closure, source) {
   const visit = (n) => {
     if (n.kind === SyntaxKind.ThisKeyword && isArrowFunction(closure)) {
       let p = n.parent;
-      while (p !== closure && !(isFunctionLike(p) && !isArrowFunction(p))) p = p.parent;
+      while (p !== closure && !(isFunctionLikeDeclaration(p) && !isArrowFunction(p))) p = p.parent;
       if (p === closure) found.add('this');
     }
     const isName = isIdentifier(n)
@@ -87,7 +88,7 @@ function heavyCaptures(checker, closure, source) {
       const symbol = checker.getSymbolAtLocation(n);
       const handle = symbol && symbol.declarations[0];
       const declaration = handle && handle.path === source.path ? handle.resolve() : undefined;
-      const local = declaration && (isVariableDeclaration(declaration) || isParameter(declaration) || isBindingElement(declaration));
+      const local = declaration && (isVariableDeclaration(declaration) || isParameterDeclaration(declaration) || isBindingElement(declaration));
       if (local && !(declaration.pos >= closure.pos && declaration.end <= closure.end)) {
         const owner = enclosingFunction(declaration);
         if (owner && !isSourceFile(owner) && heavy(checker, checker.getTypeAtLocation(n))) found.add(n.text);

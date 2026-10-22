@@ -71,7 +71,7 @@ function beyondDeferral(row, entry) {
  * @param {Array<{ problems?: string[], tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null, regraded?: { task: string, evidence: string[] } }> | null }> } | null>} verdicts
  *   the matrix's remote-probes verdicts (null for one that wrote none)
  * @param {import('../../../tests/behavioral/_deferred.mjs').ReleaseException[]} deferred
- * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<object>, problems: string[] }}
+ * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<import('../../../tests/behavioral/_deferred.mjs').ReleaseException & { rows?: object[] }>, problems: string[] }}
  *   exitCode 0 green, 1 red, 2 not graded; red, the red rows no deferral
  *   covers; applied, exclusions plus each deferral that covered red rows, with those rows;
  *   problems, every reason the matrix is not green.

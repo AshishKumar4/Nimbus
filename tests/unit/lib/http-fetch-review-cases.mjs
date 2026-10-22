@@ -20,7 +20,7 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
       req.on('abort', () => events.push('abort'));
       req.on('finish', () => events.push('finish'));
       req.on('error', (error) => events.push([error.code, error.message]));
-      const closed = new Promise((resolve) => req.on('close', () => { events.push('close'); resolve(); }));
+      const closed = new Promise((resolve) => req.on('close', () => { events.push('close'); resolve(undefined); }));
       if (begin === 'write') req.write('a');
       else if (begin === 'end') req.end('x', () => events.push('end-callback'));
       else req[begin]();
@@ -37,7 +37,7 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
     const req = http.request({ host: 'bad host', port: 80, method: 'POST' });
     const events = [];
     req.on('error', () => events.push('error'));
-    const closed = new Promise((resolve) => req.on('close', () => { events.push('close'); resolve(); }));
+    const closed = new Promise((resolve) => req.on('close', () => { events.push('close'); resolve(undefined); }));
     try { req.end('x'); } catch (error) { events.push('throw'); req.destroy(error); }
     await closed;
     result.preparation = events;

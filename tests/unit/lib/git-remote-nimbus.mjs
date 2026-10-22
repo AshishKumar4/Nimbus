@@ -101,7 +101,7 @@ const lines = (() => {
   };
 })();
 
-const write = (stream) => (text) => new Promise((resolve) => stream.write(text, () => resolve()));
+const write = (stream) => (text) => new Promise((resolve) => stream.write(text, () => resolve(undefined)));
 const code = await runRemoteHelper({
   args: process.argv.slice(2),
   env: process.env,
