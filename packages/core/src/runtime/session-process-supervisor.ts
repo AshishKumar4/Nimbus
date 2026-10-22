@@ -798,14 +798,18 @@ export class SessionProcessSupervisor implements ProcessOutput {
     const failures: { pid: number; error: unknown }[] = [];
     // Each release began at its process's end: they are waited for together.
     const released = await Promise.all(entries.map((entry) => this.releaseOf(entry.pid)));
+    let reaped = 0;
     entries.forEach((entry, i) => {
       const failed = released[i];
       if (failed !== null) failures.push({ pid: entry.pid, error: failed.error });
+      // Leased while its release ran (retainAttribution): kept, released, for a later reap.
+      if (this.attributionLeases.has(entry.pid)) return;
       this.releases.delete(entry.pid);
       this.table.forget(entry.pid);
+      reaped++;
     });
-    if (entries.length > 0) this.logRetention?.();
-    return { reaped: entries.length, failures };
+    if (reaped > 0) this.logRetention?.();
+    return { reaped, failures };
   }
 
   get stats(): ProcessTable['stats'] {

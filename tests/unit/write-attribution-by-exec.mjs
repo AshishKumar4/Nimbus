@@ -127,6 +127,7 @@ await check('a mount that does not report its own writes', async () => {
   // made (the write committed, its answer pending), so a kill and a reap can come while one is.
   const backing = new MemoryVFS();
   let gate = null;
+  let reached = () => {};
   const slow = new Proxy(backing, {
     get(target, key) {
       if (key === 'sync') return undefined;
@@ -135,7 +136,10 @@ await check('a mount that does not report its own writes', async () => {
       return async (...args) => {
         const done = value.apply(target, args);
         // A mkdir made, its answer held.
-        if (gate !== null && key === 'mkdir') await gate;
+        if (gate !== null && key === 'mkdir') {
+          reached();
+          await gate;
+        }
         return done;
       };
     },
@@ -149,22 +153,29 @@ await check('a mount that does not report its own writes', async () => {
     });
     assert.deepEqual(byPath(plain, '/home/user/m/'), { '/home/user/m/plain': ['exec-mount'] });
 
+    // A process of its own, no work held for it, writing through its own binding: once it has ended, a reap may forget it.
+    const { pid } = ws.processes.spawn('mkdir', ['mkdir', '/home/user/m/late'], '/home/user', { cred: CRED_SESSION_USER, execId: 'exec-late' });
+    const bridge = ws.filesystem.bind({ pid, cred: CRED_SESSION_USER });
     let open;
     gate = new Promise((resolve) => { open = resolve; });
+    const committed = new Promise((resolve) => { reached = resolve; });
+    let kept;
     const late = await observed(async () => {
-      const running = ws.exec('mkdir /home/user/m/late', { execId: 'exec-late' });
-      await sleep(100);
-      const entry = ws.processes.getAll().find((process) => process.execId === 'exec-late' && process.state === 'running');
-      assert.ok(entry !== undefined, 'its process runs while the mount\'s write is pending');
-      ws.processes.signal(entry.pid, 'SIGKILL');
-      await sleep(50);
+      const making = bridge.mkdir('/home/user/m/late', { recursive: false, mode: 0o755 });
+      // Made on the mount, its answer held: the process ends and is reaped now.
+      await committed;
+      ws.processes.exit(pid, 0);
+      await sleep(20);
       await ws.processes.reap(0);
+      kept = ws.processes.get(pid) !== undefined;
       open();
-      await running.catch(() => {});
-      await sleep(50);
+      await making.catch(() => {});
+      await sleep(20);
     });
     const ids = byPath(late, '/home/user/m/')['/home/user/m/late'];
-    assert.deepEqual(ids, ['exec-late'], `still its exec's: ${JSON.stringify(late)}`);
+    assert.deepEqual([kept, ids], [true, ['exec-late']], `its entry kept by its write in flight, still its exec's: ${JSON.stringify(late)}`);
+    await ws.processes.reap(0);
+    assert.equal(ws.processes.get(pid), undefined, 'and reaped once it has landed');
   } finally {
     gate = null;
     ws.filesystem.vfs.unmount('/home/user/m');

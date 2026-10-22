@@ -327,6 +327,13 @@ const D1QueriesSchema = z.array(z.object({
   params: z.array(z.union([z.string(), z.number(), z.null(), z.array(z.number())])).optional(),
 }));
 
+/** `writer` kept attributable (SqliteVFS.retainWriter) while a call made for it is in flight; nothing for no writer. */
+function retainWriter(self: Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>, writer: number | undefined): () => void {
+  if (writer === undefined) return () => {};
+  self.ensureSqliteFs();
+  return self.sqliteFs?.retainWriter(writer) ?? (() => {});
+}
+
 /**
  * A project's KV or R2 files, as the binding's credential (the process that
  * started the server), its writes that process's (`writer`, VfsWriteEvent.execId).
@@ -340,13 +347,23 @@ function storeFs(self: StorageHost, cred: VfsCred | undefined, op: string, write
 /** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */
 export async function _rpcKvCall(self: StorageHost, target: StorageTarget, call: KvCall, cred?: VfsCred) {
   const { root, store, writer } = StorageTargetSchema.parse(target);
-  return await serveKvCall(new KvEmulator({ vfs: storeFs(self, cred, 'kvCall', writer), root, binding: store }), call);
+  const retained = retainWriter(self, writer);
+  try {
+    return await serveKvCall(new KvEmulator({ vfs: storeFs(self, cred, 'kvCall', writer), root, binding: store }), call);
+  } finally {
+    retained();
+  }
 }
 
 /** A call of a `wrangler dev` Worker's R2 binding, on the bucket its props name. */
 export async function _rpcR2Call(self: StorageHost, target: StorageTarget, call: R2Call, cred?: VfsCred) {
   const { root, store, writer } = StorageTargetSchema.parse(target);
-  return await serveR2Call(new R2Emulator({ vfs: storeFs(self, cred, 'r2Call', writer), root, binding: store }), call);
+  const retained = retainWriter(self, writer);
+  try {
+    return await serveR2Call(new R2Emulator({ vfs: storeFs(self, cred, 'r2Call', writer), root, binding: store }), call);
+  } finally {
+    retained();
+  }
 }
 
 /**
@@ -1048,12 +1065,17 @@ export async function _rpcWriteBatch(
       data: normalizeWriteBatchChunkData(c.data),
     }));
 
-    // The batch is its caller's process's work (VfsWriteEvent.execId).
-    return self.getFilesystemAuthority().waves.writeBatch(self.sqliteFs!.as(callerCred(self, pid), pid === undefined ? undefined : { pid }), {
-      inodes,
-      chunks,
-      deletePaths,
-    });
+    // The batch is its caller's process's work (VfsWriteEvent.execId), kept attributable until it has landed.
+    const retained = retainWriter(self, pid);
+    try {
+      return await self.getFilesystemAuthority().waves.writeBatch(self.sqliteFs!.as(callerCred(self, pid), pid === undefined ? undefined : { pid }), {
+        inodes,
+        chunks,
+        deletePaths,
+      });
+    } finally {
+      retained();
+    }
 }
 
 function normalizeWriteBatchChunkData(value: unknown): Uint8Array {
