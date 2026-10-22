@@ -1,10 +1,15 @@
+/**
+ * The reading isolate's navigator, where it has one. A Worker's says one CPU
+ * and Cloudflare-Workers; a process's facet has none, and answers the same
+ * as a Worker's, so its /proc is the session's.
+ */
+const host = () => globalThis.navigator;
 /** Where the kernel mounts /proc. */
 export const PROC_MOUNT_POINT = '/proc';
 export const PROC_FILES = {
     cpuinfo: {
-        volatile: false,
         generate: () => {
-            const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 1 : 1;
+            const cores = host()?.hardwareConcurrency ?? 1;
             const lines = [];
             for (let i = 0; i < cores; i++) {
                 lines.push(`processor\t: ${i}`, 'model name\t: Browser Virtual CPU', `cpu cores\t: ${cores}`, '');
@@ -13,7 +18,6 @@ export const PROC_FILES = {
         },
     },
     meminfo: {
-        volatile: true,
         generate: () => {
             const memory = globalThis.performance?.memory;
             if (!memory)
@@ -30,22 +34,17 @@ export const PROC_FILES = {
         },
     },
     uptime: {
-        volatile: true,
         generate: () => {
             const seconds = typeof performance !== 'undefined' ? (performance.now() / 1000).toFixed(2) : '0.00';
             return `${seconds} ${seconds}\n`;
         },
     },
     version: {
-        volatile: false,
-        generate: () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`,
+        generate: () => `Lifo 1.0.0 (${host()?.userAgent ?? 'Cloudflare-Workers'})\n`,
     },
     'net/info': {
-        volatile: true,
         generate: () => {
-            const conn = typeof navigator !== 'undefined'
-                ? navigator.connection
-                : undefined;
+            const conn = host()?.connection;
             if (!conn)
                 return 'Network information not available\n';
             return [
@@ -58,8 +57,7 @@ export const PROC_FILES = {
         },
     },
 };
-/** The generator of /proc/<name> where it is volatile: made by whoever reads it, at each read. */
-export function volatileProcFile(name) {
-    const file = Object.hasOwn(PROC_FILES, name) ? PROC_FILES[name] : undefined;
-    return file?.volatile ? file.generate : undefined;
+/** The generator of /proc/<name>, made by whoever reads it, at each read; undefined for a file only the session makes (/proc/mounts, the trust store). */
+export function procFileGenerator(name) {
+    return Object.hasOwn(PROC_FILES, name) ? PROC_FILES[name].generate : undefined;
 }

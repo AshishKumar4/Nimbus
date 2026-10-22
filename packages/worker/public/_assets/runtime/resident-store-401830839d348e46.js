@@ -36,6 +36,7 @@ var __nimbusResidentModule = (() => {
     namespaceRowBytes: () => namespaceRowBytes,
     notAfter: () => notAfter,
     posixAccess: () => posixAccess,
+    procFileGenerator: () => procFileGenerator,
     residentFileCost: () => residentFileCost,
     rootOf: () => rootOf,
     sameEpochs: () => sameEpochs,
@@ -445,9 +446,25 @@ var __nimbusResidentModule = (() => {
     }
     return true;
   }
+  var mountPoints = new SafeWeakMap();
+  function mountPointsOf(position) {
+    let points = mountPoints.get(position.feeds);
+    if (points === void 0) {
+      const all = objectKeys(feedsOf(position));
+      const found = [];
+      for (let i = 0; i < all.length; i++)
+        if (all[i] !== ROOT_FEED)
+          found[found.length] = all[i];
+      points = found;
+      mountPoints.set(position.feeds, points);
+    }
+    return points;
+  }
   function feedPointOf(position, key) {
+    const points = mountPointsOf(position);
+    if (points.length === 0)
+      return ROOT_FEED;
     const path = key.length > 0 && stringCharCodeAt(key, 0) === 47 ? key : "/" + key;
-    const points = objectKeys(feedsOf(position));
     let found = ROOT_FEED;
     for (let i = 0; i < points.length; i++) {
       const point = points[i];
@@ -3917,6 +3934,65 @@ var __nimbusResidentModule = (() => {
   // ../core/dist/vfs/composite.js
   var ANONYMOUS_DEV = 65536;
   var utf8 = new TextEncoder();
+
+  // ../core/dist/vfs/proc-files.js
+  var host = () => globalThis.navigator;
+  var PROC_FILES = {
+    cpuinfo: {
+      generate: () => {
+        const cores = host()?.hardwareConcurrency ?? 1;
+        const lines = [];
+        for (let i = 0; i < cores; i++) {
+          lines.push(`processor	: ${i}`, "model name	: Browser Virtual CPU", `cpu cores	: ${cores}`, "");
+        }
+        return lines.join("\n");
+      }
+    },
+    meminfo: {
+      generate: () => {
+        const memory = globalThis.performance?.memory;
+        if (!memory)
+          return ["MemTotal:       2097152 kB", "MemFree:        1048576 kB", "MemUsed:        1048576 kB", ""].join("\n");
+        const totalKB = Math.floor(memory.jsHeapSizeLimit / 1024);
+        const usedKB = Math.floor(memory.usedJSHeapSize / 1024);
+        return [
+          `MemTotal:       ${totalKB} kB`,
+          `MemFree:        ${totalKB - usedKB} kB`,
+          `MemUsed:        ${usedKB} kB`,
+          `HeapTotal:      ${Math.floor(memory.totalJSHeapSize / 1024)} kB`,
+          ""
+        ].join("\n");
+      }
+    },
+    uptime: {
+      generate: () => {
+        const seconds = typeof performance !== "undefined" ? (performance.now() / 1e3).toFixed(2) : "0.00";
+        return `${seconds} ${seconds}
+`;
+      }
+    },
+    version: {
+      generate: () => `Lifo 1.0.0 (${host()?.userAgent ?? "Cloudflare-Workers"})
+`
+    },
+    "net/info": {
+      generate: () => {
+        const conn = host()?.connection;
+        if (!conn)
+          return "Network information not available\n";
+        return [
+          `type:          ${conn.type ?? "unknown"}`,
+          `effectiveType: ${conn.effectiveType ?? "unknown"}`,
+          `downlink:      ${conn.downlink ?? 0} Mbps`,
+          `rtt:           ${conn.rtt ?? 0} ms`,
+          ""
+        ].join("\n");
+      }
+    }
+  };
+  function procFileGenerator(name) {
+    return Object.hasOwn(PROC_FILES, name) ? PROC_FILES[name].generate : void 0;
+  }
 
   // src/vfs/resident/index.ts
   function dropSqlStore(storage) {

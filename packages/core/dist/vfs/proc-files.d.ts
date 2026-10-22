@@ -1,10 +1,11 @@
 /**
- * The /proc every workspace has, but its trust store: each file's generator
- * and whether it is volatile (made at each read: the heap, the clock, the
- * network). One source for the session's /proc (proc-vfs.ts standardProc)
- * and for a process's resident filesystem, which makes a volatile file
- * itself at each read rather than ask the session for bytes that are stale
- * once they arrive.
+ * The /proc every workspace has, but its trust store: each file's generator,
+ * a pure function of the isolate reading it (its CPUs, heap, clock,
+ * network, runtime). Every one is made at each read, its stat size 0, as
+ * Linux procfs says. One source for the session's /proc (proc-vfs.ts
+ * standardProc) and for a process's filesystem (the resident filesystem,
+ * Node's shims), which makes each itself at each read: a call that cannot
+ * wait answers it, and nothing is fetched that is stale once it arrives.
  */
 import type { VfsCred } from './vfs.js';
 /**
@@ -17,8 +18,7 @@ export type ProcGenerator = (cred: VfsCred | null) => string | Uint8Array;
 export declare const PROC_MOUNT_POINT = "/proc";
 export declare const PROC_FILES: Readonly<Record<string, {
     readonly generate: ProcGenerator;
-    readonly volatile: boolean;
 }>>;
-/** The generator of /proc/<name> where it is volatile: made by whoever reads it, at each read. */
-export declare function volatileProcFile(name: string): ProcGenerator | undefined;
+/** The generator of /proc/<name>, made by whoever reads it, at each read; undefined for a file only the session makes (/proc/mounts, the trust store). */
+export declare function procFileGenerator(name: string): ProcGenerator | undefined;
 //# sourceMappingURL=proc-files.d.ts.map

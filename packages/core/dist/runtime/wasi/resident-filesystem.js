@@ -44,7 +44,7 @@ import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
 import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
-import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
+import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
@@ -633,12 +633,12 @@ export function residentFilesystem(session, resident, delegation) {
         return cursor !== null && feedPointOf(cursor, key) === PROC_MOUNT_POINT;
     };
     /**
-     * A volatile /proc file's bytes, made here by the session's own generator
+     * A generated /proc file's bytes, made here by the session's own generator
      * (proc-files.ts) where this process has it; undefined where only the
      * session makes it (/proc/mounts).
      */
     const generated = (key) => {
-        const generate = volatileProcFile(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
+        const generate = procFileGenerator(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
         if (generate === undefined)
             return undefined;
         const content = generate({ ...store.cred, umask: 0 });

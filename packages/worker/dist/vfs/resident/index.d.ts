@@ -164,6 +164,7 @@ export { ANONYMOUS_DEV } from '@nimbus-sh/core/vfs/composite.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export { feedFor, floorFor, isFeedPosition, notAfter, rootOf, samePosition, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
+export { procFileGenerator } from '@nimbus-sh/core/vfs/proc-files.js';
 export type { ResidentCell } from './cell-cost.js';
 export interface ResidentStoreOptions {
     /** Told each path a synchronous read asks for (no leading '/'): the launch's read profile strikes it off. */

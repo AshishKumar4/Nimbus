@@ -10,7 +10,7 @@
  * feedOf, and only the composite reads them whole (feedsOf). So nothing that
  * compares the root reads anything but the root's feed.
  */
-import { objectHasOwn, objectKeys, stringCharCodeAt, stringStartsWith, TypeError } from '../_shared/primordials.js';
+import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringStartsWith, TypeError } from '../_shared/primordials.js';
 /** The root's mount point: its feed is the SQLite namespace's. */
 export const ROOT_FEED = '/';
 export function positionOf(table, feeds) {
@@ -63,10 +63,27 @@ export function samePosition(a, b) {
     }
     return true;
 }
+/** The mount points of `position`'s feeds but the root's, read once a position (a store asks at every call that finds a path's feed). */
+const mountPoints = new SafeWeakMap();
+function mountPointsOf(position) {
+    let points = mountPoints.get(position.feeds);
+    if (points === undefined) {
+        const all = objectKeys(feedsOf(position));
+        const found = [];
+        for (let i = 0; i < all.length; i++)
+            if (all[i] !== ROOT_FEED)
+                found[found.length] = all[i];
+        points = found;
+        mountPoints.set(position.feeds, points);
+    }
+    return points;
+}
 /** The point of the feed `key` (a path, with or without its leading slash) is under in `position`: its deepest fed mount at or above it. */
 export function feedPointOf(position, key) {
+    const points = mountPointsOf(position);
+    if (points.length === 0)
+        return ROOT_FEED;
     const path = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? key : '/' + key;
-    const points = objectKeys(feedsOf(position));
     let found = ROOT_FEED;
     for (let i = 0; i < points.length; i++) {
         const point = points[i];
@@ -140,9 +157,9 @@ export function sameClock(a, b, key) {
 export function abovePoint(position, key) {
     const path = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? key : '/' + key;
     const under = path === '/' ? '/' : path + '/';
-    const points = objectKeys(feedsOf(position));
+    const points = mountPointsOf(position);
     for (let i = 0; i < points.length; i++) {
-        if (points[i] !== ROOT_FEED && points[i].length > under.length && stringStartsWith(points[i], under))
+        if (points[i].length > under.length && stringStartsWith(points[i], under))
             return true;
     }
     return false;
