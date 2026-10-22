@@ -278,6 +278,10 @@ const FOUND = {
     schedule: [['input'], ['input'], ['input'], ['own', 'stat', 'x/f'], ['input'], ['own', 'rename', 'd', 'z'], ['own', 'mkdir', 'x/e'], ['sync', 'write', 'new', 'c7269.2'],
       ['peer', 'mount', 'x', 'fed', { e: null, h: 'm7269.3', 'e/g': 'm7269.4' }], ['sync', 'write', 'x/f', 'c7269.5'], ['sync', 'unlink', 'x/f']],
   },
+  'a directory root shut and took is refused to a read that cannot wait (7451)': {
+    park: 7451,
+    schedule: [['root', 'chmod', 'd/e', 0o711], ['own', 'opendir', 'x'], ['root', 'chown', 'd/e', 0], ['release'], ['input'], ['release'], ['sync', 'readFile', 'd/e']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
