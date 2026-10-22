@@ -22,6 +22,11 @@ const a = makeAsserter('perf-regression/cjs-global-reads');
 const arms = requirePairedTargets('perf-regression/cjs-global-reads');
 console.log(`perf-regression/cjs-global-reads — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
+/**
+ * What it guards is tenfold: 2e7 reads in a `{ cjs }` module cost 2.9-3.1 s, and the whole program here 0.2-0.5 s.
+ * Two A/As of one commit at 12 rounds passed at 0.910-0.912, their arms' intervals within 0.70-1.38 (2026-10-22,
+ * verdicts 20261022T012719-3f5d0a132e46 and 20261022T014024-3f5d0a132e46): a twofold change is outside every one.
+ */
 const ROUNDS = 12;
 /**
  * Runs a round: a single wall carries a launch's own spikes, and the least of
