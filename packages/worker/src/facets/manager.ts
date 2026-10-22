@@ -25,7 +25,6 @@ import {
   commonJsCellModuleName,
   commonJsCellReadsBack,
   columnMapModuleName,
-  commonJsEntryExpression,
   commonJsEntryModuleName,
   declaresWrapperBinding,
   ENTRY_CHECKED,
@@ -1181,16 +1180,14 @@ const CHECKED_HEAD = `throw ${JSON.stringify(ENTRY_CHECKED)};`;
 
 /**
  * The entry as the runner evaluates it: its modules, `{ cjs }` (`modules`)
- * or ES (`esCells`), or, a sloppy one's, the wrapper text the guest compiles
- * as it loads (`loadText`, JSON or 'null'); the expression that evaluates
- * it; and how its frames are named.
+ * or ES (`esCells`), the expression that evaluates it, and how its frames
+ * are named.
  */
 interface ProgramEntry {
   name: string;
   esModule: boolean;
   modules: Record<string, string>;
   esCells: Record<string, string>;
-  loadText: string;
   evaluate: string;
   stackEntry: string;
 }
@@ -1203,14 +1200,14 @@ function programEntry(
   const cell = commonJsCellModuleName(key);
   const importer = entryImporterUrl(filename, cwd);
   if (esModule === true && bundleSource.esModules[cell] !== undefined) {
-    return { name: '', esModule: true, modules: {}, esCells: {}, loadText: 'null', evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
+    return { name: '', esModule: true, modules: {}, esCells: {}, evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
   }
   // TypeScript or JSX the launch compiled to CommonJS (or the diagnostic of
   // one it could not): its cell, whose frames are its file's.
   if (esModule === true && (bundleSource.codeModules[cell] ?? bundleSource.esCells[cell]) !== undefined) {
     const path = JSON.stringify('/' + key);
     return {
-      name: cell, esModule: false, modules: {}, esCells: {}, loadText: 'null', stackEntry: 'null',
+      name: cell, esModule: false, modules: {}, esCells: {}, stackEntry: 'null',
       evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(cell)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
     };
   }
@@ -1218,22 +1215,15 @@ function programEntry(
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
   // -c compiles a function body, as Node's wrapSafe does, whatever it declares.
-  const scope = !check && declaresWrapperBinding(code) ? 'block' : 'function';
-  const body = wrapCommonJsCell(code, scope);
+  const body = wrapCommonJsCell(code, !check && declaresWrapperBinding(code) ? 'block' : 'function');
   // -c: the cell stops at its first statement, so not even text of the
   // program's that closes the wrapper runs (node-shims __nimbusEvaluateEntry).
-  // A sloppy entry has no fast module form: the guest compiles its wrapper as
-  // it loads, where code generation is allowed (commonjs-cell.ts
-  // __nimbusEntryLoaded); -c's stays a module, since its head throws.
-  const atLoad = !check && !body.esModule;
-  const wrapped = check ? { ...body, text: CHECKED_HEAD + body.text, head: CHECKED_HEAD.length + body.head }
-    : atLoad ? { ...commonJsEntryExpression(code, scope), esModule: false } : body;
+  const wrapped = check ? { ...body, text: CHECKED_HEAD + body.text, head: CHECKED_HEAD.length + body.head } : body;
   return {
     name,
     esModule: false,
-    modules: atLoad || wrapped.esModule ? {} : { [name]: wrapped.text },
+    modules: wrapped.esModule ? {} : { [name]: wrapped.text },
     esCells: wrapped.esModule ? { [name]: wrapped.text } : {},
-    loadText: atLoad ? JSON.stringify(wrapped.text) : 'null',
     evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
     stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail]),
@@ -1453,7 +1443,7 @@ export async function generateEntrypointCode(
 ): Promise<GeneratedNodeFacetCode> {
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble, check);
-  const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry, entryText: entry.loadText });
+  const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   const source = moduleSource`
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
 
@@ -1837,7 +1827,7 @@ export async function generateLongRunningNodeCode(
     attachedTty: opts.attachedTty === true,
     cred: opts.cred,
   };
-  const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry, entryText: entry.loadText });
+  const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   const source = moduleSource`
 import { DurableObject } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}

@@ -258,30 +258,15 @@ function strictModuleCell(body: string): boolean {
  * valid inside a function).
  */
 export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function'): WrappedCommonJsCell {
-  const esModule = strictModuleCell(withoutHashbang(cell));
-  return { ...wrapped(cell, scope, esModule ? ES_MODULE_HEAD : COMMONJS_HEAD), esModule };
-}
-
-/**
- * A sloppy entry's wrapper as an expression, for the launch to compile as it
- * loads (programEntry, the guest's __nimbusEntryLoaded): the same function,
- * with no module around it.
- */
-export function commonJsEntryExpression(cell: string, scope: CommonJsCellScope): Omit<WrappedCommonJsCell, 'esModule'> {
-  return wrapped(cell, scope, WRAPPER_FUNCTION);
-}
-
-function withoutHashbang(cell: string): string {
-  return cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33 ? '//' + cell.slice(2) : cell;
-}
-
-function wrapped(cell: string, scope: CommonJsCellScope, opening: string): Omit<WrappedCommonJsCell, 'esModule'> {
-  const body = withoutHashbang(cell);
+  const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
+  const body = hashbang ? '//' + cell.slice(2) : cell;
+  const esModule = strictModuleCell(body);
+  const opening = esModule ? ES_MODULE_HEAD : COMMONJS_HEAD;
   const head = scope === 'function'
     ? opening
     : opening + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
   const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-  return { text: head + body + tail, head: head.length, tail: tail.length, hashbang: body !== cell };
+  return { text: head + body + tail, esModule, head: head.length, tail: tail.length, hashbang };
 }
 
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
@@ -641,9 +626,7 @@ function __nimbusModuleCell(key) {
 // stack leads with where it is, as Node's does (__nimbusDecorateSyntaxError).
 function __nimbusEntryWrapper(name, importer) {
   try {
-    const loaded = __nimbusEntryLoaded !== null && name === __nimbusStackEntry[0] ? __nimbusEntryLoaded : null;
-    if (loaded !== null && loaded.factory === null) throw loaded.error;
-    return (loaded === null ? __nimbusCellFactory(name) : loaded.factory)(globalThis.__nimbusCodeOrigin(importer).Function);
+    return __nimbusCellFactory(name)(globalThis.__nimbusCodeOrigin(importer).Function);
   } catch (e) {
     __nimbusDecorateSyntaxError(e, name);
     throw e;
@@ -656,20 +639,6 @@ function __nimbusEntryWrapper(name, importer) {
 // the wrapper's tail].
 const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
 const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
-// A sloppy entry, compiled now, as the launch loads (manager.ts
-// programEntry): code is generated only while a Worker loads, and a { cjs }
-// module's global reads are slow (THE WRAPPER). Its text is its wrapper's
-// function, its frames named as its module's would be (its sourceURL). What
-// its compile throws is thrown where requiring its module would have thrown
-// it (__nimbusEntryWrapper).
-const __nimbusEntryText = typeof __NIMBUS_ENTRY_TEXT === "undefined" ? null : __NIMBUS_ENTRY_TEXT;
-const __nimbusEntryLoaded = __nimbusEntryText === null ? null : (() => {
-  try {
-    return { factory: (0, eval)(__nimbusEntryText + "\\n//# sourceURL=" + __NIMBUS_BUNDLE_URL + __nimbusStackEntry[0]), error: null };
-  } catch (error) {
-    return { factory: null, error };
-  }
-})();
 let __nimbusCellsByName = null;
 const __nimbusModules = new __NimbusCellMap();
 // A stack frame's module, by its URL in the map: the cell's VFS path (or the
@@ -693,7 +662,6 @@ function __nimbusModuleNamed(name) {
   if (module !== undefined) return module;
   if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
     module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
-    if (__nimbusEntryText !== null) module.source = __nimbusEntryText;
   } else {
     if (__nimbusCellsByName === null) {
       __nimbusCellsByName = new __NimbusCellMap();

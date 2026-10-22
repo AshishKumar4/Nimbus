@@ -34,8 +34,8 @@ export function nodeFacetSource(sources: NodeFacetSources, name: keyof NodeSourc
 
 /** The registry bootstrap and its modules, for every runner that hosts node shims. */
 export function createNodeFacetRuntime(sources: NodeFacetSources, {
-  codeCells = '[]', runtimeCode = '[]', stackEntry = 'null', entryText = 'null', esm = 'null',
-}: { codeCells?: string; runtimeCode?: string; stackEntry?: string; entryText?: string; esm?: string } = {}) {
+  codeCells = '[]', runtimeCode = '[]', stackEntry = 'null', esm = 'null',
+}: { codeCells?: string; runtimeCode?: string; stackEntry?: string; esm?: string } = {}) {
   const modules: Record<string, string> = {};
   const immutableModules: Record<string, ImmutableModuleSource> = {};
   for (const [name, key] of [
@@ -61,7 +61,6 @@ export function createNodeFacetRuntime(sources: NodeFacetSources, {
     code: moduleSource`const __NIMBUS_CODE_CELLS = ${codeCells};
 const __NIMBUS_RUNTIME_CODE = ${runtimeCode};
 const __NIMBUS_STACK_ENTRY = ${stackEntry};
-const __NIMBUS_ENTRY_TEXT = ${entryText};
 const __NIMBUS_ESM = ${esm};
 ${nodeFacetSource(sources, 'registry')}
 ${nodeFacetSource(sources, 'residentStore')}`,
