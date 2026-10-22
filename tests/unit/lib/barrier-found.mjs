@@ -297,6 +297,11 @@ const FOUND = {
     park: 7896,
     schedule: [['peer', 'chmod', 'd/e/g', 0o644], ['own', 'readFile', 'd/e/g'], ['input'], ['sync', 'readFile', 'd/e/g']],
   },
+  'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696)': {
+    park: 7696,
+    schedule: [['input'], ['release'], ['peer', 'mount', '', 'unfed', { d: null, x: null, 'd/e': null, top: 'm7696.4', 'x/h': 'm7696.5', 'x/f': 'm7696.6' }], ['own', 'readFile', 'd/e'],
+      ['own', 'stat', 'new'], ['sync', 'stat', 'x']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
@@ -397,6 +402,10 @@ const GAPS = {
   'a file read after the session\'s database restarted is held for a call that cannot wait (7519) [eager]': {
     lacks: 'after the session\'s database restarts, the eager engine does not hold the bytes of a file its process then read awaited (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/f answered EAGAIN',
+  },
+  'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [holder]': {
+    lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
+    shows: 'sync stat x answered null',
   },
   'a file read after a peer changed its mode is held for a call that cannot wait (7896) [eager]': {
     lacks: 'the eager engine reads a file a peer just changed the mode of by its old revision (ESTALE) and holds no bytes for the next call that cannot wait (main does the same; found by the mount sweep, its schedule has no mount)',
