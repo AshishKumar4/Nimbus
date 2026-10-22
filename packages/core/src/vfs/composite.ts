@@ -1049,6 +1049,12 @@ export class CompositeVFS implements VFS {
 
   // ── the table ──────────────────────────────────────────────────────────
 
+  /**
+   * Mount `source` at `point`. What a process's view answers of it follows
+   * the backend's change model (VFS.changes): a fed one's names are listed
+   * and followed by every process, as the root's are; one with none is
+   * walked where a launch named it and is the session's to answer.
+   */
   mount(point: string, source: VfsSource, options: MountOptions = {}): void {
     const at = normalizePath(point);
     if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
