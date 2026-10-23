@@ -2,7 +2,7 @@
   "artifact": "napi-wasm",
   "source": {
     "inputs": {
-      "packages/core/src/_shared/primordials.ts": "e97a34fbabb446d21ceff7adccf384f25bff788b102525413d49b36b651c4e35",
+      "packages/core/src/_shared/primordials.ts": "bbf5b7bbd2e5b5e05090d49d603902dc34d369e0ad018ccceb75eb5a1a97f34e",
       "packages/core/src/runtime/wasi/filesystem.ts": "c943a545e7d39575af0a827fcfc2c9fb48089a6545351f60738ba0712847c663",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "208c26a922a32faa4b2975b66bfcf738d7e12e80cd282969439a7f7b7cc4bafa",
