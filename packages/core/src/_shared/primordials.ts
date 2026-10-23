@@ -384,6 +384,10 @@ export function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T 
 
 // The process's filesystem (runtime/wasi/resident-filesystem.ts, its holder,
 // decisions and client) and the resident store under it.
+/** `record`'s own `key`, or undefined: an optional field read without the prototype chain, typed as its contract types it. */
+export function ownValue<T extends object, K extends keyof T>(record: T, key: K): T[K] | undefined {
+  return objectHasOwn(record, key) ? record[key] : undefined;
+}
 /** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
 export const promiseThen: <T, R1 = T, R2 = never>(
   promise: Promise<T>, onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,
