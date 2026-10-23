@@ -23,6 +23,12 @@ import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
+// A step the session never answers stops the file here, and names itself.
+const realStderr = process.stderr.write.bind(process.stderr);
+const realExit = process.exit.bind(process);
+let at = 'start';
+const progress = (step) => { at = step; };
+const watchdog = setTimeout(() => { realStderr(`resident-node-request-vfs-durability: no progress for 120 s, stopped at ${at}\n`); realExit(1); }, 120_000);
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
 
@@ -114,6 +120,7 @@ http.createServer((req, res) => {
 }).listen(4387);
 `;
 
+progress('spawn');
 await manager.spawnNode(userCode, {
   command: 'node --watch server.js',
   filename: '/home/user/server.js',
@@ -203,11 +210,14 @@ async function assertAsyncFlushPreservesNewerWrite(initial, newer) {
   );
 }
 
+progress('206');
 await assertAsyncFlushPreservesNewerWrite('older', 'newer');
+progress('207');
 await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // Shim-triggered flushes and request-boundary full writes share one per-path
 // queue, so a delayed older authority RPC cannot land after the newer content.
+progress('211');
 {
   let releaseOlder;
   let olderStarted;
@@ -244,6 +254,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // An older fs.promises.writeFile completion clears only its own captured
 // generation. A newer writeFileSync cell remains pending and can be persisted.
+progress('247');
 {
   let releaseOlder;
   let olderStarted;
@@ -276,6 +287,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // An append and the full write after it reach the authority in the order they
 // were made (the process's one log), whatever the first's latency.
+progress('279');
 {
   let releaseAppend;
   let appendStarted;
@@ -309,6 +321,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // A full write queued before an append remains a full image; the later append
 // extends that image rather than reviving the external prefix it replaced.
+progress('312');
 {
   let releaseFull;
   let fullStarted;
@@ -348,6 +361,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 // Concurrent appends to a live-only file carry only their uncommitted suffix
 // through the per-path queue. The local fragment must never replace the live
 // prefix as if it were a complete file image.
+progress('351');
 {
   let releaseFirst;
   let firstStarted;
@@ -384,6 +398,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 }
 
 // Settle waits for the writes this process decided and has not sent yet.
+progress('387');
 {
   let releaseMutation;
   const gate = new Promise((resolve) => { releaseMutation = resolve; });
@@ -401,6 +416,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 // A FileHandle range that first flushes a pending full image and a concurrent
 // boundary capture of that same generation share one in-flight full-write
 // claim. The boundary cannot queue a duplicate full image behind the range.
+progress('404');
 {
   let releaseFull;
   let fullStarted;
@@ -443,6 +459,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // A zero-byte positional FileHandle write is a true no-op: it neither extends
 // the authority/local overlay nor advances the sequential handle position.
+progress('446');
 {
   let durable = 'base';
   let rangedWrites = 0;
@@ -476,6 +493,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 // FileHandle ranged writes participate in the same authority queue as a later
 // synchronous full cell, and a delayed range completion cannot overlay that
 // newer local generation.
+progress('479');
 {
   let releaseRange;
   let rangeStarted;
@@ -509,6 +527,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // The local-generation guard is captured when FileHandle.write is scheduled,
 // not when a preceding same-path mutation finally lets its queue callback run.
+progress('512');
 {
   let releaseBlocker;
   let blockerStarted;
@@ -544,6 +563,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // Concurrent append-mode FileHandle writes resolve the live EOF inside their
 // shared queue, so the second range cannot reuse the first range's old offset.
+progress('547');
 {
   let releaseFirst;
   let firstStarted;
@@ -578,6 +598,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // Live truncation is ordered with later full content and its post-RPC local
 // update is generation-guarded just like ranged writes.
+progress('581');
 {
   let releaseTruncate;
   let truncateStarted;
@@ -614,6 +635,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // A refused write rejects its caller and leaves nothing of it parked; the
 // path's next write is sent and lands.
+progress('617');
 {
   let refuse = true;
   let durable;
@@ -652,6 +674,7 @@ function request(path = 'first') {
 
 // The public generated entrypoint must not return a successful response until
 // its handler's pending writeFileSync content has crossed the supervisor boundary.
+progress('655');
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -694,6 +717,7 @@ function request(path = 'first') {
 
 // appendFileSync on a nonresident live file records append-only content, so the
 // request boundary appends at authority EOF instead of replacing its prefix.
+progress('697');
 {
   delete globalThis.__portRegistry;
   let durable = 'base';
@@ -735,6 +759,7 @@ function request(path = 'first') {
 
 // Multiple unclaimed synchronous append fragments coalesce into one EOF
 // mutation rather than one full image or duplicate range operations.
+progress('738');
 {
   delete globalThis.__portRegistry;
   let durable = 'base';
@@ -770,6 +795,7 @@ function request(path = 'first') {
 
 // Repeated request-boundary content writes are awaited directly and do not
 // accumulate settled promises in the resident runtime's pending-I/O array.
+progress('773');
 {
   delete globalThis.__portRegistry;
   const supervisor = {
@@ -798,6 +824,7 @@ function request(path = 'first') {
 
 // Concurrent flush callers share one pending-I/O drain owner: neither request
 // may complete while a prior stdout task the first drain waits for is blocked.
+progress('801');
 {
   delete globalThis.__portRegistry;
   let releaseOutput;
@@ -857,6 +884,7 @@ function request(path = 'first') {
 }
 
 // Adding the durability boundary must not buffer an open response body.
+progress('860');
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -892,6 +920,7 @@ function request(path = 'first') {
 
 // If a newer local write lands while an older RPC is in flight, only the
 // flushed cell is cleared; the newer bytes survive for the next boundary.
+progress('895');
 {
   delete globalThis.__portRegistry;
   let releaseOlder;
@@ -947,6 +976,7 @@ function request(path = 'first') {
 
 // Cell identity cannot be inferred from value equality: two separate writes of
 // the same string still have distinct mutation generations.
+progress('950');
 {
   delete globalThis.__portRegistry;
   let releaseFirst;
@@ -999,6 +1029,7 @@ function request(path = 'first') {
 }
 
 // A VFS failure cannot be hidden behind a successful HTTP response.
+progress('1002');
 {
   delete globalThis.__portRegistry;
   const supervisor = {
@@ -1024,6 +1055,7 @@ function request(path = 'first') {
 
 // A failed report of generated code neither fails the response nor skips the
 // request's writes; it is told to the process's stderr.
+progress('1027');
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -1055,6 +1087,7 @@ function request(path = 'first') {
 // Clean FileHandle range writes and truncates have no whole-file pending cell,
 // but a response still cannot cross the durability boundary while either
 // authority mutation is in flight.
+progress('1058');
 {
   const port = 4390;
   await manager.spawnNode(`
@@ -1167,6 +1200,7 @@ http.createServer((req, res) => {
 // Explicit process exit is only an intent until the owning lifecycle has
 // drained durability. A failed append cannot be hidden behind an earlier
 // terminal exit 0 or lose its writer authorization before the drain.
+progress('1170');
 {
   await manager.spawnNode(`
 const fs = require('node:fs');
@@ -1209,6 +1243,7 @@ process.exit(0);
 // The regular one-shot generated runner follows the same ordering: process.exit
 // records the intended code, the append drain runs with live authority, and
 // only the final post-drain code is reported.
+progress('1212');
 {
   const reports = [];
   let appendCalls = 0;
@@ -1269,4 +1304,5 @@ process.exit(0);
   assert.deepEqual(reports, [1], 'only the final failed durability code is reported');
 }
 
+clearTimeout(watchdog);
 console.log('resident-node-request-vfs-durability: ok');

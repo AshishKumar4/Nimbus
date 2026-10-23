@@ -22,35 +22,37 @@ import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './lib/facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 
 const PORT = 4471;
 
 /**
- * Stands in for the coordinator's disk. Every write that lands here arrived
- * over a SUPERVISOR binding from inside the facet, whichever DO hosts it.
+ * The process's own writes, applied by the session's writer as the process's
+ * credential applies them (WaveIngest over its filesystem): every write that
+ * lands here arrived over a SUPERVISOR binding from inside the facet.
  */
-const durable = new Map();
 const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  // Its process's waves reach writeFile (lib/wave-supervisor.mjs).
-  return waveSupervisor({
+  const ingest = new WaveIngest(null);
+  const engine = sessionVfs.as(CRED_SESSION_USER);
+  return {
     props,
-    async writeFile(path, content) {
+    openWaveWriter: async () => null,
+    async writeBatchStream(stream) {
       // Slow the write down so ordering has to be REAL. If the response could
       // overtake it, this is where the race would open.
       if (writeDelayMs > 0) await new Promise((r) => setTimeout(r, writeDelayMs));
-      // A process's write carries bytes (its call's data); text from an older caller.
-      durable.set(String(path).replace(/^\/+/, ''), typeof content === 'string' ? content : new TextDecoder().decode(content));
+      const answer = await ingest.writeStream(engine, stream);
       order.push('write');
+      return answer;
     },
     async registerPort() {},
     async unregisterPort() {},
@@ -62,8 +64,10 @@ function makeSupervisor(props) {
     fsList: (after, limit) => _rpcFsList(sessionHost(), after ?? null, limit ?? null),
     fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost(), requests),
     fsAcquire: (position, options) => _rpcFsAcquire(sessionHost(), position, options),
-  });
+  };
 }
+/** What the session holds at `path`: the process's writes land there. */
+const durable = (path) => new TextDecoder().decode(sessionVfs.as(CRED_KERNEL).readFile(path));
 let _sessionHost = null;
 const sessionHost = () => _sessionHost
   ??= attachSupervisorOps({ sqliteFs: sessionVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
@@ -142,7 +146,7 @@ assert.ok(
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(await response.text(), 'ok:/first');
   assert.equal(
-    durable.get('home/user/routed-write.txt'),
+    durable('/home/user/routed-write.txt'),
     'first',
     'the handler write is durable on the coordinator before the routed response returns',
   );
@@ -165,7 +169,7 @@ assert.ok(
   );
   order.push('response');
   assert.equal(response.status, 200, await response.clone().text());
-  assert.equal(durable.get('home/user/routed-write.txt'), 'second');
+  assert.equal(durable('/home/user/routed-write.txt'), 'second');
   assert.deepEqual(order, ['write', 'response']);
 }
 

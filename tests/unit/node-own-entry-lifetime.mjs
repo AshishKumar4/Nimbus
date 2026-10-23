@@ -40,10 +40,7 @@ async function boot(overrides = {}) {
 async function afterPeerChmod({ authority, probe }, path) {
   // The process's own changes reach the session at its boundary (an awaited read does not publish them).
   await globalThis.__nimbusProcessFs.flush();
-  const session = () => authority.rawVfs.as(CRED_KERNEL).readdir('home/user/app').map((entry) => entry.name).join(',');
-  await authority.peerAs(CRED_KERNEL).chmod(path.slice(1), 0o640).catch((error) => {
-    throw new Error(`${error.message}; session app: [${session()}]; process delegated ${JSON.stringify(globalThis.__nimbusProcessFs.stats().delegated)} holding ${globalThis.__nimbusProcessFs.holding()}`);
-  });
+  await authority.peerAs(CRED_KERNEL).chmod(path.slice(1), 0o640);
   await probe.resume();
   const mode = (stat) => (stat.mode & 0o777).toString(8);
   return [mode(probe.fs.statSync(path)), mode(await probe.fs.promises.stat(path))];
