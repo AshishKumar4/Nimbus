@@ -9,11 +9,11 @@
       "../nimbus-libc/nimbus-netdb.h": "22cdb1eb824a2559f404770c830b31d07284a3909711c8afb95506858e2d7278",
       "../nimbus-libc/nimbus-restart.c": "4beb995921f510a9a30ce39ccc24a7ef438184a0454f631102f2c8f8fb5dc907",
       "../nimbus-libc/nimbus-restart.h": "52d0ab05d0eb76ff77091afc5f99a75d5f0a89ee555fae44999cd0d752303df0",
-      "../nimbus-libc/nimbus-signal.c": "dfe884dac8bbee80ca9b6105fe6f4380e0222addddf74e7cf8dac9088430a5b0",
+      "../nimbus-libc/nimbus-signal.c": "203cfa4df17b37cabb7c4f1711e6bd61e67566649d86ccd9bf9ad0e58f43b313",
       "../nimbus-libc/verify-imports.mjs": "855e97d27ca8264cee97480748e923ac263906ea9df6969ebac28175c8552eb7",
       "Setup.local": "a7f117c96caaaab335b7bc39c753699d0e96341c6c6dff4cb8c9061f549d1a0f",
       "build-in-bwrap.sh": "de5b0b1b95557392be4be706dcb78350d021dffedc3aad3adfda43f3cd997a22",
-      "build-python.sh": "664784200243ea22e08758a67f5a404f651becef4ae48942f5d3adff9eb054c6",
+      "build-python.sh": "f46402598af29cb5e18e96a2dbee022505a431d4b023b0d0c8371f79bff4d1ca",
       "config.site-nimbus-wasi": "03c22c8582d316a68beda01c3ff8c7fcce94c344822ce9ac35e6f5dabbc8fab3",
       "include/__struct_sockaddr_un.h": "7356db4435c9aed4f664a64398313627f614b2c70f75bac71f3ec2ec009930ca",
       "include/netdb.h": "1d654b411e58a3fcf92c91c19157e3490ddf9494cfd2eaf7b5904b91925166c9",
@@ -25,7 +25,7 @@
       "nimbus-cxx-noeh.c": "1629fcec5c8da61e875684b055a8141d3ff32311422242c0465d2bab4e46b3f1",
       "nimbus-net.c": "fd8289d9265f47d877fc5ade89ad469ac27a0d1855d3ac3b672b46e860409a76",
       "nimbus-py.c": "fe4c9bf62ef3386ddfbfaaea7aa58f3f026991c573be7456a91fced2801aca7d",
-      "nimbus-signal-check.c": "b35c2ef200fd164992687001456d08de423c730468e98d314c3bf6236006e969",
+      "nimbus-signal-check.c": "d3599ad24ba3a4f872d25a6e5d9dfc10f42e44e7c1bca846f70106bf710dd8a6",
       "nimbus-wasi-compat.c": "2fe35f16a990687f9de2c2146b54a97f060f2dbd0880b79371ea5833bc179166",
       "patches/0001-pthread-stubs-support-tls-destructors.patch": "6d6b6facc6c418209795884eab7a508b4c09245cbcaeee44f3e6264653dab8be",
       "patches/0002-numpy-share-one-reference-lapack.patch": "58f6724a8436fa67bd7383c4d484c4f5ed8248d18f5d7eb85be5e79b9c527b73",
@@ -34,9 +34,9 @@
     }
   },
   "outputs": {
-    "python-sci.wasm": "9d0c430dd1dc808b43727ff439d125b0d070a181e7f48c0776f1434910ecc691",
-    "python.wasm": "df1136b514e570278509628fe6ff17f3461b4349ee3061f949498aa583b578b5",
-    "python313.zip": "78d52d790566ff2c36d6a30538626f9476d4d063eecd81dc8197d16bda445ac1",
+    "python-sci.wasm": "28555d18f8b532af2cc69f88122647fb6303d64f7ca2239cfe413fa7f69d1473",
+    "python.wasm": "1c0a50c4e0fc0388f84607a78f0ddae5b51c7a798fc7fa6f9cfb0c15ec275686",
+    "python313.zip": "3d7cb7efe24b317a206f304996d7cec3bc4737bf12648712a503a795897a4906",
     "sci-packages.zip": "c8f75fa904af325b5b2bc5c800936cd398bb74ea3df49fd519962dc8bbe6ca19"
   }
 }
