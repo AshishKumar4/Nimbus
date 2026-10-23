@@ -4592,7 +4592,7 @@ export interface PrefetchBundleOptions {
   /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
   maxBundleBytes?: number;
   /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+  learnedFor?: (closure: readonly string[], room: number) => Promise<readonly string[]>;
   /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
   executedModules?: readonly RequiredModuleRoot[];
   /** Where the launch's transform results are kept by content. */
@@ -4957,7 +4957,7 @@ async function _buildPrefetchBundle(
   // Other sessions' misses in the packages this closure can load
   // (read-profile.ts) are evidence of the same kind: a learned module joins
   // the module map with its imports, as this session's own misses do.
-  const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+  const learned = learnedFor ? await learnedFor(Object.keys(bundle), Math.max(0, room)).catch(() => []) : [];
   const own = await addObservedReads(vfs, observedReads ?? new Set(), bundle, observedPaths, budgetState, Math.max(0, room), pacer);
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
@@ -7496,11 +7496,10 @@ export class FacetManager {
       const stamp = (await vfs.acquire(null)).position;
       const readProfile = this.readProfile;
       const offered: StagedProfileEntry[] = [];
-      const learnedFor = readProfile === null ? undefined : async (closure: readonly string[]) => {
+      const learnedFor = readProfile === null ? undefined : async (closure: readonly string[], room: number) => {
         const roots = this._profileRoots(closure, spec.cwd);
         if (roots.length === 0) return [];
-        // Another tenant's reads, read by no run of this one: a guess for this launch.
-        offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), LAUNCH_GUESS_MAX_BYTES));
+        offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), room));
         return offered.map((entry) => entry.path);
       };
       const learning = await this.learning.forLaunch(key);
