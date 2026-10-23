@@ -188,7 +188,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   ensureNpmInstaller(): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
-  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;
+  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>, pid?: number): void;
   seedFilesystem(): void;
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).

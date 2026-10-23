@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants, WriteAttribution } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
@@ -341,6 +341,8 @@ interface Table {
     lastDev: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
+    /** The process table its write events are attributed by (attributeWrites). */
+    attribution?: WriteAttribution;
     /** watchChanges: who is told. */
     changes?: ChangeWatches;
     /** Each principal's view of a backend, to the backend it views (storeBehind). */
@@ -479,6 +481,13 @@ export declare class CompositeVFS implements VFS {
      * writeFile or a compare-and-write leaves is the bytes it was given, so
      * its after costs no read.
      */
+    /**
+     * The process table the events it makes for its mounts are attributed by
+     * (VfsWriteEvent.execId), read as each backend call returns. A backend
+     * that reports its own writes (SQLite) attributes them itself; one whose
+     * reports name no process the table knows gives `undefined`.
+     */
+    attributeWrites(attribution: WriteAttribution): void;
     observeWrites(observer: VfsWriteObserver, options?: {
         wants?: (path: string, principal: Principal) => VfsWriteWants;
     }): () => void;
@@ -627,6 +636,14 @@ export declare class CompositeVFS implements VFS {
     /** `report` in its turn among the observed mutations (takeTurn); a caller that cannot wait is refused while another holds it. */
     private inTurn;
     /** reportWrite's report of `spec`'s mutation, `run`, in its turn. */
+    /**
+     * The exec `principal`'s write is the work of (VfsWriteEvent.execId), told
+     * to `resolved` as `run`, the backend's call, returns: when it committed.
+     * A process's entry is held in the table from before the call until then,
+     * so a kill and a reap while it is pending leave it answering. No process
+     * made it: null.
+     */
+    private attributed;
     private reportIn;
     /** `run` once every observed mutation queued before it is done; those after it wait for it. */
     private takeTurn;

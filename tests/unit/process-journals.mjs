@@ -10,6 +10,10 @@
  * cannot be read is said, named, and kept for the start after. Red before:
  * nothing recorded which facets held a log, and a session that restarted
  * minted their names again, which deletes what they stored.
+ *
+ * A row records the exec its process was the work of (ask 69), so a drain
+ * in a later incarnation attributes its changes as the process's own; a row
+ * a book made before the column was reads back with none.
  */
 
 import assert from 'node:assert/strict';
@@ -89,6 +93,22 @@ const cred = (uid) => ({ uid, gid: uid, groups: [uid] });
   assert.deepEqual(drained, [2_500_000], 'a running process\'s log was drained as a previous incarnation\'s, or an old one\'s kept by its pid');
   assert.deepEqual([...reserved], [], 'a running process\'s name was reserved');
   assert.deepEqual(book.pending().map((row) => row.pid), [2_000_001]);
+}
+
+// ── The exec a row's process was the work of, kept; a row from before the column, none ──
+{
+  const sql = createSqliteVfsTestHarness().sql;
+  // A book as it was made before the column.
+  sql.exec(`CREATE TABLE nimbus_process_journals (
+    facet TEXT PRIMARY KEY, pid INTEGER NOT NULL, cred TEXT NOT NULL, generation INTEGER NOT NULL, opened_at INTEGER NOT NULL
+  )`);
+  sql.exec('INSERT INTO nimbus_process_journals (facet, pid, cred, generation, opened_at) VALUES (?, ?, ?, ?, ?)', 'proc-old', 301, JSON.stringify(cred(1000)), 1, 1);
+  const book = new ProcessJournals(() => sql);
+  book.opened('proc-new', 302, cred(1000), 1, 'exec-7');
+  book.opened('proc-none', 303, cred(1000), 1, undefined);
+  assert.deepEqual(book.of(301), { facet: 'proc-old', pid: 301, cred: cred(1000), generation: 1 }, 'a row from before the column has none');
+  assert.deepEqual(book.of(302), { facet: 'proc-new', pid: 302, cred: cred(1000), generation: 1, execId: 'exec-7' });
+  assert.equal('execId' in book.of(303), false, 'a process whose exec named none has none');
 }
 
 console.log('process-journals: ok');

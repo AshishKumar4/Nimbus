@@ -660,7 +660,7 @@ async function storageOp(env, props, usage, { op, call }) {
         stub = ns.get(ns.idFromString(doId));
         return await hostOpDispatch(stub, usage, props?.route)({
             op,
-            args: [{ root, store }, call],
+            args: [{ root, store, ...(props?.writer === undefined ? {} : { writer: props.writer }) }, call],
             ...(props?.cred === undefined ? {} : { cred: props.cred }),
         });
     }

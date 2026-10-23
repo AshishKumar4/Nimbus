@@ -36,8 +36,9 @@ import { openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export const LINK_SLOT_SUFFIX = '.nimbus-wave';
 export function namespaceWaveRouter(namespace, credential) {
-    const view = (cred, guard, owner) => {
-        const as = namespace.as(credential(cred));
+    // As the wave's caller: its credential, and its process, whose writes they are (VfsWriteEvent.execId).
+    const view = (cred, guard, owner, writer) => {
+        const as = namespace.as(credential(cred), undefined, writer === undefined ? undefined : { pid: writer });
         return guard === undefined && owner === undefined ? as : as.scoped(guard ?? (() => { }), owner);
     };
     return {
@@ -75,16 +76,16 @@ export function namespaceWaveRouter(namespace, credential) {
         composes(path) {
             return namespace.isAboveMount(path);
         },
-        async apply(record, cred, guard, owner) {
+        async apply(record, cred, guard, owner, writer) {
             // The wave's lease, presented to the namespace's lease check as its group commits present it.
-            const ns = view(cred, guard, owner);
+            const ns = view(cred, guard, owner, writer);
             // Removing its own slot after a failure is the record's own: not admitted again, under the same lease.
-            const cleanup = view(cred, undefined, owner);
+            const cleanup = view(cred, undefined, owner, writer);
             return applyRecord(ns, cleanup, record, pinsOf(ns, record));
         },
-        async open(call, cred, guard, owner) {
+        async open(call, cred, guard, owner, writer) {
             // Pinned under the wave's lease alone: its description's later writes are not this wave's to admit.
-            const ns = view(cred, undefined, owner);
+            const ns = view(cred, undefined, owner, writer);
             const flags = openFlags({ ...openAccessRights(call.access), create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
             const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
             await pinOf(ns, parentOf(call.path))();
