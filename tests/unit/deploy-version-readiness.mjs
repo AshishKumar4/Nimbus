@@ -9,7 +9,10 @@ const header = VERSION_HEADER;
 const cycles = 64;
 const failures = [];
 
-for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismatch', 'transient-500', 'bound']) {
+// 'cut': the second session's upgrade is refused (500); every later one is
+// never answered, so the deadline cuts the last cycle's connect short. What
+// readiness reports is the refusal, a failure of a whole cycle, with a tally.
+for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismatch', 'transient-500', 'bound', 'cut']) {
   let minted = 0;
   let upgrades = 0;
   let commands = 0;
@@ -27,6 +30,8 @@ for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismat
       }
       if (path.endsWith('/ws')) {
         upgrades++;
+        if (mode === 'cut' && upgrades === 2) return new Response('internal error; reference fixture', { status: 500 });
+        if (mode === 'cut' && upgrades > 2) return new Promise(() => {});
         const stale = mode === 'upgrade-mismatch' && upgrades === 1;
         if (server.upgrade(request, { headers: { [header]: stale ? 'previous-version' : uploaded } })) return;
         throw new Error('terminal did not upgrade');
@@ -59,9 +64,14 @@ for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismat
   });
   try {
     let error;
-    try { await waitForTarget(server.url.origin, 'readiness-token', mode === 'bound' ? 250 : 15_000, uploaded); }
+    try { await waitForTarget(server.url.origin, 'readiness-token', mode === 'bound' ? 250 : mode === 'cut' ? 4_000 : 15_000, uploaded); }
     catch (caught) { error = caught; }
-    if (mode === 'bound') {
+    if (mode === 'cut') {
+      assert.ok(error, 'a target that refuses and then never answers is not ready');
+      assert.equal(error.exitCode, 2);
+      assert.match(error.message, /\(2 of \d+ cycles failed, the longest run of healthy cycles was 1\)/, 'it counts the cycles');
+      assert.match(error.message, /did not open: socket error: .*(101|500)/, `it names the refusal, a whole cycle's failure, not the cut one: ${error.message}`);
+    } else if (mode === 'bound') {
       assert.ok(error, 'an old version can never declare the uploaded version ready');
       assert.equal(error.exitCode, 2, 'exhausting readiness is NOT GRADED, never a red code verdict');
       assert.match(error.message, /version|uploaded|previous/i);
