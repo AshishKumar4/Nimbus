@@ -1775,11 +1775,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       counts.local++;
       return statOf(entry);
     });
-    // A read-only descriptor of a file: as its name has the file now, while the name still leads to that same file and
-    // nothing this process asked of the session since (another description's change of it) is owed to the view.
+    // A read-only descriptor of a file: as its name has the file now, while the name still leads to that same file,
+    // nothing this process asked of the session since is owed to the view, and nothing it decided there is unretired
+    // (another description of it, a /dev/fd reopen's among them, may have changed it where only the session says how).
     const file = readerFiles.get(handleId);
     if (file !== undefined) return answer<RuntimeVfsStat>('fstat', () => {
-      if (owed.own > caught.own) return DELEGATE;
+      if (owed.own > caught.own || holder?.provisional.touches(file.key) === true) return DELEGATE;
       const entry = entryAt(file.key);
       return entry !== undefined && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
     }, () => authority.fstat(handleId));
