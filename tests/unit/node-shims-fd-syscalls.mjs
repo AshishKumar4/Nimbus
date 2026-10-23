@@ -194,8 +194,7 @@ assert.equal(closeErr.code, 'EBADF', 'with a callback it arrives there instead')
 // SQLite looks absent. Zeroing it at open time would destroy the very
 // content an append was asked to preserve.
 await vfs.writeFile('home/user/live-append.log', enc.encode('PRIOR'));
-const preFd = fs.openSync('/home/user/live-append.log', 'a');
-fs.closeSync(preFd);
+await checks.check('a sync open for append of a file made after boot is not ENOENT', () => fs.closeSync(fs.openSync('/home/user/live-append.log', 'a')));
 assert.equal(dec.decode(await bridge.readFile('/home/user/live-append.log')), 'PRIOR',
   'opening for append with no write must not truncate');
 // The async form stats live, so it appends correctly.
