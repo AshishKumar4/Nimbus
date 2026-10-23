@@ -1375,8 +1375,10 @@ export function provisional(host: ProvisionalHost): Provisional {
         ...(chmod === undefined ? {} : { fchmod: chmod }),
         description,
         // The file it decided this on (none, for a file it makes): the session refuses it where the name leads elsewhere.
-        // One made exclusively needs none: the session's EEXIST refuses it first.
-        ...(flags.exclusive && row === null ? {} : expecting(row, key)),
+        // One made exclusively needs none: the session's EEXIST refuses it first. Nor does one that makes or empties
+        // whatever the view says is not there (not this process's removal): open(O_CREAT|O_TRUNC) truncates a file a
+        // peer made there since, as the open, coming after it, finds it.
+        ...(row === null && (flags.exclusive || (flags.truncate && !layer.has(key))) ? {} : expecting(row, key)),
       },
     };
     let target: Inode;
@@ -1816,9 +1818,16 @@ export function provisional(host: ProvisionalHost): Provisional {
     rename: (from, to, path, source, target, awaited) => {
       if (source === undefined || target === undefined) return false;
       if (source === null) throw fsError('ENOENT', 'rename', path);
-      if (source.type === 'directory' && (target !== null || within(to, from))) return false;
-      if (target !== null && (target.type === 'directory' || source.type === 'directory')) return false;
+      // rename(2) to the name it has leaves it as it is.
       if (from === to) return true;
+      // A directory into its own subtree, and onto a directory the view lists non-empty, as rename(2) refuses them.
+      if (source.type === 'directory' && within(to, from)) throw fsError('EINVAL', 'rename', path);
+      if (source.type === 'directory' && target !== null && target.type === 'directory') {
+        const listed = provisional.children(to, host.children(to));
+        if (listed !== undefined && listed.length > 0) throw fsError('ENOTEMPTY', 'rename', path);
+      }
+      if (source.type === 'directory' && target !== null) return false;
+      if (target !== null && target.type === 'directory') return false;
       if (!removable(from, source, path, 'rename') || (target === null ? writableParent(to, path, 'rename') === undefined : !removable(to, target, path, 'rename'))) return false;
       // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves,
       // and what the names beneath the source grow by: their names here now, and the view's once it has the rename (retire).

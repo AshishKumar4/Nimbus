@@ -14,7 +14,8 @@ authority.kfs.writeFile('home/user/log.txt', 'stale-snapshot\n');
 // Seed a live-only file (outside the bundle).
 authority.kfs.writeFile('home/user/live.bin', '0123456789abcdef');
 
-// The session's records, as it receives them: each positional write, by path.
+// The session's records, as it receives them: each positional write, by path
+// (a data call rides its file's record: its call, its offset and its size).
 const positional = [];
 const { fs } = shimsOnSession({
   authority,
@@ -22,7 +23,9 @@ const { fs } = shimsOnSession({
   bundle: { 'home/user/log.txt': 'stale-snapshot\n' },
   overrides: (forward) => ({
     writeBatchStream: observeWaves(forward, (record) => {
-      if (record.type === 'call' && (record.call.call === 'write' || record.call.call === 'append')) positional.push(record.call);
+      if (record.type === 'file-begin' && (record.inode.call === 'write' || record.inode.call === 'append')) {
+        positional.push({ call: record.inode.call, path: record.inode.path, offset: record.inode.offset, size: record.inode.size });
+      }
     }),
   }),
 });
@@ -150,7 +153,7 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
   const sent = positional.slice(before).filter((call) => call.path === 'home/user/huge.bin');
   assert.equal(sent.length, 1, 'a small FileHandle positional write is one positional record');
   assert.equal(sent[0].offset, CHUNK + 1, 'at its offset');
-  assert.equal(sent[0].data.byteLength, 2, 'and carries only its own bytes');
+  assert.equal(sent[0].size, 2, 'and carries only its own bytes');
   assert.equal((await authority.peer.stat('home/user/huge.bin')).size, CHUNK * 2, 'and it leaves the file its size');
 }
 

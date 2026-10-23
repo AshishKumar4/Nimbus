@@ -21,6 +21,8 @@ kernel.writeFile(`${APP}/root-owned.json`, '{"root":true}');
 kernel.chown(`${APP}/root-owned.json`, 0, 0);
 kernel.mkdir(`${APP}/etc-like`, { mode: 0o755 });
 kernel.chown(`${APP}/etc-like`, 0, 0);
+kernel.writeFile(`${APP}/etc-like/anything`, 'root\'s');
+kernel.chown(`${APP}/etc-like/anything`, 0, 0);
 authority.kfs.writeFile(`${APP}/mine-already.txt`, 'mine');
 authority.kfs.chmod(`${APP}/mine-already.txt`, 0o600);
 // /tmp is the session's from its creation; make it what a shared, sticky /tmp is.
@@ -98,7 +100,8 @@ fs.writeFileSync('/tmp/mine.txt', 'mine');
 assert.equal(t(() => fs.renameSync('/tmp/mine.txt', '/tmp/theirs.txt')), 'ERR:EPERM', 'nor replaced by a rename');
 assert.equal(t(() => fs.renameSync('/tmp/theirs.txt', '/tmp/stolen.txt')), 'ERR:EPERM', 'nor renamed away');
 assert.equal(t(() => fs.unlinkSync('/tmp/mine.txt')), undefined, 'its own file it may remove');
-// And no removal from a directory the reader cannot write.
+// And no removal from a directory the reader cannot write (of a name in it: one that is not there is ENOENT first, as Linux looks it up first).
 assert.equal(t(() => fs.unlinkSync(`${APP}/etc-like/anything`)), 'ERR:EACCES');
+assert.equal(t(() => fs.unlinkSync(`${APP}/etc-like/nothing`)), 'ERR:ENOENT');
 
 console.log('node-shims-stat-ownership: ok');

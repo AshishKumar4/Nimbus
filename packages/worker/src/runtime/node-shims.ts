@@ -1462,12 +1462,17 @@ const __fsMod = (() => {
   /**
    * An awaited call that reads what a name is or holds (an open among them):
    * over the session as it is now, as Node's call finds what another process
-   * just did. The filesystem owes its barrier, which the call's walk takes
-   * before it answers from what this process holds (inbound).
+   * just did, with what this process wrote there before it (sent first, so
+   * another process reads it as this one was told it is). The filesystem
+   * owes its barrier, which the call's walk takes before it answers from
+   * what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, (fs) => {
-      if (__nimbusProcessSupervised) fs.inbound();
+    return _async(syscall, p, async (fs) => {
+      if (__nimbusProcessSupervised) {
+        if (fs.holding()) await fs.send();
+        fs.inbound();
+      }
       return run(fs);
     });
   }

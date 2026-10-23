@@ -41,10 +41,8 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  // The session's own writer over its namespace: a whole-file write is descriptor records, which only the namespace router keeps.
-  const namespace = new CompositeVFS(sessionVfs);
-  const waves = processFiles(namespace).waves;
-  const view = sessionVfs.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
+  // The session's own writer over its namespace, bound to the process as the session binds it (ProcessFiles.bind).
+  const bound = processFiles(new CompositeVFS(sessionVfs)).bind({ pid: props?.pid ?? 1, cred: CRED_SESSION_USER });
   return {
     props,
     openWaveWriter: async () => null,
@@ -52,7 +50,7 @@ function makeSupervisor(props) {
       // Slow the write down so ordering has to be REAL. If the response could
       // overtake it, this is where the race would open.
       if (writeDelayMs > 0) await new Promise((r) => setTimeout(r, writeDelayMs));
-      const answer = await waves.writeStream(view, stream);
+      const answer = await bound.writeStream(stream);
       order.push('write');
       return answer;
     },
