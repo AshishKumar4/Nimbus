@@ -5,7 +5,7 @@ import type { ProcessFsGrantSession, ProcessFsSession } from '../_shared/process
 import type { WasiSupervisorStub } from './wasi/types.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
 import { FILESYSTEM_METHODS, refusalData, supervisorRefusalError, type SupervisorRefusal } from './filesystem-methods.js';
-import { Error, objectAssign, promiseResolve, Proxy, reflectGet, reflectSet, reflectSetPrototypeOf, symbolFor } from '../_shared/primordials.js';
+import { arrayCopy, Error, objectAssign, objectHasOwn, objectKeys, promiseResolve, Proxy, reflectGet, reflectSet, reflectSetPrototypeOf, SafeList, symbolFor } from '../_shared/primordials.js';
 
 // The method table (filesystem-methods.ts) and the typed mirrors core's
 // build writes from it (filesystem-mirrors.generated.ts).
@@ -42,10 +42,12 @@ export type SupervisorAnsweredMethod =
   | typeof FILESYSTEM_ANSWERED_RPC_METHODS[number]
   | typeof NODE_SHIM_RPC_METHODS[number];
 
-export const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[] = [
-  ...FILESYSTEM_ANSWERED_RPC_METHODS,
-  ...NODE_SHIM_RPC_METHODS,
-];
+export const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[] = (() => {
+  const methods = new SafeList<SupervisorAnsweredMethod>();
+  for (let i = 0; i < FILESYSTEM_ANSWERED_RPC_METHODS.length; i++) methods[methods.length] = FILESYSTEM_ANSWERED_RPC_METHODS[i];
+  for (let i = 0; i < NODE_SHIM_RPC_METHODS.length; i++) methods[methods.length] = NODE_SHIM_RPC_METHODS[i];
+  return arrayCopy(methods);
+})();
 
 // A table that inherits nothing, made as the module loads: a guest's every
 // supervisor call asks it, after its program may have replaced
@@ -57,7 +59,13 @@ for (let i = 0; i < SUPERVISOR_ANSWERED_METHODS.length; i++) { const name = SUPE
 // The answered calls that wait on the session for as long as it likes (FILESYSTEM_METHODS `waits`).
 const WAITS: Partial<Record<string, true>> = {};
 reflectSetPrototypeOf(WAITS, null);
-for (const method of Object.values(FILESYSTEM_METHODS)) if ('waits' in method) WAITS[method.rpc] = true;
+{
+  const names = objectKeys(FILESYSTEM_METHODS) as (keyof typeof FILESYSTEM_METHODS)[];
+  for (let i = 0; i < names.length; i++) {
+    const method = FILESYSTEM_METHODS[names[i]];
+    if (objectHasOwn(method, 'waits')) WAITS[method.rpc] = true;
+  }
+}
 
 export function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAnsweredMethod {
   return typeof name === 'string' && ANSWERED[name] === true;
@@ -130,7 +138,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
         const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
         const answer = await asked;
         try {
-          if ('refusal' in answer) throw supervisorRefusalError(answer.refusal);
+          if (objectHasOwn(answer, 'refusal')) throw supervisorRefusalError((answer as { readonly refusal: SupervisorRefusal }).refusal);
           return answer.value;
         } finally {
           disposeRpcResource(answer);

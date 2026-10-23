@@ -9,7 +9,7 @@
 import type { RuntimeFsPath } from './os-contracts.js';
 import { fsError as nodeFsError, type FsError } from '../vfs/vfs-error.js';
 import { modeAllows } from '../vfs/posix-access.js';
-import { arrayJoin, arrayShift, stringEndsWith, stringSlice, stringStartsWith } from '../_shared/primordials.js';
+import { arrayJoin, arrayPop, arrayShift, SafeList, safeGenerator, stringEndsWith, stringSlice, stringSplit, stringStartsWith } from '../_shared/primordials.js';
 
 export type { FsError };
 
@@ -78,7 +78,7 @@ type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number }
  * lookup beneath it starts from until an absolute link leaves it; its
  * confinement is the normalized `root`'s.
  */
-export function* walkBeneath(
+export const walkBeneath = safeGenerator(function* (
   root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
   handedOver: (path: string, to: string) => boolean, rootSpelling: string = '/' + root,
 ): Generator<BeneathLookup, BeneathReached | null, BeneathAnswer> {
@@ -91,8 +91,8 @@ export function* walkBeneath(
     : reached.length === root.length ? rootSpelling : `${rootSpelling === '/' ? '' : rootSpelling}${stringSlice(reached, root.length)}`);
   if (root !== '') yield { stat: rootSpelling };
   if (stringStartsWith(name, '/')) throw fsError('ENOTCAPABLE', 'path', path);
-  const pending = name.split('/');
-  const resolved = root === '' ? [] : root.split('/');
+  let pending = stringSplit(name, '/');
+  const resolved = root === '' ? new SafeList<string>() : stringSplit(root, '/');
   let hops = 0;
   let handoff: { base: string; rest: string[] } | null = null;
   while (pending.length > 0) {
@@ -100,7 +100,11 @@ export function* walkBeneath(
     if (segment === undefined) break;
     const dir = arrayJoin(resolved, '/');
     const candidate = dir === '' ? segment : `${dir}/${segment}`;
-    const to = '/' + arrayJoin([dir, segment, ...pending].filter(Boolean), '/');
+    const spelled = new SafeList<string>();
+    if (dir !== '') spelled[spelled.length] = dir;
+    if (segment !== '') spelled[spelled.length] = segment;
+    for (let i = 0; i < pending.length; i++) if (pending[i] !== '') spelled[spelled.length] = pending[i];
+    const to = '/' + arrayJoin(spelled, '/');
     const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
     if (!handed) {
       const searched = (yield { stat: named(dir) }) as Exclude<BeneathAnswer, string>;
@@ -111,11 +115,16 @@ export function* walkBeneath(
     if (segment === '' || segment === '.') continue;
     if (segment === '..') {
       if (dir === root) throw fsError('ENOTCAPABLE', 'path', path);
-      resolved.pop();
+      arrayPop(resolved);
       continue;
     }
     if (handed) {
-      handoff ??= { base: named(dir), rest: [segment, ...pending] };
+      if (handoff === null) {
+        const rest = new SafeList<string>();
+        rest[0] = segment;
+        for (let i = 0; i < pending.length; i++) rest[rest.length] = pending[i];
+        handoff = { base: named(dir), rest };
+      }
       resolved[resolved.length] = segment;
       continue;
     }
@@ -134,11 +143,16 @@ export function* walkBeneath(
     // its backend covers it) cannot be followed beneath the root.
     if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
     if (stringStartsWith(target, '/')) { resolved.length = 0; fromRoot = false; }
-    pending.unshift(...target.split('/'));
+    const parts = stringSplit(target, '/');
+    for (let i = 0; i < pending.length; i++) parts[parts.length] = pending[i];
+    pending = parts;
     // A link followed after a handoff: the rest as written is no longer what is reached.
     handoff = null;
   }
   const reached = arrayJoin(resolved, '/');
   if (root !== '' && reached !== root && !stringStartsWith(reached, root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
   return { reached, spelling: handedSpelling(handoff, named(reached), stringEndsWith(name, '/')) };
-}
+}) as (
+  root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
+  handedOver: (path: string, to: string) => boolean, rootSpelling?: string,
+) => Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;

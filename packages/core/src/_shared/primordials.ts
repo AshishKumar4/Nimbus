@@ -426,6 +426,18 @@ export function mapKeyList<K, V>(map: ReadonlyMap<K, V>): SafeList<K> {
   mapForEach(map, (_value, key) => { list[list.length] = key; });
   return list;
 }
+export const arrayPop: <T>(list: T[]) => T | undefined = uncurryThis(Array.prototype.pop);
+/** `text.split(separator)` for a separator that is a nonempty string, without asking it for Symbol.split: a SafeList. */
+export function stringSplit(text: string, separator: string): SafeList<string> {
+  const parts = new SafeList<string>();
+  let from = 0;
+  for (let at = stringIndexOf(text, separator); at >= 0; at = stringIndexOf(text, separator, from)) {
+    parts[parts.length] = stringSlice(text, from, at);
+    from = at + separator.length;
+  }
+  parts[parts.length] = stringSlice(text, from);
+  return parts;
+}
 export const stringLocaleCompare: (text: string, other: string) => number = uncurryThis(String.prototype.localeCompare);
 export const stringPadStart: (text: string, length: number, fill?: string) => string = uncurryThis(String.prototype.padStart);
 export const mathTrunc = Math.trunc;

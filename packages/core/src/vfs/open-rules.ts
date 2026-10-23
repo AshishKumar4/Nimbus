@@ -5,6 +5,7 @@
  */
 import type { RuntimeFileHandle } from '../runtime/os-contracts.js';
 import type { VfsErrorCode } from './vfs-error.js';
+import { ownValue } from '../_shared/primordials.js';
 
 /**
  * Where an open looks its name up (CompositeVFS.pin): through a link at it,
@@ -43,5 +44,5 @@ export function openAccess(flags: RuntimeFileHandle['flags'], directory: boolean
  * O_DIRECTORY changes none of these. Any other open of a directory opens.
  */
 export function refusesDirectory(flags: { readonly create?: boolean; readonly truncate?: boolean; readonly append?: boolean; readonly write?: boolean }, describes = true): boolean {
-  return flags.create === true || flags.truncate === true || flags.append === true || (flags.write === true && !describes);
+  return ownValue(flags, 'create') === true || ownValue(flags, 'truncate') === true || ownValue(flags, 'append') === true || (ownValue(flags, 'write') === true && !describes);
 }

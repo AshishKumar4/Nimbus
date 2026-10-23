@@ -10,7 +10,7 @@
  * feedOf, and only the composite reads them whole (feedsOf). So nothing that
  * compares the root reads anything but the root's feed.
  */
-import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringSlice, stringStartsWith, TypeError } from '../_shared/primordials.js';
+import { objectHasOwn, objectKeys, ownField, SafeWeakMap, stringCharCodeAt, stringSlice, stringStartsWith, TypeError } from '../_shared/primordials.js';
 
 declare const OPAQUE: unique symbol;
 
@@ -59,12 +59,13 @@ export function rootOf(position: FeedPosition): FeedCursor {
 /** Whether `value` is a position as it crosses an RPC (a table, and a root feed among its feeds). */
 export function isFeedPosition(value: unknown): value is FeedPosition {
   if (value === null || typeof value !== 'object') return false;
-  const { table, feeds } = value as { table?: unknown; feeds?: unknown };
+  const table = ownField(value, 'table');
+  const feeds = ownField(value, 'feeds');
   if (typeof table !== 'string' || feeds === null || typeof feeds !== 'object') return false;
   const points = objectKeys(feeds);
   for (let i = 0; i < points.length; i++) {
-    const feed = (feeds as Record<string, unknown>)[points[i]] as { epoch?: unknown; cursor?: unknown } | null;
-    if (feed === null || typeof feed !== 'object' || typeof feed.epoch !== 'string' || typeof feed.cursor !== 'number') return false;
+    const feed = (feeds as Record<string, unknown>)[points[i]];
+    if (feed === null || typeof feed !== 'object' || typeof ownField(feed, 'epoch') !== 'string' || typeof ownField(feed, 'cursor') !== 'number') return false;
   }
   return objectHasOwn(feeds, ROOT_FEED);
 }

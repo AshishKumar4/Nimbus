@@ -9,7 +9,7 @@ import { sqlJournal, type JournalSql } from '../../_shared/process-fs-journal.js
 import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '../vfs-supervisor.js';
 import type { WasiSupervisorStub } from './types.js';
 import { residentFilesystem, type ResidentDelegation, type ResidentFilesystem, type ResidentNamespace } from './resident-filesystem.js';
-import { stringIncludes, stringSlice, stringStartsWith } from '../../_shared/primordials.js';
+import { ownValue, reflectApply, reflectDeleteProperty, reflectGet, stringIncludes, stringSlice, stringStartsWith } from '../../_shared/primordials.js';
 
 /** What a runtime gives the process's filesystem beyond its supervisor and view. */
 export type ProcessFilesystemOptions = Omit<ResidentDelegation, 'session' | 'journal' | 'readDirectories' | 'isHomeRoot'> & {
@@ -30,14 +30,19 @@ export function isHomeDirectory(key: string): boolean {
  */
 export function processFilesystem(supervisor: WasiSupervisorStub, view: ResidentNamespace, options: ProcessFilesystemOptions = {}): ResidentFilesystem {
   const authority = supervisorFilesystem(supervisor);
-  const { journalSql, holdsGrants, ...delegation } = options;
+  const journalSql = ownValue(options, 'journalSql');
+  const holdsGrants = ownValue(options, 'holdsGrants');
+  const { ...delegation } = options;
+  reflectDeleteProperty(delegation, 'journalSql');
+  reflectDeleteProperty(delegation, 'holdsGrants');
   // Its refusals rethrown as the errors they are, as the authority's are.
-  const directories = answeringSupervisor(supervisor) as WasiSupervisorStub & { fsReadDirectories?: ResidentDelegation['readDirectories'] };
+  const directories = answeringSupervisor(supervisor);
   return residentFilesystem(authority, view, {
     ...delegation,
     session: supervisorSession(supervisor, authority, undefined, holdsGrants !== false),
     isHomeRoot: isHomeDirectory,
-    ...(typeof directories.fsReadDirectories === 'function' ? { readDirectories: (request) => directories.fsReadDirectories!(request) } : {}),
+    ...(typeof reflectGet(directories, 'fsReadDirectories') === 'function'
+      ? { readDirectories: (request) => reflectApply(reflectGet(directories, 'fsReadDirectories'), directories, [request]) } : {}),
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
   });
 }

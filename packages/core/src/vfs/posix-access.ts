@@ -1,5 +1,5 @@
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
-import { arrayIncludes, mathTrunc } from '../_shared/primordials.js';
+import { arrayIncludes, mathTrunc, ownValue } from '../_shared/primordials.js';
 
 /** What an entry is, as its filesystem says: the type every access check is given. */
 export type PosixNodeType = 'file' | 'directory' | 'symlink';
@@ -40,8 +40,9 @@ export function modeAllows(
   want: number,
   cred: { readonly uid: number; readonly gid: number; readonly groups: readonly number[] },
 ): boolean {
-  if (stat.mode === undefined) return true;
-  return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
+  const mode = ownValue(stat, 'mode');
+  if (mode === undefined) return true;
+  return posixAccess({ mode, uid: ownValue(stat, 'uid') ?? -1, gid: ownValue(stat, 'gid') ?? -1, type: stat.type }, want, cred);
 }
 
 /** The caller a metadata rule judges: its uid, its primary group and its supplementary groups. */

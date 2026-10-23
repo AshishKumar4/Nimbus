@@ -117,8 +117,8 @@ export function applyOp(state: InodeState, op: InodeOp): InodeState {
 }
 
 /** `ops` folded over a copy of `baseline`, in order: what the inode is with them pending. */
-export function foldOps(baseline: InodeState, ops: Iterable<InodeOp>): InodeState {
+export function foldOps(baseline: InodeState, ops: readonly InodeOp[]): InodeState {
   let state = copyState(baseline);
-  for (const op of ops) state = applyOp(state, op);
+  for (let i = 0; i < ops.length; i++) state = applyOp(state, ops[i]);
   return state;
 }

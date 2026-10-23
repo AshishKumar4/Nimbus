@@ -3,7 +3,7 @@
  * the message a person reads. Every backend throws it, so no caller matches
  * prose.
  */
-import { Error, objectAssign, objectHasOwn, ObjectPrototype, reflectApply, SafeSet, stringOf } from '../_shared/primordials.js';
+import { dataDescriptor, Error, objectAssign, objectHasOwn, ownField, ownValue, reflectDefineProperty, reflectGet, regExpExec, SafeSet, stringOf } from '../_shared/primordials.js';
 
 export type VfsErrorCode =
   | 'E2BIG'
@@ -50,8 +50,8 @@ export function vfsError(code: string, what: string, detail: string = what): Err
 
 /** An error's errno (an `E…` code), if it carries one. */
 export function errnoCodeOf(error: unknown): string | undefined {
-  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
-  return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined;
+  const code = typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined;
+  return typeof code === 'string' && regExpExec(/^E[A-Z0-9]+$/, code) !== null ? code : undefined;
 }
 
 /** What a VfsError carries besides its cause: Node's `err.syscall` and `err.dest`. */
@@ -84,12 +84,14 @@ export class VfsError extends Error {
    * `EXDEV: cross-device link not permitted, rename 'a' -> 'b'`.
    */
   constructor(readonly code: VfsErrorCode, message: string, readonly path?: string, options?: VfsErrorOptions) {
-    super(systemErrorMessage(code, message, path, options?.dest), options);
-    this.name = 'VfsError';
+    super(systemErrorMessage(code, message, path, options === undefined ? undefined : ownValue(options, 'dest')), options);
+    reflectDefineProperty(this, 'name', dataDescriptor('VfsError', true, true, true));
     this.errno = VFS_ERRNO[code];
-    if (options?.syscall !== undefined) this.syscall = options.syscall;
-    if (options?.dest !== undefined) this.dest = options.dest;
-    const detail = options?.detail ?? (options?.syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
+    const syscall = options === undefined ? undefined : ownValue(options, 'syscall');
+    const dest = options === undefined ? undefined : ownValue(options, 'dest');
+    if (syscall !== undefined) this.syscall = syscall;
+    if (dest !== undefined) this.dest = dest;
+    const detail = (options === undefined ? undefined : ownValue(options, 'detail')) ?? (syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
     if (detail !== undefined) this.detail = detail;
   }
 }
@@ -106,7 +108,7 @@ export function syscallError(
   path?: string,
   options: VfsErrorOptions = {},
 ): VfsError {
-  return new VfsError(code, `${options.detail ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...options, syscall });
+  return new VfsError(code, `${ownValue(options, 'detail') ?? VFS_DESCRIPTION[code]}, ${syscall}`, path, { ...options, syscall });
 }
 
 /** Whether `error` is a filesystem error, and when `code` is given, that one. */
@@ -130,17 +132,21 @@ export function isVfsErrorCode(code: unknown): code is VfsErrorCode {
  */
 export function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown {
   if (error instanceof VfsError) {
-    if (error.syscall !== undefined || error.path !== undefined) return error;
-    return syscallError(error.code, syscall, path, { detail: error.detail, dest, cause: error });
+    if (ownValue(error, 'syscall') !== undefined || ownValue(error, 'path') !== undefined) return error;
+    return syscallError(error.code, syscall, path, { detail: ownValue(error, 'detail'), dest, cause: error });
   }
   if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return error;
-  const code = 'code' in error ? error.code : undefined;
+  const code = ownField(error, 'code');
   if (isVfsErrorCode(code)) {
-    const call = 'syscall' in error && typeof error.syscall === 'string' ? error.syscall : syscall;
+    const named = ownField(error, 'syscall');
+    const call = typeof named === 'string' ? named : syscall;
     // The caller's second path belongs to its own call, not to another the layer names.
-    const second = 'dest' in error && typeof error.dest === 'string' ? error.dest : call === syscall ? dest : undefined;
-    const detail = 'detail' in error && typeof error.detail === 'string' ? error.detail : undefined;
-    return syscallError(code, call, 'path' in error && typeof error.path === 'string' ? error.path : path, { dest: second, detail, cause: error });
+    const its = ownField(error, 'dest');
+    const second = typeof its === 'string' ? its : call === syscall ? dest : undefined;
+    const reason = ownField(error, 'detail');
+    const detail = typeof reason === 'string' ? reason : undefined;
+    const at = ownField(error, 'path');
+    return syscallError(code, call, typeof at === 'string' ? at : path, { dest: second, detail, cause: error });
   }
   return error;
 }
@@ -178,9 +184,9 @@ export type RenameOutcome = 'none' | 'all';
 
 export function renameOutcome(error: unknown): RenameOutcome | undefined {
   const seen = new SafeSet<unknown>();
-  for (let at = error; typeof at === 'object' && at !== null && !seen.has(at); at = (at as { cause?: unknown }).cause) {
+  for (let at = error; typeof at === 'object' && at !== null && !seen.has(at); at = ownField(at, 'cause')) {
     seen.add(at);
-    const renamed = (at as { renamed?: unknown }).renamed;
+    const renamed = ownField(at, 'renamed');
     if (renamed === 'none' || renamed === 'all') return renamed;
   }
   return undefined;
@@ -191,10 +197,10 @@ export function renameOutcome(error: unknown): RenameOutcome | undefined {
  * refusal's own reason where Nimbus gives one, else strerror(3) for its code.
  */
 export function strerror(error: unknown): string {
-  if (error instanceof VfsError) return error.detail ?? VFS_STRERROR[error.code];
-  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  if (error instanceof VfsError) return ownValue(error, 'detail') ?? VFS_STRERROR[error.code];
+  const code = typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined;
   if (isVfsErrorCode(code)) return VFS_STRERROR[code];
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return reflectGet(error, 'message');
   // An errno this table does not name is printed as its name.
   return typeof code === 'string' ? code : stringOf(error);
 }
@@ -242,7 +248,7 @@ export const ERRNO_DESCRIPTION: Readonly<Record<string, string>> = {
 
 /** {@link ERRNO_DESCRIPTION} of `code`, undefined for a code libuv does not name. */
 export function errnoDescription(code: string): string | undefined {
-  return reflectApply(ObjectPrototype.hasOwnProperty, ERRNO_DESCRIPTION, [code]) ? ERRNO_DESCRIPTION[code] : undefined;
+  return objectHasOwn(ERRNO_DESCRIPTION, code) ? ERRNO_DESCRIPTION[code] : undefined;
 }
 
 /** Linux errno numbers of the codes {@link ERRNO_DESCRIPTION} names besides the VFS's, negative as libuv reports them. */
@@ -255,7 +261,7 @@ const OTHER_ERRNO: Readonly<Record<string, number>> = {
 /** `code`'s errno, negative as libuv reports it; undefined for a code this table does not name. */
 export function errnoOf(code: string): number | undefined {
   if (isVfsErrorCode(code)) return VFS_ERRNO[code];
-  return reflectApply(ObjectPrototype.hasOwnProperty, OTHER_ERRNO, [code]) ? OTHER_ERRNO[code] : undefined;
+  return objectHasOwn(OTHER_ERRNO, code) ? OTHER_ERRNO[code] : undefined;
 }
 
 /**
@@ -293,10 +299,12 @@ export function fsError(
   dest?: string,
   options: { detail?: string; cause?: unknown } = {},
 ): FsError {
-  const words = options.detail ?? errnoDescription(code);
+  const given = ownValue(options, 'detail');
+  const cause = ownValue(options, 'cause');
+  const words = given ?? errnoDescription(code);
   const error = new Error(
     systemErrorMessage(code, words === undefined ? syscall : `${words}, ${syscall}`, path, dest),
-    options.cause === undefined ? undefined : { cause: options.cause },
+    cause === undefined ? undefined : { cause },
   );
   const errno = errnoOf(code);
   return objectAssign(error, {
@@ -305,6 +313,6 @@ export function fsError(
     syscall,
     ...(path === undefined ? {} : { path }),
     ...(dest === undefined ? {} : { dest }),
-    ...(options.detail === undefined ? {} : { detail: options.detail }),
+    ...(given === undefined ? {} : { detail: given }),
   });
 }
