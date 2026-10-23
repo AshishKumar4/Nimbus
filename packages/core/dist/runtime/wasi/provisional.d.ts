@@ -81,6 +81,10 @@ export interface ProvisionalHost {
      * has none of that file.
      */
     absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
+    /** Whether `key` is on a mount: what is decided there names no file of this filesystem it expects (a wave refuses an expectation there). */
+    mounted?(key: string): boolean;
+    /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
+    unreported?(key: string): boolean;
 }
 /** A rename planned (Provisional.planMove): settled once, made (`commit`) or not (`cancel`); whichever comes second does nothing. */
 export interface MovePlan {

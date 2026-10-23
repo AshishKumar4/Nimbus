@@ -64,6 +64,9 @@ export interface HolderStore {
   /** As ResidentNamespace.reserve and release: what a provisional decision keeps takes of the process's budget (no grant reserved it). */
   reserve?(bytes: number): boolean;
   release?(bytes: number): void;
+  /** As ProvisionalHost.mounted and unreported: a name on a mount, and one the view never hears a change of. */
+  mounted?(key: string): boolean;
+  unreported?(key: string): boolean;
 }
 
 export interface HolderOptions {
@@ -490,6 +493,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
     generation: (key) => names.generation(key),
     settled: (key, generation) => names.settled(key, generation),
+    ...(store.mounted === undefined ? {} : { mounted: (key: string) => store.mounted!(key) }),
+    ...(store.unreported === undefined ? {} : { unreported: (key: string) => store.unreported!(key) }),
     absorb: (key, file) => {
       const decision = decided.get(key);
       if (!decision || decision.dev !== file.dev || decision.ino !== file.ino) return undefined;

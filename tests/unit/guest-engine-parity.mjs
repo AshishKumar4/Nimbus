@@ -1,11 +1,8 @@
 #!/usr/bin/env bun
-// The guest filesystem engines' parity ledger (VFS-9 B, stage 1): every
-// behaviour either engine has that a process's guest can see, written once
-// (lib/guest-engines.mjs) and run against both, the node shim's and the WASI
-// holder's. Where an engine lacks one, the ledger says so (GAPS), and the run
-// must fail showing it: so the ledger is the specification both engines are
-// held to, and exactly what each lacks. An engine that gains a behaviour
-// fails its gap until the gap is removed.
+// The guest filesystem engines' parity ledger (VFS-9 B): every behaviour a
+// process's guest can see, written once (lib/guest-engines.mjs) and run
+// against both, node's fs and the WASI holder's, one resident filesystem
+// under each: the specification both are held to.
 //
 // The families:
 //   - decided in a held subtree: answered with the session's waves stalled,
@@ -515,19 +512,4 @@ const SCENARIOS = {
   },
 };
 
-/** What each engine lacks today: each must fail, showing what it lacks. */
-const PATH_FDS = 'descriptors on the open file, not on its name';
-const GAPS = {
-  'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
-  'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
-  'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
-  'a description writes the file it opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'the write did not reach the renamed file' },
-  'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
-  'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken [node]': { lacks: PATH_FDS, shows: 'the file that took the name changed' },
-  'fchmod, fchown and futimes change the file a description opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
-  'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
-  'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s [node]': { lacks: PATH_FDS, shows: 'the opened file did not change as asked' },
-  'a synchronous descriptor reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the descriptor read the name\'s new file' },
-};
-
-await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS), { gaps: GAPS });
+await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS));

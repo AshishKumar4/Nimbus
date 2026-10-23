@@ -327,6 +327,15 @@ export interface ResidentDelegation {
     readonly journal?: ProcessFsJournal;
     /** Told of each change the process's client logs (HolderOptions.logged). */
     readonly logged?: HolderOptions['logged'];
+    /**
+     * A mount that states no change model is answered as the store's walk of
+     * it left it (its launch named it), and what this process changes on a
+     * mount (but the kernel's /dev and /proc) is decided here, staying its own
+     * where the view never hears of it: node's, as its fs always answered.
+     * Without it such a mount is the session's to answer, and every mount's
+     * changes the session's to decide.
+     */
+    readonly walkedMounts?: boolean;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
     /**
      * The directories the last process in this facet opened, in order (its

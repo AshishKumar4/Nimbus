@@ -114,6 +114,10 @@ export interface ProvisionalHost {
    * has none of that file.
    */
   absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
+  /** Whether `key` is on a mount: what is decided there names no file of this filesystem it expects (a wave refuses an expectation there). */
+  mounted?(key: string): boolean;
+  /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
+  unreported?(key: string): boolean;
 }
 
 /** A rename planned (Provisional.planMove): settled once, made (`commit`) or not (`cancel`); whichever comes second does nothing. */
@@ -525,7 +529,8 @@ export function provisional(host: ProvisionalHost): Provisional {
    * named by the description its open made it through (nothing for a
    * directory or link made here: no description names those).
    */
-  const expecting = (row: ResidentEntry | null): { expect?: W7Expected } => {
+  const expecting = (row: ResidentEntry | null, key: string): { expect?: W7Expected } => {
+    if (host.mounted?.(key) === true) return {};
     if (row === null) return { expect: null };
     const inode = inodeAtNumber(row.dev, row.ino);
     if (inode?.local !== true) return { expect: row.ino };
@@ -1326,7 +1331,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         description,
         // The file it decided this on (none, for a file it makes): the session refuses it where the name leads elsewhere.
         // One made exclusively needs none: the session's EEXIST refuses it first.
-        ...(flags.exclusive && row === null ? {} : expecting(row)),
+        ...(flags.exclusive && row === null ? {} : expecting(row, key)),
       },
     };
     let target: Inode;
@@ -1615,7 +1620,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       admitOps(inode, [op], syscall, desc.path);
       host.count(inode.key);
       // Through its description; without one, by the name that leads to its file, which it expects there.
-      loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? expecting(entryOf(inode)) : { description: described }) });
+      loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? expecting(entryOf(inode), inode.key) : { description: described }) });
       fit(inode);
     },
 
@@ -1665,7 +1670,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         if (!named(inode)) throw fsError('ESTALE', 'open', desc.path);
         description = descriptionId();
         // By its name, the file this descriptor names expected there.
-        const open: ProcessFsOp = { type: 'call', call: { call: 'open', path: inode.key, mode: entryOf(inode).mode & 0o7777, ...(flags.truncate ? { truncate: true as const } : {}), access: read ? 'readwrite' : 'write', description, ...expecting(entryOf(inode)) } };
+        const open: ProcessFsOp = { type: 'call', call: { call: 'open', path: inode.key, mode: entryOf(inode).mode & 0o7777, ...(flags.truncate ? { truncate: true as const } : {}), access: read ? 'readwrite' : 'write', description, ...expecting(entryOf(inode), inode.key) } };
         const records = flags.truncate ? [{ kind: 'truncate', size: 0, at: host.now() } as InodeOp] : [];
         host.drain();
         admitOps(inode, records, 'open', desc.path);
@@ -1712,7 +1717,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
       host.drain();
       keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
-      return loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null), undefined, undefined, awaited) ?? true;
+      return loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row, key) } }, [key], nameCost([key]), () => place(key, null), undefined, undefined, awaited) ?? true;
     },
 
     rmdir: (key, path, row, awaited) => {
@@ -1725,7 +1730,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (writableParent(key, path, 'rmdir') === undefined) return false;
       host.drain();
       admit(nameCost([key]), 'rmdir', path);
-      return loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
+      return loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row, key) } }, [key], nameCost([key]), () => {
         place(key, null);
         added.delete(key);
         removed.delete(key);
@@ -1764,8 +1769,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       const moving = known ?? inodeAt(from, source);
       moving.reserved += moves;
       for (const [inode, grows] of beneath) inode.reserved += grows;
-      const { expect: expectTo } = expecting(target);
-      const answer = loggedName({ type: 'rename', from, to, ...expecting(source), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
+      const { expect: expectTo } = expecting(target, to);
+      const answer = loggedName({ type: 'rename', from, to, ...expecting(source, from), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
         // What is beneath the source moves with it: names, never records.
         for (const [key, value] of [...layer]) {
           if (key === from || !within(key, from)) continue;
@@ -1808,7 +1813,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         throw error;
       }
       host.count(key);
-      const logged: ProcessFsOp = !own ? { type: 'setattr', path: key, attrs, ...expecting(row) }
+      const logged: ProcessFsOp = !own ? { type: 'setattr', path: key, attrs, ...expecting(row, key) }
         : 'uid' in attrs ? { type: 'call', call: { call: 'lchown', path: key, uid: attrs.uid, gid: attrs.gid } }
         : { type: 'call', call: { call: 'lutimes', path: key, atime: (attrs as { atime: number }).atime, mtime: (attrs as { mtime: number }).mtime } };
       const answer = loggedOn([fold(inode, op)], logged, awaited);
@@ -1850,7 +1855,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     retire: (begun) => {
       // A name record answered before the barrier began is the view's now; one under a held subtree waits for it to be given back.
       const kept = nameRecords.filter((record) => {
-        if (!record.answered || record.answeredAt >= begun) return true;
+        if (!record.answered || record.answeredAt >= begun || record.keys.some((key) => host.unreported?.(key) === true)) return true;
         record.keys.forEach((key, at) => host.settled(key, record.over[at]));
         // What it kept goes back before what it leaves takes its share of it (a rename's names, grown beneath it).
         host.release(record.cost);
@@ -1863,6 +1868,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       }
       // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
       for (const inode of [...loose]) {
+        if (host.unreported?.(inode.key) === true) continue;
         if (inode.heldAt !== undefined) {
           if (inode.heldAt >= begun) continue;
           delete inode.heldAt;
