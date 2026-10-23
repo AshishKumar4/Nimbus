@@ -14,7 +14,7 @@
  * resolved or probed (found or not, which is how a module resolves), and
  * each directory it listed. recordLaunchReads passes a build's bridge
  * through and notes those. A later change (the barrier's report since the
- * build's cursor, RuntimeFsBridge.acquire) leaves the build's answer as it
+ * build's position, RuntimeFsBridge.acquire) leaves the build's answer as it
  * was unless it names one of them (staleReason):
  *   - a path the build asked about;
  *   - a directory above one, removed, renamed or given another mode or owner

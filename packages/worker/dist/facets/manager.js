@@ -6283,7 +6283,7 @@ export class FacetManager {
         for (const [entryKey, entry] of this.prefetchBundleCache) {
             if (entry.revision === revision || !entryKey.includes(`\x00${credKey}\x00`))
                 continue;
-            const changes = entry.mounted ? null : await vfs.acquire(entry.stamp.epoch, entry.stamp.rev);
+            const changes = entry.mounted ? null : await vfs.acquire(entry.stamp);
             // What is at a name now, as a listing names it: lstat, so a link is a link.
             const kindNow = async (name) => (await Promise.resolve(vfs.stat('/' + name, { followSymlinks: false })).catch(() => null))?.type ?? null;
             const stale = changes === null ? 'it read under a mount, and the filesystem changed'
@@ -6291,7 +6291,7 @@ export class FacetManager {
                     : await staleReason(entry.reads, changes.paths, kindNow);
             if (stale === null && changes !== null) {
                 entry.revision = revision;
-                entry.stamp = { epoch: changes.epoch, rev: changes.rev };
+                entry.stamp = changes.position;
                 continue;
             }
             // Checked again only if still there: another launch may have replaced it while the barrier answered.
@@ -6390,7 +6390,7 @@ export class FacetManager {
             // later launch is served this build unless a change since names it.
             const recorded = recordLaunchReads(vfs);
             const buildFs = recorded.view;
-            const stamp = await vfs.acquire(null, 0);
+            const stamp = (await vfs.acquire(null)).position;
             const readProfile = this.readProfile;
             const offered = [];
             const learnedFor = readProfile === null ? undefined : async (closure) => {
@@ -6513,7 +6513,7 @@ export class FacetManager {
             releaseSerializedSources(vfsState);
             const reads = recorded.reads();
             const mounted = readsUnderMounts(reads, this.filesystem?.mounts?.(cred).map((mount) => mount.mountPoint) ?? []);
-            vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState, { stamp: { epoch: stamp.epoch, rev: stamp.rev }, reads, mounted });
+            vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState, { stamp, reads, mounted });
             // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
             return { state: vfsState, shared: { state: { ...vfsState }, revision } };
         };
