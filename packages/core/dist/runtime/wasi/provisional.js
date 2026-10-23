@@ -1350,6 +1350,9 @@ export function provisional(host) {
             const desc = descOf(handleId);
             if (!desc.write)
                 throw fsError('EBADF', 'write', desc.path);
+            // write(2) of nothing to a regular file changes nothing.
+            if (bytes.byteLength === 0)
+                return 0;
             const at = host.now();
             const start = desc.append ? undefined : offset ?? desc.position;
             if (!awaited && continued(desc, start, bytes, at)) {
@@ -1577,6 +1580,10 @@ export function provisional(host) {
             // rename(2) to the name it has leaves it as it is.
             if (from === to)
                 return true;
+            // Across filesystems (a mount's and another's): the session's, which knows what crossing them means.
+            const into = rowAt(parentKey(to));
+            if (into === undefined || into === null || into.dev !== source.dev)
+                return false;
             // A directory into its own subtree, and onto a directory the view lists non-empty, as rename(2) refuses them.
             if (source.type === 'directory' && within(to, from))
                 throw fsError('EINVAL', 'rename', path);

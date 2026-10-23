@@ -6298,6 +6298,8 @@ var __nimbusResidentModule = (() => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EBADF", "write", desc.path);
+        if (bytes.byteLength === 0)
+          return 0;
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
         if (!awaited && continued(desc, start, bytes, at)) {
@@ -6513,6 +6515,9 @@ var __nimbusResidentModule = (() => {
           throw fsError2("ENOENT", "rename", path);
         if (from === to)
           return true;
+        const into = rowAt(parentKey3(to));
+        if (into === void 0 || into === null || into.dev !== source.dev)
+          return false;
         if (source.type === "directory" && within2(to, from))
           throw fsError2("EINVAL", "rename", path);
         if (source.type === "directory" && target !== null && target.type === "directory") {

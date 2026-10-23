@@ -4705,15 +4705,35 @@ const __fsMod = (() => {
    * the session has it, its refusal the call's (answeredWrites).
    */
   function _async(syscall, p, run, dest) {
-    return __nimbusTrackOp((async () => {
+    return __nimbusTrackOp(_inCallOrder(p, async () => {
       try {
         const fs = _rf();
-        // Decided on the session as it is now: what another process did before it, as Node's call finds it.
+        // Decided on the session as it is now: what another process did before it, as Node's call finds it, and what
+        // the session made of this process's own changes before it (sent and answered first: one it refused is gone).
         // Not in a subtree this process holds: no other changes it, so its view is the session's.
-        if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) fs.inbound();
+        if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) {
+          if (fs.holding()) await fs.send();
+          fs.inbound();
+        }
         return await run(fs);
       } catch (error) { throw _rfError(error, syscall, p, dest); }
-    })());
+    }));
+  }
+  /**
+   * The awaited calls on one name, decided in the order they were made (a
+   * later one starts once the earlier is answered): this fs's order, which a
+   * barrier one of them owes would otherwise reorder.
+   */
+  const _pathTails = new __NimbusSafeMap();
+  function _inCallOrder(p, work) {
+    if (typeof p !== "string" && !(p instanceof URL)) return work();
+    const key = _strip(_resolve(p));
+    const before = _pathTails.get(key);
+    const run = before === undefined ? work() : before.then(work, work);
+    const tail = run.then(() => undefined, () => undefined);
+    _pathTails.set(key, tail);
+    tail.then(() => { if (_pathTails.get(key) === tail) _pathTails.delete(key); });
+    return run;
   }
   /** Whether `p` (and `dest`) lie in subtrees the process holds (its client's grants). */
   function _heldHere(fs, p, dest) {
@@ -4731,10 +4751,7 @@ const __fsMod = (() => {
    * what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, async (fs) => {
-      if (__nimbusProcessSupervised && fs.holding() && !_heldHere(fs, p)) await fs.send();
-      return run(fs);
-    });
+    return _async(syscall, p, run);
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -5168,7 +5185,13 @@ const __fsMod = (() => {
     if (p instanceof __FileHandle) return p.truncate(len);
     const absPath = _at(p);
     const size = Math.max(0, Math.trunc(Number(len) || 0));
-    await _async("truncate", p, (fs) => fs.truncate(absPath, size));
+    // Node's own: an open of it 'r+', its ftruncate, its close (decided and sent in order, as truncateSync's).
+    await _async("open", p, async (fs) => {
+      const opened = await fs.open(absPath, _openFlags("r+"));
+      let done = false;
+      try { await fs.ftruncate(opened.id, size); done = true; }
+      finally { try { await fs.close(opened.id); } catch (error) { if (done) throw error; } }
+    });
   }
   async function _copyFileAsync(src, dest, mode) {
     const from = _at(src);
