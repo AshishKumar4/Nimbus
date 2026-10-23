@@ -137,8 +137,8 @@ await runner.close();
   changed after the runner started can answer `EAGAIN` once; `fs.promises`
   reads it.
 - **What a call leaves pending.** The call answers once its code's value
-  settles. A timer or callback still pending then does not run. Await what
-  you need.
+  settles and the requests and file operations it started have ended. A
+  timer still pending then does not run. Await what you need.
 - **Limits.** `cpuMs` is the CPU time one call may use: 5,000 ms by
   default, at most 300,000. `timeoutMs` is the wall time it may take: none
   by default. Both count from when the runner gets the call, so a first
@@ -159,8 +159,9 @@ await runner.close();
   once, with `name: 'NimbusRunnerError'`. The next call starts a new
   runner. A call whose `timeoutMs` came while it still waited for a
   Dynamic Worker ran nothing, and its runner keeps its state.
-- **Output.** `value`, `stdout` and `stderr` each carry up to about 4.9
-  million characters; past that the text is cut, and says so.
+- **Output.** `value`, `stdout`, `stderr` and the error's `message` and
+  `stack` each carry up to about 2.9 million characters; past that the text
+  is cut, and says so.
 - **`fresh`.** A `fresh: true` answer ran in a new runner, where nothing an
   earlier call left is there: the first call, the call after one that lost
   the runner, the call after the platform dropped an idle runner, and the

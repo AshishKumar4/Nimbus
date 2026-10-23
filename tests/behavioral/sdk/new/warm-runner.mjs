@@ -201,6 +201,26 @@ try {
   a.check('close ends a call the runner is running, with ERR_NIMBUS_RUNNER_CLOSED',
     closedWhileRunning === true && abandoned.result !== 'hung' && abandoned.result.error?.code === 'ERR_NIMBUS_RUNNER_CLOSED', show({ closedWhileRunning, abandoned }));
 
+  // A kill of the runner's process between calls ends that runner; the next call starts a new one.
+  const victim = box.runner({ cwd: '/home/user/runner' });
+  await victim.run('globalThis.kept = 1');
+  const listed = (await box.processes.list()).find((process) => process.command === `node (runner ${victim.id})` && process.state === 'running');
+  const killed = listed === undefined ? null : await box.processes.kill(listed.pid);
+  const afterKill = await victim.run('typeof kept');
+  const ended = listed === undefined ? undefined : (await box.processes.list()).find((process) => process.pid === listed.pid);
+  a.check("a kill of an idle runner's process ends it: the process reads ended, and the next call is fresh",
+    killed?.ok === true && ended?.state !== 'running' && afterKill.fresh === true && afterKill.value === "'undefined'", show({ listed, killed, ended, afterKill }));
+  await victim.close();
+
+  // A new runner closed after its first call: the same id runs fresh, in a new worker.
+  const once = box.runner({ cwd: '/home/user/runner' });
+  await once.run('globalThis.kept = 1');
+  await once.close();
+  const reused = await once.run('typeof kept');
+  a.check('a runner closed after its first call starts fresh under the same id',
+    reused.fresh === true && reused.value === "'undefined'", show(reused));
+  await once.close();
+
   await runner.run('globalThis.kept = 1');
   const closed = await runner.close();
   const reopened = await runner.run('typeof kept');

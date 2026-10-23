@@ -35,7 +35,8 @@ export interface RunnerSpec {
  */
 export function runnerOptionsKey(options: SessionRunnerOptions): string {
   const env = options.env === undefined ? null : Object.entries(options.env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return JSON.stringify([options.cwd ?? null, env, options.cred ?? null, options.execId ?? null]);
+  const cred = options.cred === undefined ? null : [options.cred.uid, options.cred.gid, options.cred.groups, options.cred.umask];
+  return JSON.stringify([options.cwd ?? null, env, cred, options.execId ?? null]);
 }
 
 /**
@@ -69,14 +70,15 @@ export function runnerExited(code: number): SessionRunnerError {
 }
 
 /**
- * The error a call answers when its runner was lost while it ran: by the
- * call's own CPU limit (`cpuMs`), its wall limit, a kill or a close
- * (RunnerCallEnded), the platform's memory limit, or any other failure of its
- * worker. A call whose wall limit came before its worker began it
- * (`entered` false) ran nothing, and its runner keeps its state.
+ * The error a call answers when it failed: by its own CPU limit (`cpuMs`),
+ * its wall limit, a kill or a close (RunnerCallEnded), the platform's memory
+ * limit, or any other failure of its worker. Every one ends its runner
+ * (`ended`) but a wall limit that came before the worker began a call of a
+ * runner that had started: that call ran nothing, and the runner keeps its
+ * state.
  */
-export function runnerFailure(error: Error, cpuMs: number, entered: boolean): SessionRunnerError {
-  if (error instanceof RunnerCallEnded && error.why === 'timeout' && !entered) {
+export function runnerFailure(error: Error, cpuMs: number, ended: boolean): SessionRunnerError {
+  if (error instanceof RunnerCallEnded && !ended) {
     return { name: RUNNER_ERROR, code: ENDED_CODES.timeout, message: `${error.message} waiting for a Dynamic Worker, so its code did not run; its runner keeps its state` };
   }
   if (error instanceof RunnerCallEnded) {
