@@ -235,11 +235,19 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
      */
     syncInode(dev: number, ino: number): void | Promise<void>;
     /**
-     * The end of a run: every held write goes to the session, and every refusal
-     * not yet reported (by its descriptor's close or fsync) is returned, naming
-     * the file, and forgotten.
+     * The end of a run: every held write goes to the session, every fault-in
+     * out ends, and every refusal not yet reported (by its descriptor's close
+     * or fsync) is returned, naming the file, and forgotten.
      */
     settle(): Promise<UnsettledWrite[]>;
+    /**
+     * The reads the program was refused (`synchronous`, not resident) that
+     * nothing has answered since, by key, in the order first refused, once
+     * every fault-in out has ended: less those the view now knows are absent
+     * (ResidentDelegation.residency; none without it). Not the run's end: a
+     * live process asks as often as it reports.
+     */
+    misses(): Promise<string[]>;
     /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
     stats(): ResidentFilesystemStats;
     /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
@@ -267,6 +275,8 @@ export interface ResidentFilesystemStats {
     fills: number;
     filledBytes: number;
     readAhead: number;
+    /** Of those, fetched for a refused synchronous read (ResidentDelegation.residency). */
+    faultIns: number;
     /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
     pagedReads: number;
     pagesFetched: number;
@@ -321,6 +331,50 @@ export interface ResidentDelegation {
      * description is admitted only if the namespace still vouches for it.
      */
     readonly walked?: readonly string[];
+    /**
+     * The process's program reads synchronously (node's): a read it is
+     * refused is recorded (ResidentFilesystem.misses), and a refused file's
+     * bytes are fetched for its next read. Without it a refusal leaves
+     * nothing (a WASI program's).
+     */
+    readonly residency?: ProgramResidency;
+}
+/**
+ * What a program that reads synchronously is refused. A refused read is a
+ * code no program branches on (EAGAIN cannot come of reading a regular
+ * file), so whatever catches it carries on as if the file were missing:
+ * the run's end reports what is left (misses), and the next launch stages
+ * it. A refused read stays the program's miss until its own awaited read of
+ * the name answers it (one of the file's bytes for a refused read of them,
+ * any for a refused stat), or the view knows the name absent; a fill behind
+ * its back or a later synchronous answer does not, since it may have built
+ * on the refusal by then (vite's resolver swallows a refused package.json).
+ * A refused read of a file the view has fetches its bytes for the next read
+ * (a fault-in): one fetch per file while it is out, which every read of it
+ * joins; the refusals of one turn are fetched together; one that did not
+ * land is asked again by the next refusal.
+ */
+export interface ProgramResidency {
+    /** The speculative read running now (the import prefetch's), or null. */
+    speculation(): ResidentSpeculation | null;
+    /** A read the program was refused, by key, for the first time: told as it happens, so a run the platform kills has reported it. */
+    missed?(key: string): void;
+}
+/**
+ * A speculative read (an import's prefetch, reading ahead of its load as the
+ * load will read): a read refused under it is its own, never the program's,
+ * and the fetch of a file it is refused is charged to its quota first.
+ */
+export interface ResidentSpeculation {
+    /**
+     * `key` was refused under it. `fetch` brings its bytes: a fill issued for
+     * it, or one out it joined, telling whether they are held once it ends.
+     * Null where none was issued: past its quota, or nothing to fetch (a name
+     * the view cannot say, bytes only the session reads).
+     */
+    missed(key: string, fetch: Promise<boolean> | null): void;
+    /** One more file, of `bytes`, before its fetch is issued: false past its quota, and nothing is issued. */
+    charge(bytes: number): boolean;
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

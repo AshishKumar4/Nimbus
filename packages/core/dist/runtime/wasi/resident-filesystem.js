@@ -109,6 +109,19 @@ function refusesADirectory(syscall, args) {
     return flags !== undefined && refusesDirectory(flags);
 }
 const notNow = () => { throw NOT_NOW; };
+/**
+ * The reads a program can be refused (ProgramResidency), by what they ask:
+ * a file's bytes, or what a name is (an open for reading, which reads
+ * nothing, among them). An awaited one answers a refused read of its name
+ * of its own kind, and one of a file's bytes either kind.
+ */
+const READS = new Map([
+    ['readFile', 'content'], ['read', 'content'], ['readRange', 'content'],
+    ['stat', 'metadata'], ['access', 'metadata'], ['readdir', 'metadata'], ['readlink', 'metadata'], ['realpath', 'metadata'],
+    ['open', 'metadata'], ['fstat', 'metadata'], ['readdirHandle', 'metadata'],
+]);
+/** What an awaited read may be refused with that answers it all the same: the name's own state. */
+const ANSWERED_REFUSALS = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR', 'ELOOP', 'EPERM']);
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
 const NO_SYNCHRONOUS_FORM = new Set(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
 function after(value, next) {
@@ -145,7 +158,7 @@ function statOf(entry) {
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
     /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
     let now = false;
     // Every session interaction begins here, given as what would begin it: the
@@ -166,6 +179,7 @@ export function residentFilesystem(session, resident, delegation) {
     // The subtrees this process holds, when it may hold any (it waits in its
     // syscalls): what it decided there is answered here and sent later.
     let holder = null;
+    const residency = delegation?.residency;
     const authority = new Proxy(session, {
         get(target, name, receiver) {
             const value = Reflect.get(target, name, receiver);
@@ -306,6 +320,8 @@ export function residentFilesystem(session, resident, delegation) {
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
     const readers = new Set();
+    /** Of those, the names they were opened by, whose reads answer the program's misses (ProgramResidency). */
+    const readerKeys = new Map();
     /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
     const unwritten = new Set();
     /** Of the read-only ones, the directories, and where their listing is. */
@@ -430,7 +446,7 @@ export function residentFilesystem(session, resident, delegation) {
     const unlistable = new Set();
     /** Whether the name a directory's last miss looked up was there: its misses are a walk of what is there, not a probe. */
     const foundIn = new Map();
-    /** Files a read-ahead batch is fetching, and the batch; and the bytes read ahead so far. */
+    /** Files a batch is fetching (read ahead, or faulted in), and the batch, which a read of one joins; and the bytes read ahead so far. */
     const fetchingAhead = new Map();
     let readAheadBytes = 0;
     /**
@@ -481,6 +497,58 @@ export function residentFilesystem(session, resident, delegation) {
             if (fetchingAhead.get(path) === fetched)
                 fetchingAhead.delete(path); });
         return fetched;
+    };
+    /**
+     * The fault-ins of refused synchronous reads (ProgramResidency): the files
+     * this turn's refusals named, fetched together once its synchronous calls
+     * are done (one fillMany, where a fetch may begin); and every fetch a
+     * refusal issued or joined, until it ends (misses, settle).
+     */
+    let faults = null;
+    let faulted = Promise.resolve();
+    const faulting = new Set();
+    const outstanding = (fetch) => {
+        faulting.add(fetch);
+        void fetch.then(() => { faulting.delete(fetch); });
+        return fetch;
+    };
+    const faultsEnded = async () => {
+        while (faulting.size > 0)
+            await Promise.all(faulting);
+    };
+    /** The fetch the refusal of the synchronous call running now issued or joined. */
+    let refusedFetch = null;
+    /**
+     * A refused read of the file at `key` (`entry`), whose bytes are the
+     * store's: fetched for its next read, joined with a fetch of it out; under
+     * a speculation, charged to it first. Whether they are held once it ends,
+     * or null where none was issued.
+     */
+    const faultIn = (key, entry) => {
+        if (residency === undefined)
+            return null;
+        const held = () => store.content(key, entry.revision)?.byteLength === entry.size;
+        const out = fetchingAhead.get(key);
+        if (out !== undefined)
+            return outstanding(out.then(held));
+        const speculation = residency.speculation();
+        if (speculation !== null && !speculation.charge(entry.size))
+            return null;
+        let files = faults;
+        if (files === null) {
+            const named = [];
+            files = faults = named;
+            faulted = outstanding(Promise.resolve().then(() => { faults = null; return store.fillMany(named); }).catch(() => { }));
+        }
+        const batch = faulted;
+        files.push([key, entry]);
+        counts.fills++;
+        counts.faultIns++;
+        counts.filledBytes += entry.size;
+        fetchingAhead.set(key, batch);
+        void batch.then(() => { if (fetchingAhead.get(key) === batch)
+            fetchingAhead.delete(key); });
+        return outstanding(batch.then(held));
     };
     /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up. */
     const resolve = (path, follow, content = false, crossed) => {
@@ -660,8 +728,10 @@ export function residentFilesystem(session, resident, delegation) {
         const held = store.content(key, entry.revision);
         if (held !== undefined && held.byteLength === entry.size)
             return held;
-        if (now)
+        if (now) {
+            refusedFetch = faultIn(key, entry);
             notNow();
+        }
         const fill = () => {
             counts.fills++;
             counts.filledBytes += entry.size;
@@ -674,6 +744,25 @@ export function residentFilesystem(session, resident, delegation) {
         return batch.then(() => {
             const fetched = store.content(key, entry.revision);
             return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
+        });
+    };
+    /**
+     * A file's bytes for a caller that may wait, where the store did not take
+     * them whole (no room, or past what one call carries): read through its
+     * pages at the revision the view has, each held as room allows: a read of
+     * any size answers. DELEGATE where they cannot be.
+     */
+    const wholeByPages = (key, entry) => {
+        if (entry.size === 0)
+            return DELEGATE;
+        return store.pages(key, entry.revision, entry.size, 0, Math.floor((entry.size - 1) / RESIDENT_PAGE_BYTES)).then((found) => {
+            if (found === null)
+                return DELEGATE;
+            counts.pagedReads++;
+            counts.pagesFetched += found.fetched;
+            const whole = new Uint8Array(entry.size);
+            found.pages.forEach((page, at) => whole.set(page, at * RESIDENT_PAGE_BYTES));
+            return whole;
         });
     };
     /**
@@ -836,6 +925,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.flush = async () => { await holder?.flush(); };
     fs.settle = async () => {
         const failures = [];
+        await faultsEnded();
         // The run's end, both at once: the directory descriptions it holds are
         // retired, what it logged is answered, and what it held is given back.
         await Promise.all([directoryPool?.dispose(), holder?.settle()].map((ending) => Promise.resolve(ending).catch((error) => {
@@ -940,11 +1030,12 @@ export function residentFilesystem(session, resident, delegation) {
             throw fsError('EACCES', 'open', path);
         if (entry.type === 'directory')
             throw fsError('EISDIR', 'open', path);
-        if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode))
+        if (entry.type !== 'file' || isCharacterDevice(entry.mode))
             return DELEGATE;
         if (volatileProc(key, entry))
             return generated(key) ?? DELEGATE;
-        return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
+        // A file this process changed is the session's to read where its bytes are not known here.
+        return after(contentOf(key, entry), (bytes) => bytes ?? (holder?.provisional.pending(entry.dev, entry.ino) ? DELEGATE : wholeByPages(key, entry)));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
         if (key === DELEGATE || key === '' || key === null)
@@ -1168,8 +1259,12 @@ export function residentFilesystem(session, resident, delegation) {
         }
         if (done !== undefined)
             return done;
-        if (now)
+        if (now) {
+            const of = holder.provisional.inodeOf(handleId);
+            if (of !== undefined && !holder.provisional.pending(of.entry.dev, of.entry.ino))
+                refusedFetch = faultIn(of.key, of.entry);
             throw NOT_NOW;
+        }
         const at = holder.provisional.inodeOf(handleId);
         if (at === undefined)
             return readByAnchor(handleId, offset, length);
@@ -1254,6 +1349,8 @@ export function residentFilesystem(session, resident, delegation) {
         delegated('open');
         return after(authority.open(path, flags), (handle) => {
             readers.add(handle.id);
+            if (residency !== undefined)
+                readerKeys.set(handle.id, keyOf(handle.path));
             // What it is, its open said: a directory is listed here, and a file too big to hold whole is paged, while its name still leads to it.
             const { type, dev, ino, size } = handle.stat;
             if (dev === store.device) {
@@ -1376,6 +1473,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (readers.delete(handleId)) {
             directories.delete(handleId);
             paged.delete(handleId);
+            readerKeys.delete(handleId);
             delegated('close');
             return authority.close(handleId);
         }
@@ -1782,6 +1880,109 @@ export function residentFilesystem(session, resident, delegation) {
             detail: `resource temporarily unavailable, ${syscall} '${path}' — '${path}' exists but its content is not resident in this process, and a synchronous call cannot wait to fetch it`,
         });
     };
+    /** The program's refused reads nothing has answered since (misses), by key, in the order first refused: what each asked. */
+    const missed = new Map();
+    /** The key a read names: as spelled, no link followed; a descriptor, its file's name. */
+    const keyFor = (target) => {
+        if (typeof target === 'number')
+            return holder?.owns(target) ? holder.keyOf(target) : readerKeys.get(target);
+        if (typeof target === 'string')
+            return keyOf(target);
+        if (typeof target === 'object' && target !== null && 'root' in target)
+            return keyOf(`${target.root}/${pathOf(target)}`);
+        return undefined;
+    };
+    /** What `syscall` with `args` reads (READS): an open only when it opens for reading alone. */
+    const readOf = (syscall, args) => {
+        if (syscall !== 'open')
+            return READS.get(syscall);
+        const flags = args[1];
+        return flags && !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive ? 'metadata' : undefined;
+    };
+    /** A synchronous read refused as not resident: its speculation's, or the program's miss. `fetch`: the fault-in it issued or joined. */
+    const refused = (syscall, args, fetch) => {
+        const kind = readOf(syscall, args);
+        const key = kind === undefined ? undefined : keyFor(args[0]);
+        if (kind === undefined || key === undefined)
+            return;
+        const speculation = residency.speculation();
+        if (speculation !== null) {
+            speculation.missed(key, fetch);
+            return;
+        }
+        const was = missed.get(key);
+        if (was === 'content' || was === kind)
+            return;
+        missed.set(key, kind);
+        if (was === undefined)
+            residency.missed?.(key);
+    };
+    /** The program's awaited read of `args[0]` answered: what it answers of the misses of that name goes, as spelled and as it resolves. */
+    const answered = (kind, args) => {
+        const key = keyFor(args[0]);
+        if (key === undefined)
+            return;
+        const keys = [key];
+        try {
+            const at = walkOnce('', key, true);
+            if (typeof at === 'string' && at !== key)
+                keys.push(at);
+        }
+        catch { /* the name as spelled */ }
+        for (const at of keys)
+            if (kind === 'content' || missed.get(at) === 'metadata')
+                missed.delete(at);
+    };
+    if (residency !== undefined) {
+        for (const name of READS.keys()) {
+            const passed = Reflect.get(fs, name);
+            if (typeof passed !== 'function')
+                continue;
+            Reflect.set(fs, name, (...args) => {
+                // A miss is answered by the program's own read, which may wait, asked once it was refused.
+                const kind = now || missed.size === 0 ? undefined : readOf(name, args);
+                if (kind === undefined)
+                    return Reflect.apply(passed, fs, args);
+                const refusal = (error) => {
+                    if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? ''))
+                        answered(kind, args);
+                    throw error;
+                };
+                let answer;
+                try {
+                    answer = Reflect.apply(passed, fs, args);
+                }
+                catch (error) {
+                    return refusal(error);
+                }
+                if (!(answer instanceof Promise)) {
+                    answered(kind, args);
+                    return answer;
+                }
+                return answer.then((value) => { answered(kind, args); return value; }, refusal);
+            });
+        }
+    }
+    /** Whether the view knows nothing is at `key`, links followed: the session proved it absent. */
+    const knownAbsent = (key) => {
+        if (!store.ready())
+            return false;
+        try {
+            const at = walkOnce('', key, true);
+            return typeof at === 'string' && entryAt(at) === null;
+        }
+        catch (error) {
+            const code = errnoCodeOf(error);
+            return code === 'ENOENT' || code === 'ENOTDIR';
+        }
+    };
+    fs.misses = async () => {
+        await faultsEnded();
+        for (const key of [...missed.keys()])
+            if (knownAbsent(key))
+                missed.delete(key);
+        return [...missed.keys()];
+    };
     const synchronous = Object.create(null);
     for (const name of names) {
         if (NO_SYNCHRONOUS_FORM.has(name) || typeof Reflect.get(fs, name) !== 'function')
@@ -1798,9 +1999,13 @@ export function residentFilesystem(session, resident, delegation) {
                 return value;
             }
             catch (error) {
-                if (error === NOT_NOW)
-                    throw notResident(name, args);
-                throw error;
+                if (error !== NOT_NOW)
+                    throw error;
+                const refusal = notResident(name, args);
+                if (residency !== undefined && errnoCodeOf(refusal) === 'EAGAIN')
+                    refused(name, args, refusedFetch);
+                refusedFetch = null;
+                throw refusal;
             }
             finally {
                 now = was;
