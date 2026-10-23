@@ -1752,7 +1752,6 @@ export function provisional(host) {
                 // Bytes changed by what retires: what its descriptors read before (its pin) is not what it is.
                 const rewritten = retired.some((record) => record.op.kind === 'write' || record.op.kind === 'append' || record.op.kind === 'truncate');
                 let seen = viewed(inode);
-                let keptHere = false;
                 // What its retired records did is the view's: the grant's decision of its name they fold over answers no more.
                 if (retired.length > 0 && inode.over !== undefined) {
                     if (host.settled(inode.over.key, inode.over.generation))
@@ -1782,7 +1781,6 @@ export function provisional(host) {
                     if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision <= last.after
                         && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
                         keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
-                        keptHere = true;
                     }
                     dropRecords(inode, new Set(retired));
                     // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
@@ -1816,13 +1814,7 @@ export function provisional(host) {
                     refold(inode);
                 }
                 fit(inode);
-                // One whose bytes the view keeps stays for its descriptors and names to read them by (content), its reservation given back.
-                if (keptHere) {
-                    host.release(inode.reserved);
-                    inode.reserved = 0;
-                }
-                else
-                    release(inode);
+                release(inode);
             }
             for (const [key, row, bytes] of keeping)
                 host.keep?.(key, row, bytes);

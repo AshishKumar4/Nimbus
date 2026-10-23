@@ -6666,7 +6666,6 @@ var __nimbusResidentModule = (() => {
           }
           const rewritten = retired.some((record) => record.op.kind === "write" || record.op.kind === "append" || record.op.kind === "truncate");
           let seen = viewed(inode);
-          let keptHere = false;
           if (retired.length > 0 && inode.over !== void 0) {
             if (host2.settled(inode.over.key, inode.over.generation))
               seen = viewed(inode);
@@ -6688,7 +6687,6 @@ var __nimbusResidentModule = (() => {
             const last = retired[retired.length - 1];
             if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision <= last.after && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
               keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
-              keptHere = true;
             }
             dropRecords(inode, new Set(retired));
             inode.row = (retired.length > 0 ? host2.absorb(seen.name, entryOf(inode)) : void 0) ?? seen.row;
@@ -6717,11 +6715,7 @@ var __nimbusResidentModule = (() => {
             refold(inode);
           }
           fit(inode);
-          if (keptHere) {
-            host2.release(inode.reserved);
-            inode.reserved = 0;
-          } else
-            release(inode);
+          release(inode);
         }
         for (const [key, row, bytes] of keeping)
           host2.keep?.(key, row, bytes);
