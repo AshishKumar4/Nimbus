@@ -1079,12 +1079,18 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   /**
    * A file's bytes for a caller that may wait, where the store did not take
-   * them whole (no room, or past what one call carries): read through its
-   * pages at the revision the view has, each held as room allows: a read of
-   * any size answers. DELEGATE where they cannot be.
+   * them whole (it has no room, or the file changed): read through its pages
+   * at the revision the view has, each held as room allows, where the file
+   * is past what one batch read asks (FS_READ_BATCH_REQUEST_BYTES). The
+   * session's whole-file read holds as much of its transient allocation as
+   * the file is (readWholeFile's lease), and none past what one call
+   * carries (MAX_RPC_SAFE_PAYLOAD_BYTES): a page batch never asks more than
+   * a batch read does, and a read of any size answers. A smaller file, or
+   * one whose pages are not at that revision either, is DELEGATE: the
+   * session's read, in one round trip.
    */
   const wholeByPages = (key: string, entry: ResidentEntry): Promise<Uint8Array | Delegate> | Delegate => {
-    if (entry.size === 0) return DELEGATE;
+    if (entry.size <= FS_READ_BATCH_REQUEST_BYTES) return DELEGATE;
     return store.pages(key, entry.revision, entry.size, 0, Math.floor((entry.size - 1) / RESIDENT_PAGE_BYTES)).then((found) => {
       if (found === null) return DELEGATE;
       counts.pagedReads++;
