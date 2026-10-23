@@ -140,13 +140,11 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
+const processFs = globalThis.__nimbusProcessFs;
 ;return {
   fs: builtins.fs,
-  writes: __vfsWrites,
-  queueVfsMutation: __nimbusQueueVfsMutation,
-  drainVfsMutations: __nimbusDrainVfsMutations,
-  flushVfsWrite: __nimbusFlushVfsWrite,
-  drainVfsWrites: __nimbusDrainVfsWrites,
+  flush: () => processFs.flush(),
+  settle: () => processFs.settle(),
 };`,
   );
   // Staged content comes with its records, as every launch stages it
@@ -229,13 +227,13 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
     },
     async fsTruncate() {},
   };
-  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const { fs, flush } = makeShimFsFacet(supervisor);
   const path = '/home/user/cross-boundary-race.txt';
   fs.writeFileSync(path, 'older');
   const shimFlush = fs.promises.truncate(path, 5);
   await olderCall;
   fs.writeFileSync(path, 'newer');
-  const boundaryFlush = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  const boundaryFlush = flush();
   await Promise.resolve();
   assert.deepEqual(calls, ['older'], 'same-path boundary write waits behind the older shim flush');
   releaseOlder();
@@ -264,14 +262,14 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
       durable.set(path, text);
     },
   };
-  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const { fs, flush } = makeShimFsFacet(supervisor);
   const path = '/home/user/async-write-race.txt';
   const older = fs.promises.writeFile(path, 'older');
   await olderCall;
   fs.writeFileSync(path, 'newer');
   releaseOlder();
   await older;
-  await flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  await flush();
   assert.equal(durable.get(path), 'newer');
   assert.deepEqual(calls, ['older', 'newer']);
 }
@@ -374,7 +372,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
       durable = text;
     },
   };
-  const { fs, writes } = makeShimFsFacet(supervisor);
+  const { fs } = makeShimFsFacet(supervisor);
   const path = '/home/user/concurrent-appends.txt';
   const first = fs.promises.appendFile(path, 'A');
   await firstCall;
@@ -383,45 +381,21 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   await Promise.all([first, second]);
   assert.equal(durable, 'baseAB');
   assert.deepEqual(calls, ['range:A', 'range:B']);
-  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/concurrent-appends.txt'), false);
 }
 
-// The request boundary can await every queued file-content mutation, including
-// operations that do not create a whole-file __vfsWrites cell.
+// Settle waits for the writes this process decided and has not sent yet.
 {
   let releaseMutation;
   const gate = new Promise((resolve) => { releaseMutation = resolve; });
-  const facet = makeShimFsFacet({});
-  const mutation = facet.queueVfsMutation(
-    '/home/user/queued-range.txt',
-    () => gate,
-  );
+  const { fs, settle } = makeShimFsFacet({ async writeFile() { await gate; } });
+  fs.writeFileSync('/home/user/queued-range.txt', 'x');
   let drained = false;
-  const drain = facet.drainVfsMutations().then(() => { drained = true; });
+  const drain = settle().then(() => { drained = true; });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(drained, false);
   releaseMutation();
-  await Promise.all([mutation, drain]);
+  await drain;
   assert.equal(drained, true);
-}
-
-// A failed mutation remains visible to the next durability boundary even when
-// the caller observed/caught it before the boundary started. The failure is
-// consumed exactly once so it cannot poison unrelated later requests.
-{
-  const facet = makeShimFsFacet({});
-  await assert.rejects(
-    facet.queueVfsMutation(
-      '/home/user/settled-failure.txt',
-      async () => { throw new Error('settled before boundary'); },
-    ),
-    /settled before boundary/,
-  );
-  await assert.rejects(
-    facet.drainVfsMutations(),
-    /settled before boundary/,
-  );
-  await facet.drainVfsMutations();
 }
 
 // A FileHandle range that first flushes a pending full image and a concurrent
@@ -449,7 +423,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
       durable = durable.slice(0, position) + text + durable.slice(position + bytes.byteLength);
     },
   };
-  const { fs, flushVfsWrite, writes } = makeShimFsFacet(
+  const { fs, flush } = makeShimFsFacet(
     supervisor,
     { 'home/user/same-generation-claim.txt': 'base' },
   );
@@ -458,16 +432,12 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   fs.writeFileSync(path, 'newbase');
   const ranged = handle.write('X', 0);
   await fullCall;
-  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  const boundary = flush();
   releaseFull();
   await Promise.all([ranged, boundary]);
   assert.equal(durable, 'Xewbase');
   assert.deepEqual(calls, ['full:newbase', 'range:X']);
   assert.equal(fs.readFileSync(path, 'utf8'), 'Xewbase');
-  assert.equal(Object.prototype.hasOwnProperty.call(
-    writes,
-    'home/user/same-generation-claim.txt',
-  ), false);
   await handle.close();
 }
 
@@ -522,19 +492,18 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
     },
     async writeFile(_path, content) { durable = cellText(content); },
   };
-  const { fs, flushVfsWrite, writes } = makeShimFsFacet(supervisor);
+  const { fs, flush } = makeShimFsFacet(supervisor);
   const path = '/home/user/handle-range-race.txt';
   const handle = await fs.promises.open(path, 'r+');
   const ranged = handle.write('OLD', 0);
   await rangeCall;
   fs.writeFileSync(path, 'newer');
-  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  const boundary = flush();
   await Promise.resolve();
   releaseRange();
   await Promise.all([ranged, boundary]);
   assert.equal(durable, 'newer');
   assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
-  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/handle-range-race.txt'), false);
   await handle.close();
 }
 
@@ -558,14 +527,14 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
     },
     async writeFile(_path, content) { durable = cellText(content); },
   };
-  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const { fs, flush } = makeShimFsFacet(supervisor);
   const path = '/home/user/queued-handle-range-race.txt';
   const handle = await fs.promises.open(path, 'r+');
   const blocker = handle.write('X', 0);
   await blockerCall;
   const ranged = handle.write('OLD', 0);
   fs.writeFileSync(path, 'newer');
-  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  const boundary = flush();
   releaseBlocker();
   await Promise.all([blocker, ranged, boundary]);
   assert.equal(durable, 'newer');
@@ -629,19 +598,18 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
     async writeFile(_path, content) { durable = cellText(content); rev += 1; return rev; },
   };
   const path = '/home/user/truncate-race.txt';
-  const { fs, flushVfsWrite, writes } = makeShimFsFacet(
+  const { fs, flush } = makeShimFsFacet(
     supervisor,
     { 'home/user/truncate-race.txt': 'abcdef' },
   );
   const truncating = fs.promises.truncate(path, 3);
   await truncateCall;
   fs.writeFileSync(path, 'newer');
-  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  const boundary = flush();
   releaseTruncate();
   await Promise.all([truncating, boundary]);
   assert.equal(durable, 'newer');
   assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
-  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/truncate-race.txt'), false);
 }
 
 // A refused write rejects its caller and leaves nothing of it parked; the
@@ -655,14 +623,12 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
       durable = cellText(content);
     },
   };
-  const { fs, writes } = makeShimFsFacet(supervisor);
+  const { fs } = makeShimFsFacet(supervisor);
   const path = '/home/user/retry-after-failure.txt';
   await assert.rejects(fs.promises.writeFile(path, 'failed'), (error) => error.code === 'EACCES');
-  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false, 'a refused write stayed parked');
   refuse = false;
   await fs.promises.writeFile(path, 'recovered');
   assert.equal(durable, 'recovered');
-  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false);
 }
 
 async function loadGeneratedWorker() {

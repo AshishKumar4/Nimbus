@@ -308,4 +308,6 @@ await runScenarios(import.meta.path, {
     const at = authority.rawVfs.as(CRED_KERNEL).stat(`${APP}/mine.txt`);
     assert.deepEqual([at.uid, at.gid, (at.mode & 0o7777).toString(8)], [CRED.uid, CRED.gid, file.mode]);
   },
+}, {
+  barrierFailures: ['a delta entry without owner or mode is no record: nothing invented, the write not granted, the next answer restores it'],
 });

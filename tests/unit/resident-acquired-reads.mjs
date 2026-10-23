@@ -106,7 +106,7 @@ await runScenarios(import.meta.path, {
   async 'a read answered after a barrier reported its file gone does not bring the name back'() {
     // The session answers the read's content, which is held while a peer
     // deletes the file and a barrier applies the deletion.
-    const h = '/home/user/app/h.txt';
+    const h = '/home/user/elsewhere/h.txt';
     const served = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
@@ -121,11 +121,12 @@ await runScenarios(import.meta.path, {
       },
     }));
     // Made after the launch, so the store holds none of its bytes.
-    await authority.peer.writeFile('home/user/app/h.txt', 'h1');
+    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/elsewhere/h.txt', 'h1');
     armed = true;
     const reading = probe.fs.promises.readFile(h, 'utf8');
     await served.promise;
-    await authority.peer.unlink('home/user/app/h.txt');
+    await authority.peer.unlink('home/user/elsewhere/h.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => appliedCursor() >= deleted, 'the barrier applied the deletion');
@@ -145,7 +146,7 @@ await runScenarios(import.meta.path, {
     const acquired = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
-    const late = '/home/user/app/late.txt';
+    const late = '/home/user/elsewhere/late.txt';
     const { authority, probe } = await boot((forward) => ({
       fsReadBatch: async (...args) => {
         if (armed && args[0].some((request) => request.path.endsWith('/late.txt') && request.lstat !== true)) {
@@ -156,7 +157,8 @@ await runScenarios(import.meta.path, {
         return forward('fsReadBatch', args);
       },
     }));
-    await authority.peer.writeFile('home/user/app/late.txt', 'late');
+    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/elsewhere/late.txt', 'late');
     armed = true;
     const reading = probe.fs.promises.readFile(late, 'utf8');
     await acquired.promise;

@@ -341,7 +341,8 @@ const SCENARIO_TIMEOUT_MS = 60_000;
  * would then pass without having exercised it, which is how a harness that
  * could not serve fsAcquire read as stale bytes rather than as the missing
  * route it was. Unless `barrierFailures` says the file fails barriers on
- * purpose, a scenario in which any barrier failed fails, naming the reason.
+ * purpose (`true`), or names the scenarios that do (a list), a scenario in
+ * which any barrier failed fails, naming the reason.
  */
 export async function runScenarios(file, scenarios, { barrierFailures = false, gaps = {} } = {}) {
   const selected = realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO;
@@ -349,7 +350,8 @@ export async function runScenarios(file, scenarios, { barrierFailures = false, g
     try {
       await scenarios[selected]();
       const stats = coherenceStats();
-      if (!barrierFailures && stats.barrierFailures > 0) {
+      const allowed = barrierFailures === true || (Array.isArray(barrierFailures) && barrierFailures.includes(selected));
+      if (!allowed && stats.barrierFailures > 0) {
         throw new Error(
           `${stats.barrierFailures} barrier(s) did not land; `
           + 'the scenario ran on the failure path, not the delta',

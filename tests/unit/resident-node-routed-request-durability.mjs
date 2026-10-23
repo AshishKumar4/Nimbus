@@ -139,7 +139,7 @@ assert.ok(
     '/first',
   );
   order.push('response');
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 200, await response.clone().text());
   assert.equal(await response.text(), 'ok:/first');
   assert.equal(
     durable.get('home/user/routed-write.txt'),
@@ -164,7 +164,7 @@ assert.ok(
     '/second',
   );
   order.push('response');
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 200, await response.clone().text());
   assert.equal(durable.get('home/user/routed-write.txt'), 'second');
   assert.deepEqual(order, ['write', 'response']);
 }
