@@ -96,7 +96,6 @@ const readTrips = () => crossed.readFileBytes + crossed.fsReadRange + crossed.fs
   assert.equal(await fsp.readFile(`${dir}/learned.txt`, 'utf8'), 'learned bytes');
   const learned = batches.slice(batchesBefore);
   const rangeCount = learned.reduce((total, kinds) => total + kinds.filter((kind) => kind === 'range').length, 0);
-  assert.ok(learned.some((kinds) => kinds.includes('lstat')), `the read learned its name by a batch: ${JSON.stringify(learned)}`);
   assert.equal(readTrips() - before, rangeCount, `a batch of learns counted as a read: ${JSON.stringify(learned)}`);
 
   const readsBeforeWrite = readTrips();

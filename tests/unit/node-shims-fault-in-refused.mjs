@@ -48,10 +48,13 @@ const settled = await Promise.race([
 ]);
 assert.ok(settled, 'every fault-in settles: none waits for room that will not come');
 
+import { recording } from './lib/session-shims.mjs';
+const checks = recording();
 const landed = Object.keys(FILES).filter((name) => {
   try { return fs.readFileSync(`${dir}/${name}`, 'utf8') === FILES[name]; } catch { return false; }
 });
-assert.ok(landed.length > 0, 'the fills the grant covered landed');
-assert.ok(landed.length < Object.keys(FILES).length, `the rest were refused (${landed.length} landed)`);
+await checks.check('the fills the grant covered landed', () => assert.ok(landed.length > 0));
+await checks.check('the rest were refused', () => assert.ok(landed.length < Object.keys(FILES).length, `the rest were refused (${landed.length} landed)`));
 assert.ok(bytes() <= cap(), `and the store holds no more than it was granted (${bytes()} of ${cap()})`);
+checks.finish();
 console.log('node-shims-fault-in-refused: ok');

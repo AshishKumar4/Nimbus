@@ -13,7 +13,8 @@
 
 import assert from 'node:assert/strict';
 import { createAuthority } from './lib/resident-body.mjs';
-import { sessionShims } from './lib/session-shims.mjs';
+import { recording, sessionShims } from './lib/session-shims.mjs';
+const checks = recording();
 
 /** Largest single range read the shim is allowed to request from the supervisor. */
 let maxRangeLength = 0;
@@ -164,10 +165,10 @@ assert.ok(rangeCalls<=7,`5MiB needs at most seven range replies, not ${rangeCall
 
 // 7. A missing file emits 'error' — it must not hang and must not throw
 //    synchronously out of createReadStream.
-await assert.rejects(
+await checks.check('a missing file emits ENOENT', () => assert.rejects(
   withTimeout(collect(fs.createReadStream('/home/user/nope.bin')), 5000, 'missing file'),
   /ENOENT/,
-);
+));
 
 // 8. fs.ReadStream (the exported class graceful-fs re-parents) behaves the same.
 assertBytesEqual(
@@ -201,4 +202,5 @@ assertBytesEqual(
   assert.equal(closed, false, 'a stream that opts out of autoDestroy stays open after end');
 }
 
+checks.finish();
 console.log('node-shims-read-stream: OK');

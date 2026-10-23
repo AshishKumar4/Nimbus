@@ -26,6 +26,23 @@ export function observed(bridge) {
 }
 
 /**
+ * Checks that run to the end of a file even when one fails: each `check` is an
+ * assertion (sync or async) whose failure is kept; `finish` throws them all, so
+ * one run names every failing assertion of the file, not only the first.
+ */
+export function recording() {
+  const failures = [];
+  return {
+    async check(name, run) {
+      try { await run(); } catch (error) { failures.push(`${name}: ${error?.message ?? error}`); }
+    },
+    finish() {
+      if (failures.length > 0) throw new Error(`${failures.length} assertion(s) failed:\n${failures.join('\n')}`);
+    },
+  };
+}
+
+/**
  * The shims of one process in `cwd` on `authority`'s session. Write the
  * session's files before calling: the listing is taken now. `bundle` is what
  * the launch's store holds at boot (cells of the session's own files, at its

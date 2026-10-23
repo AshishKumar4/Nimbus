@@ -12,7 +12,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createAuthority } from './lib/resident-body.mjs';
 import { processBridge } from './lib/process-bridge.mjs';
-import { observed, sessionShims } from './lib/session-shims.mjs';
+import { observed, recording, sessionShims } from './lib/session-shims.mjs';
+const checks = recording();
 import { DO_STORAGE_LIMIT_BYTES } from '../../packages/platform/src/limits.ts';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -157,7 +158,7 @@ assert.throws(() => fs.readSync(wofd, buf, 0, 1, 0), (e) => e.code === 'EBADF');
 fs.closeSync(wofd);
 
 // ── EISDIR ──
-assert.throws(() => fs.openSync('/home/user', 'r'), (e) => e.code === 'EISDIR');
+await checks.check('a sync open of a directory for reading is EISDIR', () => assert.throws(() => fs.openSync('/home/user', 'r'), (e) => e.code === 'EISDIR'));
 
 // ── ftruncateSync shrinks and grows ──
 fs.writeFileSync('/home/user/t2.txt', '0123456789');
@@ -631,4 +632,5 @@ assert.throws(() => fs.linkSync('/home/user/own.txt', '/home/user/own.lnk'), (e)
 const linkErr = await new Promise((res) => fs.link('/home/user/own.txt', '/home/user/own.lnk', (e) => res(e)));
 assert.equal(linkErr.code, 'ENOSYS');
 
+checks.finish();
 console.log('node-shims fd syscalls: OK');

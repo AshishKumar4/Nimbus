@@ -22,6 +22,8 @@ const authority = createAuthority();
 authority.kfs.mkdir('home/user/site', { recursive: true, mode: 0o755 });
 authority.kfs.writeFile('home/user/site/hello.txt', SOURCE);
 
+import { recording } from './lib/session-shims.mjs';
+const checks = recording();
 const { fs, stream } = sessionShims(authority, {
   cwd: '/home/user',
   // A launch's cell runtime defines this stack reader; a standalone factory has none, and a builtin the shims load at start reads it.
@@ -46,7 +48,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     fs.createReadStream('/home/user/site/hello.txt').pipe(out);
   });
   assert.deepEqual(await withTimeout(copied, 5000, "pipe to fs.createWriteStream, waiting on 'close'"), ['finish', 'close']);
-  assert.equal(fs.readFileSync('/home/user/site/copy.txt', 'utf8'), SOURCE, 'the file is written when it closes');
+  await checks.check('the file is written when it closes', () => assert.equal(fs.readFileSync('/home/user/site/copy.txt', 'utf8'), SOURCE));
 }
 
 // ── autoDestroy: false keeps a finished writable open ──────────────────────
@@ -191,7 +193,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     { events: ['finish'], destroyed: true }, 'emitClose: false closes a write stream silently');
   assert.deepEqual(await lifecycle(new fs.WriteStream(target('class'), { autoClose: false }), write),
     { events: ['finish'], destroyed: false }, 'fs.WriteStream reads autoClose too');
-  assert.equal(fs.readFileSync(target('kept'), 'utf8'), 'x');
+  await checks.check('a file written and closed is read back', () => assert.equal(fs.readFileSync(target('kept'), 'utf8'), 'x'));
 }
 
+checks.finish();
 console.log('node-shims-write-stream-close: ok');
