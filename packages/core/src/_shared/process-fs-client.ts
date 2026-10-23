@@ -1347,8 +1347,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // barrier of this process sees.
       endReadLease(owner);
       counters.readRecalls++;
-      // The log first, as a grant's recall sends it: what this process decided before the recall is the session's before the change the recall waits for.
-      await client.flush().catch(() => {});
       try {
         await port.recalled(owner, kind);
       } catch {

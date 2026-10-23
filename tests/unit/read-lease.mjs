@@ -134,8 +134,8 @@ function sequenced(bridge, pid, key, first) {
   assert.equal(kind, 'revoke');
   await sleep(10);
   assert.equal(published, false, 'the write was published before the holder answered its recall');
-  // Not committed ahead of the answer: the write waits for the holder's recall, so another caller that cannot wait reads what is published.
-  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v1', 'the unpublished write is not visible');
+  // Committed ahead of the answer, and held: another caller that cannot wait is refused.
+  assert.throws(() => s.kernel.readFile('home/user/d/a.txt'), (error) => error.code === 'EAGAIN');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v2');
@@ -146,9 +146,7 @@ function sequenced(bridge, pid, key, first) {
   assert.equal(next.readLease, undefined);
 }
 
-// ── A writer that can wait waits for the recall; nothing is published, or seen, before the answer ──
-// Not committed ahead of it (pipelined) and held: the holder's own log, which its answer sends first, is older than
-// the change and lands before it, as Linux orders them; a peer write waits for the holder while a read lease is out.
+// ── A writer that can wait commits ahead of the recall; nothing is published, or seen, before the answer ──
 {
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
@@ -158,30 +156,24 @@ function sequenced(bridge, pid, key, first) {
   const before = s.engine.revision();
   const seen = other.acquire(other.acquire(null).position);
   let published = false;
-  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'waits')).then(() => { published = true; });
+  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'piped')).then(() => { published = true; });
   assert.equal(await reader.awaitRecall(taken.readLease.owner, 1000), 'revoke');
   await sleep(10);
-  // Waiting: no revision, no barrier reports it, and another reads what is published.
+  // Committed, and held: no revision, no barrier reports it, no lease is granted, and another's access waits.
   assert.equal(published, false);
   assert.equal(s.engine.revision(), before, 'the write was published before the reader answered');
   const meanwhile = other.acquire(seen.position, { lease: true });
-  assert.ok(!meanwhile.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'a barrier reported a waiting write');
-  assert.equal(new TextDecoder().decode(await withRecall(() => other.readFile('/home/user/d/a.txt'))), 'v1', 'another read a write not made yet');
+  assert.ok(!meanwhile.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'a barrier reported a held write');
+  assert.equal(meanwhile.readLease, undefined, 'a lease was granted over a held write');
+  let read = null;
+  const reading = withRecall(() => other.readFile('/home/user/d/a.txt')).then((bytes) => { read = bytes; });
+  assert.throws(() => other.writeFile('/home/user/d/a.txt', 'theirs'), (error) => error.code === 'EAGAIN');
+  await sleep(10);
+  assert.equal(read, null, 'another\'s read saw a held write');
   reader.recalled(taken.readLease.owner, 'revoke');
-  // A lease granted meanwhile is recalled too before the write is made (or ended first): no lease vouches for what it changes.
-  if (meanwhile.readLease !== undefined) {
-    const owner = meanwhile.readLease.owner;
-    const answered = (async () => {
-      try {
-        if (await other.awaitRecall(owner, 1000) === 'revoke') other.recalled(owner, 'revoke');
-      } catch (error) {
-        if (error?.code !== 'ESTALE') throw error;
-      }
-    })();
-    await Promise.all([writing, answered]);
-  }
   await writing;
-  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'waits');
+  await reading;
+  assert.equal(new TextDecoder().decode(read), 'piped');
   assert.ok(s.engine.revision() > before);
   assert.ok(other.acquire(seen.position).paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'published, a barrier reports it');
 }

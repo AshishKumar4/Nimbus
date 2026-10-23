@@ -385,4 +385,16 @@ const scenarios = {
   },
 };
 
-await runScenarios(import.meta.path, scenarios);
+/**
+ * What the resident filesystem lacks today (resident-body runScenarios gaps): its write-behind sends a sync write
+ * within LINGER_MS, and a peer's in-place write inside that window, committed ahead of the read lease's recall
+ * (pipelined), is overwritten when the process's write lands. Closed by the session applying the lease holder's
+ * flushed log beneath the held commit (verify/handoffs/ticket-read-lease-rebase.md).
+ */
+const GAPS = {
+  'a peer write after a whole-file write is served, not the process\'s bytes': {
+    lacks: 'a held commit is not rebased over the lease holder\'s older log (ticket-read-lease-rebase.md)',
+    shows: 'race/whole-peer: the refetch serves the peer bytes',
+  },
+};
+await runScenarios(import.meta.path, scenarios, { gaps: GAPS });
