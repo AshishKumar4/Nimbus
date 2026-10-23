@@ -21,6 +21,11 @@ export const TASK_BODY_ERROR_SOURCE = `function __nimbusTaskBodyError(error, req
  */
 export const RUN_ENTERED = 'nimbusRunEntered';
 
+/** Whether `error` is what a task threw once its call entered it (RUN_ENTERED): its own, so never a reason to run it again. */
+export function enteredFailure(error: unknown): boolean {
+  return Reflect.get(Object(error), RUN_ENTERED) === true;
+}
+
 /** Source for the same entries: \`__nimbusEntered(error)\` is \`error\`, as an Error, marked RUN_ENTERED. */
 export const ENTERED_FAILURE_SOURCE = `function __nimbusEntered(error) {
   return Object.assign(error instanceof Error ? error : new Error(String(error)), { ${JSON.stringify(RUN_ENTERED)}: true });

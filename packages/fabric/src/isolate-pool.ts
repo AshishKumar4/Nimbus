@@ -66,7 +66,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import type { EntrypointStub, ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
-import { ENTERED_FAILURE_SOURCE, RUN_ENTERED, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
+import { ENTERED_FAILURE_SOURCE, enteredFailure, RUN_ENTERED, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
 
 /** The one binding a pool needs off whichever env its host hands it. */
@@ -1041,7 +1041,7 @@ export class IsolatePool {
           return await runOnce(null);
         }
         if (err instanceof Error) {
-          throw Object.assign(new ExecutionError(err.message, err.stack), { [RUN_ENTERED]: Reflect.get(err, RUN_ENTERED) === true });
+          throw Object.assign(new ExecutionError(err.message, err.stack), { [RUN_ENTERED]: enteredFailure(err) });
         }
         throw new ExecutionError(String(err));
       } finally {
@@ -1133,7 +1133,8 @@ export class IsolatePool {
           this.slotGenerations.set(slotIndex, generation);
           throw lastError;
         }
-        if (cause === 'clone_refused' && !retriedCloneRefusal) {
+        // A task that threw those words itself ran: only a refusal to clone its call into the worker is retried.
+        if (cause === 'clone_refused' && !retriedCloneRefusal && !enteredFailure(lastError)) {
           retriedCloneRefusal = true;
           const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
           this.slotGenerations.set(slotIndex, generation);

@@ -10,6 +10,8 @@
 //       failure is the caller's;
 //   (2) a call refused before it started is sent again, and its answer is
 //       the caller's.
+// And first, (3): a task that wrote and then threw a clone refusal's words
+// ran once; only a call the platform could not clone into its worker is sent again.
 
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
@@ -68,6 +70,16 @@ const pool = (env) => new IsolatePool(env, { id: { toString: () => `entered-${++
   { tag: 'entered', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 0 });
 
 try {
+  // ── (3) ran, wrote, threw a clone refusal's words: once ───────────────────
+  {
+    globalThis.__poolWrites = 0;
+    const words = 'DataCloneError: Cannot deserialize cloned data.';
+    const { env, calls } = loader(words, 0);
+    const task = facetTaskSource(`async (words) => { globalThis.__poolWrites++; throw new Error(words); }`);
+    await assert.rejects(pool(env).submit(task, words), /Cannot deserialize cloned data/);
+    assert.deepEqual(calls, { refused: 0, entered: 1 }, 'a clone refusal thrown by a task that ran is not sent again');
+    assert.equal(globalThis.__poolWrites, 1, 'its write happened once');
+  }
   for (const words of REFUSALS) {
     // ── (1) ran, wrote, threw the words: once ─────────────────────────────────
     {
