@@ -13,10 +13,10 @@ const supervisor = {
   },
 };
 const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   generateShimsCode() + '\nreturn { http: builtins.http };',
 );
-const { http } = factory({}, {}, {}, supervisor,
+const { http } = factory({}, {}, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
 let acquires = 0, releases = 0;
 globalThis.__nimbusVfsAcquireBarrier = async () => { acquires++; };

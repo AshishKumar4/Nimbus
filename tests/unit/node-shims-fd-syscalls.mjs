@@ -1,99 +1,35 @@
 #!/usr/bin/env bun
 // Behavior tests for the fd syscall surface of the generated Node shims:
 // openSync/readSync/writeSync/fstatSync/ftruncateSync/closeSync plus the
-// async callback forms, driven against the REAL SqliteRuntimeFsBridge.
+// async callback forms, driven against a real session's filesystem.
 //
 // The load-bearing contract is the resident/live boundary. A node facet has
-// no synchronous I/O primitive, so sync reads are served from the resident
-// view (__vfsWrites over __vfsBundle) and content that is only live in
-// SQLite must fail EAGAIN — loudly — instead of returning wrong bytes.
+// no synchronous I/O primitive, so sync reads are served from the process's
+// resident view, and content that is only live in the session must fail
+// EAGAIN — loudly — instead of returning wrong bytes.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { spawnSync } from 'node:child_process';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createAuthority } from './lib/resident-body.mjs';
 import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 import { DO_STORAGE_LIMIT_BYTES } from '../../packages/platform/src/limits.ts';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+const authority = createAuthority();
 // The process's home is its own, and so is everything seeded into it.
-const root = rawVfs.as(CRED_KERNEL);
-root.mkdir('home/user', { recursive: true });
-root.chown('home/user', 1000, 1000);
-const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
-// The supervisor acts as the process's own credential, as SupervisorRPC does,
-// and the tree the process works in is its own: what it writes back is owned
-// by it, and a stat of it says so.
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? new TextDecoder().decode(b) : null; },
-  readFileBytes: (p) => bridge.readFile(p),
-  writeFile: (p, c) => bridge.writeFile(p, c),
-  stat: (p) => bridge.stat(p),
-  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p),
-  exists: async (p) => (await bridge.stat(p)) !== null,
-  mkdir: (p) => bridge.mkdir(p, { recursive: true }),
-  unlink: (p) => bridge.unlink(p),
-  rmdir: (p) => bridge.rmdir(p),
-  rename: (f, t) => bridge.rename(f, t),
-  utimes: (p, a, m) => bridge.utimes(p, a, m),
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
-  fsTruncate: (p, s) => bridge.truncate(p, s),
-  chmod: (p, m) => bridge.chmod(p, m),
-  chown: (p, u, g, o) => bridge.chown(p, u, g, o),
-  fsRemove: (p, o) => bridge.remove(p, o),
-  // The barrier's delta, as every session serves it.
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-
+const vfs = authority.kfs;
+// The tree the process works in is its own: what it writes back is owned by
+// it, and a stat of it says so.
+const bridge = processBridge(authority.rawVfs, authority.rawVfs.as(USER));
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-// __vfsWrites cells are string | Uint8Array by contract (facets/manager.ts).
-const _bytes = (cell) => (typeof cell === 'string' ? enc.encode(cell) : cell);
 
-const bundle = {};
-// The process's cwd, as every launch stages it.
-const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } };
-let writes;
-const dirs = {};
-
-const code = SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START;
-// The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + code +
-    '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins, drain: __nimbusDrainVfsMutations };'
-);
-listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const sandbox = (declareNamespace({ metadata: metadata, manifest: null }), factory(
-  bundle,
-  dirs,
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user',
-  [],
-  {},
-  '/home/user/main.mjs',
-  '/home/user',
-));
-writes = sandbox.writes;
-const fs = sandbox.fs;
-
-vfs.mkdir('home/user', { recursive: true });
-dirs['home/user'] = true;
+const sandbox = sessionShims(authority, {
+  cwd: '/home/user',
+  tail: '\n;return { fs: __fsMod, process: __processMod, builtins };',
+});
+const { fs } = sandbox;
 
 // ── the regression that started this: openSync must exist ──
 for (const name of ['openSync', 'closeSync', 'readSync', 'writeSync', 'fstatSync', 'ftruncateSync']) {
@@ -395,22 +331,19 @@ assert.equal(fs.fstatSync(handle.fd).size, 5, 'sync ops work on a promises-opene
 await handle.close();
 assert.throws(() => fs.fstatSync(handle.fd), (e) => e.code === 'EBADF');
 
-// ── writes are durable through the existing write-back path ──
-// writeSync buffers into __vfsWrites exactly as writeFileSync does. That map
-// IS the contract the facet epilogue consumes: facets/manager.ts drains every
-// cell to supervisor.writeFile() before reporting exit. A facet cannot block
-// on durability, so fsyncSync validates the fd and marks the VFS stale rather
-// than pretending to flush.
+// ── writes are durable through the write-back path ──
+// A synchronous write is held by the process until it is sent; fsyncSync
+// validates the fd and cannot block on durability. The write is read back at
+// once, and reaches the authority with the next async op on its path.
 const dfd = fs.openSync('/home/user/durable.txt', 'w');
 fs.writeSync(dfd, 'persisted');
 fs.fsyncSync(dfd);
 fs.closeSync(dfd);
-assert.equal(dec.decode(_bytes(writes['home/user/durable.txt'])), 'persisted',
-  'sync writes are staged in __vfsWrites for the epilogue drain');
+assert.equal(fs.readFileSync('/home/user/durable.txt', 'utf8'), 'persisted',
+  'a sync write is read back at once, before it reaches the authority');
 
-// Any async op touching the same path drains it early, and then SQLite has it.
+// Any async op touching the same path sends it first, and then SQLite has it.
 await fs.promises.truncate('/home/user/durable.txt', 9);
-assert.equal(writes['home/user/durable.txt'], undefined, 'the staged cell was flushed');
 assert.equal(dec.decode(await bridge.readFile('/home/user/durable.txt')), 'persisted',
   'sync writes reach the live VFS');
 
@@ -621,7 +554,7 @@ fs.rmSync('/home/user/od-copy', { recursive: true });
 assert.equal(fs.existsSync('/home/user/od-copy'), false);
 assert.equal(fs.existsSync('/home/user/od-copy/sub/b.txt'), false);
 assert.throws(() => fs.readdirSync('/home/user/od-copy'), (e) => e.code === 'ENOENT' || e.code === 'EAGAIN');
-await sandbox.drain(); // every queued authority mutation has landed
+await sandbox.rf.flush(); // every held mutation has been sent and answered
 assert.equal(await bridge.stat('/home/user/od-copy'), null, 'the tree is gone from the live VFS');
 assert.equal(await bridge.stat('/home/user/od-copy/sub/b.txt'), null);
 assert.throws(() => fs.rmSync('/home/user/never-there'), (e) => e.code === 'ENOENT');

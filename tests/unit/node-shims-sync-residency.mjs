@@ -26,19 +26,8 @@
 //      recorded, because a missing file is not a residency failure.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+import { createAuthority } from './lib/resident-body.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 
 const dir = '/home/user/example-app';
 const resident = `${dir}/resident.json`;
@@ -52,65 +41,40 @@ const STAGED_BODY = 'the bytes only an async read can reach at first';
 const SECOND_BODY = 'a second data file, refused three times';
 const THIRD_BODY = 'answered only through the async form';
 
-vfs.mkdir(dir, { recursive: true });
-vfs.writeFile(resident, enc.encode(RESIDENT_BODY));
-vfs.writeFile(staged, enc.encode(STAGED_BODY));
-vfs.writeFile(alsoStaged, enc.encode(SECOND_BODY));
-vfs.writeFile(asyncOnly, enc.encode(THIRD_BODY));
+const key = (path) => path.replace(/^\/+/, '');
 
-const supervisor = {
-  readFile: async (path) => {
-    const bytes = await bridge.readFile(path);
-    return bytes ? dec.decode(bytes) : null;
-  },
-  stat: (path) => bridge.stat(path),
-  lstat: (path) => bridge.stat(path, { followSymlinks: false }),
-  readdir: (path) => bridge.readdir(path),
-  exists: async (path) => (await bridge.stat(path)) !== null,
-  fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
-};
+const authority = createAuthority();
+authority.kfs.mkdir(dir.slice(1), { recursive: true, mode: 0o755 });
+authority.kfs.writeFile(key(resident), RESIDENT_BODY);
+authority.kfs.writeFile(key(staged), STAGED_BODY);
+authority.kfs.writeFile(key(alsoStaged), SECOND_BODY);
+authority.kfs.writeFile(key(asyncOnly), THIRD_BODY);
 
-const statOf = (path, size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gid: 1000 });
+// The fetches the session is asked for, by file: each fault-in's ranged reads.
+const fetched = new Map();
 
 // The bundle carries `resident.json` and NOT the two data files. That is the
 // condition under test: the existence views know all three, the content view
 // knows one.
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
-    '\n;return { fs: __fsMod };',
-);
-const { fs } = (declareNamespace({ metadata: {
-    'home/user/example-app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
-    'home/user/example-app/resident.json': statOf(resident, RESIDENT_BODY.length),
-    'home/user/example-app/lib.data.d.ts': statOf(staged, STAGED_BODY.length),
-    'home/user/example-app/second.data': statOf(alsoStaged, SECOND_BODY.length),
-    'home/user/example-app/third.data': statOf(asyncOnly, THIRD_BODY.length),
-  }, manifest: {
-    'home/user': ['app'],
-    'home/user/example-app': ['resident.json', 'lib.data.d.ts', 'second.data', 'third.data'],
-  } }), factory(
-  { 'home/user/example-app/resident.json': RESIDENT_BODY },
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/entry.js`,
-  dir,
-));
-
-/** The ledger the runner reads at exit to decide whether the run was honest. */
-const missed = () => [...(globalThis.__nimbusVfsResidencyMisses || [])];
-
-const settle = async (times = 8) => {
-  for (let i = 0; i < times; i++) await new Promise((r) => setTimeout(r, 0));
-};
+const { fs, rf } = sessionShims(authority, {
+  bundle: { [key(resident)]: RESIDENT_BODY },
+  cwd: dir,
+  overrides: (call) => ({
+    fsReadBatch: (requests) => {
+      for (const request of requests) {
+        if (request.lstat === true) continue;
+        const path = key(request.path);
+        fetched.set(path, (fetched.get(path) ?? 0) + 1);
+      }
+      return call('fsReadBatch', [requests]);
+    },
+  }),
+  tail: ';return { fs: __fsMod };',
+});
 
 // ── 1. A resident read is not a miss ────────────────────────────────────────
 assert.equal(fs.readFileSync(resident, 'utf8'), RESIDENT_BODY);
-assert.deepEqual(missed(), [], 'a read the bundle served must not be recorded as a miss');
+assert.deepEqual(await rf.misses(), [], 'a read the bundle served must not be recorded as a miss');
 
 // ── 2. An absent path stays ENOENT and is not recorded ──────────────────────
 // The previous behaviour answered EVERY unserved read with ENOENT, and that is
@@ -119,7 +83,7 @@ let absentError = null;
 try { fs.readFileSync(absent, 'utf8'); } catch (error) { absentError = error; }
 assert.ok(absentError, 'reading a file that does not exist must throw');
 assert.equal(absentError.code, 'ENOENT', 'a file that is genuinely gone is ENOENT, not EAGAIN');
-assert.deepEqual(missed(), [], 'a missing file is not a residency failure');
+assert.deepEqual(await rf.misses(), [], 'a missing file is not a residency failure');
 
 // ── 3. A non-resident read: EAGAIN, named, and recorded ─────────────────────
 let missError = null;
@@ -132,7 +96,7 @@ assert.ok(
   `the error must name the file it could not read: ${missError.message}`,
 );
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts'],
+  await rf.misses(), [key(staged)],
   'the miss must be recorded so the run can be failed by name instead of ending quietly',
 );
 
@@ -141,7 +105,6 @@ assert.deepEqual(
 // that reads the same file twice — or a later phase that reaches it for the
 // first time — must not be refused for a reason already repaired. But the
 // first refusal stands: what the program did with it is not undone.
-await settle();
 assert.equal(
   fs.readFileSync(staged, 'utf8'), STAGED_BODY,
   'the miss must have made the content resident for the next read',
@@ -149,28 +112,21 @@ assert.equal(
 assert.equal(fs.existsSync(staged), true);
 assert.equal(fs.statSync(staged).size, STAGED_BODY.length);
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts'],
+  await rf.misses(), [key(staged)],
   'a later synchronous answer does not clear the refusal the program may have built on',
 );
 
 // ── 5. Repeated misses cost one fetch per path, not one per read ────────────
-let rangeCalls = 0;
-const countingReadRange = supervisor.fsReadRange;
-supervisor.fsReadRange = (path, offset, length) => {
-  rangeCalls++;
-  return countingReadRange(path, offset, length);
-};
 for (let i = 0; i < 3; i++) {
   try { fs.readFileSync(alsoStaged, 'utf8'); } catch { /* the miss under test */ }
 }
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
+  await rf.misses(), [key(staged), key(alsoStaged)],
   'three refused reads of one path are one unanswered path',
 );
-await settle();
 assert.equal(
-  rangeCalls, 1,
-  `a repeated miss must not re-fetch: the ledger is the dedupe (saw ${rangeCalls} fetches)`,
+  fetched.get(key(alsoStaged)), 1,
+  `a repeated miss must not re-fetch: the ledger is the dedupe (saw ${fetched.get(key(alsoStaged)) ?? 0} fetches)`,
 );
 
 // ── 6. Repair behind the program's back does not clear the record ───────────
@@ -178,7 +134,7 @@ assert.equal(
 // was never handed those bytes. It read three times and got nothing three
 // times, so the run is not honest and must not be allowed to end quietly.
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
+  await rf.misses(), [key(staged), key(alsoStaged)],
   'residency repaired after the fact does not un-answer the reads that failed',
 );
 
@@ -193,29 +149,29 @@ assert.equal(
   'a path the supervisor can see is present, not missing',
 );
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data', 'home/user/example-app/third.data'],
+  await rf.misses(), [key(staged), key(alsoStaged), key(asyncOnly)],
   'each unanswered path is listed once, in the order the program hit them',
 );
 assert.equal(await fs.promises.readFile(asyncOnly, 'utf8'), THIRD_BODY);
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
+  await rf.misses(), [key(staged), key(alsoStaged)],
   'the async form is the documented remedy, so taking it must settle that miss',
 );
 assert.equal(fs.readFileSync(alsoStaged, 'utf8'), SECOND_BODY);
 assert.deepEqual(
-  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
+  await rf.misses(), [key(staged), key(alsoStaged)],
   'a retried sync read that succeeds does not settle the read that was refused',
 );
 assert.equal(await fs.promises.readFile(staged, 'utf8'), STAGED_BODY);
 assert.equal(await fs.promises.readFile(alsoStaged, 'utf8'), SECOND_BODY);
-assert.deepEqual(missed(), [], 'the async form settles each of them');
+assert.deepEqual(await rf.misses(), [], 'the async form settles each of them');
 
-// ── 8. The miss count is reported alongside the other coherence numbers ─────
+// ── 8. The refusals are counted alongside the other filesystem numbers ──────
 // Whether residency is working is a measurement, not an opinion, and it rides
-// the ledger the fills and invalidations already ride.
+// the counters the filesystem keeps (ResidentFilesystem.stats).
 assert.ok(
-  globalThis.__nimbusVfsCoherence.misses >= 3,
-  'every recorded miss must also be counted',
+  rf.stats().notResident >= 3,
+  'every refused read must also be counted',
 );
 
 console.log('node-shims-sync-residency: all tests passed');

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // The RELEASE barrier ahead of egress must be BOUNDED.
 //
-// It was not, and it took `npx sv create` off main: RELEASE awaited
-// `__nimbusDrainVfsWrites`, which ends with `while (pendingMutations > 0)`.
+// It was not, and it took `npx sv create` off main: RELEASE waited for every
+// parked write to drain, which ends with `while (pendingMutations > 0)`.
 // That wait is right at process exit, where no new writes are coming, and is a
 // livelock anywhere else — a facet unpacking a tarball adds mutations faster
 // than the loop retires them. Sited ahead of egress it meant the request never
@@ -14,21 +14,16 @@
 // keep landing for as long as the fetch is outstanding.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { processBridge } from './lib/process-bridge.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
 const dec = new TextDecoder();
 const dir = '/home/user/t';
-vfs.mkdir(dir, { recursive: true });
+const authority = createAuthority();
+authority.kfs.mkdir(dir.slice(1), { recursive: true, mode: 0o755 });
+const bridge = processBridge(authority.rawVfs, authority.rawVfs.as(CRED_KERNEL));
 
 // The authority is a round trip away. Latency is what makes the starvation
 // real: with an instant supervisor the drain always outpaces the writer, and
@@ -39,20 +34,6 @@ const wait = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
 const LATENCY_MS = 20;
 const slow = (fn) => async (...args) => { await wait(LATENCY_MS); return fn(...args); };
 
-const supervisor = {
-  readFile: slow(async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; }),
-  writeFile: slow((p, c) => bridge.writeFile(p, c)),
-  stat: slow((p) => bridge.stat(p)),
-  lstat: slow((p) => bridge.stat(p, { followSymlinks: false })),
-  readdir: slow((p) => bridge.readdir(p)),
-  exists: slow(async (p) => (await bridge.stat(p)) !== null),
-  access: slow((p, m) => bridge.access(p, m)),
-  mkdir: slow((p) => bridge.mkdir(p, { recursive: true })),
-  fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
-  fsAcquire: slow((position) => bridge.acquire(position)),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
 globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});
 
@@ -66,22 +47,15 @@ globalThis.fetch = async () => {
   return new Response('ok');
 };
 
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
-    '\n;return { fs: __fsMod, fetch: globalThis.fetch };',
-);
-const out = (declareNamespace({ metadata: { 'home/user/t': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { 'home/user': ['t'], 'home/user/t': [] } }), factory(
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/s.mjs`,
-  dir,
-));
+const out = sessionShims(authority, {
+  cwd: dir,
+  overrides: (call) => ({
+    fsAcquire: slow((...args) => call('fsAcquire', args)),
+    fsReadBatch: slow((...args) => call('fsReadBatch', args)),
+    writeBatchStream: slow((...args) => call('writeBatchStream', args)),
+  }),
+  tail: '\n;return { fs: __fsMod, fetch: globalThis.fetch };',
+});
 const { fs } = out;
 
 // Writes are already parked when the request is issued, and more keep landing
