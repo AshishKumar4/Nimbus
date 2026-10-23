@@ -1864,12 +1864,12 @@ const RUNNER_DROPPED = "the platform dropped the runner's idle worker";
 /** The entry code a runner's bundle is built for: none of its own, under a key of its own (_buildProcessBundle). */
 const RUNNER_ENTRY = '// a Nimbus runner: each call runs its code as a REPL line\n';
 /**
- * The text a runner's answer may carry in each of value, stdout and stderr:
- * a sixth of what one RPC answer may hold, at two bytes a character. Past it
- * the text is cut, and says so; an answer over the RPC limit would lose the
- * runner.
+ * The text a runner's answer may carry in each of its five texts (value,
+ * stdout, stderr, the error's message and stack): a tenth of what one RPC
+ * answer may hold, at two bytes a character. Past it the text is cut, and
+ * says so; an answer over the RPC limit would lose the runner.
  */
-const RUNNER_ANSWER_TEXT_CHARS = Math.floor(MAX_RPC_SAFE_PAYLOAD_BYTES / 6);
+const RUNNER_ANSWER_TEXT_CHARS = Math.floor(MAX_RPC_SAFE_PAYLOAD_BYTES / 10);
 /**
  * Generate a runner's main module (FacetManager.runnerRun): a node process
  * that runs no entry. Its generation's first call starts it as a one-shot
@@ -1999,6 +1999,10 @@ ${nodeProgramRuntime(sources, false)}
     // ends, and no later call waits for it.
     __pendingIO.length = 0;
     if (exited === undefined && __nimbusProcessExitCode !== null) exited = __nimbusProcessExitCode;
+    if (error !== undefined) {
+      error.message = __runnerFit(error.message);
+      if (error.stack !== undefined) error.stack = __runnerFit(error.stack);
+    }
     return { value: value === undefined ? undefined : __runnerFit(value), stdout: __runnerFit(stdout), stderr: __runnerFit(stderr), error, exited };
   };
 }
@@ -4754,10 +4758,12 @@ export class FacetManager {
     launching = new Map();
     launchTasks = new Set();
     launchesClosed = false;
-    /** The session's runners, by id (runnerRun). */
+    /** The session's runners, by owner and id (runnerRun). */
     runners = new Map();
     /** Names this incarnation's runner workers: a later one never enters them, whose SUPERVISOR names this one. */
     runnerIncarnation = crypto.randomUUID();
+    /** Runner generations this incarnation has made: each one's Loader key is its number, never another's. */
+    runnerGenerations = 0;
     // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
     // spawn created as an OS-child of the attach TUI. When the attach process
     // exits (reported / killed), its serve facet is torn down with it.
@@ -7249,7 +7255,7 @@ export class FacetManager {
         const key = runnerOptionsKey(asked);
         let runner = this.runners.get(name);
         if (runner === undefined) {
-            runner = { asked: key, spec: resolve(), queue: Promise.resolve(), generations: 0, live: null, closed: false };
+            runner = { asked: key, spec: resolve(), queue: Promise.resolve(), live: null, starting: null, closed: false };
             this.runners.set(name, runner);
         }
         else if (runner.asked !== key) {
@@ -7257,7 +7263,11 @@ export class FacetManager {
         }
         const record = runner;
         const call = record.queue.then(() => this._runnerCall(id, record, code, options));
-        record.queue = call.then(() => { }, () => { });
+        // A launch's work, which closeLaunches waits for.
+        const task = call.then(() => { }, () => { });
+        record.queue = task;
+        this.launchTasks.add(task);
+        void task.then(() => this.launchTasks.delete(task));
         return call;
     }
     /**
@@ -7272,12 +7282,21 @@ export class FacetManager {
         this._runnerDiscard(name, runner);
         return true;
     }
-    /** `runner`, under `name`, is gone: no call runs on it again, and the one it runs is ended. */
+    /**
+     * `runner`, under `name`, is gone: no call runs on it again, the one it
+     * runs is ended, and so is a generation being made for it.
+     */
     _runnerDiscard(name, runner) {
         this.runners.delete(name);
         runner.closed = true;
-        runner.live?.call?.abort(new RunnerCallEnded('closed'));
-        this._runnerRetire(runner, { code: exitCodeForSignal('TERM'), killed: true });
+        const ending = { code: exitCodeForSignal('TERM'), killed: true };
+        if (runner.starting !== null)
+            this._end(runner.starting, ending);
+        const live = runner.live;
+        if (live === null)
+            return;
+        live.call?.abort(new RunnerCallEnded('closed'));
+        this._runnerRetire(runner, live, ending);
     }
     async _runnerCall(id, runner, code, options) {
         const began = Date.now();
@@ -7287,12 +7306,12 @@ export class FacetManager {
                 throw new Error(`runner '${id}' was closed`);
             // Its process ended between calls (a kill, the session's teardown): that generation is over.
             if (runner.live !== null && this.processes.get(runner.live.pid)?.state !== 'running')
-                this._runnerRetire(runner, { code: 0 });
+                this._runnerRetire(runner, runner.live, { code: 0 });
             const generation = runner.live ?? await this._runnerGeneration(id, runner);
             runner.live = generation;
-            if (runner.closed || this.launchesClosed) {
-                this._runnerRetire(runner, { code: exitCodeForSignal('TERM'), killed: true });
-                throw new Error(`runner '${id}' was closed`);
+            if (runner.closed || this.launchesClosed || this.processes.get(generation.pid)?.state !== 'running') {
+                this._runnerRetire(runner, generation, { code: exitCodeForSignal('TERM'), killed: true });
+                throw new Error(`runner '${id}' was closed, or its process ended, as it started`);
             }
             const ended = new AbortController();
             generation.call = ended;
@@ -7305,13 +7324,13 @@ export class FacetManager {
                 // An isolate the platform started again, with none of what the
                 // generation held: a new one runs the call.
                 if ('unstarted' in answer) {
-                    this._runnerRetire(runner, { code: 1, cause: RUNNER_DROPPED });
+                    this._runnerRetire(runner, generation, { code: 1, cause: RUNNER_DROPPED });
                     continue;
                 }
-                generation.launch = null;
+                this._runnerLaunched(generation);
                 const ms = Date.now() - began;
                 if (answer.exited !== undefined) {
-                    this._runnerRetire(runner, { code: answer.exited });
+                    this._runnerRetire(runner, generation, { code: answer.exited });
                     return { stdout: answer.stdout, stderr: answer.stderr, error: runnerExited(answer.exited), fresh, ms };
                 }
                 return { value: answer.value, stdout: answer.stdout, stderr: answer.stderr, error: answer.error, fresh, ms };
@@ -7321,7 +7340,7 @@ export class FacetManager {
                 // The loader asked again for a worker that had answered: it dropped
                 // it while idle, with what it held. A new one runs the call.
                 if (generation.dropped && !fresh) {
-                    this._runnerRetire(runner, { code: 1, cause: RUNNER_DROPPED });
+                    this._runnerRetire(runner, generation, { code: 1, cause: RUNNER_DROPPED });
                     continue;
                 }
                 // Refused before its worker began it (the ledger's deadlock, the
@@ -7329,12 +7348,12 @@ export class FacetManager {
                 // the call's, as a launch's is.
                 if (!entered && (isDynamicWorkerDeadlock(error) || classifyError(error) === 'dynamic_worker_cap'))
                     throw error;
-                const failure = runnerFailure(error, cpuMs, entered);
                 // A wall limit that came while it waited for a worker loses nothing,
                 // unless the generation never started (its launch's hold goes too).
                 const kept = !entered && error instanceof RunnerCallEnded && error.why === 'timeout' && !fresh;
+                const failure = runnerFailure(error, cpuMs, !kept);
                 if (!kept)
-                    this._runnerRetire(runner, { code: 1, cause: failure.message });
+                    this._runnerRetire(runner, generation, { code: 1, cause: failure.message });
                 return { stdout: '', stderr: '', error: failure, fresh, ms: Date.now() - began };
             }
             finally {
@@ -7349,8 +7368,13 @@ export class FacetManager {
      */
     async _runnerGeneration(id, runner) {
         const { spec } = runner;
-        const number = ++runner.generations;
         const entry = this.processes.spawn(`node (runner ${id})`, [], spec.cwd, { cred: spec.cred, ...(spec.execId === undefined ? {} : { execId: spec.execId }) });
+        runner.starting = entry.pid;
+        // A kill ends the call it runs; between calls, the next call finds its process ended.
+        this.processes.setTerminator(entry.pid, () => {
+            if (runner.live?.pid === entry.pid)
+                runner.live.call?.abort(new RunnerCallEnded('killed'));
+        });
         const pacer = this._launchPacer(entry.pid);
         const bundleSpec = { scriptPath: undefined, cwd: spec.cwd, entryCode: RUNNER_ENTRY };
         const prepare = (state) => this._prepareUnderCredit(entry, bundleSpec, pacer, state, (current) => this._prepareOneShotCode(RUNNER_ENTRY, { cwd: spec.cwd }, entry, current, pacer, undefined, generateRunnerCode));
@@ -7368,7 +7392,7 @@ export class FacetManager {
             const generation = {
                 pid: entry.pid,
                 writerId,
-                key: `runner:${this.ctx.id.toString()}:${this.runnerIncarnation}:${id}:${number}`,
+                key: `runner:${this.ctx.id.toString()}:${this.runnerIncarnation}:${++this.runnerGenerations}`,
                 call: null,
                 dropped: false,
                 launch: {
@@ -7385,8 +7409,6 @@ export class FacetManager {
                     pacer,
                 },
             };
-            // A kill ends the call it runs; between calls, the next call finds its process ended.
-            this.processes.setTerminator(entry.pid, () => generation.call?.abort(new RunnerCallEnded('killed')));
             return generation;
         }
         catch (error) {
@@ -7395,6 +7417,9 @@ export class FacetManager {
             this._releaseBuildAdmission(entry.pid);
             this._end(entry.pid, { code: 1, cause: `runner '${id}' could not start: ${errorMessage(error)}` });
             throw error;
+        }
+        finally {
+            runner.starting = null;
         }
     }
     /**
@@ -7448,15 +7473,22 @@ export class FacetManager {
             }
         }
     }
-    /** `runner`'s generation is over: its process ends with `ending`, and what it held goes. */
-    _runnerRetire(runner, ending) {
-        const generation = runner.live;
-        if (generation === null)
-            return;
-        runner.live = null;
+    /** `generation`'s process has started: what its first load and start took goes. */
+    _runnerLaunched(generation) {
         generation.launch?.pacer.settle();
-        this.launchBundles.delete(generation.pid);
+        generation.launch = null;
         this._releaseBuildAdmission(generation.pid);
+    }
+    /**
+     * `generation` of `runner` is over: its process ends with `ending`, and
+     * what it held goes. Each step is a no-op the second time, so the call
+     * that lost it and a close may both retire it.
+     */
+    _runnerRetire(runner, generation, ending) {
+        if (runner.live === generation)
+            runner.live = null;
+        this._runnerLaunched(generation);
+        this.launchBundles.delete(generation.pid);
         this.revokeProcessVfsWriters(generation.pid, generation.writerId);
         this._end(generation.pid, ending);
     }

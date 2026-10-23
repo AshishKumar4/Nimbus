@@ -1248,10 +1248,12 @@ export declare class FacetManager {
     private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
-    /** The session's runners, by id (runnerRun). */
+    /** The session's runners, by owner and id (runnerRun). */
     private readonly runners;
     /** Names this incarnation's runner workers: a later one never enters them, whose SUPERVISOR names this one. */
     private readonly runnerIncarnation;
+    /** Runner generations this incarnation has made: each one's Loader key is its number, never another's. */
+    private runnerGenerations;
     private _pairedServeFacet;
     private readonly launchBundles;
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
@@ -1932,7 +1934,10 @@ export declare class FacetManager {
      * is ended as a kill ends one, and the calls still in its line are refused.
      */
     runnerClose(owner: string, id: string): boolean;
-    /** `runner`, under `name`, is gone: no call runs on it again, and the one it runs is ended. */
+    /**
+     * `runner`, under `name`, is gone: no call runs on it again, the one it
+     * runs is ended, and so is a generation being made for it.
+     */
     private _runnerDiscard;
     private _runnerCall;
     /**
@@ -1948,7 +1953,13 @@ export declare class FacetManager {
      * after that holds only its worker.
      */
     private _runnerEnter;
-    /** `runner`'s generation is over: its process ends with `ending`, and what it held goes. */
+    /** `generation`'s process has started: what its first load and start took goes. */
+    private _runnerLaunched;
+    /**
+     * `generation` of `runner` is over: its process ends with `ending`, and
+     * what it held goes. Each step is a no-op the second time, so the call
+     * that lost it and a close may both retire it.
+     */
     private _runnerRetire;
     /** End every runner, and each call it runs: the session is closing (closeLaunches). */
     private _closeRunners;

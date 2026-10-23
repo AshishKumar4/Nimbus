@@ -583,8 +583,7 @@ export interface OneShotParams {
  * One call on a runner: a keyed dynamic worker its owner calls again and
  * again, which holds no request between calls. Its module scope lives as
  * long as the platform keeps its isolate, so what one call leaves there the
- * next call finds; the owner tells a lost isolate by the boot id each
- * answer carries.
+ * next call finds.
  */
 export interface RunnerCallParams<I extends object> {
     /** The runner's process: the identity its SUPERVISOR binding acts as. */

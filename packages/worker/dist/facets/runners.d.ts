@@ -59,11 +59,12 @@ export declare class RunnerCallEnded extends Error {
 /** The error a call answers when its code called process.exit(`code`), which ends its runner. */
 export declare function runnerExited(code: number): SessionRunnerError;
 /**
- * The error a call answers when its runner was lost while it ran: by the
- * call's own CPU limit (`cpuMs`), its wall limit, a kill or a close
- * (RunnerCallEnded), the platform's memory limit, or any other failure of its
- * worker. A call whose wall limit came before its worker began it
- * (`entered` false) ran nothing, and its runner keeps its state.
+ * The error a call answers when it failed: by its own CPU limit (`cpuMs`),
+ * its wall limit, a kill or a close (RunnerCallEnded), the platform's memory
+ * limit, or any other failure of its worker. Every one ends its runner
+ * (`ended`) but a wall limit that came before the worker began a call of a
+ * runner that had started: that call ran nothing, and the runner keeps its
+ * state.
  */
-export declare function runnerFailure(error: Error, cpuMs: number, entered: boolean): SessionRunnerError;
+export declare function runnerFailure(error: Error, cpuMs: number, ended: boolean): SessionRunnerError;
 //# sourceMappingURL=runners.d.ts.map
