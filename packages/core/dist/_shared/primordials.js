@@ -409,15 +409,52 @@ export const promiseThen = uncurryThis(Promise.prototype.then);
 export const promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
 /** `Promise.reject(reason)`, of the launch's Promise. */
 export const promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+// The realm's own finally, all and race, called where nothing they reach was
+// replaced: an engine may settle them in fewer turns than their composition
+// from then (JSC does), and the process's filesystem keeps the turns it had.
+const PromisePrototype = Promise.prototype;
+const ArrayPrototype = Array.prototype;
+const symbolSpecies = Symbol.species;
+const PromisePrototypeFinally = Promise.prototype.finally;
+const PromiseAllOf = Promise.all;
+const PromiseRaceOf = Promise.race;
+const PromiseSpecies = reflectGetOwnPropertyDescriptor(Promise, Symbol.species)?.get;
+/** Whether `object`'s own `key` is still the data property `value`: read without calling an accessor a program put there. */
+function stillOwn(object, key, value) {
+    const descriptor = reflectGetOwnPropertyDescriptor(object, key);
+    return descriptor !== undefined && descriptor.value === value;
+}
+/** Whether what the realm's finally reaches is as the launch found it: then, the constructor and its species. */
+function promisesAsFound() {
+    if (!stillOwn(PromisePrototype, 'then', PromisePrototypeThen) || !stillOwn(PromisePrototype, 'constructor', PromiseConstructor))
+        return false;
+    const species = reflectGetOwnPropertyDescriptor(PromiseConstructor, symbolSpecies);
+    return species !== undefined && species.get === PromiseSpecies;
+}
+/** And what its all and race reach besides: Promise.resolve and an array's iterator. */
+function combinatorsAsFound() {
+    return promisesAsFound() && stillOwn(PromiseConstructor, 'resolve', PromiseResolve) && stillOwn(ArrayPrototype, symbolIterator, ArrayValues)
+        && stillOwn(ArrayIteratorPrototype, 'next', ArrayIteratorNext);
+}
 /** Settled as the first of `list` to settle: Promise.race, without the list's iterator or the program's Promise.resolve and then. */
 export function promiseRace(list) {
+    if (combinatorsAsFound())
+        return reflectApply(PromiseRaceOf, PromiseConstructor, [arrayCopy(list)]);
     return new PromiseConstructor((resolve, reject) => {
         for (let i = 0; i < list.length; i++)
             reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [resolve, reject]);
     });
 }
-/** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
+/** What each of `list` fulfilled with, or the first rejection: Promise.all as the realm runs it where nothing it reaches was replaced, else promiseAll. */
+export function promiseAllAsFound(list) {
+    if (combinatorsAsFound())
+        return reflectApply(PromiseAllOf, PromiseConstructor, [arrayCopy(list)]);
+    return promiseAll(list);
+}
+/** `promise.finally(onFinally)`: the realm's own where nothing it reaches was replaced, else as Promise.prototype.finally runs it, on the captures. */
 export function promiseFinally(promise, onFinally) {
+    if (promisesAsFound())
+        return reflectApply(PromisePrototypeFinally, promise, [onFinally]);
     return promiseThen(promise, (value) => promiseThen(promiseResolve(onFinally()), () => value), (reason) => promiseThen(promiseResolve(onFinally()), () => { throw reason; }));
 }
 /** A SafeSet of `list`'s members, in its order: `new Set(list)` without the list's iterator. */

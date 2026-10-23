@@ -21,7 +21,7 @@ import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { S_IFMT } from '@nimbus-sh/core/vfs/vfs.js';
 import { floorFor, isFeedPosition, notAfter, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsKey, nsRowAt } from './namespace.js';
-import { arrayCopy, arrayIncludes, arrayIsArray, mapKeyList, NumberOf, objectHasOwn, ownValue, promiseAll, promiseFinally, promiseResolve, promiseThen, SafeList, SafeMap, stringOf, stringStartsWith, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayCopy, arrayIncludes, arrayIsArray, mapKeyList, newTextEncoder, NumberOf, objectHasOwn, ownValue, promiseAllAsFound, promiseFinally, promiseResolve, promiseThen, SafeList, SafeMap, stringOf, stringStartsWith, textEncoderEncode, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
 import { groupsOf } from './permissions.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE } from './tables.js';
 /** A row's exact type, as readdir's d_type names it: a file's by its mode's format bits (a device's, a FIFO's, a socket's). */
@@ -138,7 +138,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
             if (known === undefined || known.rev < (NumberOf(root.revision) || 0))
                 namespace.setRoot(root, root.revision);
             namespace.setCred(cred);
-            const encoder = new TextEncoder();
+            const encoder = newTextEncoder();
             const typeOf = (kind) => (kind === NS_DIR ? 'directory' : kind === NS_LINK ? 'symlink' : 'file');
             /** What an ACQUIRE is asked with: the store's cursor, and the push roots it keeps (sync.acquireOptions). */
             const argsNow = () => {
@@ -305,7 +305,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                         const waits = new SafeList();
                         waits[0] = newer !== undefined && newer !== record ? newer.read : undefined;
                         waits[1] = repairing ?? undefined;
-                        return promiseAll(waits);
+                        return promiseAllAsFound(waits);
                     }), () => undefined, () => undefined), () => { if (refetching.get(k) === record)
                         refetching.delete(k); });
                     refetching.set(k, record);
@@ -387,7 +387,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 const waits = refetch(again);
                 for (let i = 0; i < joined.length; i++)
                     waits[waits.length] = joined[i];
-                await promiseAll(waits);
+                await promiseAllAsFound(waits);
                 return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
             };
             /** The barrier on a namespace listed on demand: one it cannot apply starts it again from nothing. */
@@ -440,7 +440,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cell = cells.get(k);
                     if (cell === undefined || (typeof cell === 'object' && objectHasOwn(cell, 'error')))
                         return undefined;
-                    return typeof cell === 'string' ? encoder.encode(cell) : cell;
+                    return typeof cell === 'string' ? textEncoderEncode(encoder, cell) : cell;
                 },
                 async fill(k, entry) {
                     const cursor = coherence.cursor();

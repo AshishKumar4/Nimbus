@@ -47,7 +47,7 @@ import { readDirectoryPool } from './read-directory-pool.js';
 import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
 import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
-import { arrayCopy, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, mathFloor, mathMax, mathMin, NumberOf, objectCreate, objectHasOwn, ObjectPrototype, ownField, ownValue, promiseAll, PromiseConstructor, promiseFinally, promiseResolve, promiseThen, Proxy, reflectApply, reflectDefineProperty, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeList, SafeMap, SafeSet, setList, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor, typedArraySet, Uint8ArrayConstructor, } from '../../_shared/primordials.js';
+import { arrayCopy, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, mathFloor, mathMax, mathMin, newTextEncoder, NumberOf, objectCreate, objectHasOwn, ObjectPrototype, ownField, ownValue, promiseAllAsFound, PromiseConstructor, promiseFinally, promiseResolve, promiseThen, Proxy, reflectApply, reflectDefineProperty, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeList, SafeMap, SafeSet, setList, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor, textEncoderEncode, typedArraySet, Uint8ArrayConstructor, } from '../../_shared/primordials.js';
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
 /** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
@@ -599,7 +599,7 @@ export function residentFilesystem(session, resident, delegation) {
     };
     const faultsEnded = async () => {
         while (faulting.size > 0)
-            await promiseAll(setList(faulting));
+            await promiseAllAsFound(setList(faulting));
     };
     /** The fetch the refusal of the synchronous call running now issued or joined. */
     let refusedFetch = null;
@@ -850,7 +850,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (generate === undefined)
             return undefined;
         const content = generate({ ...store.cred, umask: 0 });
-        return typeof content === 'string' ? new TextEncoder().encode(content) : bytesCopy(content);
+        return typeof content === 'string' ? textEncoderEncode(newTextEncoder(), content) : bytesCopy(content);
     };
     /**
      * A file's bytes: what this process decided for it, else the store's,
@@ -1117,7 +1117,7 @@ export function residentFilesystem(session, resident, delegation) {
                 failures[failures.length] = { path: '/', dev: 0, ino: 0, error };
             });
         }
-        await promiseAll(ended);
+        await promiseAllAsFound(ended);
         return failures;
     };
     // A sync of a file through any descriptor: everything this process logged
@@ -1945,7 +1945,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.writeFile = (path, bytes, options) => {
         if (holder === null || options?.expectedRevision !== undefined)
             return bySessionWriteFile(path, bytes, options);
-        const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+        const data = typeof bytes === 'string' ? textEncoderEncode(newTextEncoder(), bytes) : bytes;
         const flags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
         const local = decide(() => after(walkToWrite(path, options?.createParents === true), (walk) => {
             if (walk === DELEGATE || !decidable(walk.key, walk))

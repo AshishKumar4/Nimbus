@@ -270,7 +270,9 @@ export declare const promiseResolve: {
 export declare const promiseReject: <T = never>(reason?: unknown) => Promise<T>;
 /** Settled as the first of `list` to settle: Promise.race, without the list's iterator or the program's Promise.resolve and then. */
 export declare function promiseRace<T>(list: ArrayLike<T>): Promise<Awaited<T>>;
-/** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
+/** What each of `list` fulfilled with, or the first rejection: Promise.all as the realm runs it where nothing it reaches was replaced, else promiseAll. */
+export declare function promiseAllAsFound<T>(list: ArrayLike<T>): Promise<SafeList<Awaited<T>>>;
+/** `promise.finally(onFinally)`: the realm's own where nothing it reaches was replaced, else as Promise.prototype.finally runs it, on the captures. */
 export declare function promiseFinally<T>(promise: Promise<T>, onFinally: () => unknown): Promise<T>;
 /** A SafeSet of `list`'s members, in its order: `new Set(list)` without the list's iterator. */
 export declare function setOfList<T>(list: ArrayLike<T>): SafeSet<T>;
