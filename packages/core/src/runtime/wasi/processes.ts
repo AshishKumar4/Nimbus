@@ -116,6 +116,8 @@ interface ChildProcessSupervisor {
   cpKill(childPid: number, signal: string): boolean | Promise<boolean>;
   /** The next signal sent to the guest's own process (SessionProcessSupervisor.takeSignals): null if none came in `waitMs`. */
   cpNextSignal?(waitMs: number): Promise<string | null>;
+  /** The guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+  cpSignalsTaken?(received: number): Promise<void>;
 }
 
 interface ChildWait {
@@ -233,9 +235,12 @@ export interface ProcessHost {
   /**
    * The guest returned to its host (an entry into it ended): a check it made
    * while it ran no longer has its signals watched, so an idle guest asks
-   * the session nothing; its next check watches them again.
+   * the session nothing; its next check watches them again. Unless it holds
+   * one it has not raised, it tells the session it took every signal handed
+   * to it (cpSignalsTaken), which then counts none of them as untaken; it
+   * settles once the session has heard.
    */
-  left(): void;
+  left(): Promise<void>;
 }
 
 function newPipe(): Pipe {
@@ -272,6 +277,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   let watching = false;
   /** The guest checks for its signals while it computes (signal_check): they are watched for the rest of its run. */
   let checking = false;
+  /** How many signals the session has handed the guest, by any of its waits (signalled). */
+  let received = 0;
   /**
    * Session operations in progress that take the process's signals
    * themselves and answer one (a stdin read, a write to a child's stdin):
@@ -282,6 +289,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
 
   /** A signal arrived: every wait in progress ends, for the guest to take it. */
   const signalled = (name: string | null | undefined): void => {
+    if (name) received++;
     const errno = name ? SIGNAL_ERRNOS.get(name) : undefined;
     if (errno === undefined) return;
     pendingSignal = errno;
@@ -858,6 +866,9 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       return { ready, cancel };
     },
     dispose: () => { disposed = true; },
-    left: () => { checking = false; },
+    left: async () => {
+      checking = false;
+      if (pendingSignal === null && received > 0) await supervisor()?.cpSignalsTaken?.(received).catch(() => {});
+    },
   };
 }

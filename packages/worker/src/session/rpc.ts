@@ -1682,6 +1682,12 @@ export async function _rpcCpTakeSignal(self: ProcessRpcHost, pid: number | undef
 }
 
 /** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
+/** `pid`'s guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+export async function _rpcCpSignalsTaken(self: ProcessRpcHost, pid: number | undefined, received: unknown): Promise<void> {
+    if (pid === undefined || isPriorGenerationPid(self, pid) || typeof received !== 'number' || !Number.isInteger(received) || received < 0) return;
+    self.processes.signalsTaken(pid, received);
+}
+
 export async function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void> {
     if (pid === undefined || isPriorGenerationPid(self, pid) || !Array.isArray(catches)) return;
     const names: ProcessSignalName[] = [];

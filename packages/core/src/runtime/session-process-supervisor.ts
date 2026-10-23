@@ -86,6 +86,21 @@ export interface ProcessTerminalDescriptor {
 }
 
 const ONCE = { once: true };
+/** `signal` handed to `box`'s program: what it has until it says it took it (signalsTaken) or waits past it. */
+function hand(box: SignalBox, signal: ProcessSignalName): { readonly signal: ProcessSignalName } {
+  const handed = { signal };
+  box.handed = handed;
+  box.handings++;
+  return handed;
+}
+
+/** `handed`, given to a wait that answered otherwise, back at the front of `box`'s queue, unseen by its program. */
+function unhand(box: SignalBox, handed: { readonly signal: ProcessSignalName }): void {
+  if (box.handed === handed) box.handed = null;
+  box.queued.unshift(handed.signal);
+  box.handings--;
+}
+
 /** The longest one wait for a signal lasts (nextSignal): a guest's long poll asks again after it. */
 const SIGNAL_WAIT_MAX_MS = 5000;
 const signalWaitMs = (waitMs: number): number => Math.max(0, Math.min(waitMs, SIGNAL_WAIT_MAX_MS));
@@ -107,6 +122,8 @@ interface SignalBox {
    * gives one back takes it from here, and a later hand cannot give it again.
    */
   handed: { readonly signal: ProcessSignalName } | null;
+  /** How many signals were handed to the program, less those taken back to the queue unseen (signalsTaken). */
+  handings: number;
 }
 
 /** Whether `a` and `b` are one identity: uid, gid and supplementary groups (as a set); a umask is not one. */
@@ -886,7 +903,8 @@ export class SessionProcessSupervisor implements ProcessOutput {
         // A signal it took as the write was made is the next wait's.
         wait.cancel();
         const late = await wait.signal;
-        if (late !== null) box.queued.unshift(late);
+        const given = wait.given();
+        if (late !== null && given !== null) unhand(box, given);
         return first.result;
       }
       if (first.signal === null) continue;
@@ -894,7 +912,8 @@ export class SessionProcessSupervisor implements ProcessOutput {
       const result = await writing;
       // Made before it could be withdrawn: the signal is the next wait's.
       if (result.ok) {
-        box.queued.unshift(first.signal);
+        const given = wait.given();
+        if (given !== null) unhand(box, given);
         return result;
       }
       return { ok: false, signal: first.signal };
@@ -931,7 +950,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     box.handed = null;
     const queued = box.queued.shift();
     if (queued !== undefined) {
-      box.handed = { signal: queued };
+      hand(box, queued);
       return { data: '', ended: false, signal: queued };
     }
     const withdraw = new AbortController();
@@ -944,10 +963,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
       const late = await wait.signal;
       // Back to the queue, unless a park has given it back already.
       const given = wait.given();
-      if (late !== null && given !== null && box.handed === given) {
-        box.handed = null;
-        box.queued.unshift(late);
-      }
+      if (late !== null && given !== null && box.handed === given) unhand(box, given);
       return first.packet;
     }
     withdraw.abort();
@@ -969,7 +985,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   takeSignals(pid: number, catches: readonly ProcessSignalName[]): () => void {
     if (this.table.get(pid)?.state !== 'running' || this.signalBoxes.has(pid)) return () => {};
-    const box: SignalBox = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null, parked: false, handed: null };
+    const box: SignalBox = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null, parked: false, handed: null, handings: 0 };
     this.signalBoxes.set(pid, box);
     // What was sent and not taken goes with its program.
     const release = (): void => {
@@ -1027,16 +1043,27 @@ export class SessionProcessSupervisor implements ProcessOutput {
     const box = this.signalBoxes.get(pid);
     if (box === undefined) return;
     box.parked = true;
-    if (box.handed !== null) {
-      box.queued.unshift(box.handed.signal);
-      box.handed = null;
-    }
+    if (box.handed !== null) unhand(box, box.handed);
     box.taker?.(null);
   }
 
-  /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
+  /**
+   * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
+   * null: one handed to it that it has not said it took (signalsTaken, or a
+   * wait past it), else the first that waits in its box.
+   */
   untakenSignal(pid: number): ProcessSignalName | null {
-    return this.signalBoxes.get(pid)?.queued[0] ?? null;
+    const box = this.signalBoxes.get(pid);
+    return box?.handed?.signal ?? box?.queued[0] ?? null;
+  }
+
+  /**
+   * `pid`'s program took each of the first `received` signals handed to it:
+   * what it was last handed is taken, unless one was handed since it counted.
+   */
+  signalsTaken(pid: number, received: number): void {
+    const box = this.signalBoxes.get(pid);
+    if (box !== undefined && box.handings === received) box.handed = null;
   }
 
   /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
@@ -1062,8 +1089,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
   private waitSignal(box: SignalBox, waitMs: number): { signal: Promise<ProcessSignalName | null>; cancel(): void; given(): { readonly signal: ProcessSignalName } | null } {
     const queued = box.queued.shift();
     if (queued !== undefined) {
-      const handed = { signal: queued };
-      box.handed = handed;
+      const handed = hand(box, queued);
       return { signal: Promise.resolve(queued), cancel: () => {}, given: () => handed };
     }
     box.taker?.(null);
@@ -1074,10 +1100,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
       take = (sent) => {
         clearTimeout(timer);
         if (box.taker === take) box.taker = null;
-        if (sent !== null) {
-          handed = { signal: sent };
-          box.handed = handed;
-        }
+        if (sent !== null) handed = hand(box, sent);
         resolve(sent);
       };
       box.taker = take;
