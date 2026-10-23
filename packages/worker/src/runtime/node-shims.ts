@@ -1463,9 +1463,13 @@ const __fsMod = (() => {
     return __nimbusTrackOp(_inCallOrder(p, async () => {
       try {
         const fs = _rf();
-        // Decided on the session as it is now: what another process did before it, as Node's call finds it.
+        // Decided on the session as it is now: what another process did before it, as Node's call finds it, and what
+        // the session made of this process's own changes before it (sent and answered first: one it refused is gone).
         // Not in a subtree this process holds: no other changes it, so its view is the session's.
-        if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) fs.inbound();
+        if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) {
+          if (fs.holding()) await fs.send();
+          fs.inbound();
+        }
         return await run(fs);
       } catch (error) { throw _rfError(error, syscall, p, dest); }
     }));
@@ -1502,10 +1506,7 @@ const __fsMod = (() => {
    * what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, async (fs) => {
-      if (__nimbusProcessSupervised && fs.holding() && !_heldHere(fs, p)) await fs.send();
-      return run(fs);
-    });
+    return _async(syscall, p, run);
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};

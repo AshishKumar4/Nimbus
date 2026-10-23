@@ -1820,6 +1820,9 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (source === null) throw fsError('ENOENT', 'rename', path);
       // rename(2) to the name it has leaves it as it is.
       if (from === to) return true;
+      // Across filesystems (a mount's and another's): the session's, which knows what crossing them means.
+      const into = rowAt(parentKey(to));
+      if (into === undefined || into === null || into.dev !== source.dev) return false;
       // A directory into its own subtree, and onto a directory the view lists non-empty, as rename(2) refuses them.
       if (source.type === 'directory' && within(to, from)) throw fsError('EINVAL', 'rename', path);
       if (source.type === 'directory' && target !== null && target.type === 'directory') {
