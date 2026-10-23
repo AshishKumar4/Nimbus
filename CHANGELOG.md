@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: Node's `fs`, `require` and `import()` run on the same resident filesystem as WASI programs; node-shims' own filesystem engine and its write ledger are gone. What a Node program sees follows Linux:
+  - an awaited read finds what another process just did, and an awaited change is answered once the session has it, its refusal the call's;
+  - a change decided on a name another process has since replaced (a peer's new file, or a link swapped in) is that peer's: the program's write goes to the file it opened, no name leads to it, and nothing is reported, as when Linux leaves a write to an orphaned inode; refusals Linux would surface (permission, space) are still reported;
+  - a sync whole-file write the session refuses for space leaves the empty file its open made, as `open(O_CREAT|O_TRUNC)` and a failed `write(2)` do;
+  - `rename(2)` to the same name, into the directory's own subtree and onto a non-empty directory answer as Linux does; a sticky directory's entries are removed or replaced only by their owner, the directory's owner or root; `unlink` of a missing name in a directory the program cannot write is ENOENT;
+  - a mount with no change feed (Kinu's Drive) answers a call that cannot wait as its launch walked it, as before, and an awaited one as the session holds it now;
+  - known gap: another process's in-place write to a file within milliseconds of the program's own sync write to it, while the program holds a read lease, can be overwritten by the program's write (fixed next).
+
 - Fixed: a node one-shot whose synchronous read (`fs.readFileSync`, `require`) finds a file its process does not hold runs again as a resident process, which holds it, and the command gets the bytes on its first run. Before, the read failed with `EAGAIN` and the run ended 1, and only the command's next run had the file. What the run printed before that read is shown once, and the command still ends when its program does, with its status; one that then listens runs on as a server, as a one-shot that listens does. A run that cannot be run again (it did something outside itself first, or its output is captured) fails the read as before. The next launch of the command stages the file, and runs as a one-shot.
 - Every mount states its change model, and a process's view answers by it:
   - `/dev` and `/proc` are listed for every process and answered from its own view (`stat('/dev/null')`, a `/proc` file once read); a WASI program's call that cannot wait is no longer refused there, and Node's `statSync` and `existsSync` see them (they answered ENOENT);

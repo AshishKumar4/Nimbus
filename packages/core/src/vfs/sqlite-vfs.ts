@@ -4480,9 +4480,7 @@ export class SqliteVFS {
     }
     // Started now, whether or not the caller can wait for it.
     recall().catch(() => {});
-    // Not pipelined (a writer's change committed ahead of the answer and held): the holder's own log, which its
-    // answer sends first, is older than the change, and lands before it, as Linux orders them.
-    return new RecallRequired('', 'revoke', key, recall);
+    return new RecallRequired('', 'revoke', key, recall, (run) => this.pipelined(run));
   }
 
   /**
