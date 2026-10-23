@@ -28,7 +28,7 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 
 const PORT = 4471;
 
@@ -41,8 +41,9 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  const ingest = new WaveIngest(null);
-  const engine = sessionVfs.as(CRED_SESSION_USER);
+  // The session's own writer: a whole-file write is descriptor records, which only its namespace router keeps.
+  const waves = new ProcessFiles(sessionVfs).waves;
+  const view = sessionVfs.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
   return {
     props,
     openWaveWriter: async () => null,
@@ -50,7 +51,7 @@ function makeSupervisor(props) {
       // Slow the write down so ordering has to be REAL. If the response could
       // overtake it, this is where the race would open.
       if (writeDelayMs > 0) await new Promise((r) => setTimeout(r, writeDelayMs));
-      const answer = await ingest.writeStream(engine, stream);
+      const answer = await waves.writeStream(view, stream);
       order.push('write');
       return answer;
     },
