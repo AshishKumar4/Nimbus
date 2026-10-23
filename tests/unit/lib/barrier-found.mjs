@@ -485,8 +485,8 @@ scenarios['a floating awaited read finishes before a one-shot exits [node]'] = a
   const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/cold.txt', 'cold bytes');
-  // The read's barrier, parked: nothing else keeps the process up.
-  const transport = scheduleTransport({ park: (_kind, name) => name === 'fsAcquire' });
+  // The read's own barrier and read, one call, parked: nothing else keeps the process up.
+  const transport = scheduleTransport({ park: (_kind, name) => name === 'fsAcquired' });
   const handle = supervisedFacet(facetSupervisor, authority, transport);
   await launchResident({
     authority,
