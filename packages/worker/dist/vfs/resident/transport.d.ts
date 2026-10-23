@@ -5,6 +5,7 @@
  * fetch with (sync.ts, view.ts). Every bound here is the session's.
  */
 import type { RuntimeFileVersion, RuntimeVfsStat, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
@@ -43,6 +44,12 @@ export interface Fetched {
     bytes: number;
     ranges: number;
     copied: number;
+    /**
+     * Whole files the session served at the revision asked, outdated by a delta
+     * that landed while they were in flight: not installed, but what the read
+     * that asked them was answered (a read before the change, as Linux's).
+     */
+    outdated?: SafeMap<string, Uint8Array>;
 }
 /** A whole enumeration: its files, every name, what the names cost a one-shot, its cursor, and whether it finished. */
 export interface Listing {

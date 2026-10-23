@@ -30,6 +30,7 @@ export function createAdmission(coherence) {
      * not fit, and the caller then reads through the session instead.
      */
     let pinnedBytes = 0;
+    let shedHeld = null;
     let available = null;
     /**
      * Room promised to fills in flight. A fault-in asks for its file's room
@@ -196,11 +197,14 @@ export function createAdmission(coherence) {
         storageCap() { return cap; },
         get available() { return available; },
         pin(bytes) {
+            if (!inHeap && pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES)
+                shedHeld?.(pinnedBytes + heldBytes + bytes - FACET_OWN_WRITE_MEMORY_BYTES);
             if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES)
                 return false;
             pinnedBytes += bytes;
             return true;
         },
+        setHeldShedder(shed) { shedHeld = shed; },
         unpin(bytes) {
             pinnedBytes = mathMax(0, pinnedBytes - bytes);
         },

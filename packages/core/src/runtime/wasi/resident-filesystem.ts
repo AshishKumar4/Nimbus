@@ -186,6 +186,8 @@ export interface ResidentBarrier {
   readonly readLease?: ResidentReadLease;
   /** The answer a delivery carried stood in for asking. */
   readonly fromDelivery?: boolean;
+  /** Its ACQUIRE got no answer (whatever a repair after it landed): a barrier failure, counted. */
+  readonly dropped?: boolean;
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -231,6 +233,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   cancelPendingDirectories(): void;
   /** Whether writes are held that the session does not have yet. */
   holding(): boolean;
+  /** Whether this process decided a change at `path` (its name, as spelled) that the session has not answered yet. */
+  decidedAt(path: string): boolean;
   /**
    * The process's filesystem client, its holder's and the only one it has:
    * its effect is the output gate (what the holder decided logged and sent
@@ -243,9 +247,12 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   /**
    * Send every held write to the session, before something leaves the
    * process (a socket send): what it wrote is there before anyone hears from
-   * it. A refusal stays recorded for the writer's close, fsync or settle.
+   * it. A refusal the session answered by then is this call's to report
+   * (thrown, and reported no more).
    */
   flush(): Promise<void>;
+  /** As flush, but a refusal stays recorded for the writer's close, fsync or settle (node's release barrier: an egress reports nothing). */
+  send(): Promise<void>;
   /**
    * fsync(2) through a descriptor this process holds no writes for (the
    * codec's own copy of a file): the file's held writes go to the session
@@ -703,7 +710,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const ask = client !== undefined && (delegation === undefined ? undefined : ownValue(delegation, 'readLeases'))?.() === true ? client.readLeaseAsk() : null;
     const lease = ask === null ? undefined : { answered: (terms: ResidentReadLease) => client!.readLeaseAnswered(terms) };
     return promiseThen(store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }), (result) => {
-      if (!result.landed) counts.barrierFailures++;
+      if (!result.landed || ownValue(result, 'dropped') === true) counts.barrierFailures++;
       if (!result.landed || !store.ready()) return false;
       const readLease = ownValue(result, 'readLease');
       if (ask !== null && readLease && !ownValue(result, 'fromDelivery')) client!.readLeased(readLease, ask);
@@ -1090,7 +1097,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * namespace makes above a fed mount point is answered too. A moving
    * feed's (not fixed) not while a read lease is trusted.
    */
-  const answerable = (key: string, entry: ResidentEntry): boolean => walkedMounts || fedRow(key, entry) === true;
+  // Node's walked mounts answer its calls that cannot wait; one that may is the session's, as a fed mount's moving rows under a trusted lease are.
+  const answerable = (key: string, entry: ResidentEntry): boolean => fedRow(key, entry) === true || (walkedMounts && now);
   const walkedMounts = (delegation === undefined ? undefined : ownValue(delegation, 'walkedMounts')) === true;
   const answeredWrites = (delegation === undefined ? undefined : ownValue(delegation, 'answeredWrites')) === true;
 
@@ -1294,7 +1302,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. */
   const walkFor = (path: RuntimeFsPath, follow: boolean): Walk | Delegate | Promise<Walk | Delegate> => {
     const crossed: string[] = [];
-    return after(resolve(path, follow, false, crossed), (key) => (typeof key === 'string' && key !== '' ? { key, crossed } : DELEGATE));
+    return after(resolve(path, follow, false, crossed), (key) => {
+      // Links that do not end (more than the walk follows): open(2)'s ELOOP.
+      if (key === null) throw fsError('ELOOP', 'open', pathOf(path));
+      return typeof key === 'string' && key !== '' ? { key, crossed } : DELEGATE;
+    });
   };
 
   /**
@@ -1389,10 +1401,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
+  fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
   reflectDefineProperty(fs, 'client', dataDescriptor(holder?.client ?? null, false, true, false));
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
-  fs.flush = async () => { await holder?.send(); };
+  fs.flush = async () => { await holder?.flush(); };
+  fs.send = async () => { await holder?.send(); };
   fs.settle = async () => {
     const failures: UnsettledWrite[] = [];
     await faultsEnded();
@@ -1629,7 +1643,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
     if (!readOnly && holder !== null) {
       // A file made or emptied in a subtree this process holds is decided here.
-      const local = decide<RuntimeOpenedFile>(() => after(walkFor(path, true), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
+      // The final link followed as open(2) follows it: never under O_CREAT|O_EXCL nor O_NOFOLLOW (openFollows).
+      const local = decide<RuntimeOpenedFile>(() => after(walkFor(path, openFollows(openFlags(flags))), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
         : after(holder!.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
       return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
     }
@@ -1719,7 +1734,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const openByNumber = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile => {
     if (flags.directory) throw NOT_NOW;
-    return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder!.provisional.open(key, pathOf(path), flags, row)));
+    return heldOpen(provisionally(path, openFollows(openFlags(flags)), (key, row) => holder!.provisional.open(key, pathOf(path), flags, row)));
   };
 
   /**
@@ -1797,7 +1812,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // a mount is the session's descriptor.
       const through = (): RuntimeOpenedFile | Delegate | Promise<RuntimeOpenedFile | Delegate> => {
         if (holder === null || !store.ready() || flags.directory) return DELEGATE;
-        return after(walkFor(path, flags.followSymlinks !== false), (walk) => {
+        return after(walkFor(path, openFollows(openFlags(flags))), (walk) => {
           if (walk === DELEGATE) return DELEGATE;
           const there = ownEntryAt(walk.key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;

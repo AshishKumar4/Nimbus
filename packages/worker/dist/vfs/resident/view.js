@@ -21,8 +21,7 @@ import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { S_IFMT } from '@nimbus-sh/core/vfs/vfs.js';
 import { floorFor, isFeedPosition, notAfter, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsKey, nsRowAt } from './namespace.js';
-import { arrayCopy, arrayIncludes, arrayIsArray, mapKeyList, NumberOf, objectHasOwn, ownValue, promiseAll, promiseFinally, promiseResolve, promiseThen, SafeList, SafeMap, stringOf, stringStartsWith, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
-import { groupsOf } from './permissions.js';
+import { NumberOf } from '@nimbus-sh/core/_shared/primordials.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE } from './tables.js';
 /** A row's exact type, as readdir's d_type names it: a file's by its mode's format bits (a device's, a FIFO's, a socket's). */
 function direntTypeOfRow(kind, mode) {
@@ -96,13 +95,8 @@ export function createView(coherence, admission, namespace, cells, transport, sy
             return answer;
         if (notAfter(answer.position, cursor))
             return { ...answer, position: cursor, paths: [] };
-        const news = new SafeList();
-        for (let i = 0; i < answer.paths.length; i++) {
-            const entry = answer.paths[i];
-            if (entry.rev > floorFor(answer.position, cursor, entry.path))
-                news[news.length] = entry;
-        }
-        return news.length === answer.paths.length ? answer : { ...answer, paths: arrayCopy(news) };
+        const paths = answer.paths.filter((entry) => entry.rev > floorFor(answer.position, cursor, entry.path));
+        return paths.length === answer.paths.length ? answer : { ...answer, paths };
     };
     /**
      * The answer a delivery carried, as it stands now, or null when it cannot
@@ -116,7 +110,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
             return null;
         const { args, answer } = given;
         const cursor = coherence.cursor();
-        if (cursor === null || !args || !answer || answer.poison === true || !arrayIsArray(answer.paths))
+        if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths))
             return null;
         if (!isFeedPosition(answer.position) || !isFeedPosition(args.position) || !notAfter(args.position, cursor))
             return null;
@@ -251,7 +245,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 catch {
                     repaired = null;
                 }
-                if (!repaired || !ownValue(repaired, 'cursor')) {
+                if (!repaired || !repaired.cursor) {
                     // The pass could not vouch for a single row (a supervisor replaced
                     // mid-enumeration, a listing that came back short, an authority it
                     // could not reach). A row that cannot be dated is not served: an
@@ -270,11 +264,11 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                         repaired = null;
                     }
                 }
-                repairOwed = !(repaired && ownValue(repaired, 'cursor'));
+                repairOwed = !(repaired && repaired.cursor);
             };
             const repair = (answer) => {
                 if (repairing === null)
-                    repairing = promiseFinally(runRepair(answer), () => { repairing = null; });
+                    repairing = runRepair(answer).finally(() => { repairing = null; });
                 return repairing;
             };
             /**
@@ -283,7 +277,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
              * own, so a call that cannot wait, right after any barrier, finds a
              * file the store held at its new bytes, not a miss.
              */
-            const refetching = new SafeMap();
+            const refetching = new Map();
             /**
              * Fetch again, at their revisions now, the keys a delta dropped. A
              * refetch a later delta superseded is refused its install (its ticket);
@@ -292,26 +286,20 @@ export function createView(coherence, admission, namespace, cells, transport, sy
              * would hold each resumption while a peer rewrites faster than a read.
              */
             const refetch = (keys) => {
-                const done = new SafeList();
                 if (keys.length === 0)
-                    return done;
-                const read = promiseThen(sync.refillFromNamespace(supervisor, keys), undefined, () => undefined);
+                    return [];
+                const read = sync.refillFromNamespace(supervisor, keys).catch(() => undefined);
                 const t = coherence.require();
-                for (let i = 0; i < keys.length; i++) {
-                    const k = keys[i];
-                    const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: promiseResolve() };
-                    record.done = promiseFinally(promiseThen(promiseThen(read, () => {
+                return keys.map((k) => {
+                    const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: Promise.resolve() };
+                    record.done = read.then(() => {
                         const newer = refetching.get(k);
-                        const waits = new SafeList();
-                        waits[0] = newer !== undefined && newer !== record ? newer.read : undefined;
-                        waits[1] = repairing ?? undefined;
-                        return promiseAll(waits);
-                    }), () => undefined, () => undefined), () => { if (refetching.get(k) === record)
+                        return Promise.all([newer !== undefined && newer !== record ? newer.read : undefined, repairing ?? undefined]);
+                    }).then(() => undefined, () => undefined).finally(() => { if (refetching.get(k) === record)
                         refetching.delete(k); });
                     refetching.set(k, record);
-                    done[i] = record.done;
-                }
-                return done;
+                    return record.done;
+                });
             };
             /**
              * The barrier on an enumerated namespace. A namespace that stopped
@@ -325,8 +313,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
              * the rows the listing vouched for.
              */
             const enumerated = async (first, lease) => {
-                const joined = new SafeList();
-                refetching.forEach((record) => { joined[joined.length] = record.done; });
+                const joined = [...refetching.values()].map((record) => record.done);
                 let answer = first;
                 let namespaceAsked = false;
                 let repaired = false;
@@ -365,29 +352,9 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 // What it held and the delta dropped, fetched again at its new
                 // revision; a refetch in flight that its delta overtook (a file
                 // rewritten again), once more; and every refetch it found in flight.
-                const named = new SafeList();
-                for (let i = 0; i < answer.paths.length; i++)
-                    named[i] = nsKey(answer.paths[i].path);
-                const again = new SafeList();
-                for (let i = 0; i < applied.dropped.length; i++)
-                    again[again.length] = applied.dropped[i];
-                const fetching = mapKeyList(refetching);
-                for (let i = 0; i < fetching.length; i++) {
-                    const k = fetching[i];
-                    if (arrayIncludes(applied.dropped, k))
-                        continue;
-                    for (let j = 0; j < named.length; j++) {
-                        const at = named[j];
-                        if (at === k || at === '' || stringStartsWith(k, at + '/')) {
-                            again[again.length] = k;
-                            break;
-                        }
-                    }
-                }
-                const waits = refetch(again);
-                for (let i = 0; i < joined.length; i++)
-                    waits[waits.length] = joined[i];
-                await promiseAll(waits);
+                const named = answer.paths.map((entry) => nsKey(entry.path));
+                const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === '' || k.startsWith(at + '/')));
+                await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
                 return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
             };
             /** The barrier on a namespace listed on demand: one it cannot apply starts it again from nothing. */
@@ -401,8 +368,8 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 return applied && answer.readLease ? { landed, applied, readLease: answer.readLease } : { landed, applied };
             };
             const view = {
-                device: NumberOf(device),
-                cred: { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: arrayCopy(groupsOf(cred)) },
+                device: Number(device),
+                cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
                 ready: () => namespace.ready(),
                 entry(k) {
                     // Under a directory whose relist is on its way, no row is answered, nor any absence.
@@ -415,7 +382,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                         type: typeOf(row.kind), dev: row.dev || 0, ino: row.ino, nlink: row.nlink || 1,
                         size: row.size, atime: row.atime, mtime: row.mtime, ctime: row.ctime,
                         mode: row.mode, uid: row.uid, gid: row.gid, revision: row.rev,
-                        target: row.target == null ? null : stringOf(row.target),
+                        target: row.target == null ? null : String(row.target),
                     };
                 },
                 children(k) {
@@ -438,7 +405,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                             return undefined;
                     }
                     const cell = cells.get(k);
-                    if (cell === undefined || (typeof cell === 'object' && objectHasOwn(cell, 'error')))
+                    if (cell === undefined || (typeof cell === 'object' && 'error' in cell))
                         return undefined;
                     return typeof cell === 'string' ? encoder.encode(cell) : cell;
                 },
@@ -446,9 +413,10 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null)
                         return null;
-                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
+                    const fetched = await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
                     const bytes = view.content(k, entry.revision);
-                    return bytes === undefined ? null : bytes;
+                    // Served at the revision the read saw, outdated in flight: its answer, not the view's.
+                    return bytes !== undefined ? bytes : fetched.outdated?.get(k) ?? null;
                 },
                 pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
                 // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).
@@ -456,23 +424,17 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null || files.length === 0)
                         return;
-                    const wanted = new SafeList();
-                    for (let i = 0; i < files.length; i++) {
-                        const k = files[i][0];
-                        const entry = files[i][1];
-                        wanted[i] = { path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry };
-                    }
-                    await transport.fetchFiles(supervisor, wanted);
+                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
                 },
                 acquireArgs: () => argsNow(),
                 repairOwed: () => repairOwed,
                 async barrier(options = {}) {
-                    const given = ownValue(options, 'answer');
-                    const lease = ownValue(options, 'lease');
-                    const standIn = given === undefined ? delivered(ownValue(options, 'delivered')) : null;
-                    const answer = given !== undefined ? current(given) : standIn ?? await acquire(lease);
-                    const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, lease);
-                    return standIn === null ? result : { ...result, fromDelivery: true };
+                    const standIn = options.answer === undefined ? delivered(options.delivered) : null;
+                    const answer = options.answer !== undefined ? current(options.answer) : standIn ?? await acquire(options.lease);
+                    const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+                    // An ACQUIRE that got no answer, whatever the repair after it did: the store's own failure.
+                    const dropped = answer === null && options.answer === undefined && standIn === null;
+                    return { ...result, ...(standIn === null ? {} : { fromDelivery: true }), ...(dropped ? { dropped: true } : {}) };
                 },
                 cursor: () => coherence.cursor(),
                 reserve: (bytes) => admission.pin(bytes),
@@ -482,7 +444,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     if (row === undefined || row.rev !== revision || view.content(k, revision) !== undefined)
                         return;
                     // A copy: the process's own buffer is its decisions', given back as they retire.
-                    cells.keep(coherence.require(), k, new Uint8ArrayConstructor(bytes), revision);
+                    cells.keep(coherence.require(), k, new Uint8Array(bytes), revision);
                 },
                 // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
                 onAdmitted(listener) {

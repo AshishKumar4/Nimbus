@@ -278,10 +278,7 @@ function __nimbusStartProcessFilesystem(root) {
 // live boundary: a response, a served process's flush). A change the program
 // was told succeeded that the session refused is thrown here.
 async function __nimbusFlushFilesystem() {
-  if (__nimbusProcessFilesystem === null) return;
-  await __nimbusProcessFilesystem.flush();
-  const failure = __nimbusProcessFilesystem.client ? __nimbusProcessFilesystem.client.takeFailuresError() : null;
-  if (failure) throw failure;
+  if (__nimbusProcessFilesystem !== null) await __nimbusProcessFilesystem.flush();
 }
 // The run's end: everything held sent and answered, and the first refusal of
 // what the program was told it wrote thrown, naming the file.
@@ -1420,6 +1417,12 @@ const __fsMod = (() => {
     const mapped = _mapSupervisorError(error, syscall, p, dest);
     if (mapped.code !== "EAGAIN") return mapped;
     const named = typeof p === "string" || p instanceof URL;
+    // The namespace is being rebuilt: no synchronous call can say what is there until it is.
+    if (named && typeof __resident !== "undefined" && !__resident.namespace.ready()) {
+      mapped.message = "EAGAIN: " + syscall + " '" + String(p) + "': the namespace is being rebuilt after " + __resident.namespace.notReadyCause()
+        + (asyncForm ? "; use " + asyncForm : "");
+      return mapped;
+    }
     // On a mount, in a directory its launch did not list: the namespace cannot say what is there.
     const mount = typeof __resident !== "undefined" && named ? __resident.namespace.unknown(_strip(_resolve(p)), true, true) : null;
     // A content read this process does not hold: a one-shot that can be run again stops here, to run again
@@ -1457,22 +1460,53 @@ const __fsMod = (() => {
    * the session has it, its refusal the call's (answeredWrites).
    */
   function _async(syscall, p, run, dest) {
-    return __nimbusTrackOp((async () => {
-      try { return await run(_rf()); }
-      catch (error) { throw _rfError(error, syscall, p, dest); }
-    })());
+    return __nimbusTrackOp(_inCallOrder(p, async () => {
+      try {
+        const fs = _rf();
+        // Decided on the session as it is now: what another process did before it, as Node's call finds it, and what
+        // the session made of this process's own changes at the name (sent and answered first: one it refused is gone).
+        // Not in a subtree this process holds: no other changes it, so its view is the session's.
+        if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) {
+          if (fs.holding() && (typeof p === "string" || p instanceof URL) && fs.decidedAt(_resolve(p))) await fs.send();
+          fs.inbound();
+        }
+        return await run(fs);
+      } catch (error) { throw _rfError(error, syscall, p, dest); }
+    }));
+  }
+  /**
+   * The awaited calls on one name, decided in the order they were made (a
+   * later one starts once the earlier is answered): this fs's order, which a
+   * barrier one of them owes would otherwise reorder.
+   */
+  const _pathTails = new __NimbusSafeMap();
+  function _inCallOrder(p, work) {
+    if (typeof p !== "string" && !(p instanceof URL)) return work();
+    const key = _strip(_resolve(p));
+    const before = _pathTails.get(key);
+    const run = before === undefined ? work() : before.then(work, work);
+    const tail = run.then(() => undefined, () => undefined);
+    _pathTails.set(key, tail);
+    tail.then(() => { if (_pathTails.get(key) === tail) _pathTails.delete(key); });
+    return run;
+  }
+  /** Whether \`p\` (and \`dest\`) lie in subtrees the process holds (its client's grants). */
+  function _heldHere(fs, p, dest) {
+    const client = fs.client;
+    if (!client || (typeof p !== "string" && !(p instanceof URL))) return false;
+    if (client.held(_strip(_resolve(p))) === undefined) return false;
+    return dest === undefined || client.held(_strip(_resolve(dest))) !== undefined;
   }
   /**
    * An awaited call that reads what a name is or holds (an open among them):
    * over the session as it is now, as Node's call finds what another process
-   * just did. The filesystem owes its barrier, which the call's walk takes
-   * before it answers from what this process holds (inbound).
+   * just did, with what this process wrote there before it (sent first, so
+   * another process reads it as this one was told it is). The filesystem
+   * owes its barrier, which the call's walk takes before it answers from
+   * what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, (fs) => {
-      if (__nimbusProcessSupervised) fs.inbound();
-      return run(fs);
-    });
+    return _async(syscall, p, run);
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -1911,7 +1945,13 @@ const __fsMod = (() => {
     if (p instanceof __FileHandle) return p.truncate(len);
     const absPath = _at(p);
     const size = Math.max(0, Math.trunc(Number(len) || 0));
-    await _async("truncate", p, (fs) => fs.truncate(absPath, size));
+    // Node's own: an open of it 'r+', its ftruncate, its close (decided and sent in order, as truncateSync's).
+    await _async("open", p, async (fs) => {
+      const opened = await fs.open(absPath, _openFlags("r+"));
+      let done = false;
+      try { await fs.ftruncate(opened.id, size); done = true; }
+      finally { try { await fs.close(opened.id); } catch (error) { if (done) throw error; } }
+    });
   }
   async function _copyFileAsync(src, dest, mode) {
     const from = _at(src);
@@ -2152,10 +2192,7 @@ const __fsMod = (() => {
     const fl = _openFlags(flags, mode);
     // What the name is now; an open that makes or empties a file is a change, answered once the session has it.
     const changes = fl.write || fl.create || fl.truncate || fl.append;
-    const opened = await (changes ? _async : _asyncRead)("open", path, (fs) => {
-      if (__nimbusProcessSupervised) fs.inbound();
-      return fs.open(absPath, fl);
-    });
+    const opened = await (changes ? _async : _asyncRead)("open", path, (fs) => fs.open(absPath, fl));
     return new __FileHandle(path, opened, fl);
   }
   function openSync(path, flags, mode) {
@@ -2195,7 +2232,7 @@ const __fsMod = (() => {
    */
   async function _resumptionRelease() {
     if (__nimbusProcessFilesystem === null) return;
-    await __nimbusProcessFilesystem.flush();
+    await __nimbusProcessFilesystem.send();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch

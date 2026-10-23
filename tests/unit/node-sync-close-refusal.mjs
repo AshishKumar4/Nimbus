@@ -36,13 +36,13 @@ function facet() {
   let lost = 0;
   /**
    * A synchronous write the session refuses, answered (and recorded) before
-   * the call under test. The boundary that sends it takes the refusal as it
-   * throws it; that is what this file observes.
+   * the call under test: sent as an egress sends it, which reports nothing,
+   * so the call under test is the one to report it.
    */
   const refuseOne = async () => {
     refusing.on = true;
     fs.writeFileSync(`/home/user/lost-${lost++}.txt`, 'lost');
-    await globalThis.__nimbusProcessFs.flush().catch(() => {});
+    await globalThis.__nimbusProcessFs.send();
     refusing.on = false;
   };
   return { fs, refuseOne };

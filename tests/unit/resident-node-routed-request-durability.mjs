@@ -28,7 +28,6 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 
 const PORT = 4471;
 
@@ -41,10 +40,9 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  // The session's own writer over its namespace: a whole-file write is descriptor records, which only the namespace router keeps.
-  const namespace = new CompositeVFS(sessionVfs);
-  const waves = processFiles(namespace).waves;
-  const view = sessionVfs.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
+  // The session's own writer for the process, bound to it as the session binds it (ProcessFiles.bind).
+  const writer = processFiles(sessionVfs).bind({ pid: props?.pid ?? 1, cred: CRED_SESSION_USER });
+  const bound = () => writer;
   return {
     props,
     openWaveWriter: async () => null,
@@ -52,7 +50,7 @@ function makeSupervisor(props) {
       // Slow the write down so ordering has to be REAL. If the response could
       // overtake it, this is where the race would open.
       if (writeDelayMs > 0) await new Promise((r) => setTimeout(r, writeDelayMs));
-      const answer = await waves.writeStream(view, stream);
+      const answer = await bound().writeStream(stream);
       order.push('write');
       return answer;
     },

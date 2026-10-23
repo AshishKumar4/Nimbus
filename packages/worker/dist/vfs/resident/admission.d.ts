@@ -24,6 +24,12 @@ export interface Admission {
     /** What the own writes held in memory take (cells' held cells): counted here, against the one budget. */
     readonly heldBytes: number;
     addHeld(bytes: number): void;
+    /**
+     * What gives held cells up, least recently read first, until `bytes` of
+     * them are gone or none is left (cells): the session holds what they hold,
+     * so they make room for bytes the process has yet to send (pin).
+     */
+    setHeldShedder(shed: (bytes: number) => void): void;
     /** The allowance this launch was admitted for (the fabric's startArgs.storage). */
     setStorage(storage: unknown, supervisor: ResidentSupervisor | null | undefined): void;
     /** The cap this store enforces, for startProcess to report. */

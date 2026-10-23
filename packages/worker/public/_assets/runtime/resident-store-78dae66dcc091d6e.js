@@ -371,6 +371,7 @@ var __nimbusResidentModule = (() => {
     let namespaceOverlayBytes = 0;
     let namespaceReserveBytes = 0;
     let pinnedBytes = 0;
+    let shedHeld = null;
     let available = null;
     const reservations = new SafeMap();
     let reservedBytes = 0;
@@ -486,9 +487,13 @@ var __nimbusResidentModule = (() => {
         return available;
       },
       pin(bytes) {
+        if (!inHeap && pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) shedHeld?.(pinnedBytes + heldBytes + bytes - FACET_OWN_WRITE_MEMORY_BYTES);
         if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
         pinnedBytes += bytes;
         return true;
+      },
+      setHeldShedder(shed) {
+        shedHeld = shed;
       },
       unpin(bytes) {
         pinnedBytes = mathMax(0, pinnedBytes - bytes);
@@ -1978,6 +1983,15 @@ var __nimbusResidentModule = (() => {
       }
       unheld.delete(path);
     };
+    const shedTo = (under) => {
+      held.forEach((old, oldest) => {
+        if (admission.heldBytes <= under) return;
+        held.delete(oldest);
+        admission.addHeld(-cellSize(old.cell));
+        unheld.add(oldest);
+      });
+    };
+    admission.setHeldShedder((bytes) => shedTo(admission.heldBytes - bytes));
     const hold = (path, cell, rev = RK_OWN_WRITE) => {
       forgetHeld(path);
       const size = cellSize(cell);
@@ -1986,14 +2000,7 @@ var __nimbusResidentModule = (() => {
         unheld.add(path);
         return;
       }
-      if (admission.heldBytes + size > limit) {
-        held.forEach((old, oldest) => {
-          if (admission.heldBytes + size <= limit) return;
-          held.delete(oldest);
-          admission.addHeld(-cellSize(old.cell));
-          unheld.add(oldest);
-        });
-      }
+      if (admission.heldBytes + size > limit) shedTo(limit - size);
       held.set(path, { cell, rev });
       admission.addHeld(size);
     };
@@ -2880,9 +2887,9 @@ var __nimbusResidentModule = (() => {
           async fill(k, entry) {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
-            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
+            const fetched = await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
             const bytes = view.content(k, entry.revision);
-            return bytes === void 0 ? null : bytes;
+            return bytes !== void 0 ? bytes : fetched.outdated?.get(k) ?? null;
           },
           pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
           // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).
@@ -2900,12 +2907,20 @@ var __nimbusResidentModule = (() => {
           acquireArgs: () => argsNow(),
           repairOwed: () => repairOwed,
           async barrier(options = {}) {
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-9837cf41eaa25995.js
             const given = ownValue(options, "answer");
             const lease = ownValue(options, "lease");
             const standIn = given === void 0 ? delivered(ownValue(options, "delivered")) : null;
             const answer = given !== void 0 ? current(given) : standIn ?? await acquire(lease);
             const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, lease);
             return standIn === null ? result : { ...result, fromDelivery: true };
+========
+            const standIn = options.answer === void 0 ? delivered(options.delivered) : null;
+            const answer = options.answer !== void 0 ? current(options.answer) : standIn ?? await acquire(options.lease);
+            const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+            const dropped = answer === null && options.answer === void 0 && standIn === null;
+            return { ...result, ...standIn === null ? {} : { fromDelivery: true }, ...dropped ? { dropped: true } : {} };
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-78dae66dcc091d6e.js
           },
           cursor: () => coherence.cursor(),
           reserve: (bytes) => admission.pin(bytes),
@@ -3146,6 +3161,7 @@ var __nimbusResidentModule = (() => {
       const t = coherence.tables("fetchFiles");
       const requested = wantedFiles.length;
       let copied = 0;
+      const served = new SafeMap();
       const files = new SafeList();
       const later = new SafeList();
       const fetching = new SafeSet();
@@ -3254,6 +3270,7 @@ var __nimbusResidentModule = (() => {
           }
           if (outdated(t, learning, range.path, range.rev)) {
             failedPaths.add(range.path);
+            if (range.parts === 1) served.set(range.path, chunk);
             continue;
           }
           fetchedBytes += chunkBytes;
@@ -3285,7 +3302,8 @@ var __nimbusResidentModule = (() => {
         failed,
         bytes: fetchedBytes,
         ranges: ranges.length,
-        copied
+        copied,
+        ...served.size === 0 ? {} : { outdated: served }
       };
     };
     const enumerate = async (supervisor) => {
@@ -6703,6 +6721,8 @@ var __nimbusResidentModule = (() => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EBADF", "write", desc.path);
+        if (bytes.byteLength === 0)
+          return 0;
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
         if (!awaited && continued(desc, start, bytes, at)) {
@@ -6921,12 +6941,19 @@ var __nimbusResidentModule = (() => {
           return false;
         if (source === null)
           throw fsError2("ENOENT", "rename", path);
-        if (source.type === "directory" && (target !== null || within2(to, from)))
-          return false;
-        if (target !== null && (target.type === "directory" || source.type === "directory"))
-          return false;
         if (from === to)
           return true;
+        if (source.type === "directory" && within2(to, from))
+          throw fsError2("EINVAL", "rename", path);
+        if (source.type === "directory" && target !== null && target.type === "directory") {
+          const listed = provisional2.children(to, host2.children(to));
+          if (listed !== void 0 && listed.length > 0)
+            throw fsError2("ENOTEMPTY", "rename", path);
+        }
+        if (source.type === "directory" && target !== null)
+          return false;
+        if (target !== null && target.type === "directory")
+          return false;
         if (!removable(from, source, path, "rename") || (target === null ? writableParent(to, path, "rename") === void 0 : !removable(to, target, path, "rename")))
           return false;
         host2.drain();
@@ -10751,8 +10778,13 @@ var __nimbusResidentModule = (() => {
       const client = holder?.client;
       const ask = client !== void 0 && (delegation === void 0 ? void 0 : ownValue(delegation, "readLeases"))?.() === true ? client.readLeaseAsk() : null;
       const lease = ask === null ? void 0 : { answered: (terms) => client.readLeaseAnswered(terms) };
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-9837cf41eaa25995.js
       return promiseThen(store.barrier({ ...delivered ? { delivered } : {}, ...lease ? { lease } : {} }), (result) => {
         if (!result.landed)
+========
+      return store.barrier({ ...delivered ? { delivered } : {}, ...lease ? { lease } : {} }).then((result) => {
+        if (!result.landed || result.dropped === true)
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-78dae66dcc091d6e.js
           counts.barrierFailures++;
         if (!result.landed || !store.ready())
           return false;
@@ -11125,9 +11157,15 @@ var __nimbusResidentModule = (() => {
         return void 0;
       return entry;
     };
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-9837cf41eaa25995.js
     const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
     const walkedMounts = (delegation === void 0 ? void 0 : ownValue(delegation, "walkedMounts")) === true;
     const answeredWrites = (delegation === void 0 ? void 0 : ownValue(delegation, "answeredWrites")) === true;
+========
+    const answerable = (key, entry) => fedRow(key, entry) === true || walkedMounts && now;
+    const walkedMounts = delegation?.walkedMounts === true;
+    const answeredWrites = delegation?.answeredWrites === true;
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-78dae66dcc091d6e.js
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
@@ -11281,7 +11319,11 @@ var __nimbusResidentModule = (() => {
     };
     const walkFor = (path, follow) => {
       const crossed = [];
-      return after2(resolve(path, follow, false, crossed), (key) => typeof key === "string" && key !== "" ? { key, crossed } : DELEGATE);
+      return after2(resolve(path, follow, false, crossed), (key) => {
+        if (key === null)
+          throw fsError2("ELOOP", "open", pathOf(path));
+        return typeof key === "string" && key !== "" ? { key, crossed } : DELEGATE;
+      });
     };
     const decidable = (key, ...walks) => {
       if (onMount(key))
@@ -11360,9 +11402,17 @@ var __nimbusResidentModule = (() => {
       directoryPool?.cancelPending();
     };
     fs.holding = () => holder?.pending() ?? false;
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-9837cf41eaa25995.js
     reflectDefineProperty(fs, "client", dataDescriptor(holder?.client ?? null, false, true, false));
+========
+    fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
+    Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-78dae66dcc091d6e.js
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
+      await holder?.flush();
+    };
+    fs.send = async () => {
       await holder?.send();
     };
     fs.settle = async () => {
@@ -11619,7 +11669,7 @@ var __nimbusResidentModule = (() => {
         }), () => openOnSession(path, flags));
       }
       if (!readOnly && holder !== null) {
-        const local = decide(() => after2(walkFor(path, true), (walk) => walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE : after2(holder.open(walk.key, typeof path === "string" ? path : path.path, flags), (handle) => handle === void 0 ? DELEGATE : heldOpen(handle))));
+        const local = decide(() => after2(walkFor(path, openFollows(openFlags(flags))), (walk) => walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE : after2(holder.open(walk.key, typeof path === "string" ? path : path.path, flags), (handle) => handle === void 0 ? DELEGATE : heldOpen(handle))));
         return after2(local, (handle) => handle === DELEGATE ? openOnSession(path, flags) : handle);
       }
       return openOnSession(path, flags);
@@ -11686,7 +11736,7 @@ var __nimbusResidentModule = (() => {
     const openByNumber = (path, flags) => {
       if (flags.directory)
         throw NOT_NOW;
-      return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
+      return heldOpen(provisionally(path, openFollows(openFlags(flags)), (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
     };
     const readOwn = (handleId, offset, length) => {
       const desc = holder.provisional.descriptor(handleId);
@@ -11751,7 +11801,7 @@ var __nimbusResidentModule = (() => {
         const through = () => {
           if (holder === null || !store.ready() || flags.directory)
             return DELEGATE;
-          return after2(walkFor(path, flags.followSymlinks !== false), (walk) => {
+          return after2(walkFor(path, openFollows(openFlags(flags))), (walk) => {
             if (walk === DELEGATE)
               return DELEGATE;
             const there = ownEntryAt(walk.key);

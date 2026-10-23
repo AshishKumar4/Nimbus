@@ -171,6 +171,8 @@ export interface ResidentBarrier {
     readonly readLease?: ResidentReadLease;
     /** The answer a delivery carried stood in for asking. */
     readonly fromDelivery?: boolean;
+    /** Its ACQUIRE got no answer (whatever a repair after it landed): a barrier failure, counted. */
+    readonly dropped?: boolean;
 }
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
 export interface PinnedContent {
@@ -220,6 +222,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
+    /** Whether this process decided a change at `path` (its name, as spelled) that the session has not answered yet. */
+    decidedAt(path: string): boolean;
     /**
      * The process's filesystem client, its holder's and the only one it has:
      * its effect is the output gate (what the holder decided logged and sent
@@ -232,9 +236,12 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     /**
      * Send every held write to the session, before something leaves the
      * process (a socket send): what it wrote is there before anyone hears from
-     * it. A refusal stays recorded for the writer's close, fsync or settle.
+     * it. A refusal the session answered by then is this call's to report
+     * (thrown, and reported no more).
      */
     flush(): Promise<void>;
+    /** As flush, but a refusal stays recorded for the writer's close, fsync or settle (node's release barrier: an egress reports nothing). */
+    send(): Promise<void>;
     /**
      * fsync(2) through a descriptor this process holds no writes for (the
      * codec's own copy of a file): the file's held writes go to the session

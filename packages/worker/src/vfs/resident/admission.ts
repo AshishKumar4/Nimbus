@@ -31,6 +31,12 @@ export interface Admission {
   /** What the own writes held in memory take (cells' held cells): counted here, against the one budget. */
   readonly heldBytes: number;
   addHeld(bytes: number): void;
+  /**
+   * What gives held cells up, least recently read first, until `bytes` of
+   * them are gone or none is left (cells): the session holds what they hold,
+   * so they make room for bytes the process has yet to send (pin).
+   */
+  setHeldShedder(shed: (bytes: number) => void): void;
   /** The allowance this launch was admitted for (the fabric's startArgs.storage). */
   setStorage(storage: unknown, supervisor: ResidentSupervisor | null | undefined): void;
   /** The cap this store enforces, for startProcess to report. */
@@ -84,6 +90,7 @@ export function createAdmission(coherence: Coherence): Admission {
    * not fit, and the caller then reads through the session instead.
    */
   let pinnedBytes = 0;
+  let shedHeld: ((bytes: number) => void) | null = null;
   let available: number | null = null;
 
   /**
@@ -243,10 +250,12 @@ export function createAdmission(coherence: Coherence): Admission {
     storageCap() { return cap; },
     get available() { return available; },
     pin(bytes) {
+      if (!inHeap && pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) shedHeld?.(pinnedBytes + heldBytes + bytes - FACET_OWN_WRITE_MEMORY_BYTES);
       if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
       pinnedBytes += bytes;
       return true;
     },
+    setHeldShedder(shed) { shedHeld = shed; },
     unpin(bytes) {
       pinnedBytes = mathMax(0, pinnedBytes - bytes);
     },
