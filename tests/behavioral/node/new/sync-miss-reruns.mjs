@@ -82,7 +82,7 @@ try {
   ]) {
     const r = await t.run(`node ${program} /home/user/d21-data/${file} ${status}`, 120_000);
     const said = lines(r.output);
-    console.log(JSON.stringify({ run, exit: r.exitCode, said }));
+    console.log(JSON.stringify({ run, exit: r.exitCode, said, debug: stripAnsi(r.output).split('\n').filter((line) => /module map|data plan|learned|image/.test(line)).map((line) => line.trim().slice(0, 300)) }));
     a.check(`${run} run: it read the file, after its asynchronous work, and ended with its own status (${status})`,
       said.includes(`READ=${expected}`) && r.exitCode === status, JSON.stringify({ exit: r.exitCode, said }));
     a.check(`${run} run: no read failed`, !said.some((line) => /EAGAIN|never staged|did not retrace/.test(line)), JSON.stringify(said));
