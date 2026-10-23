@@ -451,14 +451,14 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  // Read until the API serves the upload, for as long as the upload took,
-  // and never for less than an upload was seen to take to land.
+  // Read until the API serves the upload, for the longer of the upload's own
+  // time and the slowest an upload was seen to take to land.
   // Measured 2026-10-20: 20 uploads to two Previews, new and redeployed,
   // landed 273–1488 ms after wrangler exited (median 330 ms), each on the
   // first read; the misses seen before (no deployment, or the one before,
-  // 30 s on) never landed later. So past the upload's own time, uploading
-  // again is what lands sooner. A read the deadline cuts off is no answer:
-  // the wait ends with what was last read.
+  // 30 s on) never landed later. So an upload not served within that window
+  // is uploaded again, which lands sooner than waiting on. A read the
+  // deadline cuts off is no answer: the wait ends with what was last read.
   const landingMs = Math.max(Date.now() - uploadStarted, SLOWEST_LANDING_MS);
   const settleBy = Date.now() + landingMs;
   const waited = `${(landingMs / 1000).toFixed(1)} s`;

@@ -48,9 +48,13 @@ let mode = 'stale';
 /**
  * How long the API takes to answer a read of the latest deployment: longer
  * than the stand-in `wrangler preview` (a shell script, done in milliseconds)
- * takes to upload, as a read across the Internet can be.
+ * takes to upload, as a read across the Internet can be. The second-lands
+ * case checks that premise: without it, a window as long as the upload would
+ * pass too.
  */
 const READ_MS = 300;
+/** When each read of the latest deployment arrived, and when each was answered (ms). */
+const reads = { arrived: [], answered: [] };
 let parentMade = false;
 const NO_WORKER = { success: false, result: null, errors: [{ code: 10007, message: 'This Worker does not exist on your account.' }] };
 let latestReads = 0;
@@ -75,10 +79,11 @@ const server = createServer((request, response) => {
   }
   if (request.method === 'GET' && request.url === LATEST_PATH) {
     latestReads++;
+    reads.arrived.push(Date.now());
     // The first read is the one before the upload; it always answers.
     if (mode === 'silent' && latestReads > 1) return;
     // Each answer takes READ_MS, longer than the stand-in's upload takes.
-    const answer = (status, body) => setTimeout(() => json(status, body), READ_MS);
+    const answer = (status, body) => setTimeout(() => { reads.answered.push(Date.now()); json(status, body); }, READ_MS);
     if (mode === 'latest-500') return answer(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
     if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return answer(404, ABSENT);
     if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
@@ -214,9 +219,15 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   {
     mode = 'second-lands';
     rmSync(join(checkout, 'uploads'), { force: true });
+    reads.arrived.length = 0;
+    reads.answered.length = 0;
     const { code, stdout, stderr } = await up();
     const output = `${stdout}${stderr}`;
     assert.equal(code, 3, `up reaches readiness\n${output}`);
+    // The premise: from the answer to the read before the first upload to the
+    // read after it, up uploaded in less time than a read took to answer.
+    const uploadedIn = reads.arrived[1] - reads.answered[0];
+    assert.ok(uploadedIn < READ_MS, `the upload (${uploadedIn} ms) is quicker than a read (${READ_MS} ms), so a window as long as the upload would miss`);
     assert.match(output, /WARNING: .*did not land: [\d.]+ s after it, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
     assert.match(output, /deployment deployment-uploaded-2 is live at https:\/\/tw-up-settle-nimbus-probe-previews\.proof\.workers\.dev/, `up goes on with the second upload\n${output}`);
     assert.deepEqual([record().versionId, record().secret], ['deployment-uploaded-2', 'the-held-signing-secret'], 'and records it, with the secret it held');
