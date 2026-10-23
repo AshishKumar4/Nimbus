@@ -2225,7 +2225,8 @@ const __fsMod = (() => {
     const _barriered = (cb, args) => {
       __nimbusTrackOp(globalThis.__nimbusVfsAcquireBarrier()).then(() => {
         try {
-          cb(...args);
+          // By the captured Reflect.apply: a program may have replaced the array iterator a spread asks.
+          __nimbusApply(cb, undefined, args);
         } catch (error) {
           __nimbusUncaughtException(error);
         }
