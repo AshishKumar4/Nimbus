@@ -365,6 +365,8 @@ export interface WasiInstanceBundle {
     fsImport: NimbusFsImports;
     /** Once the guest exited: stop following its children (they run on, as orphans do). */
     procDispose(): void;
+    /** Once an entry into the guest returned (Processes.left). */
+    procLeft(): void;
     getStdout(): string;
     getStderr(): string;
 }

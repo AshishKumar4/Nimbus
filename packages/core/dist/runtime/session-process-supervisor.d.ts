@@ -461,7 +461,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
-     * took its place (one waits at a time).
+     * took its place (one waits at a time). A program that takes none waits
+     * as long, for none: a guest that asks again at once does not spin.
      */
     nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null>;
     /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */

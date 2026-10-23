@@ -795,5 +795,6 @@ export function processHost(opts) {
             return { ready, cancel };
         },
         dispose: () => { disposed = true; },
+        left: () => { checking = false; },
     };
 }

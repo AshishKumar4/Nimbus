@@ -34,6 +34,9 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
  */
 const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 const ONCE = { once: true };
+/** The longest one wait for a signal lasts (nextSignal): a guest's long poll asks again after it. */
+const SIGNAL_WAIT_MAX_MS = 5000;
+const signalWaitMs = (waitMs) => Math.max(0, Math.min(waitMs, SIGNAL_WAIT_MAX_MS));
 const NOTHING_REAPED = Promise.resolve(0);
 /** Whether `a` and `b` are one identity: uid, gid and supplementary groups (as a set); a umask is not one. */
 function sameIdentity(a, b) {
@@ -798,7 +801,7 @@ export class SessionProcessSupervisor {
         const writing = this.input.writeBytesWait(pid, data, withdraw.signal);
         // Its waits for a signal end at their bound, or when its program lets go of its signals: the write is then waited for alone.
         while (this.signalBoxes.get(writer) === box) {
-            const wait = this.waitSignal(box, 5000);
+            const wait = this.waitSignal(box, SIGNAL_WAIT_MAX_MS);
             const first = await Promise.race([writing.then((result) => ({ result })), wait.signal.then((signal) => ({ signal }))]);
             if ('result' in first) {
                 // A signal it took as the write was made is the next wait's.
@@ -961,12 +964,13 @@ export class SessionProcessSupervisor {
     /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
-     * took its place (one waits at a time).
+     * took its place (one waits at a time). A program that takes none waits
+     * as long, for none: a guest that asks again at once does not spin.
      */
     nextSignal(pid, waitMs) {
         const box = this.signalBoxes.get(pid);
         if (box === undefined)
-            return Promise.resolve(null);
+            return new Promise((resolve) => setTimeout(() => resolve(null), signalWaitMs(waitMs)));
         // It asks again: what it was given it has.
         box.handed = null;
         return this.waitSignal(box, waitMs).signal;
@@ -983,7 +987,7 @@ export class SessionProcessSupervisor {
         let take = () => { };
         let handed = null;
         const signal = new Promise((resolve) => {
-            const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
+            const timer = setTimeout(() => take(null), signalWaitMs(waitMs));
             take = (sent) => {
                 clearTimeout(timer);
                 if (box.taker === take)

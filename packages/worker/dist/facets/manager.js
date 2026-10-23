@@ -28,7 +28,8 @@ import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.
 import { InterpreterEnvFactsSchema, interpreterProcessEnv } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
 import { launchReadsBytes, readsUnderMounts, recordLaunchReads, staleReason } from './launch-reads.js';
-import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReasonOf } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { takeImageSignals } from '@nimbus-sh/core/runtime/runtime-stdio.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -9708,7 +9709,8 @@ export class FacetManager {
         let record;
         let durableFacetName;
         let launchEnv;
-        const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
+        const releaseSignals = opts.takesSignals ? takeImageSignals(this.processes, entry.pid) : null;
+        const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground, opts.takesSignals === true) : null;
         try {
             if (opts.durable) {
                 // A durable spawn on a declared port starts only when a reservation the
@@ -9891,22 +9893,30 @@ export class FacetManager {
                 this.releaseProcessRpcResources(entry.pid);
             else
                 handle?.kill();
-            // An interrupt already killed the process; it did not fail.
-            if (!opts.foreground?.signal.aborted)
+            // An interrupt that killed the process ended it; it did not fail.
+            if (this.processes.get(entry.pid)?.state === 'running')
                 this._end(entry.pid, { code: 1, cause: 'long-running worker boot failed: ' + errorMessage(e) });
             throw e;
         }
         finally {
             foreground?.release();
+            releaseSignals?.();
         }
     }
-    _holdForeground(pid, launch) {
+    /**
+     * `pid`, the foreground job of the command `launch` until its boot settles.
+     * The command's interrupt kills it, or, a process whose program takes its
+     * own signals (`takesSignals`), is sent to it, and its program decides.
+     */
+    _holdForeground(pid, launch, takesSignals = false) {
         this.processes.setForeground(pid, true);
         const unsubscribe = this.processes.subscribeOutputBytes(pid, (chunk) => launch.write(chunk.stream, chunk.data));
         let onAbort = () => { };
         const interrupted = new Promise((_, reject) => {
             onAbort = () => {
-                this.kill(pid);
+                this.kill(pid, takesSignals ? signalAbortReasonOf(launch.signal)?.signal : undefined);
+                if (this.processes.get(pid)?.state === 'running')
+                    return;
                 reject(new DOMException('the launching command was interrupted', 'AbortError'));
             };
         });
