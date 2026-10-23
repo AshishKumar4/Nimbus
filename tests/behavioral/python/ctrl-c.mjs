@@ -90,9 +90,9 @@ try {
       a.check(`${host} ${name}: exit ${expected.exit}, last saying ${expected.last}`,
         submission.exitCode === expected.exit && said.some((line) => line.endsWith(expected.last)), JSON.stringify({ exit: submission.exitCode, tail: said.slice(-4) }));
       if (expected.noServer) {
-        // Ended, it no longer runs: a server would run on in the background.
-        const ps = stripAnsi((await t.run('ps', 30_000)).output);
-        a.check(`${host} ${name}: not left running as a server`, !ps.includes(`ctrl-c-${name}.py`), JSON.stringify(ps.slice(-600)));
+        // Ended, it no longer runs: a server would run on in the background. ps lists ended processes with their end.
+        const ps = stripAnsi((await t.run('ps', 30_000)).output).split('\n').filter((line) => line.includes(`ctrl-c-${name}.py`));
+        a.check(`${host} ${name}: not left running as a server`, ps.length > 0 && ps.every((line) => /crashed\(130\)/.test(line)), JSON.stringify(ps));
       }
       // Still running: the terminal is the run's, and nothing after it can run.
       if (!ended) break run;
