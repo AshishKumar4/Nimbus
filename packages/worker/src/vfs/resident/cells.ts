@@ -22,7 +22,7 @@
 
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { Admission } from './admission.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds, type ResidentCell } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, residentChunkCost, textChunkEnds, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, prefixEnd, type Namespace } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
@@ -312,7 +312,7 @@ export function createCells(
   const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean => {
     if (filling.get(path) !== fill) return false;
     if (part === 0) admission.release(path);
-    if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
+    if (!admission.fits(residentChunkCost(typedArrayByteLength(bytes)))) return false;
     t.chunkSetBin(path, part, bytes);
     return true;
   };
