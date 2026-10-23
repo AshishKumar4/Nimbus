@@ -148,8 +148,10 @@ await runner.close();
   `cpuMs`: measured 3.7 s after it began with `cpuMs: 1000`, and 8.1 s with
   the default. A call that waits for something that never comes holds one
   of the session's Dynamic Workers until `timeoutMs`, or until `close()`.
-- **What a call keeps.** Sockets, streams and requests do not outlive the
-  call that opened them, even when a global holds them.
+- **What a call keeps.** Values stay; I/O does not. Sockets, streams and
+  requests do not outlive the call that opened them, even when a global
+  holds them, and a promise still pending when its call answers does not
+  settle in a later call.
 - **Losing a runner.** A call past `cpuMs` (`ERR_NIMBUS_RUNNER_CPU_LIMIT`),
   past `timeoutMs` (`ERR_NIMBUS_RUNNER_TIMEOUT`), past the memory limit
   (`ERR_NIMBUS_RUNNER_MEMORY_LIMIT`), killed (`ERR_NIMBUS_RUNNER_KILLED`),
