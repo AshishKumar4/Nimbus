@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -208,8 +208,19 @@ try {
   // side effect. dist matching src is scripts/dist-integrity.mjs's invariant,
   // not this test's, and a test that silently rewrites the tree it is testing
   // is how a stale dist gets papered over.
+  // This tree's core carries changes no release has published: when its own
+  // version is already on npm, a copy of it is packed as the next patch, the
+  // first version that can carry them, which a runtime's floor may name.
+  const corePackage = JSON.parse(readFileSync(join(REPO, 'packages', 'core', 'package.json'), 'utf8'));
+  let core = join(REPO, 'packages', 'core');
+  if (published.includes(corePackage.version)) {
+    const [major, minor, patch] = corePackage.version.split('.').map(Number);
+    core = join(work, 'core');
+    cpSync(join(REPO, 'packages', 'core'), core, { recursive: true, filter: (from) => !from.includes('/node_modules') });
+    writeFileSync(join(core, 'package.json'), `${JSON.stringify({ ...corePackage, version: `${major}.${minor}.${patch + 1}` }, null, 2)}\n`);
+  }
   const tarballs = [];
-  for (const dir of [join(REPO, 'packages', 'core'), join(REPO, 'packages', 'platform'), ...staged]) {
+  for (const dir of [core, join(REPO, 'packages', 'platform'), ...staged]) {
     const packed = JSON.parse(
       run('npm', ['pack', dir, '--json', '--ignore-scripts', '--pack-destination', work], work),
     );

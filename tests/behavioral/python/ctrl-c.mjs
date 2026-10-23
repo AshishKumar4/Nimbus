@@ -11,14 +11,13 @@
 import { makeAsserter, mintSession, deleteSession, Terminal, stripAnsi } from '../_driver.mjs';
 import { SPECS } from '../../../packages/worker/scripts/runtime-specs.mjs';
 import { peer, warmFor, mark, hostsSince, holdLive } from '../one-shot-peer/_peer.mjs';
+import { CPYTHON_RUNNER } from '../../../packages/core/src/runtime/os-contracts.ts';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('python/ctrl-c');
 
-// The build this tree describes, and the runner its python3 names: a warm peer is keyed by it.
-const [KEY, SPEC] = Object.entries(SPECS).find(([key]) => key.startsWith('cpython/'));
-const BUILD = KEY.slice('cpython/'.length);
-const RUNNER = SPEC.files.find((file) => file.binName === 'python3').runner;
+// The build this tree describes.
+const BUILD = Object.keys(SPECS).find((key) => key.startsWith('cpython/')).slice('cpython/'.length);
 // Ctrl-C to the prompt took 370-1812 ms over 32 computing runs on both hosts
 // at check intervals 1e3 to 1e6, 370-781 ms at this image's 1e4 (verdict
 // 20261022T235009-25265f1e507e): twice the worst, half of what a sleeping run
@@ -55,7 +54,7 @@ try {
   run: for (const host of ['session', 'peer']) {
     for (const [name, expected] of Object.entries(CASES)) {
       if (host === 'session') await peer(sid, 'forget');
-      else await warmFor(sid, RUNNER);
+      else await warmFor(sid, CPYTHON_RUNNER);
       const marked = await mark(sid);
       t.reset();
       t.cmd(oneShot(name));
