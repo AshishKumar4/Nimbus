@@ -2846,7 +2846,8 @@ var __nimbusResidentModule = (() => {
             const answer = options.answer !== void 0 ? current(options.answer) : standIn ?? await acquire(options.lease);
             const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
             const dropped = answer === null && options.answer === void 0 && standIn === null;
-            return { ...result, ...standIn === null ? {} : { fromDelivery: true }, ...dropped ? { dropped: true } : {} };
+            const reported = answer === null || answer.poison === true || result.applied !== true ? "all" : answer.paths.map((entry) => ({ path: nsKey(entry.path), subtree: entry.subtree === true || entry.structural === true }));
+            return { ...result, reported, ...standIn === null ? {} : { fromDelivery: true }, ...dropped ? { dropped: true } : {} };
           },
           cursor: () => coherence.cursor(),
           reserve: (bytes) => admission.pin(bytes),
@@ -5501,7 +5502,7 @@ var __nimbusResidentModule = (() => {
         if (inode.base !== null)
           inode.base = { ...inode.base, bytes: null };
         if (inode.state !== null)
-          inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op));
+          inode.state = { ...foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op)), bytes: null };
         need = cost(inode) - inode.reserved;
         if (need > 0 && !host2.reserve(need))
           need = 0;
@@ -5631,6 +5632,7 @@ var __nimbusResidentModule = (() => {
           if (after3 !== void 0)
             record.after = after3;
         }
+        answerChecked();
         return;
       }
       const refusedOf = /* @__PURE__ */ new Map();
@@ -5648,7 +5650,42 @@ var __nimbusResidentModule = (() => {
         fit(inode);
         release(inode);
       }
+      answerChecked();
     };
+    const answerWaiters = /* @__PURE__ */ new Set();
+    const unansweredAt = (key) => {
+      for (const inode of everyInode()) {
+        if ((inode.key === key || inode.origin === key) && inode.records.some((record) => !record.answered && !record.gone))
+          return true;
+      }
+      return nameRecords.some((record) => !record.answered && record.keys.includes(key));
+    };
+    const unansweredKeys = () => {
+      const keys = /* @__PURE__ */ new Set();
+      for (const inode of everyInode()) {
+        if (inode.records.some((record) => !record.answered && !record.gone)) {
+          keys.add(inode.key);
+          keys.add(inode.origin);
+        }
+      }
+      for (const record of nameRecords)
+        if (!record.answered)
+          for (const key of record.keys)
+            keys.add(key);
+      return [...keys];
+    };
+    const answerChecked = () => {
+      for (const waiter of [...answerWaiters]) {
+        if (waiter.keys.some((key) => unansweredAt(key)))
+          continue;
+        answerWaiters.delete(waiter);
+        waiter.done();
+      }
+    };
+    const awaitAnswered = (keys) => new Promise((done) => {
+      answerWaiters.add({ keys, done });
+      answerChecked();
+    });
     const nameCost = (keys, target = "") => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
     const loggedOn = (records, op, awaited = false) => logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
     const extended2 = (record, data, at) => {
@@ -5709,6 +5746,7 @@ var __nimbusResidentModule = (() => {
           record.answeredAt = barriers;
         }
         settled?.(refused, answer);
+        answerChecked();
       }, awaited);
     };
     const note = (dir, name, type) => {
@@ -6071,8 +6109,7 @@ var __nimbusResidentModule = (() => {
           throw error;
         }
       } else {
-        const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
-        admit(madeCost(key) + nameCost([key]) + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), "open", path);
+        admit(madeCost(key) + nameCost([key]) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), "open", path);
       }
       const description = descriptionId();
       const open = {
@@ -6097,7 +6134,7 @@ var __nimbusResidentModule = (() => {
       if (row === null) {
         target = made(key, "file", 32768 | asked & ~umask, parent);
         target.made = description;
-        target.reserved += (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
+        target.reserved += ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
       } else {
         target = inode;
       }
@@ -6761,7 +6798,10 @@ var __nimbusResidentModule = (() => {
           host2.keep?.(key, row, bytes);
         activity();
         return owed;
-      }
+      },
+      unansweredAt,
+      unansweredKeys,
+      awaitAnswered
     };
     return provisional2;
   }
@@ -9179,6 +9219,7 @@ var __nimbusResidentModule = (() => {
       }
     };
     const changedBy = (entry, attrs) => "mode" in attrs ? { ...entry, mode: entry.mode & ~4095 | attrs.mode & 4095, ctime: now() } : "uid" in attrs ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() } : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() };
+    const noted = /* @__PURE__ */ new Set();
     const holder = {
       client,
       provisional: prov,
@@ -9640,6 +9681,29 @@ var __nimbusResidentModule = (() => {
         names.retire(begun);
         return prov.retire(begun);
       },
+      noteReports: (reports) => {
+        const unanswered = prov.unansweredKeys();
+        if (unanswered.length === 0)
+          return;
+        if (reports === "all") {
+          for (const key of unanswered)
+            noted.add(key);
+          return;
+        }
+        for (const key of unanswered) {
+          if (reports.some((report) => report.subtree ? report.path === "" || key === report.path || key.startsWith(`${report.path}/`) : key === report.path))
+            noted.add(key);
+        }
+      },
+      ownAcks: () => {
+        for (const key of [...noted])
+          if (!prov.unansweredAt(key))
+            noted.delete(key);
+        if (noted.size === 0)
+          return null;
+        const keys = [...noted];
+        return holder.send().then(() => void 0, () => void 0).then(() => prov.awaitAnswered(keys));
+      },
       pending: () => dirty.size > 0 || client.pending(),
       flush: async () => {
         drain();
@@ -10094,6 +10158,14 @@ var __nimbusResidentModule = (() => {
           if (result.landed && typeof from === "number") {
             const owed2 = holder?.retire(from) ?? [];
             await Promise.all(owed2.map(([key, row]) => store.fill(key, row).catch(() => null)));
+            if (holder !== null && result.reported !== void 0) {
+              holder.noteReports(result.reported);
+              const acks = holder.ownAcks();
+              if (acks !== null) {
+                await acks;
+                return store.barrier();
+              }
+            }
           }
           return result;
         });

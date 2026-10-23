@@ -352,6 +352,12 @@ export interface Provisional {
      * whose bytes the process made and the view has no content for are returned: the caller fetches them before it lands.
      */
     retire(begun: number): [string, ResidentEntry][];
+    /** Whether a change of this process's at `key` is decided and not answered by the session yet. */
+    unansweredAt(key: string): boolean;
+    /** Every key a change of this process's is decided at and not answered yet. */
+    unansweredKeys(): string[];
+    /** Resolves once none of `keys` has a change of this process's the session has not answered. */
+    awaitAnswered(keys: readonly string[]): Promise<void>;
 }
 export declare function provisional(host: ProvisionalHost): Provisional;
 export {};

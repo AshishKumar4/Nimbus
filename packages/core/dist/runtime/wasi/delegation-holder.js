@@ -456,6 +456,8 @@ export function delegationHolder(options) {
     const changedBy = (entry, attrs) => ('mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
         : 'uid' in attrs ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
             : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() });
+    /** Keys a barrier's report named while this process's own change there was unanswered (noteReports, ownAcks). */
+    const noted = new Set();
     const holder = {
         client,
         provisional: prov,
@@ -931,6 +933,30 @@ export function delegationHolder(options) {
         retire: (begun) => {
             names.retire(begun);
             return prov.retire(begun);
+        },
+        noteReports: (reports) => {
+            const unanswered = prov.unansweredKeys();
+            if (unanswered.length === 0)
+                return;
+            if (reports === 'all') {
+                for (const key of unanswered)
+                    noted.add(key);
+                return;
+            }
+            for (const key of unanswered) {
+                if (reports.some((report) => (report.subtree ? report.path === '' || key === report.path || key.startsWith(`${report.path}/`) : key === report.path)))
+                    noted.add(key);
+            }
+        },
+        ownAcks: () => {
+            for (const key of [...noted])
+                if (!prov.unansweredAt(key))
+                    noted.delete(key);
+            if (noted.size === 0)
+                return null;
+            const keys = [...noted];
+            // Sent now, so the answers the wait is for can come: a decided change is not held behind the barrier.
+            return holder.send().then(() => undefined, () => undefined).then(() => prov.awaitAnswered(keys));
         },
         pending: () => dirty.size > 0 || client.pending(),
         flush: async () => {

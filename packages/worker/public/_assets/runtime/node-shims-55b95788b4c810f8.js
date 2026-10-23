@@ -5055,16 +5055,16 @@ const __fsMod = (() => {
     _sync("chmod", p, "fs.promises.chmod", (fs) => fs.chmod(absPath, bits));
   }
   function chownSync(p, uid, gid) {
-    nodeOwnerId(uid, "uid");
-    nodeOwnerId(gid, "gid");
+    const owner = nodeOwnerId(uid, "uid") ?? -1;
+    const group = nodeOwnerId(gid, "gid") ?? -1;
     const absPath = _at(p);
-    _sync("chown", p, "fs.promises.chown", (fs) => fs.chown(absPath, Number(uid), Number(gid), { followSymlinks: true }));
+    _sync("chown", p, "fs.promises.chown", (fs) => fs.chown(absPath, owner, group, { followSymlinks: true }));
   }
   function lchownSync(p, uid, gid) {
-    nodeOwnerId(uid, "uid");
-    nodeOwnerId(gid, "gid");
+    const owner = nodeOwnerId(uid, "uid") ?? -1;
+    const group = nodeOwnerId(gid, "gid") ?? -1;
     const absPath = _at(p);
-    _sync("lchown", p, "fs.promises.lchown", (fs) => fs.chown(absPath, Number(uid), Number(gid), { followSymlinks: false }));
+    _sync("lchown", p, "fs.promises.lchown", (fs) => fs.chown(absPath, owner, group, { followSymlinks: false }));
   }
   function utimesSync(p, atime, mtime) {
     const absPath = _at(p);
@@ -5242,7 +5242,9 @@ const __fsMod = (() => {
   async function _chownAsync(p, uid, gid, opts, syscallOverride) {
     const follow = !(opts && opts.followSymlinks === false);
     const absPath = _at(p);
-    await _async(syscallOverride || (follow ? "chown" : "lchown"), p, (fs) => fs.chown(absPath, Number(uid), Number(gid), { followSymlinks: follow }));
+    const owner = nodeOwnerId(uid, "uid") ?? -1;
+    const group = nodeOwnerId(gid, "gid") ?? -1;
+    await _async(syscallOverride || (follow ? "chown" : "lchown"), p, (fs) => fs.chown(absPath, owner, group, { followSymlinks: follow }));
   }
   async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
     const follow = !(opts && opts.followSymlinks === false);

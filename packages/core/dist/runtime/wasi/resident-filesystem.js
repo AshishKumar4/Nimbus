@@ -230,6 +230,16 @@ export function residentFilesystem(session, resident, delegation) {
                     // What the process made and the session holds, which the view has no bytes of: fetched before the barrier lands.
                     const owed = holder?.retire(from) ?? [];
                     await Promise.all(owed.map(([key, row]) => store.fill(key, row).catch(() => null)));
+                    // A report that names an own change the session has not answered yet: the barrier holds until it does, then asks
+                    // again, so what the answer decided is retired (kept, or fetched) before the resumption runs.
+                    if (holder !== null && result.reported !== undefined) {
+                        holder.noteReports(result.reported);
+                        const acks = holder.ownAcks();
+                        if (acks !== null) {
+                            await acks;
+                            return store.barrier();
+                        }
+                    }
                 }
                 return result;
             });

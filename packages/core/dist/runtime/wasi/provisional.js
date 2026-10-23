@@ -392,7 +392,7 @@ export function provisional(host) {
             if (inode.base !== null)
                 inode.base = { ...inode.base, bytes: null };
             if (inode.state !== null)
-                inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op));
+                inode.state = { ...foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op)), bytes: null };
             need = cost(inode) - inode.reserved;
             if (need > 0 && !host.reserve(need))
                 need = 0;
@@ -561,6 +561,7 @@ export function provisional(host) {
                 if (after !== undefined)
                     record.after = after;
             }
+            answerChecked();
             return;
         }
         const refusedOf = new Map();
@@ -578,7 +579,47 @@ export function provisional(host) {
             fit(inode);
             release(inode);
         }
+        answerChecked();
     };
+    /** Waiters for the session's answer to this process's changes at their keys: resolved once none of them is unanswered. */
+    const answerWaiters = new Set();
+    /** Whether a change of this process's at `key` is decided and not answered by the session yet: an inode's record or a name's. */
+    const unansweredAt = (key) => {
+        for (const inode of everyInode()) {
+            if ((inode.key === key || inode.origin === key) && inode.records.some((record) => !record.answered && !record.gone))
+                return true;
+        }
+        return nameRecords.some((record) => !record.answered && record.keys.includes(key));
+    };
+    /** Every key a change of this process's is decided at and not answered yet. */
+    const unansweredKeys = () => {
+        const keys = new Set();
+        for (const inode of everyInode()) {
+            if (inode.records.some((record) => !record.answered && !record.gone)) {
+                keys.add(inode.key);
+                keys.add(inode.origin);
+            }
+        }
+        for (const record of nameRecords)
+            if (!record.answered)
+                for (const key of record.keys)
+                    keys.add(key);
+        return [...keys];
+    };
+    /** Resolves the waiters whose keys have no unanswered change left. */
+    const answerChecked = () => {
+        for (const waiter of [...answerWaiters]) {
+            if (waiter.keys.some((key) => unansweredAt(key)))
+                continue;
+            answerWaiters.delete(waiter);
+            waiter.done();
+        }
+    };
+    /** Resolves once none of `keys` has a change of this process's the session has not answered. */
+    const awaitAnswered = (keys) => new Promise((done) => {
+        answerWaiters.add({ keys, done });
+        answerChecked();
+    });
     /** What a name record keeps: itself and its names, and a link's target. */
     const nameCost = (keys, target = '') => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
     /** Log the op that made `records`, their fate its. */
@@ -652,6 +693,7 @@ export function provisional(host) {
                 record.answeredAt = barriers;
             }
             settled?.(refused, answer);
+            answerChecked();
         }, awaited);
     };
     const note = (dir, name, type) => {
@@ -1092,8 +1134,8 @@ export function provisional(host) {
             }
         }
         else {
-            const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
-            admit(madeCost(key) + nameCost([key]) + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), 'open', path);
+            // A whole write into nothing is its payload's content (applyOp aliases it): charged once, by its records.
+            admit(madeCost(key) + nameCost([key]) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), 'open', path);
         }
         // Made.
         const description = descriptionId();
@@ -1117,8 +1159,8 @@ export function provisional(host) {
         if (row === null) {
             target = made(key, 'file', 0o100000 | (asked & ~umask), parent);
             target.made = description;
-            // Admitted above with it: its records and its fold's buffer.
-            target.reserved += (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
+            // Admitted above with it: its records, the payload as its content.
+            target.reserved += ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
         }
         else {
             target = inode;
@@ -1851,6 +1893,9 @@ export function provisional(host) {
             activity();
             return owed;
         },
+        unansweredAt,
+        unansweredKeys,
+        awaitAnswered,
     };
     return provisional;
 }

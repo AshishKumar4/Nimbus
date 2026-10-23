@@ -227,6 +227,16 @@ export interface DelegationHolder {
      * decisions while it holds it). The names whose bytes the process made and the view has no content for are returned.
      */
     retire(begun: number): [string, ResidentEntry][];
+    /**
+     * A barrier's answer reported these (`'all'` where it named nothing) against this process's changes the session has not
+     * answered: noted, so the barrier waits on them (ownAcks) before its resumption runs.
+     */
+    noteReports(reports: 'all' | readonly {
+        readonly path: string;
+        readonly subtree: boolean;
+    }[]): void;
+    /** The noted changes the session has not answered, sent now: resolved once it has answered them; null when none is left. */
+    ownAcks(): Promise<void> | null;
     /** Whether anything decided here is not sent yet. */
     pending(): boolean;
     /** Send everything decided, in order. A refusal is thrown (the run fails, naming it). */

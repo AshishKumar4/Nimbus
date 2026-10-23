@@ -173,6 +173,11 @@ export interface ResidentBarrier {
     readonly fromDelivery?: boolean;
     /** Its ACQUIRE got no answer (whatever a repair after it landed): a barrier failure, counted. */
     readonly dropped?: boolean;
+    /** What the answer applied names (keys, a subtree flagged), or 'all' where it could not be applied as it came: for the process's own changes it reports against. */
+    readonly reported?: 'all' | readonly {
+        readonly path: string;
+        readonly subtree: boolean;
+    }[];
 }
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
 export interface PinnedContent {

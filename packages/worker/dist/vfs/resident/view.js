@@ -434,7 +434,12 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
                     // An ACQUIRE that got no answer, whatever the repair after it did: the store's own failure.
                     const dropped = answer === null && options.answer === undefined && standIn === null;
-                    return { ...result, ...(standIn === null ? {} : { fromDelivery: true }), ...(dropped ? { dropped: true } : {}) };
+                    // What the answer applied names, for the process's own changes it is reported against; all of it where the answer
+                    // could not be applied as it came (no answer, a poison, a repair).
+                    const reported = answer === null || answer.poison === true || result.applied !== true
+                        ? 'all'
+                        : answer.paths.map((entry) => ({ path: nsKey(entry.path), subtree: entry.subtree === true || entry.structural === true }));
+                    return { ...result, reported, ...(standIn === null ? {} : { fromDelivery: true }), ...(dropped ? { dropped: true } : {}) };
                 },
                 cursor: () => coherence.cursor(),
                 reserve: (bytes) => admission.pin(bytes),
