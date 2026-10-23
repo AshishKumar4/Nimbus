@@ -113,13 +113,16 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   assert.equal(await fsp.readFile('/home/user/log.txt', 'utf8'), 'line1\nline2\nline3\n');
 }
 
-// A real pending full rewrite does own its prefix. Appending before that
-// rewrite flushes must publish replacement + suffix, not preserve old authority.
+// A sync write the process decided on its view, where that view (no barrier
+// since) still says the name is free, is ordered as of that view: before the
+// peer's file, which replaced it, as a peer's create after it would on Linux.
+// The peer's file stays, nothing is reported, and the append after, which
+// waits, is decided on the session as it is now: the peer's file, appended.
 {
   await authority.peer.writeFile('home/user/pending-full.txt', 'external\n');
   fs.writeFileSync('/home/user/pending-full.txt', 'replacement\n');
   await fsp.appendFile('/home/user/pending-full.txt', 'tail\n');
-  assert.equal(await live('home/user/pending-full.txt'), 'replacement\ntail\n');
+  assert.equal(await live('home/user/pending-full.txt'), 'external\ntail\n');
 }
 
 // writeFile + appendFile flow (probe parity: WRITE=ok path)

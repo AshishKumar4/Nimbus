@@ -888,7 +888,12 @@ export function residentFilesystem(session, resident, delegation) {
     /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. */
     const walkFor = (path, follow) => {
         const crossed = [];
-        return after(resolve(path, follow, false, crossed), (key) => (typeof key === 'string' && key !== '' ? { key, crossed } : DELEGATE));
+        return after(resolve(path, follow, false, crossed), (key) => {
+            // Links that do not end (more than the walk follows): open(2)'s ELOOP.
+            if (key === null)
+                throw fsError('ELOOP', 'open', pathOf(path));
+            return typeof key === 'string' && key !== '' ? { key, crossed } : DELEGATE;
+        });
     };
     /**
      * Whether the holder may be asked to decide a change at `key` on its
@@ -1223,7 +1228,8 @@ export function residentFilesystem(session, resident, delegation) {
         }
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
-            const local = decide(() => after(walkFor(path, true), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
+            // The final link followed as open(2) follows it: never under O_CREAT|O_EXCL nor O_NOFOLLOW (openFollows).
+            const local = decide(() => after(walkFor(path, openFollows(openFlags(flags))), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
                 : after(holder.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
             return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
         }
@@ -1318,7 +1324,7 @@ export function residentFilesystem(session, resident, delegation) {
     const openByNumber = (path, flags) => {
         if (flags.directory)
             throw NOT_NOW;
-        return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
+        return heldOpen(provisionally(path, openFollows(openFlags(flags)), (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
     };
     /**
      * A read by a descriptor of the holder's: its file's bytes here (a grant's
@@ -1405,7 +1411,7 @@ export function residentFilesystem(session, resident, delegation) {
             const through = () => {
                 if (holder === null || !store.ready() || flags.directory)
                     return DELEGATE;
-                return after(walkFor(path, flags.followSymlinks !== false), (walk) => {
+                return after(walkFor(path, openFollows(openFlags(flags))), (walk) => {
                     if (walk === DELEGATE)
                         return DELEGATE;
                     const there = ownEntryAt(walk.key);

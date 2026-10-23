@@ -1375,10 +1375,8 @@ export function provisional(host: ProvisionalHost): Provisional {
         ...(chmod === undefined ? {} : { fchmod: chmod }),
         description,
         // The file it decided this on (none, for a file it makes): the session refuses it where the name leads elsewhere.
-        // One made exclusively needs none: the session's EEXIST refuses it first. Nor does one that makes or empties
-        // whatever the view says is not there (not this process's removal): open(O_CREAT|O_TRUNC) truncates a file a
-        // peer made there since, as the open, coming after it, finds it.
-        ...(row === null && (flags.exclusive || (flags.truncate && !layer.has(key))) ? {} : expecting(row, key)),
+        // One made exclusively needs none: the session's EEXIST refuses it first.
+        ...(flags.exclusive && row === null ? {} : expecting(row, key)),
       },
     };
     let target: Inode;

@@ -4700,19 +4700,25 @@ const __fsMod = (() => {
    */
   function _async(syscall, p, run, dest) {
     return __nimbusTrackOp((async () => {
-      try { return await run(_rf()); }
-      catch (error) { throw _rfError(error, syscall, p, dest); }
+      try {
+        const fs = _rf();
+        // Decided on the session as it is now: what another process did before it, as Node's call finds it.
+        if (__nimbusProcessSupervised) fs.inbound();
+        return await run(fs);
+      } catch (error) { throw _rfError(error, syscall, p, dest); }
     })());
   }
   /**
    * An awaited call that reads what a name is or holds (an open among them):
    * over the session as it is now, as Node's call finds what another process
-   * just did. The filesystem owes its barrier, which the call's walk takes
-   * before it answers from what this process holds (inbound).
+   * just did, with what this process wrote there before it (sent first, so
+   * another process reads it as this one was told it is). The filesystem
+   * owes its barrier, which the call's walk takes before it answers from
+   * what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, (fs) => {
-      if (__nimbusProcessSupervised) fs.inbound();
+    return _async(syscall, p, async (fs) => {
+      if (__nimbusProcessSupervised && fs.holding()) await fs.send();
       return run(fs);
     });
   }
@@ -5389,10 +5395,7 @@ const __fsMod = (() => {
     const fl = _openFlags(flags, mode);
     // What the name is now; an open that makes or empties a file is a change, answered once the session has it.
     const changes = fl.write || fl.create || fl.truncate || fl.append;
-    const opened = await (changes ? _async : _asyncRead)("open", path, (fs) => {
-      if (__nimbusProcessSupervised) fs.inbound();
-      return fs.open(absPath, fl);
-    });
+    const opened = await (changes ? _async : _asyncRead)("open", path, (fs) => fs.open(absPath, fl));
     return new __FileHandle(path, opened, fl);
   }
   function openSync(path, flags, mode) {

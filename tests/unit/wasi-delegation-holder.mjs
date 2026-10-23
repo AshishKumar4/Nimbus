@@ -533,27 +533,28 @@ async function caughtUp(s) {
 // where the session still has the file it unlinked (the unlink refused):
 // the session refuses the creating open too (EEXIST, W7Expected), so
 // nothing of the file it would have reached changes, and every descriptor
-// of that file reads what the session has.
+// of that file reads what the session has. The unlink's refusal is
+// reported; the open's follows from it (its name leads to the file the
+// unlink left), the orphaned outcome, reported to nobody.
 {
   const { s, control, sync } = provisionalSession();
   await resident(s, 'same.txt', 'OLDOLDOLD');
   const fd = sync.open(other('same.txt'), { read: true }).id;
   control.hold();
   sync.unlink(other('same.txt'));
-  const sent = s.fs.flush().catch(() => {});
+  const reported = [];
+  const sent = s.fs.flush().catch((error) => { reported.push(error?.code); });
   await until(() => control.entered > 0, 'the unlink on its way');
   sync.writeFile(other('same.txt'), enc.encode('NEW'));
   control.verdicts.push(true);
   control.open();
   await sent;
-  // Each flush reports the next refusal: the unlink's, then the open's.
-  const reported = [];
   for (let tries = 0; tries < 4; tries++) {
     const code = await s.fs.flush().then(() => null, (error) => error?.code);
     if (code === null) break;
     reported.push(code);
   }
-  assert.ok(reported.length > 0, 'the refusals reported');
+  assert.deepEqual(reported, ['ENOSPC'], 'the unlink\'s refusal reported, and nothing more');
   assert.equal(dec.decode(s.kernel.readFile('home/user/other/same.txt')), 'OLDOLDOLD');
   assert.equal(dec.decode(sync.readFile(other('same.txt'))), 'OLDOLDOLD');
   assert.equal(dec.decode(sync.read(fd, 0, 16)), 'OLDOLDOLD', 'a descriptor of the file the session kept');
