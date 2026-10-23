@@ -142,7 +142,9 @@ const __nimbusStopReplay = (() => {
   // A replay into a resident, which runs on past its boundary: the run before
   // it stopped at a listen, or at a read of a file it did not hold. What that
   // run changed was put back (SqliteVFS.restoreRun), so this one's changes are its own.
-  const intoResident = () => run.replay.listen === true || typeof run.replay.read === "string";
+  const intoResident = () => run.replay.boundary.kind !== "stdin";
+  // Whether this run again retraces to a stop of this kind (its replay's boundary, ReplayBoundary).
+  const replayStoppedAt = (kind) => run !== null && run.replay !== null && !run.boundaryPassed && run.replay.boundary.kind === kind;
   // D1: once a run cannot be replayed it records nothing more.
   const recording = () => run !== null && run.recordTape && run.why === null;
   function unreplayable(why) {
@@ -458,7 +460,7 @@ const __nimbusStopReplay = (() => {
     readSome(available, ended) {
       if (!run || !run.tape) return available > 0 || ended ? available : -1;
       const idx = run.readAt;
-      if (run.replay !== null && !run.boundaryPassed && idx === run.replay.stopAt) boundary();
+      if (replayStoppedAt("stdin") && idx === run.replay.boundary.stopAt) boundary();
       if (replaying() && idx < run.replayedReads) {
         const recorded = run.tape.reads[idx];
         if (recorded > available) diverge("its read of stdin found less than the run before it read there");
@@ -477,7 +479,7 @@ const __nimbusStopReplay = (() => {
     readAll(length) {
       if (!run || !run.tape) return;
       const idx = run.readAt;
-      if (run.replay !== null && !run.boundaryPassed && idx === run.replay.stopAt) boundary();
+      if (replayStoppedAt("stdin") && idx === run.replay.boundary.stopAt) boundary();
       if (replaying() && idx < run.replayedReads && run.tape.reads[idx] !== length) {
         diverge("its read of stdin found " + length + " bytes where the run before it read " + run.tape.reads[idx]);
       }
@@ -505,7 +507,7 @@ const __nimbusStopReplay = (() => {
     // cannot be run again as a server.
     listen() {
       if (!run || !run.armed || run.listened) return;
-      if (run.replay !== null && run.replay.listen === true && !run.boundaryPassed) {
+      if (replayStoppedAt("listen")) {
         boundary();
         run.listened = true;
         return;
@@ -530,7 +532,7 @@ const __nimbusStopReplay = (() => {
     // A synchronous read of a file's content: a run again of a run that
     // stopped at its read of this file (miss) has reached where it stopped.
     read(path) {
-      if (run && run.armed && run.replay !== null && !run.boundaryPassed && run.replay.read === path) boundary();
+      if (run && run.armed && replayStoppedAt("read") && run.replay.boundary.path === path) boundary();
     },
     // A read that needs input not there yet: the run stops (and never comes
     // back here), or this says why it cannot.
@@ -549,8 +551,8 @@ const __nimbusStopReplay = (() => {
     },
     finish() {
       if (!run || run.replay === null || run.boundaryPassed) return "";
-      if (run.replay.listen === true) return "node: this program listens as a server, so Nimbus ran it again as one, and it ended before it listened, where the run before it listened; it did not retrace that run, and is not a server.\\n";
-      if (typeof run.replay.read === "string") return "node: this program read /" + run.replay.read + " synchronously, which its process did not hold, so Nimbus ran it again as a resident process, and it ended before that read, where the run before it read it; it did not retrace that run.\\n";
+      if (run.replay.boundary.kind === "listen") return "node: this program listens as a server, so Nimbus ran it again as one, and it ended before it listened, where the run before it listened; it did not retrace that run, and is not a server.\\n";
+      if (run.replay.boundary.kind === "read") return "node: this program read /" + run.replay.boundary.path + " synchronously, which its process did not hold, so Nimbus ran it again as a resident process, and it ended before that read, where the run before it read it; it did not retrace that run.\\n";
       return "node: this program ended before the read of stdin it stopped at when Nimbus ran it again, so it did not retrace its run before; what it printed past that is not shown.\\n";
     },
     booted() {

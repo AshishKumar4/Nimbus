@@ -45,32 +45,18 @@ export interface StoppedOutput {
     /** base64. */
     b: string;
 }
-export interface StopRecord {
+/** What every stop record carries, whatever stopped the run. */
+interface StopRecordOf<Kind extends string> {
     v: 3;
-    /**
-     * `stdin`: a read needs input not there yet. `listen`: a one-shot's first
-     * listen, to be run again as a resident. `miss`: a one-shot's synchronous
-     * read of a file its process did not hold, to be run again as a resident,
-     * which holds it. `diverged`: a replay did not retrace the run before it.
-     */
-    kind: 'stdin' | 'listen' | 'miss' | 'diverged';
+    kind: Kind;
     /** The run that stopped (1 for the first). */
     run: number;
     out: StoppedOutput[];
-    /** `stdin`: what the read waits for, the end of stdin or any of it. */
-    until?: 'end' | 'data';
-    /** `stdin`: how many synchronous reads of stdin completed before the one that stopped. */
-    stopAt?: number;
-    /** `miss`: the file it read (its path without the leading slash). */
-    path?: string;
-    tape?: ReplayTape;
     /** A run whose output is captured, not streamed: what it had printed. */
     captured?: {
         stdout: string;
         stderr: string;
     };
-    /** `diverged`: how. */
-    why?: string;
     /**
      * The signals its program had said it catches (its handlers), comma-joined:
      * the session takes them before the run's output is shown, as the run's own
@@ -78,16 +64,51 @@ export interface StopRecord {
      */
     catches?: string;
 }
+/** Why a run stopped, and what the session needs of each to run it again (or to end it). */
+export type StopRecord = 
+/** A synchronous read of stdin needs input not there yet. */
+(StopRecordOf<'stdin'> & {
+    /** What the read waits for, the end of stdin or any of it. */
+    until: 'end' | 'data';
+    /** How many synchronous reads of stdin completed before the one that stopped. */
+    stopAt: number;
+    tape: ReplayTape;
+})
+/** A one-shot's first listen, to be run again as a resident. */
+ | (StopRecordOf<'listen'> & {
+    tape: ReplayTape;
+})
+/** A one-shot's synchronous read of a file its process did not hold, to be run again as a resident, which holds it. */
+ | (StopRecordOf<'miss'> & {
+    /** The file it read (its path without the leading slash). */
+    path: string;
+    tape: ReplayTape;
+})
+/** A replay did not retrace the run before it. */
+ | (StopRecordOf<'diverged'> & {
+    why: string;
+});
+/** Where a run after a stop has retraced the run before it: what stopped that run. */
+export type ReplayBoundary = 
+/** The synchronous read of stdin it stopped at, by count: the replay must have printed all of `prefix` by it. */
+{
+    kind: 'stdin';
+    stopAt: number;
+}
+/** Its first listen. */
+ | {
+    kind: 'listen';
+}
+/** Its first synchronous read of this file (StopRecord's `path`). */
+ | {
+    kind: 'read';
+    path: string;
+};
 /** What a run after a stop is handed (the runner's `args.replay`). */
 export interface ReplayLaunch {
     run: number;
     tape: ReplayTape;
-    /** The synchronous read the run before stopped at: where the replay must have printed all of `prefix`. */
-    stopAt?: number;
-    /** The run before stopped at its first listen instead: the replay's boundary is there. */
-    listen?: true;
-    /** The run before stopped at its first synchronous read of this file instead (StopRecord.path): the boundary is there. */
-    read?: string;
+    boundary: ReplayBoundary;
     /** What the session showed of each stream, base64: the replay prints it again first. Null when output is captured. */
     prefix: {
         stdout: string;
@@ -126,4 +147,5 @@ export type RecordedBody = {
 } | {
     tooLarge: true;
 };
+export {};
 //# sourceMappingURL=stop-replay-contracts.d.ts.map

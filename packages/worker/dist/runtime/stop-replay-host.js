@@ -5,14 +5,14 @@ export function decodeBase64(text) {
     return text ? base64Decode(text) : new Uint8Array(0);
 }
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+const isObject = (value) => typeof value === 'object' && value !== null;
 const isBase64Within = (value, maxBytes) => typeof value === 'string' && value.length <= Math.ceil(maxBytes / 3) * 4 && value.length % 4 === 0 && BASE64.test(value);
 const isCount = (value, max) => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= max;
 const isReadings = (value) => Array.isArray(value) && value.length <= REPLAY_TAPE_MAX_READINGS
     && value.every((entry) => Array.isArray(entry) && entry.length === 2 && Number.isFinite(entry[0]) && isCount(entry[1], Number.MAX_SAFE_INTEGER) && entry[1] >= 1);
-function isTape(value) {
-    if (typeof value !== 'object' || value === null)
+function isTape(tape) {
+    if (!isObject(tape))
         return false;
-    const tape = value;
     return Array.isArray(tape.seed) && tape.seed.length === 4 && tape.seed.every((word) => isCount(word, 0xffffffff))
         && isReadings(tape.now) && isReadings(tape.perf)
         && isBase64Within(tape.random, REPLAY_TAPE_MAX_RANDOM_BYTES)
@@ -23,7 +23,7 @@ function isOutput(value) {
         return false;
     let bytes = 0;
     for (const chunk of value) {
-        if (typeof chunk !== 'object' || chunk === null)
+        if (!isObject(chunk))
             return false;
         const { s, at, b } = chunk;
         if ((s !== 'stdout' && s !== 'stderr') || !isCount(at, Number.MAX_SAFE_INTEGER) || !isBase64Within(b, 2 * REPLAY_PREFIX_MAX_BYTES))
@@ -60,47 +60,45 @@ function parseStopRecord(error, nonce, run) {
     const at = message.indexOf(marker);
     if (nonce.length < 16 || at < 0 || message.length - at > STOP_RECORD_MAX_CHARS)
         return null;
-    let record;
+    let r;
     try {
-        record = JSON.parse(message.slice(at + marker.length));
+        r = JSON.parse(message.slice(at + marker.length));
     }
     catch {
         return null;
     }
-    if (typeof record !== 'object' || record === null)
+    if (!isObject(r) || r.v !== 3 || r.run !== run || !isOutput(r.out))
         return null;
-    const r = record;
-    if (r.v !== 3 || r.run !== run || !isOutput(r.out))
+    const { captured, catches } = r;
+    if (captured !== undefined && (!isObject(captured)
+        || typeof captured.stdout !== 'string' || typeof captured.stderr !== 'string'
+        || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES))
         return null;
-    if (r.captured !== undefined) {
-        const captured = r.captured;
-        if (typeof captured !== 'object' || captured === null
-            || typeof captured.stdout !== 'string' || typeof captured.stderr !== 'string'
-            || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES)
-            return null;
-    }
-    if (r.catches !== undefined && (typeof r.catches !== 'string' || !/^(SIG[A-Z0-9]+(,SIG[A-Z0-9]+)*)?$/.test(r.catches) || r.catches.length > 400))
+    if (catches !== undefined && (typeof catches !== 'string' || !/^(SIG[A-Z0-9]+(,SIG[A-Z0-9]+)*)?$/.test(catches) || catches.length > 400))
         return null;
-    if (r.kind === 'stdin') {
-        if ((r.until !== 'end' && r.until !== 'data') || !isCount(r.stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(r.tape))
+    const common = {
+        run, out: r.out,
+        ...(captured === undefined ? {} : { captured: { stdout: captured.stdout, stderr: captured.stderr } }),
+        ...(catches === undefined ? {} : { catches }),
+    };
+    const { kind, tape } = r;
+    if (kind === 'stdin') {
+        const { until, stopAt } = r;
+        if ((until !== 'end' && until !== 'data') || !isCount(stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(tape))
             return null;
+        return { v: 3, ...common, kind, until, stopAt, tape };
     }
-    else if (r.kind === 'listen') {
-        if (!isTape(r.tape))
-            return null;
+    if (kind === 'listen')
+        return isTape(tape) ? { v: 3, ...common, kind, tape } : null;
+    if (kind === 'miss') {
+        const { path } = r;
+        return typeof path === 'string' && path.length > 0 && isTape(tape) ? { v: 3, ...common, kind, path, tape } : null;
     }
-    else if (r.kind === 'miss') {
-        if (typeof r.path !== 'string' || r.path.length === 0 || !isTape(r.tape))
-            return null;
+    if (kind === 'diverged') {
+        const { why } = r;
+        return typeof why === 'string' && why.length <= 1000 ? { v: 3, ...common, kind, why } : null;
     }
-    else if (r.kind === 'diverged') {
-        if (typeof r.why !== 'string' || r.why.length > 1000)
-            return null;
-    }
-    else {
-        return null;
-    }
-    return record;
+    return null;
 }
 const EMPTY = new Uint8Array(0);
 function concatBytes(parts, size) {

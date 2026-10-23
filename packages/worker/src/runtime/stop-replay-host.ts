@@ -64,14 +64,18 @@ function parseStopRecord(error: unknown, nonce: string, run: number): StopRecord
   let r: unknown;
   try { r = JSON.parse(message.slice(at + marker.length)); } catch { return null; }
   if (!isObject(r) || r.v !== 3 || r.run !== run || !isOutput(r.out)) return null;
-  const { captured, catches } = r;
-  if (captured !== undefined && (!isObject(captured)
-    || typeof captured.stdout !== 'string' || typeof captured.stderr !== 'string'
-    || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES)) return null;
+  let captured: { stdout: string; stderr: string } | undefined;
+  if (r.captured !== undefined) {
+    if (!isObject(r.captured)) return null;
+    const { stdout, stderr } = r.captured;
+    if (typeof stdout !== 'string' || typeof stderr !== 'string' || stdout.length + stderr.length > REPLAY_PREFIX_MAX_BYTES) return null;
+    captured = { stdout, stderr };
+  }
+  const { catches } = r;
   if (catches !== undefined && (typeof catches !== 'string' || !/^(SIG[A-Z0-9]+(,SIG[A-Z0-9]+)*)?$/.test(catches) || catches.length > 400)) return null;
   const common = {
     run, out: r.out,
-    ...(captured === undefined ? {} : { captured: { stdout: captured.stdout, stderr: captured.stderr } }),
+    ...(captured === undefined ? {} : { captured }),
     ...(catches === undefined ? {} : { catches }),
   };
   const { kind, tape } = r;
