@@ -239,11 +239,19 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
    */
   syncInode(dev: number, ino: number): void | Promise<void>;
   /**
-   * The end of a run: every held write goes to the session, and every refusal
-   * not yet reported (by its descriptor's close or fsync) is returned, naming
-   * the file, and forgotten.
+   * The end of a run: every held write goes to the session, every fault-in
+   * out ends, and every refusal not yet reported (by its descriptor's close
+   * or fsync) is returned, naming the file, and forgotten.
    */
   settle(): Promise<UnsettledWrite[]>;
+  /**
+   * The reads the program was refused (`synchronous`, not resident) that
+   * nothing has answered since, by key, in the order first refused, once
+   * every fault-in out has ended: less those the view now knows are absent
+   * (ResidentDelegation.residency; none without it). Not the run's end: a
+   * live process asks as often as it reports.
+   */
+  misses(): Promise<string[]>;
   /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
   stats(): ResidentFilesystemStats;
   /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
@@ -273,6 +281,8 @@ export interface ResidentFilesystemStats {
   fills: number;
   filledBytes: number;
   readAhead: number;
+  /** Of those, fetched for a refused synchronous read (ResidentDelegation.residency). */
+  faultIns: number;
   /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
   pagedReads: number;
   pagesFetched: number;
@@ -393,6 +403,21 @@ function refusesADirectory(syscall: string, args: readonly unknown[]): boolean {
 }
 const notNow = (): never => { throw NOT_NOW; };
 
+/**
+ * The reads a program can be refused (ProgramResidency), by what they ask:
+ * a file's bytes, or what a name is (an open for reading, which reads
+ * nothing, among them). An awaited one answers a refused read of its name
+ * of its own kind, and one of a file's bytes either kind.
+ */
+const READS: ReadonlyMap<string, 'content' | 'metadata'> = new Map([
+  ['readFile', 'content'], ['read', 'content'], ['readRange', 'content'],
+  ['stat', 'metadata'], ['access', 'metadata'], ['readdir', 'metadata'], ['readlink', 'metadata'], ['realpath', 'metadata'],
+  ['open', 'metadata'], ['fstat', 'metadata'], ['readdirHandle', 'metadata'],
+]);
+
+/** What an awaited read may be refused with that answers it all the same: the name's own state. */
+const ANSWERED_REFUSALS: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR', 'ELOOP', 'EPERM']);
+
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
 const NO_SYNCHRONOUS_FORM = new Set<string>(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
 
@@ -467,11 +492,57 @@ export interface ResidentDelegation {
    * description is admitted only if the namespace still vouches for it.
    */
   readonly walked?: readonly string[];
+  /**
+   * The process's program reads synchronously (node's): a read it is
+   * refused is recorded (ResidentFilesystem.misses), and a refused file's
+   * bytes are fetched for its next read. Without it a refusal leaves
+   * nothing (a WASI program's).
+   */
+  readonly residency?: ProgramResidency;
+}
+
+/**
+ * What a program that reads synchronously is refused. A refused read is a
+ * code no program branches on (EAGAIN cannot come of reading a regular
+ * file), so whatever catches it carries on as if the file were missing:
+ * the run's end reports what is left (misses), and the next launch stages
+ * it. A refused read stays the program's miss until its own awaited read of
+ * the name answers it (one of the file's bytes for a refused read of them,
+ * any for a refused stat), or the view knows the name absent; a fill behind
+ * its back or a later synchronous answer does not, since it may have built
+ * on the refusal by then (vite's resolver swallows a refused package.json).
+ * A refused read of a file the view has fetches its bytes for the next read
+ * (a fault-in): one fetch per file while it is out, which every read of it
+ * joins; the refusals of one turn are fetched together; one that did not
+ * land is asked again by the next refusal.
+ */
+export interface ProgramResidency {
+  /** The speculative read running now (the import prefetch's), or null. */
+  speculation(): ResidentSpeculation | null;
+  /** A read the program was refused, by key, for the first time: told as it happens, so a run the platform kills has reported it. */
+  missed?(key: string): void;
+}
+
+/**
+ * A speculative read (an import's prefetch, reading ahead of its load as the
+ * load will read): a read refused under it is its own, never the program's,
+ * and the fetch of a file it is refused is charged to its quota first.
+ */
+export interface ResidentSpeculation {
+  /**
+   * `key` was refused under it. `fetch` brings its bytes: a fill issued for
+   * it, or one out it joined, telling whether they are held once it ends.
+   * Null where none was issued: past its quota, or nothing to fetch (a name
+   * the view cannot say, bytes only the session reads).
+   */
+  missed(key: string, fetch: Promise<boolean> | null): void;
+  /** One more file, of `bytes`, before its fetch is issued: false past its quota, and nothing is issued. */
+  charge(bytes: number): boolean;
 }
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
   let directoryPool: ReadDirectoryPool | null = null;
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
   /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
   let now = false;
   // Every session interaction begins here, given as what would begin it: the
@@ -490,6 +561,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // The subtrees this process holds, when it may hold any (it waits in its
   // syscalls): what it decided there is answered here and sent later.
   let holder: DelegationHolder | null = null;
+  const residency = delegation?.residency;
   const authority = new Proxy(session, {
     get(target, name, receiver) {
       const value: unknown = Reflect.get(target, name, receiver);
@@ -621,6 +693,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }
   /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
   const readers = new Set<number>();
+  /** Of those, the names they were opened by, whose reads answer the program's misses (ProgramResidency). */
+  const readerKeys = new Map<number, string>();
   /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
   const unwritten = new Set<number>();
   /** Of the read-only ones, the directories, and where their listing is. */
@@ -735,7 +809,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const unlistable = new Set<string>();
   /** Whether the name a directory's last miss looked up was there: its misses are a walk of what is there, not a probe. */
   const foundIn = new Map<string, boolean>();
-  /** Files a read-ahead batch is fetching, and the batch; and the bytes read ahead so far. */
+  /** Files a batch is fetching (read ahead, or faulted in), and the batch, which a read of one joins; and the bytes read ahead so far. */
   const fetchingAhead = new Map<string, Promise<void>>();
   let readAheadBytes = 0;
 
@@ -777,6 +851,54 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     for (const [path] of batch) fetchingAhead.set(path, fetched);
     void fetched.then(() => { for (const [path] of batch) if (fetchingAhead.get(path) === fetched) fetchingAhead.delete(path); });
     return fetched;
+  };
+
+  /**
+   * The fault-ins of refused synchronous reads (ProgramResidency): the files
+   * this turn's refusals named, fetched together once its synchronous calls
+   * are done (one fillMany, where a fetch may begin); and every fetch a
+   * refusal issued or joined, until it ends (misses, settle).
+   */
+  let faults: Array<[string, ResidentEntry]> | null = null;
+  let faulted: Promise<void> = Promise.resolve();
+  const faulting = new Set<Promise<unknown>>();
+  const outstanding = <T>(fetch: Promise<T>): Promise<T> => {
+    faulting.add(fetch);
+    void fetch.then(() => { faulting.delete(fetch); });
+    return fetch;
+  };
+  const faultsEnded = async (): Promise<void> => {
+    while (faulting.size > 0) await Promise.all(faulting);
+  };
+  /** The fetch the refusal of the synchronous call running now issued or joined. */
+  let refusedFetch: Promise<boolean> | null = null;
+  /**
+   * A refused read of the file at `key` (`entry`), whose bytes are the
+   * store's: fetched for its next read, joined with a fetch of it out; under
+   * a speculation, charged to it first. Whether they are held once it ends,
+   * or null where none was issued.
+   */
+  const faultIn = (key: string, entry: ResidentEntry): Promise<boolean> | null => {
+    if (residency === undefined) return null;
+    const held = (): boolean => store.content(key, entry.revision)?.byteLength === entry.size;
+    const out = fetchingAhead.get(key);
+    if (out !== undefined) return outstanding(out.then(held));
+    const speculation = residency.speculation();
+    if (speculation !== null && !speculation.charge(entry.size)) return null;
+    let files = faults;
+    if (files === null) {
+      const named: Array<[string, ResidentEntry]> = [];
+      files = faults = named;
+      faulted = outstanding(Promise.resolve().then(() => { faults = null; return store.fillMany(named); }).catch(() => {}));
+    }
+    const batch = faulted;
+    files.push([key, entry]);
+    counts.fills++;
+    counts.faultIns++;
+    counts.filledBytes += entry.size;
+    fetchingAhead.set(key, batch);
+    void batch.then(() => { if (fetchingAhead.get(key) === batch) fetchingAhead.delete(key); });
+    return outstanding(batch.then(held));
   };
 
   /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up. */
@@ -940,7 +1062,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
     const held = store.content(key, entry.revision);
     if (held !== undefined && held.byteLength === entry.size) return held;
-    if (now) notNow();
+    if (now) {
+      refusedFetch = faultIn(key, entry);
+      notNow();
+    }
     const fill = (): Promise<Uint8Array | undefined> => {
       counts.fills++;
       counts.filledBytes += entry.size;
@@ -952,6 +1077,30 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return batch.then(() => {
       const fetched = store.content(key, entry.revision);
       return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
+    });
+  };
+
+  /**
+   * A file's bytes for a caller that may wait, where the store did not take
+   * them whole (it has no room, or the file changed): read through its pages
+   * at the revision the view has, each held as room allows, where the file
+   * is past what one batch read asks (FS_READ_BATCH_REQUEST_BYTES). The
+   * session's whole-file read holds as much of its transient allocation as
+   * the file is (readWholeFile's lease), and none past what one call
+   * carries (MAX_RPC_SAFE_PAYLOAD_BYTES): a page batch never asks more than
+   * a batch read does, and a read of any size answers. A smaller file, or
+   * one whose pages are not at that revision either, is DELEGATE: the
+   * session's read, in one round trip.
+   */
+  const wholeByPages = (key: string, entry: ResidentEntry): Promise<Uint8Array | Delegate> | Delegate => {
+    if (entry.size <= FS_READ_BATCH_REQUEST_BYTES) return DELEGATE;
+    return store.pages(key, entry.revision, entry.size, 0, Math.floor((entry.size - 1) / RESIDENT_PAGE_BYTES)).then((found) => {
+      if (found === null) return DELEGATE;
+      counts.pagedReads++;
+      counts.pagesFetched += found.fetched;
+      const whole = new Uint8Array(entry.size);
+      found.pages.forEach((page, at) => whole.set(page, at * RESIDENT_PAGE_BYTES));
+      return whole;
     });
   };
 
@@ -1102,6 +1251,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.flush = async () => { await holder?.flush(); };
   fs.settle = async () => {
     const failures: UnsettledWrite[] = [];
+    await faultsEnded();
     // The run's end, both at once: the directory descriptions it holds are
     // retired, what it logged is answered, and what it held is given back.
     await Promise.all([directoryPool?.dispose(), holder?.settle()].map((ending) => Promise.resolve(ending).catch((error: unknown) => {
@@ -1189,9 +1339,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // As the authority checks: permission before what kind of name it is.
     if (!modeAllows(entry, 4, store.cred)) throw fsError('EACCES', 'open', path);
     if (entry.type === 'directory') throw fsError('EISDIR', 'open', path);
-    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode)) return DELEGATE;
+    if (entry.type !== 'file' || isCharacterDevice(entry.mode)) return DELEGATE;
     if (volatileProc(key, entry)) return generated(key) ?? DELEGATE;
-    return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
+    // A file this process changed is the session's to read where its bytes are not known here.
+    return after(contentOf(key, entry), (bytes) => bytes ?? (holder?.provisional.pending(entry.dev, entry.ino) ? DELEGATE : wholeByPages(key, entry)));
   }), () => authority.readFile(path, options));
 
   fs.readdir = (path, options = {}) => answer<RuntimeVfsDirEntry[]>('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
@@ -1391,7 +1542,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return readByAnchor(handleId, offset, length);
     }
     if (done !== undefined) return done;
-    if (now) throw NOT_NOW;
+    if (now) {
+      const of = holder!.provisional.inodeOf(handleId);
+      if (of !== undefined && !holder!.provisional.pending(of.entry.dev, of.entry.ino)) refusedFetch = faultIn(of.key, of.entry);
+      throw NOT_NOW;
+    }
     const at = holder!.provisional.inodeOf(handleId);
     if (at === undefined) return readByAnchor(handleId, offset, length);
     // Fetched by the name, while its access lets the process read it; else through its anchor, whose access was its open's.
@@ -1465,6 +1620,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     delegated('open');
     return after(authority.open(path, flags), (handle) => {
       readers.add(handle.id);
+      if (residency !== undefined) readerKeys.set(handle.id, keyOf(handle.path));
       // What it is, its open said: a directory is listed here, and a file too big to hold whole is paged, while its name still leads to it.
       const { type, dev, ino, size } = handle.stat;
       if (dev === store.device) {
@@ -1570,6 +1726,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (readers.delete(handleId)) {
       directories.delete(handleId);
       paged.delete(handleId);
+      readerKeys.delete(handleId);
       delegated('close');
       return authority.close(handleId);
     }
@@ -1934,6 +2091,83 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     });
   };
 
+  /** The program's refused reads nothing has answered since (misses), by key, in the order first refused: what each asked. */
+  const missed = new Map<string, 'content' | 'metadata'>();
+  /** The key a read names: as spelled, no link followed; a descriptor, its file's name. */
+  const keyFor = (target: unknown): string | undefined => {
+    if (typeof target === 'number') return holder?.owns(target) ? holder.keyOf(target) : readerKeys.get(target);
+    if (typeof target === 'string') return keyOf(target);
+    if (typeof target === 'object' && target !== null && 'root' in target) return keyOf(`${(target as { root: string }).root}/${pathOf(target as RuntimeFsPath)}`);
+    return undefined;
+  };
+  /** What `syscall` with `args` reads (READS): an open only when it opens for reading alone. */
+  const readOf = (syscall: string, args: readonly unknown[]): 'content' | 'metadata' | undefined => {
+    if (syscall !== 'open') return READS.get(syscall);
+    const flags = args[1] as RuntimeOpenFlags | undefined;
+    return flags && !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive ? 'metadata' : undefined;
+  };
+  /** A synchronous read refused as not resident: its speculation's, or the program's miss. `fetch`: the fault-in it issued or joined. */
+  const refused = (syscall: string, args: readonly unknown[], fetch: Promise<boolean> | null): void => {
+    const kind = readOf(syscall, args);
+    const key = kind === undefined ? undefined : keyFor(args[0]);
+    if (kind === undefined || key === undefined) return;
+    const speculation = residency!.speculation();
+    if (speculation !== null) {
+      speculation.missed(key, fetch);
+      return;
+    }
+    const was = missed.get(key);
+    if (was === 'content' || was === kind) return;
+    missed.set(key, kind);
+    if (was === undefined) residency!.missed?.(key);
+  };
+  /** The program's awaited read of `args[0]` answered: what it answers of the misses of that name goes, as spelled and as it resolves. */
+  const answered = (kind: 'content' | 'metadata', args: readonly unknown[]): void => {
+    const key = keyFor(args[0]);
+    if (key === undefined) return;
+    const keys = [key];
+    try {
+      const at = walkOnce('', key, true);
+      if (typeof at === 'string' && at !== key) keys.push(at);
+    } catch { /* the name as spelled */ }
+    for (const at of keys) if (kind === 'content' || missed.get(at) === 'metadata') missed.delete(at);
+  };
+  if (residency !== undefined) {
+    for (const name of READS.keys()) {
+      const passed: unknown = Reflect.get(fs, name);
+      if (typeof passed !== 'function') continue;
+      Reflect.set(fs, name, (...args: unknown[]) => {
+        // A miss is answered by the program's own read, which may wait, asked once it was refused.
+        const kind = now || missed.size === 0 ? undefined : readOf(name, args);
+        if (kind === undefined) return Reflect.apply(passed, fs, args);
+        const refusal = (error: unknown): never => {
+          if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? '')) answered(kind, args);
+          throw error;
+        };
+        let answer: unknown;
+        try { answer = Reflect.apply(passed, fs, args); } catch (error) { return refusal(error); }
+        if (!(answer instanceof Promise)) { answered(kind, args); return answer; }
+        return answer.then((value: unknown) => { answered(kind, args); return value; }, refusal);
+      });
+    }
+  }
+  /** Whether the view knows nothing is at `key`, links followed: the session proved it absent. */
+  const knownAbsent = (key: string): boolean => {
+    if (!store.ready()) return false;
+    try {
+      const at = walkOnce('', key, true);
+      return typeof at === 'string' && entryAt(at) === null;
+    } catch (error) {
+      const code = errnoCodeOf(error);
+      return code === 'ENOENT' || code === 'ENOTDIR';
+    }
+  };
+  fs.misses = async () => {
+    await faultsEnded();
+    for (const key of [...missed.keys()]) if (knownAbsent(key)) missed.delete(key);
+    return [...missed.keys()];
+  };
+
   const synchronous = Object.create(null) as RuntimeSynchronousFs;
   for (const name of names) {
     if (NO_SYNCHRONOUS_FORM.has(name) || typeof Reflect.get(fs, name) !== 'function') continue;
@@ -1948,8 +2182,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         }
         return value;
       } catch (error) {
-        if (error === NOT_NOW) throw notResident(name, args);
-        throw error;
+        if (error !== NOT_NOW) throw error;
+        const refusal = notResident(name, args);
+        if (residency !== undefined && errnoCodeOf(refusal) === 'EAGAIN') refused(name, args, refusedFetch);
+        refusedFetch = null;
+        throw refusal;
       } finally {
         now = was;
       }

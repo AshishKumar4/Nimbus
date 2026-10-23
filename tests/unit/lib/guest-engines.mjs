@@ -37,6 +37,7 @@ import { answeringSupervisor, supervisorFilesystem } from '../../../packages/cor
 import { createResidentStore } from '../../../packages/worker/src/vfs/resident/index.ts';
 import { _acquireOnDelivery } from '../../../packages/worker/src/session/rpc.ts';
 import { CRED, createAuthority, facetSql, facetSupervisor, launchResident, sleep, until } from './resident-body.mjs';
+import { facetStorage } from './fake-do-kv.mjs';
 
 export const ENGINES = ['node', 'holder'];
 /** The engines barrier schedules run on: the two a process runs, and the resident filesystem over an enumerated store. */
@@ -199,17 +200,22 @@ async function holderBridge(supervisor) {
 /**
  * The resident filesystem over a store enumerated at boot (as Node's runs
  * on it), over `stub`: its waves and grants through the stub, its log in
- * `sql`, a read lease asked with each barrier.
+ * `sql`, a read lease asked with each barrier. `residency`: its program's
+ * (ResidentDelegation.residency). `ledger`: the store is a process facet's
+ * storage, at its cap once booted, granted more only by the session's
+ * ledger (the stub's fsStorageGrant).
  */
-async function eagerBridge(stub, sql, leases = true) {
+async function eagerBridge(stub, sql, leases = true, { residency, ledger = false } = {}) {
   const supervisor = answeringSupervisor(stub);
   const bridge = supervisorFilesystem(stub);
   const store = createResidentStore();
-  store.bindInMemory(64 * 1024 * 1024);
+  if (ledger) store.bind({ storage: facetStorage(facetSql()) });
+  else store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
   const cursor = await supervisor.fsAcquire(null, { namespace: true });
   const boot = await store.sync.boot(() => ({}), cursor.position, supervisor, 0);
   if (boot.failure) throw new Error(`the store did not enumerate: ${boot.failure}`);
+  if (ledger) store.admission.setStorage({ facet: 'proc-slot-0', grant: 0 }, supervisor);
   const view = store.view.namespaceView(supervisor, await bridge.stat('/'), CRED);
   const fs = residentFilesystem(bridge, view, {
     session: {
@@ -227,6 +233,7 @@ async function eagerBridge(stub, sql, leases = true) {
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice('home/'.length).includes('/'),
     journal: sqlJournal(sql),
     readLeases: () => leases,
+    ...(residency === undefined ? {} : { residency }),
   });
   // Its own calls answer as they are; the contract's are awaited, as a codec awaits them.
   /** @type {Set<string | symbol>} */
@@ -250,10 +257,11 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
  * process is attached to the session's input store, and its input (`input`)
  * is a keystroke, delivered with the ACQUIRE the session computes for it.
  * `leases`: the eager engine's process asks a read lease with each barrier.
+ * `residency` and `ledger`: the eager engine's (eagerBridge).
  * @param {string} kind
- * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean, leases?: boolean }} [options]
+ * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean, leases?: boolean, residency?: any, ledger?: boolean }} [options]
  */
-export async function bootEngine(kind, { seed, supervise = {}, stdin = false, leases = true } = {}) {
+export async function bootEngine(kind, { seed, supervise = {}, stdin = false, leases = true, residency, ledger = false } = {}) {
   if (!SCHEDULE_ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
   const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
@@ -314,7 +322,7 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false, le
     fs = nodeBridge(globalThis.__engineFs);
     sync = nodeSyncBridge(globalThis.__engineFs);
   } else if (kind === 'eager') {
-    fs = await eagerBridge(handle.supervisor, sql, leases);
+    fs = await eagerBridge(handle.supervisor, sql, leases, { residency, ledger });
     sync = new Proxy(fs.synchronous, { get: (target, name) => (name === 'copyFile' ? (from, to) => target.copyFile(from, to, { keepMode: true }) : target[name]) });
   } else {
     globalThis.__nimbusFsJournalSql = sql;
