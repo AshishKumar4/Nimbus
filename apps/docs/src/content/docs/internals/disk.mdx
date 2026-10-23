@@ -52,9 +52,8 @@ hibernation. Range operations touch only the chunks in range, so
 appending a byte to a large file never rewrites the file.
 
 Not every read goes to the live bridge yet. Node's synchronous `fs` runs
-against a bounded snapshot of the working tree, capped at 18 MiB with
-`node_modules` excluded; the bytes count what the snapshot spends naming
-each file as well as its content. It also keeps a local write
+against a bounded snapshot of the working tree, capped at 24 MiB and
+4,000 files with `node_modules` excluded. It also keeps a local write
 cache, because synchronous calls cannot await an RPC. Node's async `fs` uses the live
 bridge. A git clone's phases each write through their own writer, and a
 read their buffer cannot answer goes to the session once their writes are

@@ -49,7 +49,6 @@ import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
-import { moduleMapEntryBytes } from '../_shared/commonjs-cell.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { fileText, requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
@@ -205,12 +204,13 @@ export interface DependencyClosurePolicy {
   purpose: 'dependency-closure';
   held: Readonly<Record<string, string | Uint8Array>>;
   maxAdditionalBytes: number;
+  maxAdditionalFiles: number;
 }
 
 export interface DependencyClosureDeclined {
   kind: 'dependency-closure-declined';
   path: string;
-  reason: 'bytes' | 'unreadable';
+  reason: 'bytes' | 'files' | 'unreadable';
 }
 
 export type DependencyClosureOutcome = PrefetchOutcome | DependencyClosureDeclined;
@@ -300,6 +300,7 @@ export async function prefetchForRequire(
   let closureExceeded: ClosureBoundExceeded | null = null;
   let declined: DependencyClosureDeclined | null = null;
   let additionalBytes = 0;
+  let additionalFiles = 0;
   // The phase-2 unit staged whole or not at all (an optional learned root):
   // what it staged, and whether the bound cut its closure.
   let unit: { staged: Array<[string, number]>; cut: boolean } | null = null;
@@ -344,7 +345,8 @@ export async function prefetchForRequire(
 
   function fits(path: string, bytes: number): boolean {
     if (!policy || policy.held[path] !== undefined) return true;
-    if (additionalBytes + bytes + moduleMapEntryBytes(path) > policy.maxAdditionalBytes) declined = { kind: 'dependency-closure-declined', path, reason: 'bytes' };
+    if (additionalFiles >= policy.maxAdditionalFiles) declined = { kind: 'dependency-closure-declined', path, reason: 'files' };
+    else if (additionalBytes + bytes > policy.maxAdditionalBytes) declined = { kind: 'dependency-closure-declined', path, reason: 'bytes' };
     return declined === null;
   }
 
@@ -391,7 +393,8 @@ export async function prefetchForRequire(
     if (policy && held === undefined) {
       const actual = utf8Length(content);
       if (!fits(path, actual)) return null;
-      additionalBytes += actual + moduleMapEntryBytes(path);
+      additionalBytes += actual;
+      additionalFiles++;
     }
     if (counted) bytesSeen += size;
     bundle[path] = content;

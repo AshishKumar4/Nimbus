@@ -32,7 +32,7 @@ await section('a read module whose closure does not fit stays as data, with none
   };
   const bundle = {};
   const required = new Set();
-  const budget = { totalBytes: 0 };
+  const budget = { totalBytes: 0, fileCount: 0 };
   const rootBytes = Buffer.byteLength(files[root]);
   const result = await addObservedReads(launchFs(files).fs, new Set([root]), bundle, required, budget, rootBytes + 100);
   assert.equal(bundle[root], files[root], 'the file the run read is staged');
@@ -49,7 +49,7 @@ await section('a read module loading a cell the map holds as bytes is staged wit
   const files = { [root]: "require('./latin1.js');\n", [dep]: depBytes };
   const bundle = { [dep]: depBytes };
   const required = new Set();
-  await addObservedReads(launchFs(files).fs, new Set([root]), bundle, required, { totalBytes: depBytes.byteLength });
+  await addObservedReads(launchFs(files).fs, new Set([root]), bundle, required, { totalBytes: depBytes.byteLength, fileCount: 1 });
   assert.equal(bundle[root], files[root], 'the root is staged');
   assert.ok(required.has(root) && required.has(dep), 'with the cell it loads, required');
   assert.equal(bundle[dep], depBytes, 'which keeps its bytes');

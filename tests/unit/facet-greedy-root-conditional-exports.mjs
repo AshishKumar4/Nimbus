@@ -82,7 +82,7 @@ const files = {
 const vfs = launchFs(files).fs;
 const closure = { [`${NM}/subpath-only/small.js`]: files[`${NM}/subpath-only/small.js`] };
 const bundle = { ...closure };
-const budget = { totalBytes: 0 };
+const budget = { totalBytes: 0, fileCount: 1 };
 await greedyAddMainEntries(vfs, '/home/user/app', bundle, budget, new Set(Object.keys(closure)));
 
 const has = (path) => bundle[`${NM}/${path}`] !== undefined;

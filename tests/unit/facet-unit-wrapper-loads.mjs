@@ -71,7 +71,7 @@ const PLUGIN = NM + '@vitejs/plugin-vue/dist/index.mjs';
 // 2. The greedy pass's guess at a package's main carries them too, as one group.
 {
   const bundle = {};
-  const { groups } = await greedyAddMainEntries(launchFs(files).fs, '/' + APP, bundle, { totalBytes: 0 });
+  const { groups } = await greedyAddMainEntries(launchFs(files).fs, '/' + APP, bundle, { totalBytes: 0, fileCount: 0 });
   assert.ok(bundle[PLUGIN] !== undefined, "the guess at plugin-vue's main is staged");
   const group = groups.find((g) => g.root === PLUGIN);
   assert.ok(group, 'as a group of its own');
@@ -86,7 +86,7 @@ const PLUGIN = NM + '@vitejs/plugin-vue/dist/index.mjs';
 {
   const bundle = {};
   const fitsAlone = Buffer.byteLength(pluginVue) + Buffer.byteLength(files[NM + '@vitejs/plugin-vue/package.json']) + 512;
-  await greedyAddMainEntries(launchFs(files).fs, '/' + APP, bundle, { totalBytes: 0 }, new Set(), { maxBundleBytes: fitsAlone });
+  await greedyAddMainEntries(launchFs(files).fs, '/' + APP, bundle, { totalBytes: 0, fileCount: 0 }, new Set(), { maxBundleBytes: fitsAlone });
   assert.equal(bundle[PLUGIN], undefined, 'plugin-vue is not staged without what its wrapper loads');
   console.log('  a guess whose wrapper\'s loads do not fit is not staged');
 }

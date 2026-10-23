@@ -14,6 +14,7 @@ import {
   BUNDLE_MAX_ENCODED_BYTES,
   CWD_SNAPSHOT_MAX_FILE_BYTES,
   VFS_BUNDLE_MAX_BYTES,
+  VFS_BUNDLE_MAX_FILES,
 } from '../../packages/core/src/constants.ts';
 import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
@@ -138,14 +139,10 @@ assert.equal(
   }
 }
 
-// Optional greedy content is bounded by the map's bytes, not by a count of
-// files: 2,100 packages of two files each (4,200, past the 4,000 the map once
-// counted) all ride along when their bytes fit.
 {
   const cwd = 'home/user';
-  const PACKAGES = 2100;
   const optionalFiles = {};
-  for (let index = 0; index < PACKAGES; index++) {
+  for (let index = 0; index < VFS_BUNDLE_MAX_FILES / 2 + 100; index++) {
     const packageRoot = `${cwd}/node_modules/optional-${index}`;
     optionalFiles[`${packageRoot}/package.json`] = JSON.stringify({
       name: `optional-${index}`,
@@ -156,50 +153,34 @@ assert.equal(
   // The oversample follows dependency edges: the project declares them all.
   optionalFiles[`${cwd}/package.json`] = JSON.stringify({
     name: 'app',
-    dependencies: Object.fromEntries(Array.from({ length: PACKAGES }, (_, index) => [`optional-${index}`, '*'])),
+    dependencies: Object.fromEntries(Array.from({ length: VFS_BUNDLE_MAX_FILES / 2 + 100 }, (_, index) => [`optional-${index}`, '*'])),
   });
   const requiredPath = `${globalModules}/required/index.js`;
   const bundle = { [requiredPath]: 'x'.repeat(VFS_BUNDLE_MAX_BYTES + 1) };
-  const budget = { totalBytes: 0 };
+  const budget = { totalBytes: 0, fileCount: 0 };
   const overfull = launchFs(optionalFiles);
   (await greedyAddMainEntries(overfull.fs, cwd, bundle, budget));
 
   assert.equal(bundle[requiredPath].length, VFS_BUNDLE_MAX_BYTES + 1);
-  assert.deepEqual(Object.keys(bundle), [requiredPath], 'an overfull required closure leaves no room for optional admission');
+  assert.equal(budget.fileCount, 0, 'an overfull required closure leaves no room for optional admission');
   assert.equal(overfull.reads.some(path => path.endsWith('/index.js')), false, 'optional code is not read when no bytes remain');
+  // Exercise the unchanged count ceiling separately, with byte headroom.
   const smallBundle = { [requiredPath]: 'module.exports = 1;' };
   await greedyAddMainEntries(launchFs(optionalFiles).fs, cwd, smallBundle, budget);
-  assert.equal(Object.keys(smallBundle).length, 2 * PACKAGES + 1, 'every optional file whose bytes fit is admitted');
-  assert.ok(budget.totalBytes <= VFS_BUNDLE_MAX_BYTES, 'optional greedy content keeps the raw-byte ceiling');
-}
-
-
-// What the map spends naming a file counts against its bytes: 3,000 packages
-// of three tiny files each (a manifest, and a main that requires a second
-// module, so each guess brings a closure of two) under a 6,000-character
-// directory would name 54 MB of paths for a few KB of content, and the map
-// holds only as many as its bytes allow.
-{
-  const cwd = 'home/user/' + Array.from({ length: 30 }, () => 'd'.repeat(199)).join('/');
-  const PACKAGES = 3000;
-  const files = {};
-  for (let index = 0; index < PACKAGES; index++) {
-    const packageRoot = `${cwd}/node_modules/optional-${index}`;
-    files[`${packageRoot}/package.json`] = JSON.stringify({ name: `optional-${index}`, main: 'index.js' });
-    files[`${packageRoot}/index.js`] = 'module.exports = require("./b.js");';
-    files[`${packageRoot}/b.js`] = 'module.exports = true;';
-  }
-  files[`${cwd}/package.json`] = JSON.stringify({
-    name: 'app',
-    dependencies: Object.fromEntries(Array.from({ length: PACKAGES }, (_, index) => [`optional-${index}`, '*'])),
-  });
-  const bundle = { [`${globalModules}/required/index.js`]: 'module.exports = 1;' };
-  const budget = { totalBytes: 0 };
-  await greedyAddMainEntries(launchFs(files).fs, cwd, bundle, budget);
-  const named = Object.keys(bundle).filter((path) => path.startsWith(cwd)).reduce((sum, path) => sum + path.length, 0);
-  assert.ok(named > 0, 'some optional files are admitted');
-  assert.ok(named <= VFS_BUNDLE_MAX_BYTES, `the paths the map names stay within its bytes: ${named}`);
-  assert.ok(budget.totalBytes <= VFS_BUNDLE_MAX_BYTES, 'and so does what it counted');
+  assert.equal(
+    budget.fileCount,
+    VFS_BUNDLE_MAX_FILES,
+    'optional greedy content retains the existing file-count ceiling',
+  );
+  assert.ok(
+    budget.totalBytes <= VFS_BUNDLE_MAX_BYTES,
+    'optional greedy content retains the existing raw-byte ceiling',
+  );
+  assert.equal(
+    Object.keys(smallBundle).length,
+    VFS_BUNDLE_MAX_FILES + 1,
+    'the optional budget is independent from required closure content',
+  );
 }
 
 
