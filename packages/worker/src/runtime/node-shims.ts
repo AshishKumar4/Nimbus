@@ -1417,6 +1417,12 @@ const __fsMod = (() => {
     const mapped = _mapSupervisorError(error, syscall, p, dest);
     if (mapped.code !== "EAGAIN") return mapped;
     const named = typeof p === "string" || p instanceof URL;
+    // The namespace is being rebuilt: no synchronous call can say what is there until it is.
+    if (named && typeof __resident !== "undefined" && !__resident.namespace.ready()) {
+      mapped.message = "EAGAIN: " + syscall + " '" + String(p) + "': the namespace is being rebuilt after " + __resident.namespace.notReadyCause()
+        + (asyncForm ? "; use " + asyncForm : "");
+      return mapped;
+    }
     // On a mount, in a directory its launch did not list: the namespace cannot say what is there.
     const mount = typeof __resident !== "undefined" && named ? __resident.namespace.unknown(_strip(_resolve(p)), true, true) : null;
     // A content read this process does not hold: a one-shot that can be run again stops here, to run again
@@ -1458,10 +1464,18 @@ const __fsMod = (() => {
       try {
         const fs = _rf();
         // Decided on the session as it is now: what another process did before it, as Node's call finds it.
-        if (__nimbusProcessSupervised) fs.inbound();
+        // Not in a subtree this process holds: no other changes it, so its view is the session's.
+        if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) fs.inbound();
         return await run(fs);
       } catch (error) { throw _rfError(error, syscall, p, dest); }
     })());
+  }
+  /** Whether \`p\` (and \`dest\`) lie in subtrees the process holds (its client's grants). */
+  function _heldHere(fs, p, dest) {
+    const client = fs.client;
+    if (!client || (typeof p !== "string" && !(p instanceof URL))) return false;
+    if (client.held(_strip(_resolve(p))) === undefined) return false;
+    return dest === undefined || client.held(_strip(_resolve(dest))) !== undefined;
   }
   /**
    * An awaited call that reads what a name is or holds (an open among them):
@@ -1473,7 +1487,7 @@ const __fsMod = (() => {
    */
   function _asyncRead(syscall, p, run) {
     return _async(syscall, p, async (fs) => {
-      if (__nimbusProcessSupervised && fs.holding()) await fs.send();
+      if (__nimbusProcessSupervised && fs.holding() && !_heldHere(fs, p)) await fs.send();
       return run(fs);
     });
   }

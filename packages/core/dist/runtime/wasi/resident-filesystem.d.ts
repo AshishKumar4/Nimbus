@@ -171,6 +171,8 @@ export interface ResidentBarrier {
     readonly readLease?: ResidentReadLease;
     /** The answer a delivery carried stood in for asking. */
     readonly fromDelivery?: boolean;
+    /** Its ACQUIRE got no answer (whatever a repair after it landed): a barrier failure, counted. */
+    readonly dropped?: boolean;
 }
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
 export interface PinnedContent {

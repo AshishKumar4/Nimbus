@@ -179,6 +179,8 @@ export interface ResidentBarrier {
   readonly readLease?: ResidentReadLease;
   /** The answer a delivery carried stood in for asking. */
   readonly fromDelivery?: boolean;
+  /** Its ACQUIRE got no answer (whatever a repair after it landed): a barrier failure, counted. */
+  readonly dropped?: boolean;
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -676,7 +678,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const ask = client !== undefined && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
     const lease = ask === null ? undefined : { answered: (terms: ResidentReadLease) => client!.readLeaseAnswered(terms) };
     return store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }).then((result) => {
-      if (!result.landed) counts.barrierFailures++;
+      if (!result.landed || result.dropped === true) counts.barrierFailures++;
       if (!result.landed || !store.ready()) return false;
       if (ask !== null && result.readLease && !result.fromDelivery) client!.readLeased(result.readLease, ask);
       caught.input = Math.max(caught.input, at.input);
@@ -1035,7 +1037,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * namespace makes above a fed mount point is answered too. A moving
    * feed's (not fixed) not while a read lease is trusted.
    */
-  const answerable = (key: string, entry: ResidentEntry): boolean => walkedMounts || fedRow(key, entry) === true;
+  // Node's walked mounts answer its calls that cannot wait; one that may is the session's, as a fed mount's moving rows under a trusted lease are.
+  const answerable = (key: string, entry: ResidentEntry): boolean => fedRow(key, entry) === true || (walkedMounts && now);
   const walkedMounts = delegation?.walkedMounts === true;
   const answeredWrites = delegation?.answeredWrites === true;
 

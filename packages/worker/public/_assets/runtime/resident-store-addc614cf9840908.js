@@ -2825,9 +2825,9 @@ var __nimbusResidentModule = (() => {
           async fill(k, entry) {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
-            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
+            const fetched = await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
             const bytes = view.content(k, entry.revision);
-            return bytes === void 0 ? null : bytes;
+            return bytes !== void 0 ? bytes : fetched.outdated?.get(k) ?? null;
           },
           pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
           // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).
@@ -2842,7 +2842,8 @@ var __nimbusResidentModule = (() => {
             const standIn = options.answer === void 0 ? delivered(options.delivered) : null;
             const answer = options.answer !== void 0 ? current(options.answer) : standIn ?? await acquire(options.lease);
             const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
-            return standIn === null ? result : { ...result, fromDelivery: true };
+            const dropped = answer === null && options.answer === void 0 && standIn === null;
+            return { ...result, ...standIn === null ? {} : { fromDelivery: true }, ...dropped ? { dropped: true } : {} };
           },
           cursor: () => coherence.cursor(),
           reserve: (bytes) => admission.pin(bytes),
@@ -3078,6 +3079,7 @@ var __nimbusResidentModule = (() => {
       const t = coherence.tables("fetchFiles");
       const requested = wantedFiles.length;
       let copied = 0;
+      const served = new SafeMap();
       const files = new SafeList();
       const later = new SafeList();
       const fetching = new SafeSet();
@@ -3186,6 +3188,7 @@ var __nimbusResidentModule = (() => {
           }
           if (outdated(t, learning, range.path, range.rev)) {
             failedPaths.add(range.path);
+            if (range.parts === 1) served.set(range.path, chunk);
             continue;
           }
           fetchedBytes += chunkBytes;
@@ -3217,7 +3220,8 @@ var __nimbusResidentModule = (() => {
         failed,
         bytes: fetchedBytes,
         ranges: ranges.length,
-        copied
+        copied,
+        ...served.size === 0 ? {} : { outdated: served }
       };
     };
     const enumerate = async (supervisor) => {
@@ -10059,7 +10063,7 @@ var __nimbusResidentModule = (() => {
       const ask = client !== void 0 && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
       const lease = ask === null ? void 0 : { answered: (terms) => client.readLeaseAnswered(terms) };
       return store.barrier({ ...delivered ? { delivered } : {}, ...lease ? { lease } : {} }).then((result) => {
-        if (!result.landed)
+        if (!result.landed || result.dropped === true)
           counts.barrierFailures++;
         if (!result.landed || !store.ready())
           return false;
@@ -10386,7 +10390,7 @@ var __nimbusResidentModule = (() => {
         return void 0;
       return entry;
     };
-    const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
+    const answerable = (key, entry) => fedRow(key, entry) === true || walkedMounts && now;
     const walkedMounts = delegation?.walkedMounts === true;
     const answeredWrites = delegation?.answeredWrites === true;
     const fedRow = (key, entry) => {

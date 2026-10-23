@@ -138,36 +138,35 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.fs.existsSync(h), false, 'after another barrier too');
   },
 
-  async 'a read whose barrier the cursor passed still teaches the sync view its file'() {
-    // The read's barrier is answered, then an unrelated write moves the
-    // cursor past it, and only then is the file made and read: the read
-    // cannot date its stat, and asks for a fresh one.
+  async 'a read whose barrier the cursor passed answers as of its barrier, and the next teaches the sync view'() {
+    // The read's barrier is answered, then the cursor moves past it and the
+    // file is made: the read is answered as of its barrier (nothing there,
+    // its own view's answer: a read before the file was made, as on Linux),
+    // and the next barrier teaches the sync view the file.
     const acquired = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
     const { authority, probe } = await boot((forward) => ({
-      fsReadBatch: async (...args) => {
+      fsAcquire: async (...args) => {
+        const answer = await forward('fsAcquire', args);
         if (armed) {
           armed = false;
           acquired.resolve();
           await release.promise;
         }
-        return forward('fsReadBatch', args);
+        return answer;
       },
     }));
     armed = true;
     const late = '/home/user/app/late.txt';
-    const reading = probe.fs.promises.readFile(late, 'utf8');
+    const reading = probe.fs.promises.readFile(late, 'utf8').then((text) => text, (error) => error.code);
     await acquired.promise;
     await authority.peer.writeFile('home/user/app/g.txt', 'g2');
-    const unrelated = authority.rawVfs.revision();
-    const resumed = probe.resume();
-    await until(() => appliedCursor() >= unrelated, 'the barrier applied the unrelated write');
     await authority.peer.writeFile('home/user/app/late.txt', 'late');
     release.resolve();
-    assert.equal(await reading, 'late');
-    await resumed;
-    assert.equal(probe.fs.existsSync(late), true, 'the sync view has the file the read found');
+    assert.equal(await reading, 'ENOENT', 'answered as of its barrier');
+    await probe.resume();
+    assert.equal(probe.fs.existsSync(late), true, 'the next barrier has the file');
   },
 
   async 'an async read through a symlink leaves the link resolving to the file it names'() {
