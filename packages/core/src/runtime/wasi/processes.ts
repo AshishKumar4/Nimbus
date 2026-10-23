@@ -238,7 +238,8 @@ export interface ProcessHost {
    * the session nothing; its next check watches them again. Unless it holds
    * one it has not raised, it tells the session it took every signal handed
    * to it (cpSignalsTaken), which then counts none of them as untaken; it
-   * settles once the session has heard.
+   * settles once the session has heard, and fails if it could not tell it:
+   * the entry then fails rather than end as if it had.
    */
   left(): Promise<void>;
 }
@@ -868,7 +869,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     dispose: () => { disposed = true; },
     left: async () => {
       checking = false;
-      if (pendingSignal === null && received > 0) await supervisor()?.cpSignalsTaken?.(received).catch(() => {});
+      if (pendingSignal === null && received > 0) await supervisor()?.cpSignalsTaken?.(received);
     },
   };
 }
