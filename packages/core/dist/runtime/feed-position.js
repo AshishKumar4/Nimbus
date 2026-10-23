@@ -10,7 +10,7 @@
  * feedOf, and only the composite reads them whole (feedsOf). So nothing that
  * compares the root reads anything but the root's feed.
  */
-import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringStartsWith, TypeError } from '../_shared/primordials.js';
+import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringSlice, stringStartsWith, TypeError } from '../_shared/primordials.js';
 /** The root's mount point: its feed is the SQLite namespace's. */
 export const ROOT_FEED = '/';
 export function positionOf(table, feeds) {
@@ -63,16 +63,17 @@ export function samePosition(a, b) {
     }
     return true;
 }
-/** The mount points of `position`'s feeds but the root's, read once a position (a store asks at every call that finds a path's feed). */
+/** The mounts of `position`'s feeds but the root's, read once a position (a store asks at every call that finds a path's feed). */
 const mountPoints = new SafeWeakMap();
 function mountPointsOf(position) {
     let points = mountPoints.get(position.feeds);
     if (points === undefined) {
         const all = objectKeys(feedsOf(position));
         const found = [];
-        for (let i = 0; i < all.length; i++)
+        for (let i = 0; i < all.length; i++) {
             if (all[i] !== ROOT_FEED)
-                found[found.length] = all[i];
+                found[found.length] = { point: all[i], name: stringSlice(all[i], 1), first: stringCharCodeAt(all[i], 1) };
+        }
         points = found;
         mountPoints.set(position.feeds, points);
     }
@@ -83,14 +84,20 @@ export function feedPointOf(position, key) {
     const points = mountPointsOf(position);
     if (points.length === 0)
         return ROOT_FEED;
-    const path = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? key : '/' + key;
-    let found = ROOT_FEED;
+    // Compared from where the key's first name starts: no path is made for it.
+    const at = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? 1 : 0;
+    const first = stringCharCodeAt(key, at);
+    const rest = key.length - at;
+    let found = null;
     for (let i = 0; i < points.length; i++) {
-        const point = points[i];
-        if (point.length > found.length && (path === point || (path.length > point.length && stringStartsWith(path, point) && stringCharCodeAt(path, point.length) === 0x2f)))
-            found = point;
+        const mount = points[i];
+        const length = mount.name.length;
+        if (mount.first !== first || rest < length || (found !== null && length <= found.name.length))
+            continue;
+        if ((rest === length || stringCharCodeAt(key, at + length) === 0x2f) && stringStartsWith(key, mount.name, at))
+            found = mount;
     }
-    return found;
+    return found === null ? ROOT_FEED : found.point;
 }
 /**
  * Whether `position` is at or before `held`: the same table, and each of
@@ -159,7 +166,7 @@ export function abovePoint(position, key) {
     const under = path === '/' ? '/' : path + '/';
     const points = mountPointsOf(position);
     for (let i = 0; i < points.length; i++) {
-        if (points[i].length > under.length && stringStartsWith(points[i], under))
+        if (points[i].point.length > under.length && stringStartsWith(points[i].point, under))
             return true;
     }
     return false;

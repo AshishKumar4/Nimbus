@@ -452,9 +452,10 @@ var __nimbusResidentModule = (() => {
     if (points === void 0) {
       const all = objectKeys(feedsOf(position));
       const found = [];
-      for (let i = 0; i < all.length; i++)
+      for (let i = 0; i < all.length; i++) {
         if (all[i] !== ROOT_FEED)
-          found[found.length] = all[i];
+          found[found.length] = { point: all[i], name: stringSlice(all[i], 1), first: stringCharCodeAt(all[i], 1) };
+      }
       points = found;
       mountPoints.set(position.feeds, points);
     }
@@ -464,14 +465,19 @@ var __nimbusResidentModule = (() => {
     const points = mountPointsOf(position);
     if (points.length === 0)
       return ROOT_FEED;
-    const path = key.length > 0 && stringCharCodeAt(key, 0) === 47 ? key : "/" + key;
-    let found = ROOT_FEED;
+    const at = key.length > 0 && stringCharCodeAt(key, 0) === 47 ? 1 : 0;
+    const first = stringCharCodeAt(key, at);
+    const rest = key.length - at;
+    let found = null;
     for (let i = 0; i < points.length; i++) {
-      const point = points[i];
-      if (point.length > found.length && (path === point || path.length > point.length && stringStartsWith(path, point) && stringCharCodeAt(path, point.length) === 47))
-        found = point;
+      const mount = points[i];
+      const length = mount.name.length;
+      if (mount.first !== first || rest < length || found !== null && length <= found.name.length)
+        continue;
+      if ((rest === length || stringCharCodeAt(key, at + length) === 47) && stringStartsWith(key, mount.name, at))
+        found = mount;
     }
-    return found;
+    return found === null ? ROOT_FEED : found.point;
   }
   function notAfter(position, held) {
     if (position.table !== held.table)
