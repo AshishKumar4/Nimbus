@@ -13,7 +13,9 @@
 //       when another run claimed the launch meanwhile, as a worker of its own;
 //   (4) it gives up, holding nothing, once its first refusal is
 //       REFUSED_CALL_WAIT_MS old or its signal aborts;
-//   (5) only a hold the ledger gave can be readmitted.
+//   (5) only a hold the ledger gave can be readmitted;
+//   (6) every wording the platform has refused a start with is a refusal:
+//       it pauses admission and the call is let in again.
 
 import assert from 'node:assert/strict';
 import { jest } from 'bun:test';
@@ -28,6 +30,14 @@ import {
 } from '../../packages/fabric/src/budgets.ts';
 
 const CAP_MESSAGE = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
+// Each as the platform said it (probe verdicts: the first through 2026-10-13,
+// the others from 2026-10-23), the last two as a peer Durable Object relays them.
+const REFUSALS = [
+  CAP_MESSAGE,
+  'Too many dynamic workers.',
+  'Too many dynamic workers. (remote) (peer-do)',
+  'Too many dynamic workers are starting concurrently. (remote) (peer-do)',
+];
 
 let ctxCount = 0;
 const freshCtx = () => ({ id: { toString: () => `readmit-${++ctxCount}` } });
@@ -160,6 +170,21 @@ try {
 
   // ── (5) only the ledger's own holds ─────────────────────────────────────────
   await assert.rejects(readmitRefused(() => {}, { since: Date.now() }), /only a hold the Dynamic Worker ledger gave/);
+
+  // ── (6) every wording of a refused start ────────────────────────────────────
+  for (const message of REFUSALS) {
+    const ctx = freshCtx();
+    const run = beginLoaderFetch(ctx, 'one-shot:worded');
+    run(new Error(message));
+    assert.equal(loaderLedgerStats(ctx).pauseMs, 50, `"${message}" paused admission`);
+    let readmitted;
+    const waiting = readmitRefused(run, { since: Date.now() }).then((end) => { readmitted = end; });
+    jest.advanceTimersByTime(50);
+    await waiting;
+    assert.equal(typeof readmitted, 'function', `"${message}": the call is let in again`);
+    readmitted();
+    assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, []);
+  }
 
   assert.equal(jest.getTimerCount(), 0, 'settled waits leave no pause or deadline timers');
 } finally {
