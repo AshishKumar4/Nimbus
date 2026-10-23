@@ -41,8 +41,8 @@ setTimeout(() => { console.log('READ=' + value); process.exitCode = Number(proce
 const fs = require('fs');
 console.log('BEFORE');
 const bytes = fs.readFileSync(process.argv[2]);
-const module = new WebAssembly.Module(bytes);
-setTimeout(() => { console.log('READ=' + WebAssembly.Module.exports(module).map((e) => e.name).join(',')); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
+const compiled = new WebAssembly.Module(bytes);
+setTimeout(() => { console.log('READ=' + WebAssembly.Module.exports(compiled).map((e) => e.name).join(',')); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
 `,
   'descriptor.js': `
 const fs = require('fs');
