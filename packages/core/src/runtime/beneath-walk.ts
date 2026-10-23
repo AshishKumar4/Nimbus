@@ -9,7 +9,9 @@
 import type { RuntimeFsPath } from './os-contracts.js';
 import { fsError as nodeFsError, type FsError } from '../vfs/vfs-error.js';
 import { modeAllows } from '../vfs/posix-access.js';
-import { arrayJoin, arrayPop, arrayShift, SafeList, safeGenerator, stringEndsWith, stringSlice, stringSplit, stringStartsWith } from '../_shared/primordials.js';
+import {
+  arrayJoin, arrayPop, SafeList, SafeMap, safeGenerator, stringEndsWith, stringSlice, stringSplit, stringStartsWith, type SafeGenerator,
+} from '../_shared/primordials.js';
 
 export type { FsError };
 
@@ -54,6 +56,30 @@ export function handedSpelling(handoff: { base: string; rest: readonly string[] 
 }
 type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
 
+/** A name's parts between its separators, by name: a walk reads them and never changes them. A bound on what is kept, then forgotten all at once. */
+const SEGMENTS = new SafeMap<string, SafeList<string>>();
+const SEGMENTS_KEPT = 4096;
+function segmentsOf(name: string): SafeList<string> {
+  let segments = SEGMENTS.get(name);
+  if (segments === undefined) {
+    if (SEGMENTS.size >= SEGMENTS_KEPT) SEGMENTS.clear();
+    SEGMENTS.set(name, segments = stringSplit(name, '/'));
+  }
+  return segments;
+}
+/** For each start in `segments`, those from it on that are not empty, joined by '/' (the last, past them all, ''). */
+function suffixesOf(segments: SafeList<string>): SafeList<string> {
+  const suffixes = new SafeList<string>();
+  let joined = '';
+  suffixes[segments.length] = joined;
+  for (let at = segments.length - 1; at >= 0; at--) {
+    const segment = segments[at]!;
+    if (segment !== '') joined = joined === '' ? segment : `${segment}/${joined}`;
+    suffixes[at] = joined;
+  }
+  return suffixes;
+}
+
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
  * namespace walk does it (VFS-COMP-006): the root must be reachable (every
@@ -90,21 +116,29 @@ export const walkBeneath = safeGenerator(function* (
   const named = (reached: string): string => (!anchored || !fromRoot ? '/' + reached
     : reached.length === root.length ? rootSpelling : `${rootSpelling === '/' ? '' : rootSpelling}${stringSlice(reached, root.length)}`);
   if (root !== '') yield { stat: rootSpelling };
-  if (stringStartsWith(name, '/')) throw fsError('ENOTCAPABLE', 'path', path);
-  let pending = stringSplit(name, '/');
-  const resolved = root === '' ? new SafeList<string>() : stringSplit(root, '/');
+  if (name[0] === '/') throw fsError('ENOTCAPABLE', 'path', path);
+  // What is left to walk: pending's parts from `next` on (and, past each start, those not empty, joined).
+  let pending = segmentsOf(name);
+  let suffixes = suffixesOf(pending);
+  let next = 0;
+  const resolved = new SafeList<string>();
+  if (root !== '') {
+    const rooted = segmentsOf(root);
+    for (let i = 0; i < rooted.length; i++) resolved[i] = rooted[i]!;
+  }
+  // resolved, joined by '/'.
+  let joined = arrayJoin(resolved, '/');
   let hops = 0;
   let handoff: { base: string; rest: string[] } | null = null;
-  while (pending.length > 0) {
-    const segment = arrayShift(pending);
+  while (next < pending.length) {
+    const segment = pending[next++];
     if (segment === undefined) break;
-    const dir = arrayJoin(resolved, '/');
+    const dir = joined;
     const candidate = dir === '' ? segment : `${dir}/${segment}`;
-    const spelled = new SafeList<string>();
-    if (dir !== '') spelled[spelled.length] = dir;
-    if (segment !== '') spelled[spelled.length] = segment;
-    for (let i = 0; i < pending.length; i++) if (pending[i] !== '') spelled[spelled.length] = pending[i];
-    const to = '/' + arrayJoin(spelled, '/');
+    let spelled = segment === '' ? dir : candidate;
+    const after = suffixes[next]!;
+    if (after !== '') spelled = spelled === '' ? after : `${spelled}/${after}`;
+    const to = '/' + spelled;
     const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
     if (!handed) {
       const searched = (yield { stat: named(dir) }) as Exclude<BeneathAnswer, string>;
@@ -116,25 +150,28 @@ export const walkBeneath = safeGenerator(function* (
     if (segment === '..') {
       if (dir === root) throw fsError('ENOTCAPABLE', 'path', path);
       arrayPop(resolved);
+      joined = arrayJoin(resolved, '/');
       continue;
     }
     if (handed) {
       if (handoff === null) {
         const rest = new SafeList<string>();
         rest[0] = segment;
-        for (let i = 0; i < pending.length; i++) rest[rest.length] = pending[i];
+        for (let i = next; i < pending.length; i++) rest[rest.length] = pending[i]!;
         handoff = { base: named(dir), rest };
       }
       resolved[resolved.length] = segment;
+      joined = candidate;
       continue;
     }
     // Every component already walked is a directory, not a link, so a
     // lookup by its literal name is the walk's own.
-    const isFinal = pending.length === 0;
+    const isFinal = next === pending.length;
     const stat = (yield { stat: named(candidate) }) as Exclude<BeneathAnswer, string>;
     if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
     if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
       resolved[resolved.length] = segment;
+      joined = candidate;
       continue;
     }
     if (++hops > MAX_LINK_HOPS) return null;
@@ -142,17 +179,19 @@ export const walkBeneath = safeGenerator(function* (
     // A link whose target the namespace has no name for (a mount nested in
     // its backend covers it) cannot be followed beneath the root.
     if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
-    if (stringStartsWith(target, '/')) { resolved.length = 0; fromRoot = false; }
+    if (target[0] === '/') { resolved.length = 0; joined = ''; fromRoot = false; }
     const parts = stringSplit(target, '/');
-    for (let i = 0; i < pending.length; i++) parts[parts.length] = pending[i];
+    for (let i = next; i < pending.length; i++) parts[parts.length] = pending[i]!;
     pending = parts;
+    suffixes = suffixesOf(pending);
+    next = 0;
     // A link followed after a handoff: the rest as written is no longer what is reached.
     handoff = null;
   }
-  const reached = arrayJoin(resolved, '/');
+  const reached = joined;
   if (root !== '' && reached !== root && !stringStartsWith(reached, root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
-  return { reached, spelling: handedSpelling(handoff, named(reached), stringEndsWith(name, '/')) };
+  return { reached, spelling: handedSpelling(handoff, named(reached), name.length > 0 && name[name.length - 1] === '/') };
 }) as (
   root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
   handedOver: (path: string, to: string) => boolean, rootSpelling?: string,
-) => Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
+) => SafeGenerator<BeneathLookup, BeneathReached | null, BeneathAnswer>;

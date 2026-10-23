@@ -56,11 +56,11 @@ import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf, type FeedPosition }
 import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 import {
-  arrayCopy, arrayIncludes, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, generatorNext, mathFloor, mathMax,
+  arrayCopy, arrayIncludes, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, mathFloor, mathMax,
   mathMin, NumberOf, objectCreate, objectHasOwn, ObjectPrototype, ownField, ownValue, promiseAll, PromiseConstructor, promiseFinally, promiseResolve,
   promiseThen, Proxy, reflectApply, reflectDefineProperty, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeList, SafeMap, SafeSet,
-  setList, stringIndexOf, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor,
-  typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
+  setList, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor,
+  typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -446,21 +446,27 @@ function after<T, R>(value: T | Promise<T>, next: (value: T) => R | Promise<R>):
 
 /** Whether `path` has a `..` segment. */
 function climbs(path: string): boolean {
-  for (let at = stringIndexOf(path, '..'); at >= 0; at = stringIndexOf(path, '..', at + 1)) {
-    if ((at === 0 || path[at - 1] === '/') && (at + 2 === path.length || path[at + 2] === '/')) return true;
+  for (let at = 0; at + 1 < path.length; at++) {
+    if (path[at] === '.' && path[at + 1] === '.' && (at === 0 || path[at - 1] === '/') && (at + 2 === path.length || path[at + 2] === '/')) return true;
   }
   return false;
 }
 
+/** Each path's key, by path: the same paths are looked up again and again. A bound on what is kept, then forgotten all at once. */
+const KEYS = new SafeMap<string, string>();
+const KEYS_KEPT = 4096;
 function keyOf(path: string): string {
+  let key = KEYS.get(path);
+  if (key !== undefined) return key;
   // Its segments but '' and '.', joined by '/'.
-  let key = '';
-  for (let from = 0; from <= path.length;) {
-    let at = stringIndexOf(path, '/', from);
-    if (at < 0) at = path.length;
+  key = '';
+  for (let from = 0, at = 0; at <= path.length; at++) {
+    if (at < path.length && path[at] !== '/') continue;
     if (at > from && !(at === from + 1 && path[from] === '.')) key = key === '' ? stringSlice(path, from, at) : key + '/' + stringSlice(path, from, at);
     from = at + 1;
   }
+  if (KEYS.size >= KEYS_KEPT) KEYS.clear();
+  KEYS.set(path, key);
   return key;
 }
 
@@ -789,29 +795,29 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const walkOnce = (root: string, name: string, follow: boolean, crossed?: string[]): string | null | Unknown | Delegate => {
     const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
     if (crossed !== undefined) crossed.length = 0;
-    for (let step = generatorNext(walk); ;) {
+    for (let step = walk.next(); ;) {
       if (step.done) return step.value === null ? null : step.value.reached;
       const lookup = step.value as BeneathLookup;
       if (objectHasOwn(lookup, 'readlink')) {
         const entry = store.entry(keyOf((lookup as { readonly readlink: string }).readlink));
         if (!entry || entry.type !== 'symlink' || entry.target === null) return DELEGATE;
-        step = generatorNext(walk, entry.target);
+        step = walk.next(entry.target);
         continue;
       }
       const key = keyOf((lookup as { readonly stat: string }).stat);
       if (crossed !== undefined) crossed[crossed.length] = key;
-      if (key === '') { step = generatorNext(walk, ROOT_FOR_WALK); continue; }
+      if (key === '') { step = walk.next(ROOT_FOR_WALK); continue; }
       const entry = store.entry(key);
       if (entry === undefined) {
         // Node's walk passes a directory the launch's listing could not name (a device that resolves
         // its own paths shows only what its user consented to, as the session hands it the whole
         // name): a name beneath it is answered where the listing named it, else missing.
         if (!walkedMounts) return { missing: key };
-        step = generatorNext(walk, PASSED_THROUGH);
+        step = walk.next(PASSED_THROUGH);
         continue;
       }
       if (entry !== null && entry.dev !== store.device && !answerable(key, entry)) return DELEGATE;
-      step = generatorNext(walk, entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
+      step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
     }
   };
 
@@ -980,7 +986,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (residency === undefined) return null;
     const held = (): boolean => {
       const bytes = store.content(key, entry.revision);
-      return bytes !== undefined && typedArrayByteLength(bytes) === entry.size;
+      return bytes !== undefined && bytes.length === entry.size;
     };
     const out = fetchingAhead.get(key);
     if (out !== undefined) return outstanding(promiseThen(out, held));
@@ -1028,7 +1034,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // what this process sent (the barrier first when one is owed): a grant
     // given back while the walk waited on the session drops what was decided
     // under it, and the store has it only once the barrier lands.
-    const looked = new SafeSet<string>();
+    // Made at the first name looked up: most walks look up none.
+    let looked: SafeSet<string> | undefined;
     let caughtUps = 0;
     const attempt = (asked: number): Resolution | Promise<Resolution> => {
       if (!store.ready()) return DELEGATE;
@@ -1054,7 +1061,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
             return store.list(parent);
           }), (listed) => (listed ? attempt(asked + 1) : DELEGATE));
       }
-      if (!looked.has(walked.missing)) {
+      if (looked === undefined || !looked.has(walked.missing)) {
+        looked ??= new SafeSet<string>();
         const named = prefixes(root, name);
         const spelled = new SafeList<string>();
         for (let i = 0; i < named.length; i++) if (!looked.has(named[i]) && store.entry(named[i]) === undefined) spelled[spelled.length] = named[i];
@@ -1203,9 +1211,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (decided !== undefined) return decided;
     if (holder?.provisional.pending(entry.dev, entry.ino)) return undefined;
     const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined =>
-      (bytes === null || bytes === undefined || typedArrayByteLength(bytes) !== entry.size ? undefined : bytes);
+      (bytes === null || bytes === undefined || bytes.length !== entry.size ? undefined : bytes);
     const held = store.content(key, entry.revision);
-    if (held !== undefined && typedArrayByteLength(held) === entry.size) return held;
+    if (held !== undefined && held.length === entry.size) return held;
     if (now) {
       refusedFetch = faultIn(key, entry);
       notNow();
@@ -1220,7 +1228,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (batch === undefined) return fill();
     return promiseThen(batch, () => {
       const fetched = store.content(key, entry.revision);
-      return fetched !== undefined && typedArrayByteLength(fetched) === entry.size ? fetched : fill();
+      return fetched !== undefined && fetched.length === entry.size ? fetched : fill();
     });
   };
 
@@ -1430,7 +1438,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.walked = () => opening;
   const pinnedTotal = (): number => {
     let total = 0;
-    pins.forEach((pin) => { total += typedArrayByteLength(pin.bytes); });
+    pins.forEach((pin) => { total += pin.bytes.length; });
     return total;
   };
   fs.stats = () => ({
@@ -1486,14 +1494,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           released = true;
           if (--pin.holders > 0) return;
           pins.delete(pinKey);
-          store.release(typedArrayByteLength(pin.bytes));
+          store.release(pin.bytes.length);
         },
       };
     };
     const existing = pins.get(pinKey);
     if (existing !== undefined) return pinned(existing);
     return after(contentOf(key, entry), (bytes) => {
-      if (bytes === undefined || !store.reserve(typedArrayByteLength(bytes))) return null;
+      if (bytes === undefined || !store.reserve(bytes.length)) return null;
       const pin: Pin = { bytes, holders: 0 };
       pins.set(pinKey, pin);
       return pinned(pin);
@@ -1802,7 +1810,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const start = offset ?? holder!.seek(handleId, 0, 'current');
     delegated('read');
     const chunk = await authority.read(session, start, length);
-    if (offset === null) holder!.seek(handleId, start + typedArrayByteLength(chunk), 'set');
+    if (offset === null) holder!.seek(handleId, start + chunk.length, 'set');
     return chunk;
   };
 
@@ -1904,7 +1912,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
             const page = found.pages[i];
             const start = (first + i) * RESIDENT_PAGE_BYTES;
             const from = mathMax(offset, start);
-            const to = mathMin(end, start + typedArrayByteLength(page));
+            const to = mathMin(end, start + page.length);
             typedArraySet(out, bytesView(page, from - start, to - start), from - offset);
           }
           return out;

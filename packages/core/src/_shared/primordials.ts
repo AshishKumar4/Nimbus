@@ -245,6 +245,16 @@ export const arraySort: <T>(list: SafeList<T>, compare: (a: T, b: T) => number) 
 /** RegExp.prototype.exec: RegExpBuiltinExec, which reads the regexp's own lastIndex and its flags' internal slots. */
 export const regExpExec: (pattern: RegExp, text: string) => RegExpExecArray | null = uncurryThis(RegExp.prototype.exec);
 const generatorPrototype = reflectGetPrototypeOf(function* () {}.prototype);
+/**
+ * A generator of a generator function safeGenerator made: its next, return
+ * and throw are SafeGeneratorPrototype's own, which no program reaches, so a
+ * caller drives it by its own methods.
+ */
+export interface SafeGenerator<T, TReturn, TNext> {
+  next(value?: TNext): IteratorResult<T, TReturn>;
+  return(value: TReturn): IteratorResult<T, TReturn>;
+  throw(error: unknown): IteratorResult<T, TReturn>;
+}
 export const generatorNext: <R>(it: Generator<unknown, R, unknown>, value?: unknown) => IteratorResult<unknown, R> = uncurryThis(reflectGet(generatorPrototype ?? {}, 'next'));
 export const generatorThrow: <R>(it: Generator<unknown, R, unknown>, error: unknown) => IteratorResult<unknown, R> = uncurryThis(reflectGet(generatorPrototype ?? {}, 'throw'));
 
@@ -455,6 +465,16 @@ export const arrayPop: <T>(list: T[]) => T | undefined = uncurryThis(Array.proto
 export function stringSplit(text: string, separator: string): SafeList<string> {
   const parts = new SafeList<string>();
   let from = 0;
+  if (separator.length === 1) {
+    // One code unit: found by reading the text's own, a substring taken per part.
+    for (let at = 0; at < text.length; at++) {
+      if (text[at] !== separator) continue;
+      parts[parts.length] = stringSlice(text, from, at);
+      from = at + 1;
+    }
+    parts[parts.length] = stringSlice(text, from);
+    return parts;
+  }
   for (let at = stringIndexOf(text, separator); at >= 0; at = stringIndexOf(text, separator, from)) {
     parts[parts.length] = stringSlice(text, from, at);
     from = at + separator.length;
