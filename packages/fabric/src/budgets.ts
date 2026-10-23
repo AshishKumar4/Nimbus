@@ -40,8 +40,8 @@ export { DO_DYNAMIC_WORKER_LIMIT };
 
 /**
  * Ends one hold, idempotently. Pass the error the call failed with, if it
- * did: a "Dynamic worker concurrency limit exceeded" refusal pauses the
- * ledger's admissions (see {@link beginLoaderFetchWhenFree}); anything else,
+ * did: the platform's refusal at the Dynamic Worker limit (classifyError's
+ * 'dynamic_worker_cap') pauses the ledger's admissions (see {@link beginLoaderFetchWhenFree}); anything else,
  * or nothing, just ends the hold.
  */
 export type EndLoaderFetch = (failure?: unknown) => void;
@@ -605,7 +605,7 @@ export function beginLoaderFetch(ctx: object, workerKey: string, claim?: Dynamic
  * wakes one waiter and no other caller can take it first; once resolved, it
  * is the caller's to end.
  *
- * A call refused with "Dynamic worker concurrency limit exceeded" ends its
+ * A call the platform refused at the Dynamic Worker limit ends its
  * hold with the refusal (`end(error)`) and waits again: the refusal pauses
  * admission (50 ms, doubling to 2 s while refusals continue), because the
  * platform counts a worker for a moment after its call returns and no
@@ -690,8 +690,8 @@ export const REFUSED_CALL_WAIT_MS = 15_000;
 let ownRuns = 0;
 
 /**
- * The hold to send a call again on, after the platform refused it ("Dynamic
- * worker concurrency limit exceeded"): it refuses a call before the call
+ * The hold to send a call again on, after the platform refused it at the
+ * Dynamic Worker limit: it refuses a call before the call
  * starts, so nothing ran. It still counts workers the ledger has given back
  * (one called over RPC stays counted until its session has closed, which no
  * release here can show), so `refused`, the call's hold, ended with that
@@ -1020,8 +1020,8 @@ function claimedWidth(entry: LoaderLedger): number {
 }
 
 /**
- * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"
- * failure; hand every other error back untouched. The platform's message
+ * Name the per-DO accounting on a refusal at the Dynamic Worker limit; hand
+ * every other error back untouched. The platform's message
  * says only that the limit was hit — which workers were in flight, and what
  * fan-outs had claimed, is what the operator needs to know to shrink anything.
  */

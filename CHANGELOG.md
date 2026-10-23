@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: when many programs start at once (twelve `npm install`s in a session, say), a start the platform refuses at its Dynamic Worker limit waits for room and starts. Since 2026-10-23 the platform words that refusal "Too many dynamic workers", which Nimbus did not recognise, so the program failed at once with that message.
 - Every mount states its change model, and a process's view answers by it:
   - `/dev` and `/proc` are listed for every process and answered from its own view (`stat('/dev/null')`, a `/proc` file once read); a WASI program's call that cannot wait is no longer refused there, and Node's `statSync` and `existsSync` see them (they answered ENOENT);
   - `/proc` stats are procfs's: every generated file (`cpuinfo`, `meminfo`, `uptime`, `version`, `net/info`, `mounts`) is size 0, every mtime the tree's; a process makes each but `mounts` itself, as the session does, so Node's `readFileSync('/proc/version')` (vite's is-wsl) and a WASI program's reads answer at once;

@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 // behavioral/parallel-installs — fire 8 concurrent npm installs across
-// 8 sessions; verify zero "Dynamic worker concurrency limit exceeded" errors
-// surface to the user.
+// 8 sessions; verify that no refusal at the Dynamic Worker limit surfaces to
+// the user, in any wording the platform has used (classifyMessage's).
 //
 // Black-box surfaces only. NO _diag.
 
 import { mintSession, Terminal, makeAsserter } from './_driver.mjs';
+import { classifyMessage } from '../../packages/platform/src/oom-classify.ts';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('parallel-installs');
@@ -41,7 +42,7 @@ for (const res of installs) {
     continue;
   }
   const { i, sid, output } = res.value;
-  if (/Dynamic worker concurrency limit exceeded/i.test(output)) capError++;
+  if (output.split('\n').some((line) => classifyMessage(line) === 'dynamic_worker_cap')) capError++;
   if (/added \d+ packages|installed \d+ packages|Done!\s+\d+ packages/i.test(output)) success++;
   else failures.push(`#${i} ${sid}: ${JSON.stringify(output.slice(-600))}`);
 }
@@ -49,7 +50,7 @@ for (const failure of failures) console.log(`      ${failure}`);
 
 a.check(`${N}/${N} installs completed (added/installed marker)`,
   success === N, `success=${success} capError=${capError} other=${other}`);
-a.check('zero "Dynamic worker concurrency limit exceeded" errors visible to users',
+a.check('zero Dynamic Worker limit refusals visible to users',
   capError === 0, `capError=${capError}`);
 
 const s = a.summary();
