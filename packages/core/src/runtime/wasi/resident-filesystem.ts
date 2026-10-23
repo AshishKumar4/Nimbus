@@ -1077,7 +1077,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         counts.lookups++;
         // The bytes of what the call names, when it is a small file: a stat is followed by an open.
         const target = spelled[spelled.length - 1];
-        return promiseThen(store.lookup(keys, content && keys[keys.length - 1] === target), (known) => {
+        return promiseThen(store.lookup(arrayCopy(keys), content && keys[keys.length - 1] === target), (known) => {
             if (known) foundIn.set(parent, !!store.entry(walked.missing));
             return known ? attempt(asked + 1) : DELEGATE;
           });
