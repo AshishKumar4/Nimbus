@@ -27,7 +27,9 @@ import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsKey, nsRowAt, type Namespace } from './namespace.js';
-import { NumberOf } from '@nimbus-sh/core/_shared/primordials.js';
+import {
+  arrayIncludes, arrayIsArray, NumberOf, promiseFinally, promiseResolve, promiseThen, SafeMap, stringOf, stringStartsWith, Uint8ArrayConstructor,
+} from '@nimbus-sh/core/_shared/primordials.js';
 import type { Pages } from './pages.js';
 import type { ResidentCred } from './permissions.js';
 import type { ResidentSupervisor } from './supervisor.js';
@@ -122,7 +124,7 @@ export function createView(
     if (!given || typeof given !== 'object') return null;
     const { args, answer } = given;
     const cursor = coherence.cursor();
-    if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths)) return null;
+    if (cursor === null || !args || !answer || answer.poison === true || !arrayIsArray(answer.paths)) return null;
     if (!isFeedPosition(answer.position) || !isFeedPosition(args.position) || !notAfter(args.position, cursor)) return null;
     return current(answer);
   };
@@ -254,7 +256,7 @@ export function createView(
       };
 
       const repair = (answer: VfsAcquireResult | null): Promise<void> => {
-        if (repairing === null) repairing = runRepair(answer).finally(() => { repairing = null; });
+        if (repairing === null) repairing = promiseFinally(runRepair(answer), () => { repairing = null; });
         return repairing;
       };
 
@@ -264,7 +266,7 @@ export function createView(
        * own, so a call that cannot wait, right after any barrier, finds a
        * file the store held at its new bytes, not a miss.
        */
-      const refetching = new Map<string, { rev: number; read: Promise<unknown>; done: Promise<void> }>();
+      const refetching = new SafeMap<string, { rev: number; read: Promise<unknown>; done: Promise<void> }>();
       /**
        * Fetch again, at their revisions now, the keys a delta dropped. A
        * refetch a later delta superseded is refused its install (its ticket);
@@ -274,14 +276,14 @@ export function createView(
        */
       const refetch = (keys: readonly string[]): Promise<void>[] => {
         if (keys.length === 0) return [];
-        const read = sync.refillFromNamespace(supervisor, keys).catch(() => undefined);
+        const read = promiseThen(sync.refillFromNamespace(supervisor, keys), undefined, () => undefined);
         const t = coherence.require();
         return keys.map((k) => {
-          const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: Promise.resolve() };
-          record.done = read.then(() => {
+          const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: promiseResolve() };
+          record.done = promiseFinally(promiseThen(promiseThen(read, () => {
             const newer = refetching.get(k);
             return Promise.all([newer !== undefined && newer !== record ? newer.read : undefined, repairing ?? undefined]);
-          }).then(() => undefined, () => undefined).finally(() => { if (refetching.get(k) === record) refetching.delete(k); });
+          }), () => undefined, () => undefined), () => { if (refetching.get(k) === record) refetching.delete(k); });
           refetching.set(k, record);
           return record.done;
         });
@@ -334,7 +336,7 @@ export function createView(
         // revision; a refetch in flight that its delta overtook (a file
         // rewritten again), once more; and every refetch it found in flight.
         const named = answer!.paths.map((entry) => nsKey(entry.path));
-        const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === '' || k.startsWith(at + '/')));
+        const overtaken = [...refetching.keys()].filter((k) => !arrayIncludes(applied.dropped, k) && named.some((at) => at === k || at === '' || stringStartsWith(k, at + '/')));
         await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
         return answer!.readLease ? { landed: true, applied: !repaired, readLease: answer!.readLease } : { landed: true, applied: !repaired };
       };
@@ -350,8 +352,8 @@ export function createView(
       };
 
       const view: ResidentNamespace = {
-        device: Number(device),
-        cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
+        device: NumberOf(device),
+        cred: { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: (cred.groups || []).map(Number) },
         ready: () => namespace.ready(),
         entry(k) {
           // Under a directory whose relist is on its way, no row is answered, nor any absence.
@@ -362,7 +364,7 @@ export function createView(
             type: typeOf(row.kind), dev: row.dev || 0, ino: row.ino, nlink: row.nlink || 1,
             size: row.size, atime: row.atime, mtime: row.mtime, ctime: row.ctime,
             mode: row.mode, uid: row.uid, gid: row.gid, revision: row.rev,
-            target: row.target == null ? null : String(row.target),
+            target: row.target == null ? null : stringOf(row.target),
           };
         },
         children(k) {
@@ -414,7 +416,7 @@ export function createView(
           const row = nsRowAt(coherence.require(), k);
           if (row === undefined || row.rev !== revision || view.content(k, revision) !== undefined) return;
           // A copy: the process's own buffer is its decisions', given back as they retire.
-          cells.keep(coherence.require(), k, new Uint8Array(bytes), revision);
+          cells.keep(coherence.require(), k, new Uint8ArrayConstructor(bytes), revision);
         },
         // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
         onAdmitted(listener) {

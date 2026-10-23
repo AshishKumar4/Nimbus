@@ -22,7 +22,7 @@
 
 import type { HeapTables, ResidentTables } from './tables.js';
 import { isFeedPosition, type FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
-import { JSONParse, JSONStringify } from '@nimbus-sh/core/_shared/primordials.js';
+import { Error, JSONParse, JSONStringify, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
 
 /** Where the store's rows are known-good: the namespace's position (feed-position.ts), each fed mount's feed. */
 export type Cursor = FeedPosition;
@@ -100,7 +100,7 @@ export function createCoherence(): Coherence {
     sealed: () => (isSealed ? sealReason : null),
     seal(reason) {
       isSealed = true;
-      sealReason = String(reason || 'resealed');
+      sealReason = stringOf(reason || 'resealed');
       read = null;
     },
     unseal() {

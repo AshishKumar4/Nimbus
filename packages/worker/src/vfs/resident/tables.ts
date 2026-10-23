@@ -20,8 +20,8 @@
 
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
 import {
-  arrayBufferByteLength, arrayCopy, arraySort, Error, mathMin, NumberOf, SafeList, SafeMap, SafeSet, setFind,
-  stringCodePointAt, stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor,
+  arrayBufferByteLength, arrayCopy, arraySort, bytesCopy, Error, mathMax, mathMin, NumberOf, SafeList, SafeMap, SafeSet, setFind, stringCodePointAt,
+  stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor,
 } from '@nimbus-sh/core/_shared/primordials.js';
 
 /**
@@ -420,26 +420,26 @@ export function heapTables(rowsChanged: RowsChanged = () => {}): HeapTables {
     pagePut(path, rev, part, bin, stamp) {
       const key = pageKey(path, rev, part);
       const had = pages.get(key);
-      const bytes = residentBytes(bin).slice();
-      if (had !== undefined) used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+      const bytes = bytesCopy(residentBytes(bin));
+      if (had !== undefined) used -= RESIDENT_ROW_BYTES + typedArrayByteLength(had.bin);
       pages.set(key, { path, rev, part, bin: bytes, used: stamp });
-      used += RESIDENT_ROW_BYTES + bytes.byteLength;
-      return had === undefined ? 0 : had.bin.byteLength;
+      used += RESIDENT_ROW_BYTES + typedArrayByteLength(bytes);
+      return had === undefined ? 0 : typedArrayByteLength(had.bin);
     },
     pageDelete(path, rev, part) {
       const key = pageKey(path, rev, part);
       const had = pages.get(key);
       if (had === undefined) return;
       pages.delete(key);
-      used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+      used -= RESIDENT_ROW_BYTES + typedArrayByteLength(had.bin);
     },
     pageOldest(limit) {
       // Least recently used first; ties by path, rev, part (the key-value backing's key order).
       const rows = [...pages.values()].sort((a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
-      return rows.slice(0, limit).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: row.bin.byteLength }));
+      return rows.slice(0, limit).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: typedArrayByteLength(row.bin) }));
     },
-    pageBytes() { let n = 0; for (const row of pages.values()) n += row.bin.byteLength; return n; },
-    pageMaxUsed() { let n = 0; for (const row of pages.values()) n = Math.max(n, row.used); return n; },
+    pageBytes() { let n = 0; for (const row of pages.values()) n += typedArrayByteLength(row.bin); return n; },
+    pageMaxUsed() { let n = 0; for (const row of pages.values()) n = mathMax(n, row.used); return n; },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       let dir = ns.get(parent);
       const previous = dir?.get(name);

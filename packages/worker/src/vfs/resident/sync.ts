@@ -33,6 +33,10 @@ import { nsDescribes, nsKey, nsRowAt, type Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { NS_FILE, RK_OWN_WRITE, type NsRow } from './tables.js';
 import { messageOf, type FillReport, type Transport, type WantedFile } from './transport.js';
+import {
+  arrayIncludes, arrayIsArray, Error, mathCeil, mathMax, objectAssign, objectKeys, SafeMap, SafeSet, stringEndsWith, stringIncludes, stringOf,
+  stringSlice, stringStartsWith,
+} from '@nimbus-sh/core/_shared/primordials.js';
 
 /** Dependencies and VCS state: written in bulk, read through the module map or not at all. */
 const PUSH_EXCLUDE = ['node_modules', '.git'];
@@ -76,7 +80,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
    * synchronous read may want, held from boot beside the module map. A launch
    * with none (a re-entry by an inbound request) holds what it already had.
    */
-  let plan = new Set<string>();
+  let plan = new SafeSet<string>();
   /**
    * Every package.json the launch's listing names, held from boot: the data
    * plan's `package-json` rule (facets/data-plan.ts) for a launch the session
@@ -95,13 +99,13 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
    * Null: no such rule (a resident's plan names its manifests itself).
    */
   let manifests: Map<string, unknown> | null = null;
-  const isManifest = (path: string): boolean => (path === 'package.json' || path.endsWith('/package.json')) && !('/' + path).includes('/.git/');
+  const isManifest = (path: string): boolean => (path === 'package.json' || stringEndsWith(path, '/package.json')) && !stringIncludes(('/' + path), '/.git/');
 
   const pushable = (path: string): boolean => {
     for (const root of pushRoots) {
-      if (root !== '' && path !== root && !path.startsWith(root + '/')) continue;
-      const rest = root === '' ? path : path.slice(root.length + 1);
-      if (!rest.split('/').some((seg) => PUSH_EXCLUDE.includes(seg))) return true;
+      if (root !== '' && path !== root && !stringStartsWith(path, root + '/')) continue;
+      const rest = root === '' ? path : stringSlice(path, root.length + 1);
+      if (!rest.split('/').some((seg) => arrayIncludes(PUSH_EXCLUDE, seg))) return true;
     }
     return false;
   };
@@ -149,7 +153,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     for (const path of applied.dropped) {
       const found = namespace.resolve(path, false);
       if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE) continue;
-      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
+      refetch[refetch.length] = { path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) };
     }
     if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
     return applied.cursor;
@@ -252,11 +256,11 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // vouched for, so a reconcile refetches what the mount holds now.
     const vouches = (entry: WantedFile | undefined, rev: number): boolean => entry !== undefined && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
 
-    const listed = new Map<string, WantedFile>();
+    const listed = new SafeMap<string, WantedFile>();
     for (const file of listing.entries) listed.set(file.path, file);
 
     const rows = t.fileRows();
-    const current = new Set<string>();
+    const current = new SafeSet<string>();
     const dropped: string[] = [];
     const own: { path: string; rev: number | null }[] = [];
     let rekeyed = 0;
@@ -266,10 +270,10 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       const entry = listed.get(row.path);
       if (row.rev === RK_OWN_WRITE) {
         current.add(row.path);
-        own.push({
+        own[own.length] = {
           path: row.path,
           rev: !comparable(row.path) ? null : entry !== undefined ? entry.rev : feedFor(at, row.path).cursor,
-        });
+        };
         continue;
       }
       if (vouches(entry, row.rev)) { vouched++; current.add(row.path); continue; }
@@ -285,7 +289,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         rekeyed++;
         continue;
       }
-      dropped.push(row.path);
+      dropped[dropped.length] = row.path;
     }
     // Cells held in the heap (own writes the store had no room for) are judged
     // as file rows are, on every path a file row is (N18). Undated, a write-back
@@ -298,13 +302,13 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       const entry = listed.get(path);
       if (rev === RK_OWN_WRITE) {
         current.add(path);
-        own.push({ path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor });
+        own[own.length] = { path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor };
         continue;
       }
       if (vouches(entry, rev)) { vouched++; current.add(path); continue; }
       if (!judgeable) { current.add(path); continue; }
       cells.forget(path);
-      dropped.push(path);
+      dropped[dropped.length] = path;
     }
     // Sweep what could not be vouched for. When NOTHING could — a new supervisor
     // incarnation, whose revisions say nothing about ours, and no other feed's
@@ -326,7 +330,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // stale — it was held for a reason — and what the pushes a poison lost
     // would have carried: files under the push roots changed since the cursor
     // (all of them there, when the revisions are not comparable).
-    const wanted = new Set(dropped);
+    const wanted = new SafeSet(dropped);
     const fetch: WantedFile[] = [];
     const copied: { file: WantedFile; text: string }[] = [];
     for (const file of listing.entries) {
@@ -336,17 +340,17 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         // where the listing says this credential may read them; otherwise the
         // session is asked, and answers.
         const copy = manifests.get(file.path);
-        if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey && namespace.readable(file.stat)) copied.push({ file, text: String(copy[1]) });
-        else fetch.push(file);
+        if (arrayIsArray(copy) && file.ckey !== null && copy[0] === file.ckey && namespace.readable(file.stat)) copied[copied.length] = { file, text: stringOf(copy[1]) };
+        else fetch[fetch.length] = file;
         continue;
       }
       if (plan.has(file.path) || wanted.has(file.path)
-        || (pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held!, file.path).cursor))) fetch.push(file);
+        || (pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held!, file.path).cursor))) fetch[fetch.length] = file;
     }
     // Reserve mandatory metadata growth while optional data is fetched, but
     // retain the existing namespace publication order across the await.
     const heap = coherence.heap;
-    const namespaceGrowth = admission.inHeap && describable && heap !== null ? Math.max(0, listing.namespaceBytes! - heap.nsBytes()) : 0;
+    const namespaceGrowth = admission.inHeap && describable && heap !== null ? mathMax(0, listing.namespaceBytes! - heap.nsBytes()) : 0;
     const refused = admission.namespaceRefusal(namespaceGrowth);
     if (refused !== null) namespace.refuse(t, refused);
     const giveBack = admission.reserveNamespace(namespaceGrowth);
@@ -358,7 +362,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       for (const { text } of copied) copiedBytes += residentCellCost(text);
       if (copiedBytes > 0) await admission.ensureRoom(copiedBytes);
       for (const { file, text } of copied) {
-        if (!cells.put(t, file.path, text, file.rev, file.ckey)) fetch.push(file);
+        if (!cells.put(t, file.path, text, file.rev, file.ckey)) fetch[fetch.length] = file;
       }
       filled = await transport.fetchFiles(supervisor, fetch);
     }
@@ -428,7 +432,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       coherence.unseal();
       return null;
     }
-    for (const path of Object.keys(bundle || {})) {
+    for (const path of objectKeys(bundle || {})) {
       cells.put(t, path, bundle![path]!, feedFor(moduleCursor, path).cursor);
     }
     return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
@@ -499,11 +503,11 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       let bytes = moduleBytes;
       if (typeof bytes !== 'number') {
         bytes = 0;
-        for (const path of Object.keys(bundle || {})) bytes += residentCellCost(bundle![path]);
+        for (const path of objectKeys(bundle || {})) bytes += residentCellCost(bundle![path]);
       }
       if (!(await admission.ensureRoom(bytes))) {
-        throw Object.assign(new Error(
-          'ENOSPC: workspace storage is full: this process\'s modules (' + Math.ceil(bytes / 1048576)
+        throw objectAssign(new Error(
+          'ENOSPC: workspace storage is full: this process\'s modules (' + mathCeil(bytes / 1048576)
             + ' MiB) do not fit in what is left of the session\'s storage',
         ), { code: 'ENOSPC' });
       }
@@ -519,18 +523,18 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       return { cursor: adopted, failure: failure || fail(pass) };
     },
     setPushRoots(roots) {
-      pushRoots = (Array.isArray(roots) ? roots : []).map((r) => String(r).replace(/^\/+|\/+$/g, ''));
+      pushRoots = (arrayIsArray(roots) ? roots : []).map((r) => stringOf(r).replace(/^\/+|\/+$/g, ''));
     },
     pushable,
     acquireOptions,
     applyAcquire,
     setPlan(paths) {
-      plan = new Set(Array.isArray(paths) ? paths.map((p) => nsKey(p)) : []);
+      plan = new SafeSet(arrayIsArray(paths) ? paths.map((p) => nsKey(p)) : []);
     },
     setManifests(given) {
       const files = given && typeof given === 'object' && (given as { files?: unknown }).files && typeof (given as { files?: unknown }).files === 'object'
         ? (given as { files: Record<string, unknown> }).files : null;
-      manifests = files === null ? null : new Map(Object.entries(files));
+      manifests = files === null ? null : new SafeMap(Object.entries(files));
     },
     adoptModuleBundle,
     synchronize,
@@ -545,14 +549,14 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       const cursor = coherence.cursor();
       if (cursor === null) return { requested: 0, filled: 0, failed: 0, bytes: 0 };
       const fetch: WantedFile[] = [];
-      const seen = new Set<string>();
+      const seen = new SafeSet<string>();
       for (const path of [...dropped, ...plan]) {
         if (seen.has(path)) continue;
         seen.add(path);
         if (cells.has(path)) continue;
         const row = nsRowAt(t, path);
         if (row === undefined || row.kind !== NS_FILE) continue;
-        fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
+        fetch[fetch.length] = { path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) };
       }
       return transport.fetchFiles(supervisor, fetch);
     },

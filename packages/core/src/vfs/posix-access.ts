@@ -1,5 +1,5 @@
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
-import { arrayIncludes } from '../_shared/primordials.js';
+import { arrayIncludes, mathTrunc } from '../_shared/primordials.js';
 
 /** What an entry is, as its filesystem says: the type every access check is given. */
 export type PosixNodeType = 'file' | 'directory' | 'symlink';
@@ -98,7 +98,7 @@ export function explicitTimes(atime: FsTime, mtime: FsTime): boolean {
 
 /** `time` as the filesystem committing it lands it: an explicit one in whole ms, 'now' at `now`, 'omit' as `kept`. */
 export function timeAt(time: FsTime, kept: number, now: number): number {
-  return time === 'omit' ? kept : time === 'now' ? now : Math.trunc(time);
+  return time === 'omit' ? kept : time === 'now' ? now : mathTrunc(time);
 }
 
 /**

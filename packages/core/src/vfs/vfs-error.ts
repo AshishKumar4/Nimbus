@@ -3,6 +3,7 @@
  * the message a person reads. Every backend throws it, so no caller matches
  * prose.
  */
+import { Error, objectAssign, objectHasOwn, ObjectPrototype, reflectApply, SafeSet, stringOf } from '../_shared/primordials.js';
 
 export type VfsErrorCode =
   | 'E2BIG'
@@ -44,7 +45,7 @@ export const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>> = {
  * the caller's own path.
  */
 export function vfsError(code: string, what: string, detail: string = what): Error & { code: string; detail: string } {
-  return Object.assign(new Error(detail === what ? `${code}: ${what}` : `${code}: ${what}: ${detail}`), { code, detail });
+  return objectAssign(new Error(detail === what ? `${code}: ${what}` : `${code}: ${what}: ${detail}`), { code, detail });
 }
 
 /** An error's errno (an `E…` code), if it carries one. */
@@ -114,7 +115,7 @@ export function isVfsError(error: unknown, code?: VfsErrorCode): error is VfsErr
 }
 
 export function isVfsErrorCode(code: unknown): code is VfsErrorCode {
-  return typeof code === 'string' && Object.hasOwn(VFS_ERRNO, code);
+  return typeof code === 'string' && objectHasOwn(VFS_ERRNO, code);
 }
 
 /**
@@ -151,7 +152,7 @@ export function toVfsError(error: unknown, syscall: string, path: string, dest?:
  * leaves the call's outcome unknown, which is a durability failure whatever
  * the caller does with it.
  */
-export const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode> = new Set<VfsErrorCode>([
+export const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode> = new SafeSet<VfsErrorCode>([
   'ENOENT', 'EEXIST', 'EISDIR', 'ENOTDIR', 'ENOTEMPTY', 'EBADF', 'EINVAL', 'EPERM', 'EACCES', 'ELOOP',
   'ENAMETOOLONG', 'ENOSPC', 'EROFS', 'EBUSY', 'ENOTSUP', 'EXDEV', 'ENXIO', 'E2BIG',
 ]);
@@ -162,7 +163,7 @@ export const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode> = new Set<VfsErrorCode>
  * one of these means both names are as they were. EXDEV is among them, and
  * says only that this filesystem cannot make this rename in place.
  */
-export const RENAME_REFUSALS: ReadonlySet<VfsErrorCode> = new Set<VfsErrorCode>([
+export const RENAME_REFUSALS: ReadonlySet<VfsErrorCode> = new SafeSet<VfsErrorCode>([
   'EACCES', 'EPERM', 'EBUSY', 'EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EINVAL', 'EXDEV', 'EROFS', 'ENOSPC',
 ]);
 
@@ -176,7 +177,7 @@ export const RENAME_REFUSALS: ReadonlySet<VfsErrorCode> = new Set<VfsErrorCode>(
 export type RenameOutcome = 'none' | 'all';
 
 export function renameOutcome(error: unknown): RenameOutcome | undefined {
-  const seen = new Set<unknown>();
+  const seen = new SafeSet<unknown>();
   for (let at = error; typeof at === 'object' && at !== null && !seen.has(at); at = (at as { cause?: unknown }).cause) {
     seen.add(at);
     const renamed = (at as { renamed?: unknown }).renamed;
@@ -195,7 +196,7 @@ export function strerror(error: unknown): string {
   if (isVfsErrorCode(code)) return VFS_STRERROR[code];
   if (error instanceof Error) return error.message;
   // An errno this table does not name is printed as its name.
-  return typeof code === 'string' ? code : String(error);
+  return typeof code === 'string' ? code : stringOf(error);
 }
 
 /** strerror(3) for a code: the text GNU coreutils print. */
@@ -241,7 +242,7 @@ export const ERRNO_DESCRIPTION: Readonly<Record<string, string>> = {
 
 /** {@link ERRNO_DESCRIPTION} of `code`, undefined for a code libuv does not name. */
 export function errnoDescription(code: string): string | undefined {
-  return Object.prototype.hasOwnProperty.call(ERRNO_DESCRIPTION, code) ? ERRNO_DESCRIPTION[code] : undefined;
+  return reflectApply(ObjectPrototype.hasOwnProperty, ERRNO_DESCRIPTION, [code]) ? ERRNO_DESCRIPTION[code] : undefined;
 }
 
 /** Linux errno numbers of the codes {@link ERRNO_DESCRIPTION} names besides the VFS's, negative as libuv reports them. */
@@ -254,7 +255,7 @@ const OTHER_ERRNO: Readonly<Record<string, number>> = {
 /** `code`'s errno, negative as libuv reports it; undefined for a code this table does not name. */
 export function errnoOf(code: string): number | undefined {
   if (isVfsErrorCode(code)) return VFS_ERRNO[code];
-  return Object.prototype.hasOwnProperty.call(OTHER_ERRNO, code) ? OTHER_ERRNO[code] : undefined;
+  return reflectApply(ObjectPrototype.hasOwnProperty, OTHER_ERRNO, [code]) ? OTHER_ERRNO[code] : undefined;
 }
 
 /**
@@ -298,7 +299,7 @@ export function fsError(
     options.cause === undefined ? undefined : { cause: options.cause },
   );
   const errno = errnoOf(code);
-  return Object.assign(error, {
+  return objectAssign(error, {
     code,
     ...(errno === undefined ? {} : { errno }),
     syscall,

@@ -36,6 +36,10 @@ import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import type { W7Attrs, W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp, ProcessFsReceipt } from '../../_shared/process-fs-client.js';
 import { applyOp, copyState, foldOps, owned, type InodeOp, type InodeState } from './inode-fold.js';
+import {
+  arrayIncludes, arrayIndexOf, bytesView, Error, mathMax, mathMin, objectFreeze, objectKeys, promiseThen, SafeMap, SafeSet, stringLastIndexOf,
+  stringOf, stringSlice, stringStartsWith, SymbolConstructor, typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
+} from '../../_shared/primordials.js';
 
 /** Where a provisional file's own numbers start: past any the session gives. */
 const LOCAL_INOS = 2 ** 50;
@@ -49,19 +53,19 @@ const stringCost = (text: string): number => text.length * 2;
 /** What a buffer keeps alive: all of what it is a view of. */
 const retained = (bytes: Uint8Array | null | undefined): number => bytes?.buffer.byteLength ?? 0;
 /** The bytes an operation carries, which its record keeps until it retires. */
-const payloadOf = (op: InodeOp): number => ('data' in op ? op.data.byteLength : 0);
+const payloadOf = (op: InodeOp): number => ('data' in op ? typedArrayByteLength(op.data) : 0);
 
 function parentKey(key: string): string {
-  const at = key.lastIndexOf('/');
-  return at < 0 ? '' : key.slice(0, at);
+  const at = stringLastIndexOf(key, '/');
+  return at < 0 ? '' : stringSlice(key, 0, at);
 }
 
 function nameOf(key: string): string {
-  return key.slice(key.lastIndexOf('/') + 1);
+  return stringSlice(key, stringLastIndexOf(key, '/') + 1);
 }
 
 function within(key: string, root: string): boolean {
-  return key === root || key.startsWith(`${root}/`);
+  return key === root || stringStartsWith(key, `${root}/`);
 }
 
 /** A new open description's id: unguessable, so no other process's call names it. */
@@ -252,10 +256,10 @@ interface InodeRecord {
 }
 
 /** An inode with none: one shared empty list each, frozen, until it has one of its own. */
-const NO_RECORDS = Object.freeze([]) as readonly InodeRecord[] as InodeRecord[];
-const NO_RETAINED = Object.freeze([]) as readonly string[] as string[];
+const NO_RECORDS = objectFreeze([]) as readonly InodeRecord[] as InodeRecord[];
+const NO_RETAINED = objectFreeze([]) as readonly string[] as string[];
 /** What a whole-file write on a mount answers in place of a descriptor: it was logged as one writeFile, nothing opened. */
-const WHOLE_WRITTEN: unique symbol = Symbol('written whole');
+const WHOLE_WRITTEN: unique symbol = SymbolConstructor('written whole');
 
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
 interface NameRecord {
@@ -399,14 +403,14 @@ export interface Provisional {
 
 export function provisional(host: ProvisionalHost): Provisional {
   /** Every file this process has open or changed, one Inode each, by device and number. */
-  const table = new Map<number, Map<number, Inode>>();
+  const table = new SafeMap<number, Map<number, Inode>>();
   /** The same Inodes by what holds them: a grant (its cell), or these decisions. What visits one kind visits only it. */
-  const held = new Set<Inode>();
-  const loose = new Set<Inode>();
+  const held = new SafeSet<Inode>();
+  const loose = new SafeSet<Inode>();
   const inodeAtNumber = (dev: number, ino: number): Inode | undefined => table.get(dev)?.get(ino);
   const addInode = (inode: Inode): void => {
     let numbers = table.get(inode.dev);
-    if (numbers === undefined) table.set(inode.dev, numbers = new Map());
+    if (numbers === undefined) table.set(inode.dev, numbers = new SafeMap());
     numbers.set(inode.ino, inode);
     (inode.cell === undefined ? loose : held).add(inode);
   };
@@ -429,25 +433,25 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** Every Inode: a copy, so what visits may add or remove. */
   const everyInode = (): Inode[] => [...held, ...loose];
   /** Renames planned and not yet settled (planMove). */
-  const pendingMoves = new Set<{ readonly from: string; readonly to: string }>();
+  const pendingMoves = new SafeSet<{ readonly from: string; readonly to: string }>();
   /** What a name `key` (the view's `origin`) beneath a pending rename's source grows by once it is made: both beneath its destination. */
   const pendingGrowth = (key: string, origin: string): number => {
     if (pendingMoves.size === 0) return 0;
     let total = 0;
-    for (const { from, to } of pendingMoves) if (within(key, from)) total += Math.max(0, 2 * stringCost(to + key.slice(from.length)) - stringCost(key) - stringCost(origin));
+    for (const { from, to } of pendingMoves) if (within(key, from)) total += mathMax(0, 2 * stringCost(to + stringSlice(key, from.length)) - stringCost(key) - stringCost(origin));
     return total;
   };
   /** Every descriptor of those files, held and provisional alike. */
-  const descs = new Map<number, Desc>();
+  const descs = new SafeMap<number, Desc>();
   /** Each answered session description's descriptor and the read access its open asked for. */
-  const sessions = new Map<string, { handle: number; read: boolean }>();
+  const sessions = new SafeMap<string, { handle: number; read: boolean }>();
   /** The overlay: the names the pending name records made, removed or moved, and the listings' changes, replayed over the view. */
-  const layer = new Map<string, Inode | null>();
-  const added = new Map<string, Map<string, RuntimeVfsDirEntry['type']>>();
-  const removed = new Map<string, Set<string>>();
+  const layer = new SafeMap<string, Inode | null>();
+  const added = new SafeMap<string, Map<string, RuntimeVfsDirEntry['type']>>();
+  const removed = new SafeMap<string, Set<string>>();
   const nameRecords: NameRecord[] = [];
   /** The inodes whose own content or attributes the process sees (a fold): every name the view has them at shows them. */
-  const touched = new Set<Inode>();
+  const touched = new SafeSet<Inode>();
   let ids = 0;
   let barriers = 0;
   let localIno = LOCAL_INOS;
@@ -487,12 +491,12 @@ export function provisional(host: ProvisionalHost): Provisional {
    * where no directory above `key` was moved here.
    */
   const viewNameBeneathMoved = (key: string): string | undefined => {
-    for (let at = key.lastIndexOf('/'); at > 0; at = key.lastIndexOf('/', at - 1)) {
-      const dir = key.slice(0, at);
+    for (let at = stringLastIndexOf(key, '/'); at > 0; at = stringLastIndexOf(key, '/', at - 1)) {
+      const dir = stringSlice(key, 0, at);
       if (!layer.has(dir)) continue;
       const inode = layer.get(dir)!;
       if (inode === null || inode.local) return undefined;
-      if (inode.origin !== dir) return inode.origin + key.slice(at);
+      if (inode.origin !== dir) return inode.origin + stringSlice(key, at);
     }
     return undefined;
   };
@@ -513,7 +517,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const row = known !== undefined ? known : host.row(key);
       const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
       if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
-        && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
+        && changed.heldAt === undefined && changed.records.length === 0 && !arrayIncludes([...layer.values()], changed)) {
         // A retained fold is only the fallback while no name leads to its inode.
         // The view found it again (a peer's rename): its retired content is the view's.
         renamed(changed, key, key, true);
@@ -590,7 +594,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const row = host.row(name);
     if (!row || row.dev !== inode.dev || row.ino !== inode.ino) return undefined;
     const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
-    return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+    return { name, row, bytes: held !== undefined && typedArrayByteLength(held) === row.size ? held : undefined };
   };
 
   /**
@@ -618,7 +622,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     }
     const row = inode.row;
     const held = seen?.bytes ?? pinned(inode, seen, row.revision);
-    const bytes = held === undefined ? (row.size === 0 ? new Uint8Array(0) : null) : owned(held);
+    const bytes = held === undefined ? (row.size === 0 ? new Uint8ArrayConstructor(0) : null) : owned(held);
     return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
   };
 
@@ -659,7 +663,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (inode.base === null) {
       // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
       const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
-      const held = inode.cell !== undefined ? inode.cell.bytes.subarray(0, inode.cell.length)
+      const held = inode.cell !== undefined ? bytesView(inode.cell.bytes, 0, inode.cell.length)
         : seen?.bytes ?? pinned(inode, seen, seen?.row.revision ?? inode.row.revision);
       known = held !== undefined || inode.row.size === 0;
       baseBytes = held?.byteLength ?? 0;
@@ -669,10 +673,10 @@ export function provisional(host: ProvisionalHost): Provisional {
     let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
     for (const op of ops) {
       if (op.kind === 'truncate' && op.size === 0) known = true;
-      const end = op.kind === 'write' ? op.offset + op.data.byteLength : op.kind === 'append' ? size + op.data.byteLength : op.kind === 'truncate' ? op.size : size;
-      if (known && end > capacity) capacity = Math.max(end, capacity * 2, 4096);
+      const end = op.kind === 'write' ? op.offset + typedArrayByteLength(op.data) : op.kind === 'append' ? size + typedArrayByteLength(op.data) : op.kind === 'truncate' ? op.size : size;
+      if (known && end > capacity) capacity = mathMax(end, capacity * 2, 4096);
       if (op.kind === 'truncate') size = op.size;
-      else if (op.kind === 'write' || op.kind === 'append') size = Math.max(size, end);
+      else if (op.kind === 'write' || op.kind === 'append') size = mathMax(size, end);
       total += RECORD_COST + payloadOf(op);
     }
     return total + (known ? capacity : 0);
@@ -774,7 +778,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const recorded = (inode: Inode, op: InodeOp, description?: string): InodeRecord => {
     const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
     if (inode.records === NO_RECORDS) inode.records = [record];
-    else inode.records.push(record);
+    else inode.records[inode.records.length] = record;
     inode.recordsCost += recordCost(record);
     inode.state = applyOp(inode.state!, op);
     return record;
@@ -785,7 +789,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (inode.records.length > 0 || inode.descs > 0 || inode.answers > 0 || inode.cell !== undefined) return;
     for (const value of layer.values()) if (value === inode) return;
     // A name record that may be replayed names it again (one after it refused, say).
-    for (const record of nameRecords) if (record.places.includes(inode)) return;
+    for (const record of nameRecords) if (arrayIncludes(record.places, inode)) return;
     // What the process sees of a file it changed stays until the view has it (retire), but where no name leads to it.
     if (inode.state !== null && named(inode)) return;
     touched.delete(inode);
@@ -820,7 +824,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (awaited) {
       // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
       const answer = host.client.submit(op);
-      void answer.then((answered) => settled(false, answered), () => settled(true, undefined)).catch(endedOnly);
+      void promiseThen(promiseThen(answer, (answered) => settled(false, answered), () => settled(true, undefined)), undefined, endedOnly);
       return answer;
     }
     settles(host.client.submit(op, { acknowledged: true }), settle);
@@ -829,10 +833,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `settle` told an acknowledged entry's answer once it comes: refused, or not. */
   const settles = (answer: Promise<ProcessFsAnswer>, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void): void => {
-    void answer.then(
-      (answered) => { settle(answered.failed?.refused === true, answered); host.sent(); },
-      () => { settle(false, undefined); host.sent(); },
-    ).catch(endedOnly);
+    void promiseThen(promiseThen(answer, (answered) => { settle(answered.failed?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); }), undefined, endedOnly);
   };
 
   /** `inode`'s fold again from its baseline: what it is with the records it has now. */
@@ -857,11 +858,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       }
       return;
     }
-    const refusedOf = new Map<Inode, Set<InodeRecord>>();
+    const refusedOf = new SafeMap<Inode, Set<InodeRecord>>();
     for (const record of records) {
       if (record.gone) continue;
       let mine = refusedOf.get(record.owner);
-      if (mine === undefined) refusedOf.set(record.owner, mine = new Set());
+      if (mine === undefined) refusedOf.set(record.owner, mine = new SafeSet());
       mine.add(record);
     }
     for (const [inode, mine] of refusedOf) {
@@ -883,17 +884,17 @@ export function provisional(host: ProvisionalHost): Provisional {
   const extended = (record: InodeRecord, data: Uint8Array, at: number): void => {
     // The record's own op: changed where it is.
     const op = record.op as { data: Uint8Array; at: number };
-    const before = op.data.byteLength;
-    const length = before + data.byteLength;
+    const before = typedArrayByteLength(op.data);
+    const length = before + typedArrayByteLength(data);
     const counted = recordCost(record);
     let room = record.room;
-    if (room === undefined || room.byteLength < length) {
-      const grown = new Uint8Array(Math.max(length, before * 2));
-      grown.set(op.data);
+    if (room === undefined || typedArrayByteLength(room) < length) {
+      const grown = new Uint8ArrayConstructor(mathMax(length, before * 2));
+      typedArraySet(grown, op.data);
       record.room = room = grown;
     }
-    room.set(data, before);
-    op.data = room.subarray(0, length);
+    typedArraySet(room, data, before);
+    op.data = bytesView(room, 0, length);
     op.at = at;
     record.owner.recordsCost += recordCost(record) - counted;
   };
@@ -927,11 +928,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       return placed ? [placed] : [];
     });
     const record: NameRecord = { id: ++ids, keys, over, cost, places, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
-    nameRecords.push(record);
+    nameRecords[nameRecords.length] = record;
     for (const key of keys) host.count(key);
     return logged(op, (refused, answer) => {
       if (refused) {
-        const at = nameRecords.indexOf(record);
+        const at = arrayIndexOf(nameRecords, record);
         if (at >= 0) nameRecords.splice(at, 1);
         host.release(record.cost);
         replay();
@@ -949,12 +950,12 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (type === null) {
       added.get(dir)?.delete(name);
       let gone = removed.get(dir);
-      if (gone === undefined) removed.set(dir, gone = new Set());
+      if (gone === undefined) removed.set(dir, gone = new SafeSet());
       gone.add(name);
     } else {
       removed.get(dir)?.delete(name);
       let made = added.get(dir);
-      if (made === undefined) added.set(dir, made = new Map());
+      if (made === undefined) added.set(dir, made = new SafeMap());
       made.set(name, type);
     }
   };
@@ -993,12 +994,12 @@ export function provisional(host: ProvisionalHost): Provisional {
     const { uid, gid } = ownership(parent);
     const at = host.now();
     const row: ResidentEntry = {
-      type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
+      type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : typedArrayByteLength(new TextEncoder().encode(target)),
       atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
     };
     const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0 };
     if (type === 'file') {
-      inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
+      inode.base = { bytes: new Uint8ArrayConstructor(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
       touched.add(inode);
       activity();
@@ -1024,7 +1025,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       admit(more, syscall, path);
       return;
     }
-    const held = seen.bytes.byteLength;
+    const held = typedArrayByteLength(seen.bytes);
     admit(more + 2 * held, syscall, path);
     inode.reserved += 2 * held;
     inode.base = baseline(inode);
@@ -1081,7 +1082,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       bury(made, owner);
     }
     owner.row = { ...owner.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
-    owner.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
+    owner.base = { bytes: receipt.size === 0 ? new Uint8ArrayConstructor(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
     refold(owner);
     return owner;
   };
@@ -1092,7 +1093,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * throws, so a stray reference shows itself at once.
    */
   const bury = (dead: Inode, owner: Inode): void => {
-    for (const field of Object.keys(dead)) {
+    for (const field of objectKeys(dead)) {
       Object.defineProperty(dead, field, {
         get: () => { throw new Error(`a merged Inode's ${field} used after its merge (canonical)`); },
         configurable: true,
@@ -1112,7 +1113,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (!refused) inode = reconcile(inode, answer, creating);
     // Numbered, or never made: its description names it no more, and goes once nothing holds it open; refused, the
     // session never had it, so it is no file's anchor either.
-    if (refused && inode.retained.includes(description)) {
+    if (refused && arrayIncludes(inode.retained, description)) {
       inode.retained = inode.retained.filter((kept) => kept !== description);
       sessions.delete(description);
     }
@@ -1144,7 +1145,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   const descOf = (handleId: number): Desc => {
     const desc = descs.get(handleId);
-    if (desc === undefined) throw fsError('EBADF', 'fd', String(handleId));
+    if (desc === undefined) throw fsError('EBADF', 'fd', stringOf(handleId));
     return desc;
   };
 
@@ -1173,20 +1174,20 @@ export function provisional(host: ProvisionalHost): Provisional {
         if (!named(inode)) throw fsError('ESTALE', syscall, path);
         return undefined;
       }
-      return { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength };
+      return { bytes: inode.pin.bytes, size: typedArrayByteLength(inode.pin.bytes) };
     }
     inode.row = seen.row;
     // The view's name for it has no bytes yet (moved there by a rename): what its descriptors read of it at that revision.
     if (seen.bytes === undefined) {
       const pin = pinned(inode, seen, seen.row.revision);
-      return pin === undefined ? undefined : { bytes: pin, size: pin.byteLength };
+      return pin === undefined ? undefined : { bytes: pin, size: typedArrayByteLength(pin) };
     }
     // Pinned for its descriptors while the view's name for it may move or go: the bytes they last read.
     if (inode.descs > 0 && inode.pin?.bytes !== seen.bytes) {
       inode.pin = { revision: seen.row.revision, bytes: seen.bytes };
       fit(inode);
     }
-    return { bytes: seen.bytes, size: seen.bytes.byteLength };
+    return { bytes: seen.bytes, size: typedArrayByteLength(seen.bytes) };
   };
 
   /** An open description of `inode` at the session, any of its descriptors': what reaches it whatever names it (its anchor). */
@@ -1241,18 +1242,18 @@ export function provisional(host: ProvisionalHost): Provisional {
     const last = desc.lastRecord;
     if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== undefined || inode.state === null) return false;
     const was = last.op;
-    if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength)) return false;
+    if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + typedArrayByteLength(was.data))) return false;
     // What it adds is what grows: its record's room and its state's, each by doubling; most writes add nothing to admit.
     unshared(inode);
     const state = inode.state!;
-    const before = was.data.byteLength;
-    const length = before + bytes.byteLength;
-    const recordRoom = last.room !== undefined && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
+    const before = typedArrayByteLength(was.data);
+    const length = before + typedArrayByteLength(bytes);
+    const recordRoom = last.room !== undefined && typedArrayByteLength(last.room) >= length ? typedArrayByteLength(last.room) : mathMax(length, before * 2);
     const capacity = state.bytes?.byteLength ?? 0;
-    const end = start === undefined ? state.size + bytes.byteLength : start + bytes.byteLength;
-    const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0);
+    const end = start === undefined ? state.size + typedArrayByteLength(bytes) : start + typedArrayByteLength(bytes);
+    const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? mathMax(end, capacity * 2, 4096) - capacity : 0);
     host.drain();
-    host.client.fitsSync(bytes.byteLength, desc.path);
+    host.client.fitsSync(typedArrayByteLength(bytes), desc.path);
     if (growth > 0) {
       const need = cost(inode) + growth - inode.reserved;
       admit(need, 'write', desc.path);
@@ -1319,9 +1320,9 @@ export function provisional(host: ProvisionalHost): Provisional {
     const at = host.now();
     const ops: InodeOp[] = [];
     // A made file's O_TRUNC changes nothing here, but is the session's if the name turns out to be another's file (reconcile).
-    if (flags.truncate) ops.push({ kind: 'truncate', size: 0, at });
-    if (bytes !== null && bytes.byteLength > 0) ops.push({ kind: 'write', offset: 0, data: bytes, at });
-    if (chmod !== undefined) ops.push({ kind: 'chmod', mode: chmod, at });
+    if (flags.truncate) ops[ops.length] = { kind: 'truncate', size: 0, at };
+    if (bytes !== null && typedArrayByteLength(bytes) > 0) ops[ops.length] = { kind: 'write', offset: 0, data: bytes, at };
+    if (chmod !== undefined) ops[ops.length] = { kind: 'chmod', mode: chmod, at };
     // What older decisions left unlogged goes first, and with what this logs, must fit what the log holds unanswered.
     host.drain();
     host.client.fitsSync(bytes?.byteLength ?? 0, path);
@@ -1334,7 +1335,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         throw error;
       }
     } else {
-      const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
+      const written = bytes !== null && typedArrayByteLength(bytes) > 0 ? mathMax(typedArrayByteLength(bytes), 4096) : 0;
       admit(madeCost(key) + nameCost([key]) + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), 'open', path);
     }
     // Made.
@@ -1360,7 +1361,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       target = made(key, 'file', 0o100000 | (asked & ~umask), parent!);
       target.made = description;
       // Admitted above with it: its records and its fold's buffer.
-      target.reserved += (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
+      target.reserved += (bytes !== null && typedArrayByteLength(bytes) > 0 ? mathMax(typedArrayByteLength(bytes), 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
     } else {
       target = inode!;
     }
@@ -1433,7 +1434,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     descriptorsOf: (inode) => {
       if (inode.descs === 0) return [];
-      return [...new Set(descs.values())].filter((desc) => desc.inode === inode);
+      return [...new SafeSet(descs.values())].filter((desc) => desc.inode === inode);
     },
 
     cells: () => [...held],
@@ -1452,19 +1453,19 @@ export function provisional(host: ProvisionalHost): Provisional {
       // Pending from now: what each file beneath keeps grows by its names' growth, admitted at once.
       pendingMoves.add(plan);
       let need = 0;
-      for (const inode of beneath()) need += Math.max(0, cost(inode) - inode.reserved);
+      for (const inode of beneath()) need += mathMax(0, cost(inode) - inode.reserved);
       if (need > 0 && !host.reserve(need)) {
         pendingMoves.delete(plan);
         throw fsError('ENOSPC', 'rename', path);
       }
-      for (const inode of beneath()) inode.reserved = Math.max(inode.reserved, cost(inode));
+      for (const inode of beneath()) inode.reserved = mathMax(inode.reserved, cost(inode));
       const settle = (made: boolean): void => {
         if (!pendingMoves.has(plan)) return;
         const files = beneath();
         pendingMoves.delete(plan);
         // Made, its names are beneath `to`, what they grew by taken as charged; not, the growth goes back.
         for (const inode of files) {
-          if (made) renamed(inode, to + inode.key.slice(from.length), to + inode.key.slice(from.length));
+          if (made) renamed(inode, to + stringSlice(inode.key, from.length), to + stringSlice(inode.key, from.length));
           else fit(inode);
         }
       };
@@ -1477,7 +1478,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       setCell(inode, undefined);
       inode.row = { ...entry, size: cell.length };
       // The cell's bytes are the baseline's own (no one else holds them now), kept at their size: not the room a grant drew for more.
-      const bytes = cell.bytes.byteLength === cell.length && retained(cell.bytes) === cell.length ? cell.bytes : owned(cell.bytes, cell.length);
+      const bytes = typedArrayByteLength(cell.bytes) === cell.length && retained(cell.bytes) === cell.length ? cell.bytes : owned(cell.bytes, cell.length);
       inode.base = { bytes, size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
       // Its state is its baseline until something changes it here (unshared): no copy of bytes nothing may change.
       inode.state = inode.base;
@@ -1545,7 +1546,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // A directory made here has no names but the ones made in it: what the view lists at its name is another's.
       const listed = dir && dir.local ? [] : viewed;
       if (listed === undefined) return undefined;
-      const out = new Map<string, RuntimeVfsDirEntry['type']>();
+      const out = new SafeMap<string, RuntimeVfsDirEntry['type']>();
       for (const child of listed) if (!gone?.has(child.name)) out.set(child.name, child.type);
       for (const [name, type] of made ?? []) out.set(name, type);
       return [...out].map(([name, type]) => ({ name, type }));
@@ -1585,9 +1586,9 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (!desc.read) throw fsError('EBADF', 'read', desc.path);
       const held = bytesOf(desc.inode, 'read', desc.path);
       if (held === undefined) return undefined;
-      const start = Math.min(offset ?? desc.position, held.size);
-      const chunk = owned(held.bytes.subarray(start, Math.min(held.size, start + length)));
-      if (offset === null) desc.position = start + chunk.byteLength;
+      const start = mathMin(offset ?? desc.position, held.size);
+      const chunk = owned(bytesView(held.bytes, start, mathMin(held.size, start + length)));
+      if (offset === null) desc.position = start + typedArrayByteLength(chunk);
       return chunk;
     },
 
@@ -1597,20 +1598,20 @@ export function provisional(host: ProvisionalHost): Provisional {
       const at = host.now();
       const start = desc.append ? undefined : offset ?? desc.position;
       if (continued(desc, start, bytes, at)) {
-        desc.position = start === undefined ? desc.inode.state!.size : offset === null ? start + bytes.byteLength : desc.position;
-        return bytes.byteLength;
+        desc.position = start === undefined ? desc.inode.state!.size : offset === null ? start + typedArrayByteLength(bytes) : desc.position;
+        return typedArrayByteLength(bytes);
       }
       // One private copy: what is folded and what is logged, whatever the caller does with its buffer after.
       const data = owned(bytes);
       if (desc.append) {
-        contentOp(desc, { kind: 'append', data, at }, { type: 'call', call: { call: 'append', path: desc.inode.key, ...by(desc), data } }, data.byteLength, 'write');
+        contentOp(desc, { kind: 'append', data, at }, { type: 'call', call: { call: 'append', path: desc.inode.key, ...by(desc), data } }, typedArrayByteLength(data), 'write');
         desc.position = desc.inode.state!.size;
       } else {
         const start = offset ?? desc.position;
-        contentOp(desc, { kind: 'write', offset: start, data, at }, { type: 'call', call: { call: 'write', path: desc.inode.key, ...by(desc), offset: start, data } }, data.byteLength, 'write');
-        if (offset === null) desc.position = start + data.byteLength;
+        contentOp(desc, { kind: 'write', offset: start, data, at }, { type: 'call', call: { call: 'write', path: desc.inode.key, ...by(desc), offset: start, data } }, typedArrayByteLength(data), 'write');
+        if (offset === null) desc.position = start + typedArrayByteLength(data);
       }
-      return bytes.byteLength;
+      return typedArrayByteLength(bytes);
     },
 
     ftruncate: (handleId, size) => {
@@ -1682,7 +1683,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         else logged({ type: 'call', call: { call: 'close', path: inode.key, description: desc.description } }, () => {});
       }
       closeRetained(inode);
-      if (desc.description !== undefined && !inode.retained.includes(desc.description)) sessions.delete(desc.description);
+      if (desc.description !== undefined && !arrayIncludes(inode.retained, desc.description)) sessions.delete(desc.description);
       // A grant's file that lost its name goes with its last descriptor (POSIX: its last close).
       if (inode.descs === 0 && inode.cell?.detached !== undefined) setCell(inode, undefined);
       release(inode);
@@ -1745,7 +1746,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const inode = made(key, 'directory', 0o40000 | perm, parent);
       return loggedName({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, umask } }, [key], nameCost([key]), () => {
         place(key, inode);
-        added.set(key, added.get(key) ?? new Map());
+        added.set(key, added.get(key) ?? new SafeMap());
       }, undefined, undefined, awaited) ?? true;
     },
 
@@ -1800,10 +1801,10 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.drain();
       const known = layer.get(from) ?? inodeAtNumber(source.dev, source.ino);
       const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
-      const beneath = new Map<Inode, number>();
-      for (const [key, value] of layer) if (value !== null && key !== from && within(key, from)) beneath.set(value, Math.max(0, stringCost(to + key.slice(from.length)) - stringCost(key)));
+      const beneath = new SafeMap<Inode, number>();
+      for (const [key, value] of layer) if (value !== null && key !== from && within(key, from)) beneath.set(value, mathMax(0, stringCost(to + stringSlice(key, from.length)) - stringCost(key)));
       let viewGrowth = 0;
-      for (const inode of everyInode()) if (within(inode.origin, from)) viewGrowth += Math.max(0, stringCost(to + inode.origin.slice(from.length)) - stringCost(inode.origin));
+      for (const inode of everyInode()) if (within(inode.origin, from)) viewGrowth += mathMax(0, stringCost(to + stringSlice(inode.origin, from.length)) - stringCost(inode.origin));
       const names = nameCost([from, to]) + viewGrowth;
       keepForDescriptors(target === null ? undefined : inodeAtNumber(target.dev, target.ino), names + moves + [...beneath.values()].reduce((sum, grows) => sum + grows, 0), 'rename', path);
       const moving = known ?? inodeAt(from, source);
@@ -1815,19 +1816,19 @@ export function provisional(host: ProvisionalHost): Provisional {
         for (const [key, value] of [...layer]) {
           if (key === from || !within(key, from)) continue;
           layer.delete(key);
-          const moved = to + key.slice(from.length);
+          const moved = to + stringSlice(key, from.length);
           layer.set(moved, value);
           if (value !== null) renamed(value, moved, value.origin);
         }
         for (const map of [added, removed] as Map<string, unknown>[]) {
-          for (const [key, value] of [...map]) if (within(key, from)) { map.delete(key); map.set(to + key.slice(from.length), value); }
+          for (const [key, value] of [...map]) if (within(key, from)) { map.delete(key); map.set(to + stringSlice(key, from.length), value); }
         }
         place(from, null);
         place(to, moving);
       }, undefined, () => {
         // The view has it moved: what was beneath the source starts beneath the destination (its growth the record's, given back first).
         for (const inode of everyInode()) {
-          if (within(inode.origin, from)) renamed(inode, inode.key, to + inode.origin.slice(from.length));
+          if (within(inode.origin, from)) renamed(inode, inode.key, to + stringSlice(inode.origin, from.length));
         }
       }, awaited);
       fit(moving);
@@ -1870,12 +1871,12 @@ export function provisional(host: ProvisionalHost): Provisional {
       const own = inodeAtNumber(source.dev, source.ino);
       const held = own === undefined ? undefined : bytesOf(own, 'copyfile', path);
       const stored = own === undefined ? host.content(from, source.revision) : undefined;
-      const data = held !== undefined ? held.bytes.subarray(0, held.size) : stored !== undefined && stored.byteLength === source.size ? stored : undefined;
+      const data = held !== undefined ? bytesView(held.bytes, 0, held.size) : stored !== undefined && typedArrayByteLength(stored) === source.size ? stored : undefined;
       if (data === undefined) return false;
       const umask = host.umask();
       const asked = copiedPermissions(source.mode, false);
       const opened = target === null ? asked & ~umask : target.mode & 0o7777;
-      const mode = keepMode ? copyfileMode(source.mode, data.byteLength, host.cred.uid) : opened;
+      const mode = keepMode ? copyfileMode(source.mode, typedArrayByteLength(data), host.cred.uid) : opened;
       return openToWrite(to, path, { write: true, create: true, truncate: true, mode: asked, umask }, target, data, true, keepMode ? mode : undefined) !== undefined;
     },
 
@@ -1940,7 +1941,7 @@ export function provisional(host: ProvisionalHost): Provisional {
           // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
           // (else they stay records while a descriptor may still read them).
           if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0)) continue;
-          dropRecords(inode, new Set(retired));
+          dropRecords(inode, new SafeSet(retired));
           unshared(inode);
           if (inode.base !== null) for (const record of retired) inode.base = applyOp(inode.base, record.op);
           if (inode.records.length === 0 && inode.descs === 0) {
@@ -1952,20 +1953,20 @@ export function provisional(host: ProvisionalHost): Provisional {
           // the view's still where its row is at that revision.
           const last = retired[retired.length - 1]!;
           if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision === last.after
-            && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
-            keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
+            && seen.row.size === inode.state.size && typedArrayByteLength(inode.state.bytes) >= inode.state.size) {
+            keeping[keeping.length] = [seen.name, seen.row, bytesView(inode.state.bytes, 0, inode.state.size)];
           }
-          dropRecords(inode, new Set(retired));
+          dropRecords(inode, new SafeSet(retired));
           // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
           inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
           // What its descriptors read last is what it made, at no revision the view named: theirs once no name leads to it (pin).
-          if (inode.descs > 0 && inode.state?.bytes) inode.pin = { revision: null, bytes: inode.state.bytes.subarray(0, inode.state.size) };
+          if (inode.descs > 0 && inode.state?.bytes) inode.pin = { revision: null, bytes: bytesView(inode.state.bytes, 0, inode.state.size) };
           else if (rewritten) delete inode.pin;
           inode.base = null;
           inode.state = null;
         } else {
           if (rewritten) delete inode.pin;
-          dropRecords(inode, new Set(retired));
+          dropRecords(inode, new SafeSet(retired));
           const folded = inode.base === null ? null : retired.reduce((state, record) => applyOp(state, record.op), inode.base);
           const decision = folded === null ? undefined : host.absorb(seen.name, { ...seen.row, size: folded.size, mode: folded.mode, uid: folded.uid, gid: folded.gid, atime: folded.atime, mtime: folded.mtime, ctime: folded.ctime });
           if (decision === undefined) {

@@ -9,6 +9,7 @@ import { sqlJournal, type JournalSql } from '../../_shared/process-fs-journal.js
 import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '../vfs-supervisor.js';
 import type { WasiSupervisorStub } from './types.js';
 import { residentFilesystem, type ResidentDelegation, type ResidentFilesystem, type ResidentNamespace } from './resident-filesystem.js';
+import { stringIncludes, stringSlice, stringStartsWith } from '../../_shared/primordials.js';
 
 /** What a runtime gives the process's filesystem beyond its supervisor and view. */
 export type ProcessFilesystemOptions = Omit<ResidentDelegation, 'session' | 'journal' | 'readDirectories' | 'isHomeRoot'> & {
@@ -20,7 +21,7 @@ export type ProcessFilesystemOptions = Omit<ResidentDelegation, 'session' | 'jou
 
 /** Whether `key` is a home directory itself (`home/<name>`, root's `root`): never held, so the editor and shell there recall nothing. */
 export function isHomeDirectory(key: string): boolean {
-  return key === 'root' || (key.startsWith('home/') && key.length > 'home/'.length && !key.slice('home/'.length).includes('/'));
+  return key === 'root' || (stringStartsWith(key, 'home/') && key.length > 'home/'.length && !stringIncludes(stringSlice(key, 'home/'.length), '/'));
 }
 
 /**

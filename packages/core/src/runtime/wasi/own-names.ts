@@ -9,6 +9,7 @@
 
 import type { RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
+import { SafeMap, SafeSet, stringLastIndexOf, stringSlice, stringStartsWith } from '../../_shared/primordials.js';
 
 export interface OwnNamesOptions {
   /** The view's own word, this process's aside (HolderStore.entry). */
@@ -64,22 +65,22 @@ export interface OwnNames {
 }
 
 function parentKey(key: string): string {
-  const at = key.lastIndexOf('/');
-  return at < 0 ? '' : key.slice(0, at);
+  const at = stringLastIndexOf(key, '/');
+  return at < 0 ? '' : stringSlice(key, 0, at);
 }
 
 function nameOf(key: string): string {
-  return key.slice(key.lastIndexOf('/') + 1);
+  return stringSlice(key, stringLastIndexOf(key, '/') + 1);
 }
 
 function within(key: string, root: string): boolean {
-  return key === root || key.startsWith(`${root}/`);
+  return key === root || stringStartsWith(key, `${root}/`);
 }
 
 export function ownNames(options: OwnNamesOptions): OwnNames {
-  const decided = new Map<string, ResidentEntry | null>();
+  const decided = new SafeMap<string, ResidentEntry | null>();
   /** Each decision's generation: one made again, or moved, is a new one. */
-  const born = new Map<string, number>();
+  const born = new SafeMap<string, number>();
   let generations = 0;
   /**
    * The barrier begun when each name's subtree was last given back,
@@ -87,12 +88,12 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
    * it gave back: one begun after retires it, unless the name was decided
    * again or moved since (a new generation).
    */
-  const own = new Map<string, { barrier: number; generation: number | undefined }>();
-  const added = new Map<string, Map<string, RuntimeVfsDirEntry['type']>>();
-  const removed = new Map<string, Set<string>>();
+  const own = new SafeMap<string, { barrier: number; generation: number | undefined }>();
+  const added = new SafeMap<string, Map<string, RuntimeVfsDirEntry['type']>>();
+  const removed = new SafeMap<string, Set<string>>();
   let barriers = 0;
   /** The directories made here: until the view has one, its names are the ones made in it. */
-  const made = new Set<string>();
+  const made = new SafeSet<string>();
 
   /** Whether directory `key` was made here, and the view knows nothing of it: its names are the ones made in it. */
   const madeHere = (key: string): boolean => made.has(key) && decided.get(key)?.type === 'directory' && !options.entry(key);
@@ -143,18 +144,18 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
       if (type === null) {
         added.get(dir)?.delete(name);
         let gone = removed.get(dir);
-        if (gone === undefined) removed.set(dir, gone = new Set());
+        if (gone === undefined) removed.set(dir, gone = new SafeSet());
         gone.add(name);
       } else {
         removed.get(dir)?.delete(name);
         let made = added.get(dir);
-        if (made === undefined) added.set(dir, made = new Map());
+        if (made === undefined) added.set(dir, made = new SafeMap());
         made.set(name, type);
       }
     },
     madeDirectory: (key) => {
       made.add(key);
-      added.set(key, added.get(key) ?? new Map());
+      added.set(key, added.get(key) ?? new SafeMap());
     },
     removedDirectory: (key) => {
       made.delete(key);
@@ -167,13 +168,13 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
       if (made === undefined && gone === undefined) return base;
       // One the view has not listed is listed first (undefined asks for that).
       if (base === undefined && !madeHere(key)) return undefined;
-      const out = new Map<string, RuntimeVfsDirEntry['type']>();
+      const out = new SafeMap<string, RuntimeVfsDirEntry['type']>();
       for (const child of base ?? []) if (!gone?.has(child.name)) out.set(child.name, child.type);
       for (const [name, type] of made ?? []) out.set(name, type);
       return [...out].map(([name, type]) => ({ name, type }));
     },
     move: (from, to) => {
-      const moved = (key: string): string => to + key.slice(from.length);
+      const moved = (key: string): string => to + stringSlice(key, from.length);
       for (const [key, value] of [...decided]) {
         if (key === from || !within(key, from)) continue;
         decided.delete(key);

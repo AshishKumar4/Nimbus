@@ -5,6 +5,7 @@ import type { ProcessFsGrantSession, ProcessFsSession } from '../_shared/process
 import type { WasiSupervisorStub } from './wasi/types.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
 import { FILESYSTEM_METHODS, refusalData, supervisorRefusalError, type SupervisorRefusal } from './filesystem-methods.js';
+import { Error, objectAssign, promiseResolve, Proxy, reflectGet, reflectSet, reflectSetPrototypeOf, symbolFor } from '../_shared/primordials.js';
 
 // The method table (filesystem-methods.ts) and the typed mirrors core's
 // build writes from it (filesystem-mirrors.generated.ts).
@@ -50,12 +51,12 @@ export const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[] = 
 // supervisor call asks it, after its program may have replaced
 // Set.prototype.has (or put a name on Object.prototype).
 const ANSWERED: Partial<Record<string, true>> = {};
-Reflect.setPrototypeOf(ANSWERED, null);
+reflectSetPrototypeOf(ANSWERED, null);
 for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
 
 // The answered calls that wait on the session for as long as it likes (FILESYSTEM_METHODS `waits`).
 const WAITS: Partial<Record<string, true>> = {};
-Reflect.setPrototypeOf(WAITS, null);
+reflectSetPrototypeOf(WAITS, null);
 for (const method of Object.values(FILESYSTEM_METHODS)) if ('waits' in method) WAITS[method.rpc] = true;
 
 export function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAnsweredMethod {
@@ -67,7 +68,7 @@ export type SupervisorAnswer = { readonly value: unknown } | { readonly refusal:
 
 /** The refusal `error` is, or undefined when it is not one (no string `code`) and must still throw. */
 export function supervisorRefusal(error: unknown): SupervisorRefusal | undefined {
-  if (!(error instanceof Error) || typeof Reflect.get(error, 'code') !== 'string') return undefined;
+  if (!(error instanceof Error) || typeof reflectGet(error, 'code') !== 'string') return undefined;
   return refusalData(error);
 }
 
@@ -96,11 +97,11 @@ interface AnsweringStub {
  * launch's copy of this module and the store bundle's (vfs/resident) agree
  * on it, or the second would answer through the first's `answer` again.
  */
-const ANSWERING: unique symbol = Symbol.for('nimbus.answering-supervisor');
+const ANSWERING: unique symbol = symbolFor('nimbus.answering-supervisor');
 
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {
-  return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, 'answer') === 'function';
+  return reflectGet(supervisor, ANSWERING) !== true && typeof reflectGet(supervisor, 'answer') === 'function';
 }
 
 /**
@@ -124,7 +125,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
   return new Proxy(supervisor, {
     get(target, name) {
       if (name === ANSWERING) return true;
-      if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
+      if (!isSupervisorAnsweredMethod(name)) return reflectGet(target, name);
       return async (...args: unknown[]) => {
         const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
         const answer = await asked;
@@ -145,7 +146,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
  * (SUPERVISOR_ANSWERING_SRC).
  */
 export function installAnsweringSupervisor(): void {
-  Reflect.set(globalThis, '__nimbusAnsweringSupervisor', answeringSupervisor);
+  reflectSet(globalThis, '__nimbusAnsweringSupervisor', answeringSupervisor);
 }
 
 /**
@@ -163,7 +164,7 @@ export function supervisorFilesystem(remote: WasiSupervisorStub, local?: Runtime
     // sends it as a W7 stream (writeStream), which does.
     writeFileFrom: async (path) => {
       const name = typeof path === 'string' ? path : path.path;
-      throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
+      throw objectAssign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
     },
   });
 }
@@ -174,7 +175,7 @@ export function supervisorFilesystem(remote: WasiSupervisorStub, local?: Runtime
  * follows promises (node's __nimbusTrackOp) cannot follow.
  */
 function toldLive<T>(call: PromiseLike<T>, live: ((call: Promise<unknown>) => unknown) | undefined): Promise<T> {
-  const native = Promise.resolve(call);
+  const native = promiseResolve(call);
   live?.(native);
   return native;
 }

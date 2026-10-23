@@ -427,13 +427,22 @@ export const stringPadStart: (text: string, length: number, fill?: string) => st
 export const mathTrunc = Math.trunc;
 export const numberIsFinite = Number.isFinite;
 export const typedArrayFill: (view: Uint8Array, value: number, start?: number, end?: number) => Uint8Array = uncurryThis(Uint8Array.prototype.fill);
+/** A relative index into `length` items as subarray and slice take one: from the end where negative, within 0..length. */
+function relativeIndex(at: number, length: number): number {
+  const integer = at !== at ? 0 : mathTrunc(at);
+  return integer < 0 ? mathMax(length + integer, 0) : mathMin(integer, length);
+}
 /** `bytes.subarray(start, end)` without the view's constructor or species: a view of the same buffer. */
-export function bytesView(bytes: Uint8Array, start: number, end: number = typedArrayByteLength(bytes)): Uint8Array {
-  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + start, end > start ? end - start : 0);
+export function bytesView(bytes: Uint8Array, start = 0, end?: number): Uint8Array {
+  const length = typedArrayByteLength(bytes);
+  const from = relativeIndex(start, length);
+  const to = end === undefined ? length : relativeIndex(end, length);
+  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + from, to > from ? to - from : 0);
 }
 /** `bytes.slice(start, end)` without the view's constructor or species: a copy. */
-export function bytesCopy(bytes: Uint8Array, start = 0, end: number = typedArrayByteLength(bytes)): Uint8Array {
-  const copy = new Uint8ArrayConstructor(end > start ? end - start : 0);
-  typedArraySet(copy, bytesView(bytes, start, end));
+export function bytesCopy(bytes: Uint8Array, start = 0, end?: number): Uint8Array {
+  const view = bytesView(bytes, start, end);
+  const copy = new Uint8ArrayConstructor(typedArrayByteLength(view));
+  typedArraySet(copy, view);
   return copy;
 }

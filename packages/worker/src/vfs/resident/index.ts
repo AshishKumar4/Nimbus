@@ -162,7 +162,7 @@ import { createSync, type Sync } from './sync.js';
 import { createTransport, type Transport } from './transport.js';
 import { heapTables, type HeapTables, type ResidentTables } from './tables.js';
 import { kvTables, type ResidentKv } from './kv-tables.js';
-import { SafeList, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
+import { Error, reflectApply, SafeList, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
 
 export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
 export { ANONYMOUS_DEV } from '@nimbus-sh/core/vfs/composite.js';
@@ -214,10 +214,10 @@ function dropSqlStore(storage: ResidentKv): void {
   if (typeof exec !== 'function') return;
   const sql = storage.sql!;
   const held = new SafeList<string>();
-  for (const row of exec.call(sql, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')")) {
+  for (const row of reflectApply(exec, sql, ["SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')"])) {
     held[held.length] = stringOf(row.name);
   }
-  for (let i = 0; i < held.length; i++) exec.call(sql, 'DROP TABLE IF EXISTS ' + held[i]);
+  for (let i = 0; i < held.length; i++) reflectApply(exec, sql, ['DROP TABLE IF EXISTS ' + held[i]]);
 }
 
 export function createResidentStore(options: ResidentStoreOptions = {}): ResidentStore {

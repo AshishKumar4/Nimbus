@@ -21,7 +21,10 @@
 
 import { RK_OWN_WRITE, NS_DIR, RESIDENT_SCHEMA, type ChunkRow, type FileByKey, type FileHead, type FileRow, type NsChild, type NsKey, type NsRow, type PageRow, type ResidentTables, type RowsChanged } from './tables.js';
 import { residentBytes } from './cell-cost.js';
-import { Error, NumberOf, SafeList, SafeSet, StringFromCharCode, arrayCopy, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
+import {
+  arrayCopy, bytesCopy, Error, NumberOf, SafeList, SafeSet, StringFromCharCode, stringIndexOf, stringLastIndexOf, stringOf, stringPadStart,
+  stringSlice, typedArrayByteLength,
+} from '@nimbus-sh/core/_shared/primordials.js';
 
 /** What the store uses of a SQLite-backed Durable Object's storage (ctx.storage). */
 export interface ResidentKv {
@@ -51,9 +54,9 @@ const DELETE_BATCH = 128;
 const SEP = '\u0001\u0001';
 const RESERVED = /[\u0000\u0001]/;
 const encodePart = (text: string): string => (RESERVED.test(text) ? text.replace(/[\u0000\u0001]/g, (c) => (c === '\u0000' ? '\u0001\u0002' : '\u0001\u0003')) : text);
-const decodePart = (text: string): string => (text.indexOf('\u0001') < 0 ? text : text.replace(/\u0001[\u0002\u0003]/g, (c) => (c === '\u0001\u0002' ? '\u0000' : '\u0001')));
+const decodePart = (text: string): string => (stringIndexOf(text, '\u0001') < 0 ? text : text.replace(/\u0001[\u0002\u0003]/g, (c) => (c === '\u0001\u0002' ? '\u0000' : '\u0001')));
 /** Decimal, padded past Number.MAX_SAFE_INTEGER's 16 digits: key order is numeric order. */
-const pad = (n: number): string => stringOf(NumberOf(n)).padStart(17, '0');
+const pad = (n: number): string => stringPadStart(stringOf(NumberOf(n)), 17, '0');
 
 // One tag a table. A row's key is its tag and its primary key.
 const FILE = 'F';
@@ -116,7 +119,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
   const NUMBER = SEP.length + 17;
   const unpage = (tail: string): { path: string; rev: number; part: number } => {
     const at = tail.length - 2 * NUMBER;
-    return { path: decodePart(tail.slice(0, at)), rev: NumberOf(tail.slice(at + SEP.length, at + NUMBER)), part: NumberOf(tail.slice(at + NUMBER + SEP.length)) };
+    return { path: decodePart(stringSlice(tail, 0, at)), rev: NumberOf(stringSlice(tail, at + SEP.length, at + NUMBER)), part: NumberOf(stringSlice(tail, at + NUMBER + SEP.length)) };
   };
   const chunkRow = (value: unknown): ChunkRow => (typeof value === 'string' ? { txt: value, bin: null } : { txt: null, bin: value as Uint8Array });
 
@@ -143,7 +146,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
     const keys = new SafeList<string>();
     for (let i = 0; i < parts.length; i++) {
       keys[keys.length] = parts[i];
-      keys[keys.length] = CHUNK + parts[i].slice(1);
+      keys[keys.length] = CHUNK + stringSlice(parts[i], 1);
     }
     drop(keys);
   };
@@ -156,7 +159,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
   /** Every file row, in key order: [path, row]. */
   const files = (): SafeList<[string, FileValue]> => {
     const out = new SafeList<[string, FileValue]>();
-    for (const [key, value] of kv.list({ prefix: FILE })) out[out.length] = [decodePart(key.slice(1)), value as FileValue];
+    for (const [key, value] of kv.list({ prefix: FILE })) out[out.length] = [decodePart(stringSlice(key, 1)), value as FileValue];
     return out;
   };
   /** Every path that has chunk rows, in key order. */
@@ -164,7 +167,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
     const out = new SafeList<string>();
     let last: string | null = null;
     for (const [key] of kv.list({ prefix: CHUNK_KEYS })) {
-      const path = decodePart(key.slice(1, key.lastIndexOf(SEP)));
+      const path = decodePart(stringSlice(key, 1, stringLastIndexOf(key, SEP)));
       if (path !== last) { out[out.length] = path; last = path; }
     }
     return out;
@@ -184,8 +187,8 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
   const nsRows = (options: { prefix?: string; start?: string; end?: string }): SafeList<[NsKey, NsRow]> => {
     const out = new SafeList<[NsKey, NsRow]>();
     for (const [key, value] of kv.list(options)) {
-      const at = key.indexOf(SEP);
-      out[out.length] = [{ parent: decodePart(key.slice(1, at)), name: decodePart(key.slice(at + SEP.length)) }, value as NsRow];
+      const at = stringIndexOf(key, SEP);
+      out[out.length] = [{ parent: decodePart(stringSlice(key, 1, at)), name: decodePart(stringSlice(key, at + SEP.length)) }, value as NsRow];
     }
     return out;
   };
@@ -223,7 +226,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
       // The first that can be copied, in the ckey index's order (seq).
       const prefix = byKeyPrefix(stringOf(ckey));
       for (const [key] of kv.list({ prefix })) {
-        const path = decodePart(key.slice(prefix.length + NUMBER));
+        const path = decodePart(stringSlice(key, prefix.length + NUMBER));
         if (path === notPath) continue;
         const row = fileOf(path);
         if (row !== undefined && row[3] >= 0) return { path, kind: row[0], size: row[1], chunks: row[2] } satisfies FileByKey;
@@ -232,13 +235,13 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
     },
     filePaths(from, to) {
       const out = new SafeList<string>();
-      for (const [key] of kv.list(rangeOf(FILE, from, to))) out[out.length] = decodePart(key.slice(1));
+      for (const [key] of kv.list(rangeOf(FILE, from, to))) out[out.length] = decodePart(stringSlice(key, 1));
       return arrayCopy(out);
     },
     fileAny(from, to) { for (const _entry of kv.list({ ...rangeOf(FILE, from, to), limit: 1 })) return true; return false; },
     fileRevsIn(from, to) {
       const out = new SafeList<{ path: string; rev: number }>();
-      for (const [key, value] of kv.list(rangeOf(FILE, from, to))) out[out.length] = { path: decodePart(key.slice(1)), rev: (value as FileValue)[3] };
+      for (const [key, value] of kv.list(rangeOf(FILE, from, to))) out[out.length] = { path: decodePart(stringSlice(key, 1)), rev: (value as FileValue)[3] };
       return arrayCopy(out);
     },
     fileAllPaths() { const rows = files(); const out = new SafeList<string>(); for (let i = 0; i < rows.length; i++) out[out.length] = rows[i][0]; return arrayCopy(out); },
@@ -267,11 +270,11 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
       return arrayCopy(out);
     },
     chunkAddText(path, part, txt) { addChunk(path, NumberOf(part), stringOf(txt), false); },
-    chunkAddBin(path, part, bin) { addChunk(path, NumberOf(part), residentBytes(bin).slice(), false); },
-    chunkSetBin(path, part, bin) { addChunk(path, NumberOf(part), residentBytes(bin).slice(), true); },
+    chunkAddBin(path, part, bin) { addChunk(path, NumberOf(part), bytesCopy(residentBytes(bin)), false); },
+    chunkSetBin(path, part, bin) { addChunk(path, NumberOf(part), bytesCopy(residentBytes(bin)), true); },
     chunkCopy(to, from) {
       const parts = new SafeList<[string, unknown]>();
-      for (const [key, value] of kv.list({ prefix: CHUNK + encodePart(from) + SEP })) parts[parts.length] = [key.slice(key.lastIndexOf(SEP) + SEP.length), value];
+      for (const [key, value] of kv.list({ prefix: CHUNK + encodePart(from) + SEP })) parts[parts.length] = [stringSlice(key, stringLastIndexOf(key, SEP) + SEP.length), value];
       // One step: a conflicting part fails the whole copy, and nothing lands.
       for (let i = 0; i < parts.length; i++) {
         if (kv.get(CHUNK_KEYS + encodePart(to) + SEP + parts[i][0]) !== undefined) throw new Error('UNIQUE constraint failed: chunk.path, chunk.part');
@@ -311,11 +314,11 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
     pagePut(path, rev, part, bin, used) {
       const tail = pageTail(path, rev, part);
       const had = kv.get(PAGE_ROWS + tail) as PageValue | undefined;
-      const bytes = residentBytes(bin).slice();
+      const bytes = bytesCopy(residentBytes(bin));
       if (had !== undefined) dropOne(PAGE_USED + pad(had[0]) + SEP + tail);
       put(PAGE + tail, bytes);
-      put(PAGE_ROWS + tail, [NumberOf(used), bytes.byteLength]);
-      put(PAGE_USED + pad(used) + SEP + tail, bytes.byteLength);
+      put(PAGE_ROWS + tail, [NumberOf(used), typedArrayByteLength(bytes)]);
+      put(PAGE_USED + pad(used) + SEP + tail, typedArrayByteLength(bytes));
       return had === undefined ? 0 : had[1];
     },
     pageDelete(path, rev, part) {
@@ -330,13 +333,13 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
       // Least recently used first; ties by path, rev, part: the index's key order.
       const out = new SafeList<PageRow>();
       for (const [key, value] of kv.list({ prefix: PAGE_USED, limit })) {
-        const { path, rev, part: n } = unpage(key.slice(1 + NUMBER));
+        const { path, rev, part: n } = unpage(stringSlice(key, 1 + NUMBER));
         out[out.length] = { path, rev, part: n, size: value as number };
       }
       return arrayCopy(out);
     },
     pageBytes() { let n = 0; for (const [, value] of kv.list({ prefix: PAGE_ROWS })) n += (value as PageValue)[1]; return n; },
-    pageMaxUsed() { for (const [key] of kv.list({ prefix: PAGE_USED, reverse: true, limit: 1 })) return NumberOf(key.slice(1, 18)); return 0; },
+    pageMaxUsed() { for (const [key] of kv.list({ prefix: PAGE_USED, reverse: true, limit: 1 })) return NumberOf(stringSlice(key, 1, 18)); return 0; },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       put(nsKey(parent, name), {
         kind: NumberOf(kind), size: NumberOf(size), mode: NumberOf(mode), uid: NumberOf(uid), gid: NumberOf(gid),
@@ -370,7 +373,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
       const prefix = nsChildren(parent);
       for (const [key, value] of kv.list({ prefix })) {
         const row = value as NsRow;
-        out[out.length] = { name: decodePart(key.slice(prefix.length)), kind: row.kind, mode: row.mode };
+        out[out.length] = { name: decodePart(stringSlice(key, prefix.length)), kind: row.kind, mode: row.mode };
       }
       return arrayCopy(out);
     },
