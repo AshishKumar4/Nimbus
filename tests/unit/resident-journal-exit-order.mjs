@@ -11,6 +11,11 @@
 // And the session's book of journaling residents (process-journals.ts) is
 // written when the facet opens and emptied by the drain. Red before: the
 // signal's default action told the exit at once, before any drain.
+//
+// Each change a drain lands is the process's own, attributed to its exec
+// (VfsWriteEvent.execId, Kinu ask 69): the table's exec id for it, in the
+// incarnation that ran it as in the next one, which drains what a reset left
+// (the book records the exec id; the drain adopts it).
 
 import assert from 'node:assert/strict';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
@@ -97,6 +102,13 @@ assumeGeneration(ctx, 1);
 
 const processes = new SessionProcessSupervisor();
 processes.setPidBase(PID_GEN_STRIDE);
+// The engine attributes its writes by this table, as a workspace composed over both wires it.
+const attributionOf = (table) => ({ execIdOf: (pid) => table.execIdOf(pid), retain: (pid) => table.retainAttribution(pid) });
+vfs.attributeWrites(attributionOf(processes));
+/** The exec ids the events at paths under `dir` named. */
+const written = [];
+vfs.observeWrites((event) => { written.push({ path: event.path, execId: event.execId }); });
+const execIdsUnder = (dir) => [...new Set(written.filter((event) => event.path.startsWith(dir)).map((event) => event.execId))];
 const filesAtExit = new Map();
 const out = () => kernel.readdir('home/user/app/out').length;
 const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {
@@ -113,7 +125,7 @@ const settle = async (predicate, tries = 400) => {
 };
 const booked = () => [...ctx.storage.sql.exec('SELECT facet, pid FROM nimbus_process_journals')].map((row) => ({ facet: String(row.facet), pid: Number(row.pid) }));
 
-const invoker = processes.spawn('node server.js', ['node server.js'], '/home/user/app');
+const invoker = processes.spawn('node server.js', ['node server.js'], '/home/user/app', { execId: 'drained-exec' });
 const server = await manager.spawnNode("require('http').createServer(() => {}).listen(8080);", {
   filename: '/home/user/app/server.js', cwd: '/home/user/app', command: 'node server.js',
   argv: ['/home/user/app/server.js'], invokerPid: invoker.pid,
@@ -144,6 +156,7 @@ assert.equal(new TextDecoder().decode(kernel.readFile('home/user/app/out/f299'))
 await settle(() => booked().length === 0);
 assert.deepEqual(booked(), [], 'the drained log stayed booked');
 assert.equal(facetStores.has(row.facet), false, 'the drained store was kept');
+assert.deepEqual(execIdsUnder('home/user/app/out/'), ['drained-exec'], 'each change it drained is its exec\'s');
 
 console.log('  [1] killed: its exit is told once its log is drained, and its book row and store go');
 
@@ -254,8 +267,11 @@ const manager2 = new FacetManager(ctx2, env, processes2, new PortRegistry(), pro
   resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
 });
 manager2.setVfs(vfs, processFiles(vfs));
+// The next start's own table, which never had the process.
+vfs.attributeWrites(attributionOf(processes2));
 assert.equal(kernel.readdir('home/user/app/out2').length, 0);
 await runColdStart(ctx2);
+assert.deepEqual(execIdsUnder('home/user/app/out2/'), ['drained-exec'], 'what the next start drained is the exec\'s its book recorded');
 assert.equal(kernel.readdir('home/user/app/out2').length, 100, 'the next start did not drain the log a reset left');
 assert.equal(booked().some((entry) => entry.pid === lost.pid), false, 'the drained log stayed booked');
 assert.equal(facetStores.has(lostRow.facet), false, 'the drained store was kept');

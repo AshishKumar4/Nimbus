@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // The public throwaway `up` command, after `wrangler preview` reports a
 // deployment, reads the Preview's latest deployment until the API serves it,
-// for as long as the upload took. When it never does, it uploads once more, saying so;
+// for as long as the upload took and no less than the slowest landing measured
+// (1488 ms), so a read slower than the upload still counts. When it never
+// does, it uploads once more, saying so;
 // when that one does not land either, the command fails saying what the API
 // served instead, or that the API answered nothing in time, never with the
 // abort of its own deadline. A Preview the command created keeps its
@@ -43,6 +45,12 @@ const ok = (result) => ({ success: true, result, errors: [] });
  * until the upload lands).
  */
 let mode = 'stale';
+/**
+ * How long the API takes to answer a read of the latest deployment: longer
+ * than the stand-in `wrangler preview` (a shell script, done in milliseconds)
+ * takes to upload, as a read across the Internet can be.
+ */
+const READ_MS = 300;
 let parentMade = false;
 const NO_WORKER = { success: false, result: null, errors: [{ code: 10007, message: 'This Worker does not exist on your account.' }] };
 let latestReads = 0;
@@ -69,10 +77,12 @@ const server = createServer((request, response) => {
     latestReads++;
     // The first read is the one before the upload; it always answers.
     if (mode === 'silent' && latestReads > 1) return;
-    if (mode === 'latest-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
-    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return json(404, ABSENT);
-    if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return json(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
-    return json(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
+    // Each answer takes READ_MS, longer than the stand-in's upload takes.
+    const answer = (status, body) => setTimeout(() => json(status, body), READ_MS);
+    if (mode === 'latest-500') return answer(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
+    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return answer(404, ABSENT);
+    if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
+    return answer(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
   }
   unexpected.push(`${request.method} ${request.url}`);
   return json(404, { success: false, result: null, errors: [{ code: 10000, message: 'not in the fixture' }] });
@@ -183,8 +193,8 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   }
 
   for (const [name, settled, expected] of [
-    ['the API keeps serving the deployment before', 'stale', /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
-    ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within [\d.]+ s, as long as the upload took/],
+    ['the API keeps serving the deployment before', 'stale', /did not land, twice: [\d.]+ s after it, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
+    ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within [\d.]+ s/],
   ]) {
     mode = settled;
     latestReads = 0;
@@ -207,7 +217,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     const { code, stdout, stderr } = await up();
     const output = `${stdout}${stderr}`;
     assert.equal(code, 3, `up reaches readiness\n${output}`);
-    assert.match(output, /WARNING: .*did not land: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
+    assert.match(output, /WARNING: .*did not land: [\d.]+ s after it, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
     assert.match(output, /deployment deployment-uploaded-2 is live at https:\/\/tw-up-settle-nimbus-probe-previews\.proof\.workers\.dev/, `up goes on with the second upload\n${output}`);
     assert.deepEqual([record().versionId, record().secret], ['deployment-uploaded-2', 'the-held-signing-secret'], 'and records it, with the secret it held');
     console.log('  ok  a second upload that lands: up goes on with it');
@@ -252,7 +262,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     rmSync(recordPath, { force: true });
     rmSync(join(checkout, 'uploads'), { force: true });
     const missed = await up();
-    assert.match(`${missed.stdout}${missed.stderr}`, /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves no deployment as the latest/, `${missed.stdout}${missed.stderr}`);
+    assert.match(`${missed.stdout}${missed.stderr}`, /did not land, twice: [\d.]+ s after it, the API serves no deployment as the latest/, `${missed.stdout}${missed.stderr}`);
     const kept = record();
     assert.equal(kept.secretPushed, true, 'the secret of a Preview this run created is kept through the miss');
     mode = 'landed';

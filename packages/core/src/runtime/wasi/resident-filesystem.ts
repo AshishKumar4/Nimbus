@@ -734,7 +734,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (key === '') { step = walk.next(ROOT_FOR_WALK); continue; }
       const entry = store.entry(key);
       if (entry === undefined) return { missing: key };
-      if (entry !== null && !answerable(key, entry)) return DELEGATE;
+      if (entry !== null && entry.dev !== store.device && !answerable(key, entry)) return DELEGATE;
       step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
     }
   };
@@ -978,13 +978,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const entryAt = (key: string): ResidentEntry | null | undefined => {
     const entry = store.entry(key);
     if (entry === undefined) return undefined;
-    if (entry !== null && !answerable(key, entry)) return undefined;
+    if (entry !== null && entry.dev !== store.device && !answerable(key, entry)) return undefined;
     return entry;
   };
 
   /**
-   * Whether the view answers for `entry` at `key`: a row of a fed mount
-   * (the session's own filesystem, or a mount whose backend states its
+   * Whether the view answers for `entry` at `key`, a row off the session's
+   * own filesystem's device (whose rows it answers, asked first at each
+   * call site): a row of a fed mount (a mount whose backend states its
    * change model: VFS.changes, /dev and /proc among them), never one of a
    * mount without a feed (a snapshot its listing walked), which is the
    * session's to answer. A row is its fed mount's where its device is that
@@ -994,7 +995,6 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * feed's (not fixed) not while a read lease is trusted.
    */
   const answerable = (key: string, entry: ResidentEntry): boolean => {
-    if (entry.dev === store.device) return true;
     const cursor = store.cursor();
     if (cursor === null) return false;
     // A directory the namespace makes above a fed mount that no backend holds (no device: the namespace's own): the

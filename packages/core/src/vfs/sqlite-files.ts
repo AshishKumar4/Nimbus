@@ -85,6 +85,7 @@ export class SqliteFiles implements VFS {
   as(cred: VfsCred, actor?: string, options?: VfsViewOptions): SqliteFiles {
     return new SqliteFiles(this.engine, this.engine.as(cred, {
       ...(actor === undefined ? {} : { actor }),
+      ...(options?.pid === undefined ? {} : { pid: options.pid }),
       ...(options?.holds === undefined ? {} : { holds: options.holds }),
       ...(options?.landed === true ? { landed: true } : {}),
     }));

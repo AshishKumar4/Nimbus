@@ -114,16 +114,16 @@ network?: WorkspaceNetwork,
  * waves a repository's objects go in.
  */
 filesystem?: {
-    openHost(cred: VfsCred): {
-        fs: {
-            synchronous?: CleanupBridge;
-        };
-        dispose(): Promise<void>;
+    bind(binding: {
+        pid: number;
+        cred: VfsCred;
+    }): {
+        synchronous?: CleanupBridge;
     };
     readonly waves: WaveIngest;
 }, 
 /** The session's process table: a background clone runs as a process of its own. */
-processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>, 
+processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit' | 'retainAttribution'>, 
 /**
  * This invocation, run by real git (`nimbus install git`) instead: what
  * this implementation lacks is real git's (routing.ts), and so is every

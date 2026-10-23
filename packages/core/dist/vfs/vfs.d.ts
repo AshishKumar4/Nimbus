@@ -76,6 +76,8 @@ export interface VfsCred {
 export interface Principal {
     readonly cred: VfsCred | null;
     readonly actor?: string;
+    /** The process a view was made for (VfsViewOptions.pid): what its writes are attributed to (VfsWriteEvent.execId). */
+    readonly pid?: number;
 }
 /** What stood, or stands, at a path a mutation landed on (VfsWriteEvent). */
 export interface VfsContentRef {
@@ -101,6 +103,28 @@ export interface VfsWriteEvent {
     readonly after: VfsContentRef | null | undefined;
     /** Who made it: the principal of the view it came through. */
     readonly principal: Principal;
+    /**
+     * The exec that made it (Kinu ask 69): the `execId` the process table
+     * held for the writing process when it committed, which every process an
+     * exec starts inherits.
+     * - `null`: no process made it, a host operation (a client's `files.*`,
+     *   the kernel, seeding).
+     * - `undefined`: a process's write with no exec name known: its exec
+     *   named none, or the namespace cannot tie it to a process (a write a
+     *   mount's backend reports from its own machine).
+     */
+    readonly execId: string | null | undefined;
+}
+/**
+ * What a filesystem asks of the process table to attribute its writes
+ * (attributeWrites): a process's exec id, and a lease that keeps the table
+ * answering for a process while a write of its is in flight.
+ */
+export interface WriteAttribution {
+    /** The exec id the table holds for `pid`; undefined when it holds none, or no such process. */
+    execIdOf(pid: number): string | undefined;
+    /** Keep `pid`'s entry answering execIdOf until the returned release is called. */
+    retain(pid: number): () => void;
 }
 /** Told of each landed mutation; a promise it returns holds the event's content until it settles. */
 export type VfsWriteObserver = (event: VfsWriteEvent) => void | Promise<void>;
@@ -124,6 +148,8 @@ export interface VfsUsage {
 export interface VfsViewOptions {
     holds?: () => ReadonlySet<string>;
     landed?: boolean;
+    /** The process the view is made for: its principal's pid, which its writes are attributed to. */
+    pid?: number;
 }
 /** A file a backend holds open (VFS.openFile): it stays this file after its name is renamed or unlinked. */
 export interface VfsOpenFile {

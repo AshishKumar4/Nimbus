@@ -300,7 +300,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
   private owned(owner: string | undefined): CredentialedVfs {
-    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
+    const { actor, pid } = this.vfs.principal;
+    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor, ...(pid === undefined ? {} : { pid }), holds: this.vfs.holds });
   }
 
   truncate(

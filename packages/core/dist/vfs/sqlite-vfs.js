@@ -627,7 +627,7 @@ const KERNEL_ORIGIN = Object.freeze({ cred: null });
 function samePrincipal(a, b) {
     if (a === b)
         return true;
-    if (a === null || b === null || a.actor !== b.actor)
+    if (a === null || b === null || a.actor !== b.actor || a.pid !== b.pid)
         return false;
     return a.cred === null || b.cred === null ? a.cred === b.cred : sameCred(a.cred, b.cred);
 }
@@ -846,6 +846,8 @@ export class SqliteVFS {
     captureTransactions = 0;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     activeOrigin = null;
+    /** The process table its write events are attributed by (attributeWrites); none, an embedder's without one. */
+    attribution = null;
     /**
      * Appends held in memory, one run per file by inode number (appendThrough).
      * Invisible: anything that looks at the store first writes them
@@ -2378,7 +2380,11 @@ export class SqliteVFS {
             groups: Object.freeze([...cred.groups]),
             umask: cred.umask & 0o777,
         });
-        const origin = Object.freeze(options?.actor === undefined ? { cred: bound } : { cred: bound, actor: options.actor });
+        const origin = Object.freeze({
+            cred: bound,
+            ...(options?.actor === undefined ? {} : { actor: options.actor }),
+            ...(options?.pid === undefined ? {} : { pid: options.pid }),
+        });
         const view = {
             cred: bound,
             principal: origin,
@@ -8887,6 +8893,7 @@ export class SqliteVFS {
         const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(owner, () => asWriter(fn)));
         return {
             cred,
+            writer: origin?.pid,
             signal,
             mutationOwner: owner,
             deviceId: this.deviceId,
@@ -9961,6 +9968,22 @@ export class SqliteVFS {
         this.writeObservers.add(entry);
         return () => { this.writeObservers.delete(entry); };
     }
+    /**
+     * The process table each write event's exec id is read from as it commits
+     * (VfsWriteEvent.execId): the table's word for the pid of the view that
+     * made it. None set, a process's write is `undefined`: there is no table.
+     */
+    attributeWrites(attribution) {
+        this.attribution = attribution;
+    }
+    /**
+     * Keep process `pid` attributable (WriteAttribution.retain) until the
+     * returned release: for work that writes on its behalf after it may have
+     * ended, as a background pass of its command does.
+     */
+    retainWriter(pid) {
+        return this.attribution?.retain(pid) ?? (() => { });
+    }
     /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
     writeEvent(key, oldKey, change) {
         const origin = this.activeOrigin ?? KERNEL_ORIGIN;
@@ -9995,6 +10018,7 @@ export class SqliteVFS {
             before,
             after,
             principal: origin,
+            execId: origin.pid === undefined ? null : this.attribution?.execIdOf(origin.pid),
         };
         const release = () => {
             for (const opened of held) {

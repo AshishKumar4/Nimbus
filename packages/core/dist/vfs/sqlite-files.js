@@ -81,6 +81,7 @@ export class SqliteFiles {
     as(cred, actor, options) {
         return new SqliteFiles(this.engine, this.engine.as(cred, {
             ...(actor === undefined ? {} : { actor }),
+            ...(options?.pid === undefined ? {} : { pid: options.pid }),
             ...(options?.holds === undefined ? {} : { holds: options.holds }),
             ...(options?.landed === true ? { landed: true } : {}),
         }));

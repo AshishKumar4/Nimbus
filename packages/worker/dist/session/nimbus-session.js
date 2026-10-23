@@ -1204,7 +1204,7 @@ export class NimbusSession extends CloudflareDurableObject {
     /** The latest build's shell started: its login files run. */
     shellStarted = null;
     // ── Filesystem seeding ────────────────────────────────────────────────
-    ensureGlobalPrefixDirs(prefix, cred) { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix, cred); }
+    ensureGlobalPrefixDirs(prefix, cred, pid) { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix, cred, pid); }
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the
      * sample files, and the Vite starter app.

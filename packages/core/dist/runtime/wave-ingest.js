@@ -984,7 +984,7 @@ export class WaveIngest {
      * until the router has written it. True when the record was routed.
      */
     async routeRecord(record, router, scope, at) {
-        const { cred } = scope;
+        const { cred, writer } = scope;
         /** The exclusive-mutation lease the wave writes under, presented to the namespace's guard. */
         const owner = scope.mutationOwner;
         /** Every answer a mounted backend owes the wave, which its cut does not wait for (untilAborted). */
@@ -1048,7 +1048,7 @@ export class WaveIngest {
                 at.setPhase('publish');
                 await at.settleBefore();
                 reached(placed);
-                await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, owner));
+                await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, owner, writer));
                 at.committed(null, 0);
                 return true;
             }
@@ -1060,7 +1060,7 @@ export class WaveIngest {
                 await at.settleBefore();
                 reached(placed);
                 // A directory has no receipt, here as in a group.
-                await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, owner));
+                await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, owner, writer));
                 at.committed(null, 0);
                 return true;
             }
@@ -1112,7 +1112,7 @@ export class WaveIngest {
                     at.setPhase('publish');
                     await at.settleBefore();
                     reached(to);
-                    await backend(router.apply({ type: 'call', call: { call: 'copyFile', path: to, from } }, cred, at.guard, owner));
+                    await backend(router.apply({ type: 'call', call: { call: 'copyFile', path: to, from } }, cred, at.guard, owner, writer));
                     at.committed(null, 0);
                     return true;
                 }
@@ -1132,7 +1132,7 @@ export class WaveIngest {
                     if (call.description !== undefined && descriptions === undefined)
                         throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
                     // Its answer is the file's stat; with `description`, the binding keeps the file it found, and its descriptor is in the answer.
-                    const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
+                    const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner, writer));
                     const handle = call.description === undefined || descriptions === undefined ? undefined
                         : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, openAccessRights(call.access))));
                     // The id is this mount's description's now: what the session kept of an earlier one under it is not adopted again.
@@ -1141,7 +1141,7 @@ export class WaveIngest {
                     at.committed({ path: call.path, ...opened.stat, ...(handle === undefined ? {} : { handle }) }, 0);
                     return true;
                 }
-                await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, as, at.guard, owner));
+                await backend(router.apply({ type: 'call', call: { ...call, path: placed } }, as, at.guard, owner, writer));
                 at.committed(null, 0);
                 return true;
             }
@@ -1163,7 +1163,7 @@ export class WaveIngest {
                 at.setPhase('publish');
                 await at.settleBefore();
                 reached(to);
-                await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, owner));
+                await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, owner, writer));
                 at.committed(null, 0);
                 return true;
             }
@@ -1197,7 +1197,7 @@ export class WaveIngest {
                 at.setPhase('publish');
                 await at.settleBefore();
                 reached(placed);
-                await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, owner));
+                await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, owner, writer));
                 at.committed(null, 0);
                 return true;
             }
@@ -1264,7 +1264,7 @@ export class WaveIngest {
                         ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
                         : file.link
                             ? { type: 'symlink', path: file.placed, target: nameDec.decode(bytes), slot: `${at.waveId}-${file.index}` }
-                            : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, owner));
+                            : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, owner, writer));
                     at.committed(stat === null ? null : { path: file.named, ...stat }, bytes.byteLength);
                 }
                 finally {

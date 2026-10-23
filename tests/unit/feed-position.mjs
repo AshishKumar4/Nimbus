@@ -19,6 +19,16 @@ const covered = positionOf('t2', { '/': root, '/home/user/m': { epoch: 'mem', cu
 assert.equal(feedPointOf(covered, 'home/user/m/f'), '/home/user/m');
 assert.equal(feedPointOf(covered, '/home/user/mx'), '/', 'a sibling of a point is not under it');
 assert.equal(feedFor(covered, 'home/user/m/f').cursor, 2);
+// The deepest point at or above a key, whatever order the feeds are in; a point itself is under itself.
+const nested = positionOf('t3', { '/home/user/m/n': { epoch: 'inner', cursor: 1 }, '/': root, '/home/user/m': { epoch: 'mem', cursor: 2 }, '/dev': { epoch: 'dev', cursor: 0 } });
+assert.equal(feedPointOf(nested, 'home/user/m/n/f'), '/home/user/m/n');
+assert.equal(feedPointOf(nested, '/home/user/m/n'), '/home/user/m/n');
+assert.equal(feedPointOf(nested, 'home/user/m/nx'), '/home/user/m');
+assert.equal(feedPointOf(nested, 'home/user/m'), '/home/user/m');
+assert.equal(feedPointOf(nested, 'home/user'), '/', 'above every point');
+assert.equal(feedPointOf(nested, 'dev'), '/dev');
+assert.equal(feedPointOf(nested, 'devices/x'), '/');
+for (const top of ['', '/']) assert.equal(feedPointOf(nested, top), '/');
 assert.deepEqual(rootOf(covered), root);
 
 // A file the root held, then a mount made over it: not one clock, whatever the root's revisions say.

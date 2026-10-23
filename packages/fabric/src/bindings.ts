@@ -823,6 +823,8 @@ interface NimbusStorageProps {
   store?: string;
   /** What a KV or R2 store's files are read and written as: the process that started the server. */
   cred?: VfsCred;
+  /** That process's pid: what a KV or R2 store's writes are attributed to (VfsWriteEvent.execId). */
+  writer?: number;
 }
 
 /** The ops a storage binding sends, each with the call it carries. */
@@ -846,7 +848,7 @@ async function storageOp(env: object, props: NimbusStorageProps | undefined, usa
     stub = ns.get(ns.idFromString(doId));
     return await hostOpDispatch(stub, usage, props?.route)({
       op,
-      args: [{ root, store }, call],
+      args: [{ root, store, ...(props?.writer === undefined ? {} : { writer: props.writer }) }, call],
       ...(props?.cred === undefined ? {} : { cred: props.cred }),
     });
   } finally {

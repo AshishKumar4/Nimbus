@@ -439,12 +439,12 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     return listing;
   }
 
-  bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge {
+  bind({ pid, cred, signal, attribute }: NimbusFilesystemBinding): RuntimeFsBridge {
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('filesystem binding requires a process pid');
     if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
     let bound = this.bound.get(pid);
     if (!bound) { bound = new AbortController(); this.bound.set(pid, bound); }
-    return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal, pid, false, bound.signal);
+    return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal, pid, false, bound.signal, attribute !== false);
   }
 
   recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease {
@@ -713,7 +713,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     return andThen(lost, reportLost);
   }
 
-  private bridgeFor(scope: DescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false, revoked?: AbortSignal): RuntimeFsBridge {
+  private bridgeFor(scope: DescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false, revoked?: AbortSignal, attribute = true): RuntimeFsBridge {
     // The binding's one Authority, asked right before each call of it reaches
     // a backend, after every await: by the namespace for its paths, the
     // descriptor table for its descriptions, the engine's bridge for its own.
@@ -733,6 +733,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // recall none of them, on SQLite and through the namespace alike.
     const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
     const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
+    // Whose writes these are (VfsWriteEvent.execId): the process's, unless the binding writes for the host.
+    const writer = attribute && pid !== undefined ? { pid } : {};
     // The views and the bridges under the awaiting one, made at the binding's
     // first call on the filesystem: a process that makes none (a child that
     // runs `true`, `echo`) makes none of them. What a release, a kill or a
@@ -740,8 +742,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     let made: ProcessBridgeParts | undefined;
     const parts = (): ProcessBridgeParts => {
       if (made !== undefined) return made;
-      const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(authority, undefined, holds);
-      const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves, { authority, owned, ...(signal === undefined ? {} : { signal }) });
+      const namespace = this.vfs.as(cred, undefined, landed || writer.pid !== undefined ? { ...writer, ...(landed ? { landed } : {}) } : undefined).scoped(authority, undefined, holds);
+      const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...writer, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves, { authority, owned, ...(signal === undefined ? {} : { signal }) });
       made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate, authority, revoked), namespace };
       return made;
     };
