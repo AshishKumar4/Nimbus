@@ -18,7 +18,7 @@
  * callers normalise with residentBytes), ns rows with every stat column.
  */
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { arrayBufferByteLength, arrayCopy, arraySort, Error, mathMin, NumberOf, SafeList, SafeMap, SafeSet, setFind, stringCodePointAt, stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayBufferByteLength, arrayCopy, arraySort, bytesCopy, Error, mapValueList, mathMax, mathMin, NumberOf, SafeList, SafeMap, SafeSet, setFind, stringCodePointAt, stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
  * and the kind is stored rather than inferred so a text file whose bytes happen
@@ -174,7 +174,7 @@ export function heapTables(rowsChanged = () => { }) {
     const nsGetRow = (parent, name) => { const dir = ns.get(parent); return dir ? dir.get(name) : undefined; };
     const nsDrop = (parent, name) => {
         const dir = ns.get(parent);
-        const row = dir?.get(name);
+        const row = dir === undefined ? undefined : dir.get(name);
         if (dir === undefined || row === undefined)
             return;
         dir.delete(name);
@@ -352,7 +352,7 @@ export function heapTables(rowsChanged = () => { }) {
             names = 0;
             namespaceBytes = 0;
         },
-        pageGet(path, rev, part) { return pages.get(pageKey(path, rev, part))?.bin.slice(); },
+        pageGet(path, rev, part) { const row = pages.get(pageKey(path, rev, part)); return row === undefined ? undefined : bytesCopy(row.bin); },
         pageUse(path, rev, part, stamp) {
             const row = pages.get(pageKey(path, rev, part));
             if (row !== undefined)
@@ -361,12 +361,12 @@ export function heapTables(rowsChanged = () => { }) {
         pagePut(path, rev, part, bin, stamp) {
             const key = pageKey(path, rev, part);
             const had = pages.get(key);
-            const bytes = residentBytes(bin).slice();
+            const bytes = bytesCopy(residentBytes(bin));
             if (had !== undefined)
-                used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+                used -= RESIDENT_ROW_BYTES + typedArrayByteLength(had.bin);
             pages.set(key, { path, rev, part, bin: bytes, used: stamp });
-            used += RESIDENT_ROW_BYTES + bytes.byteLength;
-            return had === undefined ? 0 : had.bin.byteLength;
+            used += RESIDENT_ROW_BYTES + typedArrayByteLength(bytes);
+            return had === undefined ? 0 : typedArrayByteLength(had.bin);
         },
         pageDelete(path, rev, part) {
             const key = pageKey(path, rev, part);
@@ -374,20 +374,21 @@ export function heapTables(rowsChanged = () => { }) {
             if (had === undefined)
                 return;
             pages.delete(key);
-            used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+            used -= RESIDENT_ROW_BYTES + typedArrayByteLength(had.bin);
         },
         pageOldest(limit) {
             // Least recently used first; ties by path, rev, part (the key-value backing's key order).
-            const rows = [...pages.values()].sort((a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
-            return rows.slice(0, limit).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: row.bin.byteLength }));
+            const rows = arraySort(mapValueList(pages), (a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
+            const out = new SafeList();
+            for (let i = 0; i < rows.length && i < limit; i++)
+                out[out.length] = { path: rows[i].path, rev: rows[i].rev, part: rows[i].part, size: typedArrayByteLength(rows[i].bin) };
+            return arrayCopy(out);
         },
-        pageBytes() { let n = 0; for (const row of pages.values())
-            n += row.bin.byteLength; return n; },
-        pageMaxUsed() { let n = 0; for (const row of pages.values())
-            n = Math.max(n, row.used); return n; },
+        pageBytes() { let n = 0; pages.forEach((row) => { n += typedArrayByteLength(row.bin); }); return n; },
+        pageMaxUsed() { let n = 0; pages.forEach((row) => { n = mathMax(n, row.used); }); return n; },
         nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
             let dir = ns.get(parent);
-            const previous = dir?.get(name);
+            const previous = dir === undefined ? undefined : dir.get(name);
             const bytes = namespaceRowBytes(parent, name, target);
             const growth = bytes - (previous === undefined ? 0 : namespaceRowBytes(parent, name, previous.target));
             if (!dir) {

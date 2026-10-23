@@ -12,7 +12,7 @@
  * to ask for more.
  */
 import { residentBytes, residentCellCost } from './cell-cost.js';
-import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, ownField, PromiseConstructor, promiseFinally, promiseResolve, promiseThen, SafeList, SafeMap, } from '@nimbus-sh/core/_shared/primordials.js';
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 export function createAdmission(coherence) {
     let cap = null;
@@ -126,28 +126,28 @@ export function createAdmission(coherence) {
     const askGrant = (bytes) => {
         const asked = supervisor;
         if (cap === null)
-            return Promise.resolve(true);
+            return promiseResolve(true);
         // A store with no ledger row (a one-shot's heap) has a fixed budget: no one to ask.
         if (facet === null || !asked || typeof asked.fsStorageGrant !== 'function')
-            return Promise.resolve(false);
+            return promiseResolve(false);
         // Another ask is out: wait for it, and ask for this one's room after it if
         // that grant did not cover it too. Giving up there left all but the first
         // of a batch of fills at the cap refused.
         if (grantAsk) {
-            return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap || askGrant(bytes));
+            return promiseThen(grantAsk, () => dbBytes() + reservedBytes + bytes <= cap || askGrant(bytes));
         }
         const want = mathMax(0, dbBytes() + reservedBytes + bytes - cap);
         const named = facet;
-        grantAsk = (async () => {
+        grantAsk = promiseFinally((async () => {
             try {
                 const answer = await asked.fsStorageGrant(named, want, dbBytes());
-                cap += Number(answer && answer.granted) || 0;
+                cap += NumberOf(answer && answer.granted) || 0;
                 if (answer && typeof answer.available === 'number')
                     available = answer.available;
             }
             catch { }
-        })().finally(() => { grantAsk = null; });
-        return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap);
+        })(), () => { grantAsk = null; });
+        return promiseThen(grantAsk, () => dbBytes() + reservedBytes + bytes <= cap);
     };
     /**
      * Whether the store may grow by `bytes` now; when not, and `ask`, more room
@@ -176,19 +176,22 @@ export function createAdmission(coherence) {
         bindHeap(budget) {
             inHeap = true;
             facet = null;
-            cap = Number(budget);
+            cap = NumberOf(budget);
             namespaceOverlayBytes = 0;
             namespaceReserveBytes = 0;
             pinnedBytes = 0;
         },
         setStorage(storage, given) {
             supervisor = given || null;
-            const allowance = storage;
-            available = allowance && typeof allowance.available === 'number' ? allowance.available : null;
-            if (!allowance || typeof allowance.facet !== 'string' || typeof allowance.grant !== 'number')
+            const allowance = typeof storage === 'object' && storage !== null ? storage : null;
+            const room = allowance === null ? undefined : ownField(allowance, 'available');
+            available = typeof room === 'number' ? room : null;
+            const named = allowance === null ? undefined : ownField(allowance, 'facet');
+            const grant = allowance === null ? undefined : ownField(allowance, 'grant');
+            if (typeof named !== 'string' || typeof grant !== 'number')
                 return;
-            facet = allowance.facet;
-            cap = dbBytes() + allowance.grant;
+            facet = named;
+            cap = dbBytes() + grant;
         },
         storageCap() { return cap; },
         get available() { return available; },
@@ -219,10 +222,10 @@ export function createAdmission(coherence) {
         reserve(path, bytes) {
             release(path);
             if (cap === null)
-                return Promise.resolve(true);
+                return promiseResolve(true);
             if (reserveQueue.length === 0 && holdRoom(path, bytes))
-                return Promise.resolve(true);
-            return new Promise((resolve) => {
+                return promiseResolve(true);
+            return new PromiseConstructor((resolve) => {
                 arrayPush(reserveQueue, { path, bytes, resolve });
                 void serveReserves();
             });
@@ -232,15 +235,16 @@ export function createAdmission(coherence) {
         ensureRoom,
         /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
         async roomForPushed(result) {
-            const answer = result;
-            if (cap === null || !answer || !arrayIsArray(answer.paths))
+            const listed = cap === null || typeof result !== 'object' || result === null ? undefined : ownField(result, 'paths');
+            if (cap === null || !arrayIsArray(listed))
                 return;
-            const paths = answer.paths;
+            const paths = listed;
             let bytes = 0;
             for (let i = 0; i < paths.length; i++) {
                 const entry = paths[i];
-                if (entry && entry.bytes != null)
-                    bytes += residentCellCost(residentBytes(entry.bytes));
+                const held = typeof entry === 'object' && entry !== null ? ownField(entry, 'bytes') : undefined;
+                if (held != null)
+                    bytes += residentCellCost(residentBytes(held));
             }
             if (bytes > 0)
                 await ensureRoom(bytes);

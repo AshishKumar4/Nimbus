@@ -39,27 +39,35 @@ import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitT
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { ownNames } from './own-names.js';
 import { provisional as provisionalDecisions } from './provisional.js';
-import { owned } from './inode-fold.js';
+import { isModeChange, isOwnerChange, isTimesChange, owned } from './inode-fold.js';
 import { LINGER_MS, processFsClient } from '../../_shared/process-fs-client.js';
+import { arrayJoin, bytesCopy, bytesView, dateNow, mathMax, mathMin, ownValue, promiseThen, SafeList, SafeSet, setList, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor, } from '../../_shared/primordials.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
 /** A file made or rewritten here: its bytes until they are sent. */
 /** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
 /** A new open description's id: unguessable, so no other process's call names it. */
-const descriptionId = () => crypto.randomUUID().replaceAll('-', '');
+const descriptionId = () => {
+    const id = crypto.randomUUID();
+    let out = '';
+    for (let i = 0; i < id.length; i++)
+        if (id[i] !== '-')
+            out += id[i];
+    return out;
+};
 function parentKey(key) {
-    const at = key.lastIndexOf('/');
-    return at < 0 ? '' : key.slice(0, at);
+    const at = stringLastIndexOf(key, '/');
+    return at < 0 ? '' : stringSlice(key, 0, at);
 }
 function nameOf(key) {
-    return key.slice(key.lastIndexOf('/') + 1);
+    return stringSlice(key, stringLastIndexOf(key, '/') + 1);
 }
 function within(key, root) {
-    return key === root || key.startsWith(`${root}/`);
+    return key === root || stringStartsWith(key, `${root}/`);
 }
 export function delegationHolder(options) {
     const { store } = options;
-    const now = options.now ?? Date.now;
+    const now = ownValue(options, 'now') ?? dateNow;
     /** What it decided by name, until the view has it. */
     const names = ownNames({
         entry: (key) => store.entry(key),
@@ -75,7 +83,7 @@ export function delegationHolder(options) {
     const { decided } = names;
     let nextHandle = FIRST_LOCAL_HANDLE;
     /** Files written since their bytes were last logged, in the order last written. */
-    const dirty = new Set();
+    const dirty = new SafeSet();
     // Changes logged, numbered; and the last a completed send covered: a send covers only what was logged when it began.
     let changes = 0;
     let sentAt = 0;
@@ -90,7 +98,7 @@ export function delegationHolder(options) {
      * made (Provisional), never for one it cannot make now.
      */
     const deciding = (key) => {
-        if (options.cannotWait?.() === true && client.held(key) === undefined)
+        if (ownValue(options, 'cannotWait')?.() === true && client.held(key) === undefined)
             return undefined;
         const grant = client.holder(key);
         return grant === undefined || (provisionalActive && prov.touches(key)) ? undefined : grant;
@@ -115,7 +123,7 @@ export function delegationHolder(options) {
         if (cell === undefined || cell.detached !== undefined)
             return;
         dirty.delete(inode);
-        delete cell.logged;
+        cell.logged = undefined;
         // A made file's cell keeps the mode its open asked, its umask beside it, until a chmod here decides it.
         const mode = cell.umask === undefined ? cell.mode : cell.mode & ~cell.umask;
         const entry = decided.get(inode.key) ?? store.entry(inode.key) ?? {
@@ -123,19 +131,23 @@ export function delegationHolder(options) {
             mode: 0o100000 | mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
         };
         // Each that may write: one opened only to read reads the content here, and needs none.
-        const opened = prov.descriptorsOf(inode).filter((desc) => desc.description === undefined && desc.write);
-        opened.forEach((desc, at) => {
+        const descs = prov.descriptorsOf(inode);
+        const opened = new SafeList();
+        for (let i = 0; i < descs.length; i++)
+            if (descs[i].description === undefined && descs[i].write)
+                opened[opened.length] = descs[i];
+        for (let at = 0; at < opened.length; at++) {
+            const desc = opened[at];
             const description = desc.description = descriptionId();
             // The first makes the file when it is not made yet: the creating open, and the bytes written through it.
             const creating = made !== undefined && at === 0;
             const making = creating ? { create: true, exclusive: true, ino: made, ...(cell.umask === undefined ? {} : { umask: cell.umask }) } : {};
             const read = desc.read;
-            void acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, access: read ? 'readwrite' : 'write', description } })
-                .then((answered) => prov.anchored(description, answered.receipt?.handle, read), () => { });
+            void promiseThen(acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, access: read ? 'readwrite' : 'write', description } }), (answered) => prov.anchored(description, ownValue(answered, 'receipt')?.handle, read), () => { });
             if (creating && cell.length > 0) {
                 acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
             }
-        });
+        }
         prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | mode });
     };
     /** What is decided here, else what the view has, at `inode`'s name while that name leads to the file. */
@@ -160,8 +172,9 @@ export function delegationHolder(options) {
         const entry = decided.get(inode.key);
         if (entry === undefined || entry === null || entry.ino !== inode.ino)
             return false;
-        for (const desc of prov.descriptorsOf(inode)) {
-            if (!modeAllows(entry, (desc.read ? 4 : 0) | (desc.write ? 2 : 0), store.cred))
+        const descs = prov.descriptorsOf(inode);
+        for (let i = 0; i < descs.length; i++) {
+            if (!modeAllows(entry, (descs[i].read ? 4 : 0) | (descs[i].write ? 2 : 0), store.cred))
                 return true;
         }
         return false;
@@ -175,13 +188,25 @@ export function delegationHolder(options) {
      * the state the local open saw, never re-authorized against a later one.
      */
     const throughAt = (keys) => {
-        const open = prov.cells().filter((inode) => inode.cell.detached === undefined && inode.descs > 0
-            && (keys === undefined || keys.some((key) => within(inode.key, key))));
+        const cells = prov.cells();
+        const open = new SafeList();
+        for (let i = 0; i < cells.length; i++) {
+            const inode = cells[i];
+            if (inode.cell.detached !== undefined || inode.descs === 0)
+                continue;
+            let under = keys === undefined;
+            for (let j = 0; !under && j < keys.length; j++)
+                under = within(inode.key, keys[j]);
+            if (under)
+                open[open.length] = inode;
+        }
         if (open.length === 0)
             return;
         drain();
-        for (const inode of open)
+        for (let i = 0; i < open.length; i++) {
+            const inode = open[i];
             unhold(inode);
+        }
     };
     /**
      * Log each file's latest bytes, in the order last written, under the name
@@ -195,19 +220,21 @@ export function delegationHolder(options) {
         if (dirty.size === 0)
             return;
         changes++;
-        for (const inode of [...dirty]) {
+        const files = setList(dirty);
+        for (let i = 0; i < files.length; i++) {
+            const inode = files[i];
             if (inode === except)
                 continue;
             const file = inode.cell;
-            const from = Math.min(file.changedFrom ?? 0, file.logged ?? 0);
+            const from = mathMin(file.changedFrom ?? 0, file.logged ?? 0);
             // A copy: the file's buffer keeps changing as the process writes. A
             // file made here makes its name with this write, with its number.
             const ino = file.made;
             // Its mode refuses its creating open what it writes: made by that open, and written through it.
             if (ino !== undefined && refusedByMode(inode)) {
                 dirty.delete(inode);
-                delete file.changedFrom;
-                delete file.made;
+                file.changedFrom = undefined;
+                file.made = undefined;
                 unhold(inode, ino);
                 continue;
             }
@@ -215,16 +242,16 @@ export function delegationHolder(options) {
                 if (file.length < file.logged)
                     acknowledged({ type: 'call', call: { call: 'ftruncate', path: inode.key, size: file.length } });
                 if (file.length > from)
-                    acknowledged({ type: 'call', call: { call: 'write', path: inode.key, offset: from, data: file.bytes.slice(from, file.length) } });
+                    acknowledged({ type: 'call', call: { call: 'write', path: inode.key, offset: from, data: bytesCopy(file.bytes, from, file.length) } });
             }
             else {
-                acknowledged({ type: 'call', call: { call: 'writeFile', path: inode.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } });
+                acknowledged({ type: 'call', call: { call: 'writeFile', path: inode.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: bytesCopy(file.bytes, 0, file.length) } });
             }
             // Unlogged until the log took it: one that refused it (the session
             // ended the process) leaves it for the settle's (logHeld).
             dirty.delete(inode);
-            delete file.changedFrom;
-            delete file.made;
+            file.changedFrom = undefined;
+            file.made = undefined;
             file.logged = file.length;
         }
     };
@@ -239,39 +266,41 @@ export function delegationHolder(options) {
      */
     const dropDecisions = (root) => {
         drain();
-        for (const inode of prov.cells())
-            if (within(inode.key, root))
-                unhold(inode);
+        const cells = prov.cells();
+        for (let i = 0; i < cells.length; i++)
+            if (within(cells[i].key, root))
+                unhold(cells[i]);
         names.released(root);
         prov.answeredHeld(root);
-        options.sent?.();
+        ownValue(options, 'sent')?.();
     };
     const client = processFsClient({
         session: options.session,
         now,
-        ...(options.timers === undefined ? {} : { timers: options.timers }),
-        ...(options.umask === undefined ? {} : { umask: options.umask }),
-        ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
-        ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
-        ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
-        ...(options.journal === undefined ? {} : { journal: options.journal }),
-        ...(options.logged === undefined ? {} : { logged: options.logged }),
+        ...(ownValue(options, 'timers') === undefined ? {} : { timers: ownValue(options, 'timers') }),
+        ...(ownValue(options, 'umask') === undefined ? {} : { umask: ownValue(options, 'umask') }),
+        ...(ownValue(options, 'isHomeRoot') === undefined ? {} : { isHomeRoot: ownValue(options, 'isHomeRoot') }),
+        ...(ownValue(options, 'grantAfter') === undefined ? {} : { grantAfter: ownValue(options, 'grantAfter') }),
+        ...(ownValue(options, 'grantInos') === undefined ? {} : { grantInos: ownValue(options, 'grantInos') }),
+        ...(ownValue(options, 'journal') === undefined ? {} : { journal: ownValue(options, 'journal') }),
+        ...(ownValue(options, 'logged') === undefined ? {} : { logged: ownValue(options, 'logged') }),
         released: dropDecisions,
         // Closing starts (a recall, an idle or renewing give-back): nothing more
         // is decided under it, and its files' descriptions write through from now
         // on, so the flush that follows covers everything accepted before.
         freezing: (root) => {
             drain();
-            for (const inode of prov.cells())
-                if (within(inode.key, root))
-                    unhold(inode);
+            const cells = prov.cells();
+            for (let i = 0; i < cells.length; i++)
+                if (within(cells[i].key, root))
+                    unhold(cells[i]);
         },
         drain,
     });
     /** A file's bytes a grant decides here (its cell). */
     const heldContent = (entry) => {
         const cell = prov.inode(entry.dev, entry.ino)?.cell;
-        return cell === undefined ? undefined : cell.bytes.slice(0, cell.length);
+        return cell === undefined ? undefined : bytesCopy(cell.bytes, 0, cell.length);
     };
     const prov = provisionalDecisions({
         // The store's, as it knows it when asked (it learns it at its first barrier).
@@ -281,18 +310,18 @@ export function delegationHolder(options) {
         children: (key) => names.children(key, store.children(key)),
         content: (key, revision) => {
             const entry = decided.get(key);
-            return (entry ? heldContent(entry) : undefined) ?? store.content?.(key, revision);
+            return (entry ? heldContent(entry) : undefined) ?? ownValue(store, 'content')?.(key, revision);
         },
-        reserve: (bytes) => store.reserve?.(bytes) ?? true,
-        release: (bytes) => store.release?.(bytes),
+        reserve: (bytes) => ownValue(store, 'reserve')?.(bytes) ?? true,
+        release: (bytes) => ownValue(store, 'release')?.(bytes),
         client,
         drain,
-        sent: () => options.sent?.(),
+        sent: () => ownValue(options, 'sent')?.(),
         // Reads by name and by number consult them only while the process sees any.
         active: (on) => { provisionalActive = on; },
         held: (key) => client.held(key) !== undefined,
         count: (key) => { client.holder(key); },
-        umask: () => options.umask?.() ?? 0o022,
+        umask: () => ownValue(options, 'umask')?.() ?? 0o022,
         now,
         nextHandle: () => nextHandle--,
         unhold: (inode) => {
@@ -301,9 +330,9 @@ export function delegationHolder(options) {
         },
         generation: (key) => names.generation(key),
         settled: (key, generation) => names.settled(key, generation),
-        ...(store.mounted === undefined ? {} : { mounted: (key) => store.mounted(key) }),
-        ...(store.unreported === undefined ? {} : { unreported: (key) => store.unreported(key) }),
-        ...(store.keep === undefined ? {} : { keep: (key, row, bytes) => store.keep(key, row.revision, bytes) }),
+        ...(ownValue(store, 'mounted') === undefined ? {} : { mounted: (key) => ownValue(store, 'mounted')(key) }),
+        ...(ownValue(store, 'unreported') === undefined ? {} : { unreported: (key) => ownValue(store, 'unreported')(key) }),
+        ...(ownValue(store, 'keep') === undefined ? {} : { keep: (key, row, bytes) => ownValue(store, 'keep')(key, row.revision, bytes) }),
         absorb: (key, file) => {
             const decision = decided.get(key);
             if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)
@@ -343,7 +372,7 @@ export function delegationHolder(options) {
         if (covered <= sentAt)
             return;
         sentAt = covered;
-        options.sent?.();
+        ownValue(options, 'sent')?.();
     };
     const entryOf = (key) => {
         const mine = names.entry(key);
@@ -383,7 +412,7 @@ export function delegationHolder(options) {
         const file = inode.cell;
         if (file.detached)
             return;
-        file.changedFrom = Math.min(file.changedFrom ?? from, from);
+        file.changedFrom = mathMin(file.changedFrom ?? from, from);
         dirty.delete(inode);
         dirty.add(inode);
         lingerTimer ??= setTimeout(() => {
@@ -400,7 +429,7 @@ export function delegationHolder(options) {
     const detach = (inode, entry) => {
         const file = inode.cell;
         file.detached = { ...entry, nlink: 0, size: file.length };
-        delete file.logged;
+        file.logged = undefined;
         dirty.delete(inode);
     };
     /** Descriptor `handleId` where its file's grant decides it (its cell), else undefined: the provisional decisions' to answer. */
@@ -417,7 +446,7 @@ export function delegationHolder(options) {
     const heldDesc = (handleId) => {
         const desc = prov.descriptor(handleId);
         if (desc === undefined)
-            throw fsError('EBADF', 'fd', String(handleId));
+            throw fsError('EBADF', 'fd', stringOf(handleId));
         return desc.inode.cell === undefined ? undefined : desc;
     };
     /**
@@ -427,14 +456,14 @@ export function delegationHolder(options) {
      * its bytes when they reach it (a refusal then is the flush's error).
      */
     const room = (file, key, length) => {
-        if (length <= file.bytes.byteLength)
+        if (length <= typedArrayByteLength(file.bytes))
             return true;
         const grant = client.held(key);
-        const size = Math.max(length, file.bytes.byteLength * 2, 4096);
-        if (grant !== undefined && !client.draw(grant, size - file.bytes.byteLength))
+        const size = mathMax(length, typedArrayByteLength(file.bytes) * 2, 4096);
+        if (grant !== undefined && !client.draw(grant, size - typedArrayByteLength(file.bytes)))
             return false;
-        const next = new Uint8Array(size);
-        next.set(file.bytes.subarray(0, file.length));
+        const next = new Uint8ArrayConstructor(size);
+        typedArraySet(next, bytesView(file.bytes, 0, file.length));
         file.bytes = next;
         return true;
     };
@@ -442,16 +471,19 @@ export function delegationHolder(options) {
     const failed = () => {
         const failures = client.takeFailures();
         if (failures.length > 0) {
+            const said = new SafeList();
+            for (let i = 0; i < failures.length; i++)
+                said[i] = `${failures[i].op} ${failures[i].path}: ${failures[i].message}`;
             // Its first refusal's errno is the call's (EACCES, ENOSPC, …), as the session said it.
             throw fsError(failures[0].errno, 'fsync', failures[0].path, undefined, {
-                detail: `the session refused what this process decided: ${failures.map((failure) => `${failure.op} ${failure.path}: ${failure.message}`).join('; ')}`,
+                detail: `the session refused what this process decided: ${arrayJoin(said, '; ')}`,
             });
         }
     };
     /** An owner or group id a chown keeps (null, or -1 as fchown(2) spells it): null, as chownRefusal takes it. */
     /** `entry` as chmod, chown (the set-id bits chownedMode clears) and utimes leave it, its ctime now. */
-    const changedBy = (entry, attrs) => ('mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
-        : 'uid' in attrs ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
+    const changedBy = (entry, attrs) => (isModeChange(attrs) ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+        : isOwnerChange(attrs) ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
             : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() });
     const holder = {
         client,
@@ -485,7 +517,7 @@ export function delegationHolder(options) {
             const asked = copiedPermissions(source.mode, false);
             // What the open leaves (cp(1)'s mode), and with keepMode its fchmod to the source's: one a confined principal may not grant is the session's.
             const opened = target === null ? asked & ~umask : target.mode & 0o7777;
-            const mode = keepMode ? copyfileMode(source.mode, bytes.byteLength, store.cred.uid) : opened;
+            const mode = keepMode ? copyfileMode(source.mode, typedArrayByteLength(bytes), store.cred.uid) : opened;
             if (keepMode && confinedModeRefusal(opened, mode) !== null)
                 return false;
             let entry;
@@ -499,12 +531,12 @@ export function delegationHolder(options) {
                     return false;
                 const { uid, gid } = ownership(parent);
                 const stamp = now();
-                entry = { type: 'file', dev: store.device, ino: made, nlink: 1, size: bytes.byteLength, atime: stamp, mtime: stamp, ctime: stamp, mode: 0o100000 | mode, uid, gid, revision: 0, target: null };
+                entry = { type: 'file', dev: store.device, ino: made, nlink: 1, size: typedArrayByteLength(bytes), atime: stamp, mtime: stamp, ctime: stamp, mode: 0o100000 | mode, uid, gid, revision: 0, target: null };
             }
             else {
                 if (!modeAllows(target, 2, store.cred))
                     throw fsError('EACCES', 'copyfile', path);
-                entry = { ...target, size: bytes.byteLength, mode: (target.mode & ~0o7777) | mode, mtime: now(), ctime: now() };
+                entry = { ...target, size: typedArrayByteLength(bytes), mode: (target.mode & ~0o7777) | mode, mtime: now(), ctime: now() };
             }
             // Its Inode: the file's, or one made for it where the budget has room; else the session copies.
             const inode = known ?? prov.inodeFor(to, { ...entry });
@@ -515,15 +547,15 @@ export function delegationHolder(options) {
             // Held here as an emptied file's written bytes are: in its cell (an
             // O_TRUNC open keeps it), what more they take drawn from what the
             // grant reserved (room); else the session copies.
-            const file = inode.cell ?? { bytes: new Uint8Array(0), length: 0, mode };
-            if (!room(file, to, bytes.byteLength)) {
+            const file = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode, made: undefined, umask: undefined, logged: undefined, changedFrom: undefined, detached: undefined };
+            if (!room(file, to, typedArrayByteLength(bytes))) {
                 if (inode.cell === undefined)
                     prov.dropCell(inode);
                 return false;
             }
-            file.bytes.set(bytes);
-            file.length = bytes.byteLength;
-            file.logged = bytes.byteLength;
+            typedArraySet(file.bytes, bytes);
+            file.length = typedArrayByteLength(bytes);
+            file.logged = typedArrayByteLength(bytes);
             file.mode = mode;
             if (target === null)
                 names.note(parentKey(to), nameOf(to), 'file');
@@ -532,7 +564,7 @@ export function delegationHolder(options) {
             const description = descriptionId();
             changes++;
             acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, access: 'write', ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
-            acknowledged({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } });
+            acknowledged({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytesCopy(bytes) } });
             acknowledged({ type: 'call', call: { call: 'close', path: to, description } });
             return true;
         },
@@ -578,7 +610,7 @@ export function delegationHolder(options) {
                 };
                 drain();
                 // Its mode was decided under this umask: the session applies the same one, and its number.
-                const file = { bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
+                const file = { bytes: new Uint8ArrayConstructor(0), length: 0, mode: asked, made: ino, umask, logged: undefined, changedFrom: undefined, detached: undefined };
                 // Room for what it is opened to be written with, before anything is decided (its number unused if not).
                 if (initial > 0 && !room(file, key, initial))
                     return undefined;
@@ -614,7 +646,7 @@ export function delegationHolder(options) {
                 inode ??= prov.inodeFor(key, current);
                 if (inode === undefined)
                     return undefined;
-                const file = inode.cell ?? { bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
+                const file = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode: current.mode & 0o7777, made: undefined, umask: undefined, logged: undefined, changedFrom: undefined, detached: undefined };
                 if (initial > 0 && !room(file, key, initial)) {
                     if (inode.cell === undefined)
                         prov.dropCell(inode);
@@ -629,7 +661,7 @@ export function delegationHolder(options) {
         },
         writeFile: (key, path, bytes, flags) => {
             // Its bytes' room drawn as it is opened: a write that cannot fail it.
-            const handle = holder.open(key, path, flags, bytes.byteLength);
+            const handle = holder.open(key, path, flags, typedArrayByteLength(bytes));
             if (handle === undefined)
                 return undefined;
             holder.write(handle.id, 0, bytes);
@@ -646,10 +678,10 @@ export function delegationHolder(options) {
             if (!handle.read)
                 throw fsError('EBADF', 'read', handle.path);
             const file = handle.inode.cell;
-            const start = Math.min(offset ?? handle.position, file.length);
-            const chunk = file.bytes.slice(start, Math.min(file.length, start + length));
+            const start = mathMin(offset ?? handle.position, file.length);
+            const chunk = bytesCopy(file.bytes, start, mathMin(file.length, start + length));
             if (offset === null)
-                handle.position = start + chunk.byteLength;
+                handle.position = start + typedArrayByteLength(chunk);
             return chunk;
         },
         write: (handleId, offset, bytes) => {
@@ -661,19 +693,19 @@ export function delegationHolder(options) {
             const inode = handle.inode;
             const file = inode.cell;
             const start = handle.append ? file.length : offset ?? handle.position;
-            const end = start + bytes.byteLength;
+            const end = start + typedArrayByteLength(bytes);
             if (!room(file, inode.key, end))
                 throw fsError('ENOSPC', 'write', handle.path);
-            const from = Math.min(start, file.length);
+            const from = mathMin(start, file.length);
             if (start > file.length)
-                file.bytes.fill(0, file.length, start);
-            file.bytes.set(bytes, start);
-            file.length = Math.max(file.length, end);
+                typedArrayFill(file.bytes, 0, file.length, start);
+            typedArraySet(file.bytes, bytes, start);
+            file.length = mathMax(file.length, end);
             if (offset === null || handle.append)
                 handle.position = end;
             resized(inode, file.length);
             written(inode, from);
-            return bytes.byteLength;
+            return typedArrayByteLength(bytes);
         },
         seek: (handleId, offset, whence) => {
             const handle = heldDesc(handleId);
@@ -695,9 +727,9 @@ export function delegationHolder(options) {
             const file = inode.cell;
             if (!room(file, inode.key, size))
                 throw fsError('ENOSPC', 'ftruncate', handle.path);
-            const from = Math.min(size, file.length);
+            const from = mathMin(size, file.length);
             if (size > file.length)
-                file.bytes.fill(0, file.length, size);
+                typedArrayFill(file.bytes, 0, file.length, size);
             file.length = size;
             resized(inode, size);
             written(inode, from);
@@ -715,28 +747,33 @@ export function delegationHolder(options) {
                 return prov.reopen(handleId, flags);
             const inode = handle.inode;
             const file = inode.cell;
-            if (flags.append)
+            const read = ownValue(flags, 'read');
+            const write = ownValue(flags, 'write');
+            const create = ownValue(flags, 'create');
+            const exclusive = ownValue(flags, 'exclusive');
+            const truncate = ownValue(flags, 'truncate');
+            if (ownValue(flags, 'append'))
                 return undefined;
             const entry = file.detached ?? atName(inode);
             if (!entry)
                 throw fsError('EBADF', 'open', handle.path);
-            if (flags.create && flags.exclusive)
+            if (create && exclusive)
                 throw fsError('EEXIST', 'open', handle.path);
-            if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred))
+            if (!modeAllows(entry, (read ? 4 : 0) | (write || truncate ? 2 : 0), store.cred))
                 throw fsError('EACCES', 'open', handle.path);
             // Its truncate is made before the descriptor exists: one whose room is not there is the session's.
-            if (flags.truncate && !room(file, inode.key, 0))
+            if (truncate && !room(file, inode.key, 0))
                 return undefined;
-            const opened = prov.heldDescriptor(inode, handle.path, !!flags.read, false);
-            prov.descriptor(opened.id).write = !!flags.write;
-            if (flags.truncate) {
+            const opened = prov.heldDescriptor(inode, handle.path, !!read, false);
+            prov.descriptor(opened.id).write = !!write;
+            if (truncate) {
                 file.length = 0;
                 resized(inode, 0);
                 written(inode, 0);
             }
             return {
                 id: opened.id, path: handle.path, position: 0, closed: false,
-                flags: { read: !!flags.read, write: !!flags.write, append: false, create: !!flags.create, exclusive: !!flags.exclusive, directory: false, truncate: !!flags.truncate, followSymlinks: true },
+                flags: { read: !!read, write: !!write, append: false, create: !!create, exclusive: !!exclusive, directory: false, truncate: !!truncate, followSymlinks: true },
             };
         },
         mkdir: (key, path, mode, mask) => {
@@ -851,12 +888,12 @@ export function delegationHolder(options) {
             // chmod, chown and utimes allow it; anything else is the session's to judge.
             if (store.cred.uid !== 0 && store.cred.uid !== current.uid)
                 return false;
-            if ('uid' in attrs && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null)
+            if (isOwnerChange(attrs) && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null)
                 return false;
             // A grant a confined principal may not make: the session's to judge.
-            if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
+            if (isModeChange(attrs) && confinedModeRefusal(current.mode, attrs.mode) !== null)
                 return false;
-            if ('mode' in attrs) {
+            if (isModeChange(attrs)) {
                 throughAt([key]);
                 if (provisionalActive && prov.touches(key))
                     return false;
@@ -867,9 +904,9 @@ export function delegationHolder(options) {
             const local = prov.inode(current.dev, current.ino)?.cell;
             if (local !== undefined) {
                 local.mode = next.mode & 0o7777;
-                delete local.umask;
+                local.umask = undefined;
             }
-            log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
+            log({ type: 'setattr', path: key, attrs: isOwnerChange(attrs) ? { uid: next.uid, gid: next.gid } : attrs });
             return true;
         },
         fsetattr: (handleId, change) => {
@@ -883,7 +920,7 @@ export function delegationHolder(options) {
             const entry = file.detached ?? atName(inode);
             // Its times as it is decided (timeAt): now, explicit, or as they are.
             const at = now();
-            const attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
+            const attrs = entry && isTimesChange(change) ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
             if (file.detached === undefined) {
                 // By its name where its grant decides it; else no grant decides the file from now on: the provisional decisions', through its description.
                 if (entry && holder.setattr(inode.key, attrs))
@@ -898,11 +935,11 @@ export function delegationHolder(options) {
             // principal too (judged confined once no grant there says).
             const detached = file.detached;
             const confined = client.held(inode.key)?.confined ?? true;
-            const refused = 'mode' in attrs ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
-                : 'uid' in attrs ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
-                    : utimesRefusal(detached, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
+            const refused = isModeChange(attrs) ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
+                : isOwnerChange(attrs) ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
+                    : utimesRefusal(detached, isTimesChange(change) && explicitTimes(change.atime, change.mtime), store.cred);
             if (refused !== null)
-                throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + inode.key);
+                throw fsError(refused, isModeChange(attrs) ? 'fchmod' : isOwnerChange(attrs) ? 'fchown' : 'futimes', '/' + inode.key);
             file.detached = changedBy(detached, attrs);
             file.mode = file.detached.mode & 0o7777;
             return true;

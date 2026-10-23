@@ -108,16 +108,16 @@ export interface HeldCell {
     length: number;
     mode: number;
     /** Made here and not yet logged: its number, which its first logged write carries. */
-    made?: number;
+    made: number | undefined;
     /** The umask its mode was decided under, which its logged writeFile carries. */
-    umask?: number;
+    umask: number | undefined;
     /**
      * How many of its bytes the log holds as they are now (a logged decision
      * of it), and the lowest offset written since: a file that only changed
      * past what was logged is logged from there, not whole.
      */
-    logged?: number;
-    changedFrom?: number;
+    logged: number | undefined;
+    changedFrom: number | undefined;
     /**
      * Its name is gone (unlinked, or replaced by a rename) while descriptions
      * of it are open: they read and write its bytes, and no name is written
@@ -125,7 +125,7 @@ export interface HeldCell {
      * `detached` is its stat when it lost the name (nlink 0): what fstat of
      * those descriptions answers, never what a name leads to now.
      */
-    detached?: ResidentEntry;
+    detached: ResidentEntry | undefined;
 }
 /** A file this process has open or changed: one per device and number, whatever decides its changes. */
 export interface Inode {
@@ -163,9 +163,9 @@ export interface Inode {
      * room for (renamed). Its descriptors answer by its identity alone, as
      * where the view can say nothing of it (unknown), until a move is kept.
      */
-    lost?: true;
+    lost: true | undefined;
     /** Merged into this one (canonicalize): dead, its forward all it keeps (bury); what held it resolves it (canonical). */
-    merged?: Inode;
+    merged: Inode | undefined;
     /**
      * The bytes its descriptors last read, and the revision they were made at:
      * the view's at that revision, or null for its own (what its retired
@@ -173,31 +173,31 @@ export interface Inode {
      * They answer for a row of that revision, and otherwise only once no name
      * leads to the file (its lifetime).
      */
-    pin?: {
+    pin: {
         readonly revision: number | null;
         readonly bytes: Uint8Array;
-    };
+    } | undefined;
     /** What it holds of the process's budget: cost(inode), and never more but transiently. */
     reserved: number;
     /** While a grant decides it: its content, which every descriptor of it reads and writes. Its bytes are the grant's, not the budget's. */
-    cell?: HeldCell;
+    cell: HeldCell | undefined;
     /**
      * Its content was decided under a grant now given back (Provisional.unhold):
      * the barriers begun when that grant's decisions were answered, Infinity
      * until they are. Its own content stands until a barrier begun after (retire).
      */
-    heldAt?: number;
+    heldAt: number | undefined;
     /**
      * Made by an open here not answered yet (local): that open's description,
      * which names the file to the session until it has a number (W7Expected),
      * kept open at the session until then.
      */
-    made?: string;
+    made: string | undefined;
     /** The grant's decision of its name its records fold over (its baseline's row), by name and generation: settled once they retire. */
-    over?: {
+    over: {
         readonly key: string;
         readonly generation: number;
-    };
+    } | undefined;
 }
 /** One of the process's operations on an inode, kept until the view has its outcome (retire). */
 interface InodeRecord {
@@ -206,18 +206,18 @@ interface InodeRecord {
     /** Its change: a write the client folded into the same entry extends it (extended), as the session answers the entry once. */
     op: InodeOp;
     /** An extended write's bytes and their room, grown by doubling: op.data is the front of it. */
-    room?: Uint8Array;
+    room: Uint8Array | undefined;
     /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
     owner: Inode;
     /** The description it was made through, where one was: what an open's answer moves with it. */
-    readonly description?: string;
+    readonly description: string | undefined;
     answered: boolean;
     /** Barriers begun when it was answered: one begun after retires it. */
     answeredAt: number;
     /** The session's revision right after it, where its answer says (ProcessFsAnswer.mutation): its file's, as it made it. */
-    after?: number;
+    after: number | undefined;
     /** Gone from its inode's records (refused, retired or moved): its answer says nothing more. */
-    gone?: true;
+    gone: true | undefined;
 }
 /** A descriptor: of an Inode, with the rights, offset and session description of its open. */
 export interface Desc {
@@ -228,9 +228,9 @@ export interface Desc {
     position: number;
     path: string;
     /** Its open description at the session, where it may write: opened there as it was here. */
-    description?: string;
+    description: string | undefined;
     /** For a caller that waits for it: the session's answer to its open, which rejects with the open's refusal. */
-    opening?: Promise<unknown>;
+    opening: Promise<unknown> | undefined;
     /** Its last content change's record and the client's answer for its entry: a change folded into that entry extends the record. */
     lastRecord: InodeRecord | null;
     lastAnswer: Promise<unknown> | null;

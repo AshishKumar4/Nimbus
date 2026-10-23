@@ -17,6 +17,8 @@ export interface ModeMeta {
     readonly uid?: unknown;
     readonly gid?: unknown;
 }
+/** The credential's groups, as numbers. */
+export declare const groupsOf: (cred: ResidentCred) => readonly number[];
 /**
  * Whether the namespace's credential may `want` (r=4, w=2, x=1) what `meta`
  * describes, an entry of `type`, as the session's own check answers a read

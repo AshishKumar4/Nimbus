@@ -375,6 +375,16 @@ export const arrayBufferByteLength = (() => {
 export const arrayShift = uncurryThis(Array.prototype.shift);
 const setValuesOf = uncurryThis(Set.prototype.values);
 const setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf(new Set().values()) ?? {}, 'next'));
+const mapValuesOf = uncurryThis(Map.prototype.values);
+const mapIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf(new Map().values()) ?? {}, 'next'));
+/** The first value of `map` that `test` holds of, or undefined: a walk that stops there, on the Map iterator as the launch found it. */
+export function mapFind(map, test) {
+    const iterator = mapValuesOf(map);
+    for (let step = mapIteratorNext(iterator); !step.done; step = mapIteratorNext(iterator))
+        if (test(step.value))
+            return step.value;
+    return undefined;
+}
 /** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
 export function setFind(set, test) {
     const iterator = setValuesOf(set);
@@ -385,15 +395,33 @@ export function setFind(set, test) {
 }
 // The process's filesystem (runtime/wasi/resident-filesystem.ts, its holder,
 // decisions and client) and the resident store under it.
+/** `record`'s own `key`, or undefined: an optional field read without the prototype chain, typed as its contract types it. */
+export function ownValue(record, key) {
+    return objectHasOwn(record, key) ? record[key] : undefined;
+}
 /** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
 export const promiseThen = uncurryThis(Promise.prototype.then);
 /** `Promise.resolve(value)`, of the launch's Promise. */
 export const promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
 /** `Promise.reject(reason)`, of the launch's Promise. */
 export const promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+/** Settled as the first of `list` to settle: Promise.race, without the list's iterator or the program's Promise.resolve and then. */
+export function promiseRace(list) {
+    return new PromiseConstructor((resolve, reject) => {
+        for (let i = 0; i < list.length; i++)
+            reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [resolve, reject]);
+    });
+}
 /** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
 export function promiseFinally(promise, onFinally) {
     return promiseThen(promise, (value) => promiseThen(promiseResolve(onFinally()), () => value), (reason) => promiseThen(promiseResolve(onFinally()), () => { throw reason; }));
+}
+/** A SafeSet of `list`'s members, in its order: `new Set(list)` without the list's iterator. */
+export function setOfList(list) {
+    const set = new SafeSet();
+    for (let i = 0; i < list.length; i++)
+        set.add(list[i]);
+    return set;
 }
 /** The members of `set`, in its order: a SafeList, by SafeSet's forEach as the launch captured it. */
 export function setList(set) {
@@ -414,18 +442,39 @@ export function mapKeyList(map) {
     mapForEach(map, (_value, key) => { list[list.length] = key; });
     return list;
 }
+export const arrayPop = uncurryThis(Array.prototype.pop);
+/** `text.split(separator)` for a separator that is a nonempty string, without asking it for Symbol.split: a SafeList. */
+export function stringSplit(text, separator) {
+    const parts = new SafeList();
+    let from = 0;
+    for (let at = stringIndexOf(text, separator); at >= 0; at = stringIndexOf(text, separator, from)) {
+        parts[parts.length] = stringSlice(text, from, at);
+        from = at + separator.length;
+    }
+    parts[parts.length] = stringSlice(text, from);
+    return parts;
+}
 export const stringLocaleCompare = uncurryThis(String.prototype.localeCompare);
 export const stringPadStart = uncurryThis(String.prototype.padStart);
 export const mathTrunc = Math.trunc;
 export const numberIsFinite = Number.isFinite;
 export const typedArrayFill = uncurryThis(Uint8Array.prototype.fill);
+/** A relative index into `length` items as subarray and slice take one: from the end where negative, within 0..length. */
+function relativeIndex(at, length) {
+    const integer = at !== at ? 0 : mathTrunc(at);
+    return integer < 0 ? mathMax(length + integer, 0) : mathMin(integer, length);
+}
 /** `bytes.subarray(start, end)` without the view's constructor or species: a view of the same buffer. */
-export function bytesView(bytes, start, end = typedArrayByteLength(bytes)) {
-    return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + start, end > start ? end - start : 0);
+export function bytesView(bytes, start = 0, end) {
+    const length = typedArrayByteLength(bytes);
+    const from = relativeIndex(start, length);
+    const to = end === undefined ? length : relativeIndex(end, length);
+    return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + from, to > from ? to - from : 0);
 }
 /** `bytes.slice(start, end)` without the view's constructor or species: a copy. */
-export function bytesCopy(bytes, start = 0, end = typedArrayByteLength(bytes)) {
-    const copy = new Uint8ArrayConstructor(end > start ? end - start : 0);
-    typedArraySet(copy, bytesView(bytes, start, end));
+export function bytesCopy(bytes, start = 0, end) {
+    const view = bytesView(bytes, start, end);
+    const copy = new Uint8ArrayConstructor(typedArrayByteLength(view));
+    typedArraySet(copy, view);
     return copy;
 }

@@ -782,6 +782,179 @@ return globalThis.Go;
     };
   }
 
+  var reflectApply = Reflect.apply;
+  var reflectGet = Reflect.get;
+  var reflectDefineProperty = Reflect.defineProperty;
+  var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  var reflectGetPrototypeOf = Reflect.getPrototypeOf;
+  var reflectSetPrototypeOf = Reflect.setPrototypeOf;
+  var objectCreate = Object.create;
+  var objectKeys = Object.keys;
+  var objectAssign = Object.assign;
+  var objectHasOwn = Object.hasOwn;
+  var symbolFor = Symbol.for;
+  var PromiseConstructor = Promise;
+  var PromiseResolve = Promise.resolve;
+  var PromiseReject = Promise.reject;
+  var PromisePrototypeThen = Promise.prototype.then;
+  var ArrayValues = Array.prototype[Symbol.iterator];
+  var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
+  var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
+  var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
+  var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
+  var StringPrototypeSlice = String.prototype.slice;
+  var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
+  var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
+  var SymbolPrototypeToString = Symbol.prototype.toString;
+  var StringPrototypeCharAt = String.prototype.charAt;
+  var StringPrototypeIndexOf = String.prototype.indexOf;
+  var StringPrototypeSubstr = String.prototype.substr;
+  var StringFromCharCode = String.fromCharCode;
+  var ArrayPrototypePop = Array.prototype.pop;
+  var ArrayPrototypeIndexOf = Array.prototype.indexOf;
+  var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+  var RegExpPrototypeExec = RegExp.prototype.exec;
+  var RegExpPrototypeAccessors = (() => {
+    const accessors = objectCreate(null);
+    const names = Object.getOwnPropertyNames(RegExp.prototype);
+    for (let i = 0; i < names.length; i++) {
+      const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
+      if (getter !== void 0) accessors[names[i]] = getter;
+    }
+    return accessors;
+  })();
+  var NumberPrototypeToString = Number.prototype.toString;
+  var BigIntPrototypeToString = BigInt.prototype.toString;
+  var ObjectPrototype = Object.prototype;
+  var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
+  var numberIsInteger = Number.isInteger;
+  var runtimeCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+  var ErrorConstructor = Error;
+  var TypeErrorConstructor = TypeError;
+  function copyMethods(to, from, methods) {
+    for (let i = 0; i < methods.length; i++) {
+      const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
+      if (descriptor) reflectDefineProperty(to, methods[i], descriptor);
+    }
+  }
+  var SafeMap = class extends Map {
+  };
+  copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
+  var SafeSet = class extends Set {
+  };
+  copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
+  var SafeWeakMap = class extends WeakMap {
+  };
+  copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
+  var SafeWeakSet = class extends WeakSet {
+  };
+  copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
+  var SafeList = class extends Array {
+  };
+  reflectSetPrototypeOf(SafeList.prototype, null);
+  var SafeGeneratorPrototype = objectCreate(null);
+  var SafeAsyncGeneratorPrototype = objectCreate(null);
+  {
+    const generatorPrototype2 = reflectGetPrototypeOf(function* () {
+    }.prototype) ?? {};
+    const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
+    }.prototype) ?? {};
+    copyMethods(SafeGeneratorPrototype, generatorPrototype2, ["next", "return", "throw"]);
+    copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype2) ?? {}, [Symbol.iterator]);
+    copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
+    copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
+  }
+  var SafeRegExpPrototype = objectCreate(null);
+  {
+    const keys = Reflect.ownKeys(RegExp.prototype);
+    const members = [];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
+    }
+    copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
+  }
+  var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
+  var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
+  var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
+  var FunctionPrototypeCall = Function.prototype.call;
+  var FunctionPrototypeBind = Function.prototype.bind;
+  function uncurryThis(fn) {
+    return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
+  }
+  var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
+  var stringSlice = uncurryThis(String.prototype.slice);
+  var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
+  var arrayJoin = uncurryThis(Array.prototype.join);
+  var stringStartsWith = uncurryThis(String.prototype.startsWith);
+  var stringEndsWith = uncurryThis(String.prototype.endsWith);
+  var stringIncludes = uncurryThis(String.prototype.includes);
+  var stringIndexOf = uncurryThis(String.prototype.indexOf);
+  var stringToLowerCase = uncurryThis(String.prototype.toLowerCase);
+  var arrayIncludes = uncurryThis(Array.prototype.includes);
+  var arrayIndexOf = uncurryThis(Array.prototype.indexOf);
+  var setForEach = uncurryThis(Set.prototype.forEach);
+  var arraySort = uncurryThis(Array.prototype.sort);
+  var regExpExec = uncurryThis(RegExp.prototype.exec);
+  var generatorPrototype = reflectGetPrototypeOf(function* () {
+  }.prototype);
+  var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
+  var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+  var mapGet = uncurryThis(Map.prototype.get);
+  var arrayPush = uncurryThis(Array.prototype.push);
+  var arraySplice = uncurryThis(Array.prototype.splice);
+  var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
+  var dateNow = Date.now;
+  var numberIsSafeInteger = Number.isSafeInteger;
+  var arrayCopy = uncurryThis(Reflect.get(Array.prototype, "toSpliced"));
+  var typedArrayByteLength = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteLength")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
+    return uncurryThis(getter);
+  })();
+  var ProxyConstructor = Proxy;
+  var ArrayBufferConstructor = ArrayBuffer;
+  var TextEncoderOf = typeof TextEncoder === "function" ? TextEncoder : void 0;
+  var encode = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encode);
+  var encodeInto = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encodeInto);
+  var stringCodePointAt = uncurryThis(String.prototype.codePointAt);
+  var typedArraySet = uncurryThis(Uint8Array.prototype.set);
+  var typedArrayBuffer = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "buffer")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.buffer is not an accessor");
+    return uncurryThis(getter);
+  })();
+  var typedArrayByteOffset = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteOffset")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteOffset is not an accessor");
+    return uncurryThis(getter);
+  })();
+  var arrayBufferByteLength = (() => {
+    const getter = reflectGetOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("ArrayBuffer.prototype.byteLength is not an accessor");
+    const length = uncurryThis(getter);
+    const sharedGetter = typeof SharedArrayBuffer === "function" ? reflectGetOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength")?.get : void 0;
+    const sharedLength = sharedGetter === void 0 ? void 0 : uncurryThis(sharedGetter);
+    return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === void 0 ? length(buffer) : sharedLength(buffer);
+  })();
+  var arrayShift = uncurryThis(Array.prototype.shift);
+  var setValuesOf = uncurryThis(Set.prototype.values);
+  var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Set()).values()) ?? {}, "next"));
+  var mapValuesOf = uncurryThis(Map.prototype.values);
+  var mapIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Map()).values()) ?? {}, "next"));
+  var promiseThen = uncurryThis(Promise.prototype.then);
+  var promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
+  var promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+  var mapForEach = uncurryThis(Map.prototype.forEach);
+  var arrayPop = uncurryThis(Array.prototype.pop);
+  var stringLocaleCompare = uncurryThis(String.prototype.localeCompare);
+  var stringPadStart = uncurryThis(String.prototype.padStart);
+  var numberIsFinite = Number.isFinite;
+  var typedArrayFill = uncurryThis(Uint8Array.prototype.fill);
+
   var NODE_SHIM_RPC_METHODS = [
     "readFile",
     "writeFileStat",
@@ -795,35 +968,46 @@ return globalThis.Go;
     "fsListTree",
     "fsReadDirectories"
   ];
-  var SUPERVISOR_ANSWERED_METHODS = [
-    ...FILESYSTEM_ANSWERED_RPC_METHODS,
-    ...NODE_SHIM_RPC_METHODS
-  ];
+  var SUPERVISOR_ANSWERED_METHODS = (() => {
+    const methods = new SafeList();
+    for (let i = 0; i < FILESYSTEM_ANSWERED_RPC_METHODS.length; i++) methods[methods.length] = FILESYSTEM_ANSWERED_RPC_METHODS[i];
+    for (let i = 0; i < NODE_SHIM_RPC_METHODS.length; i++) methods[methods.length] = NODE_SHIM_RPC_METHODS[i];
+    return arrayCopy(methods);
+  })();
   var ANSWERED = {};
-  Reflect.setPrototypeOf(ANSWERED, null);
-  for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
+  reflectSetPrototypeOf(ANSWERED, null);
+  for (let i = 0; i < SUPERVISOR_ANSWERED_METHODS.length; i++) {
+    const name = SUPERVISOR_ANSWERED_METHODS[i];
+    ANSWERED[name] = true;
+  }
   var WAITS = {};
-  Reflect.setPrototypeOf(WAITS, null);
-  for (const method of Object.values(FILESYSTEM_METHODS)) if ("waits" in method) WAITS[method.rpc] = true;
+  reflectSetPrototypeOf(WAITS, null);
+  {
+    const names = objectKeys(FILESYSTEM_METHODS);
+    for (let i = 0; i < names.length; i++) {
+      const method = FILESYSTEM_METHODS[names[i]];
+      if (objectHasOwn(method, "waits")) WAITS[method.rpc] = true;
+    }
+  }
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
-  var ANSWERING =   Symbol.for("nimbus.answering-supervisor");
+  var ANSWERING = symbolFor("nimbus.answering-supervisor");
   function isAnsweringStub(supervisor) {
-    return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, "answer") === "function";
+    return reflectGet(supervisor, ANSWERING) !== true && typeof reflectGet(supervisor, "answer") === "function";
   }
   function answeringSupervisor(supervisor, live) {
     if (!isAnsweringStub(supervisor)) return supervisor;
     const stub = supervisor;
-    return new Proxy(supervisor, {
+    return new ProxyConstructor(supervisor, {
       get(target, name) {
         if (name === ANSWERING) return true;
-        if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
+        if (!isSupervisorAnsweredMethod(name)) return reflectGet(target, name);
         return async (...args) => {
           const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
           const answer = await asked;
           try {
-            if ("refusal" in answer) throw supervisorRefusalError(answer.refusal);
+            if (objectHasOwn(answer, "refusal")) throw supervisorRefusalError(answer.refusal);
             return answer.value;
           } finally {
             disposeRpcResource(answer);
@@ -837,12 +1021,12 @@ return globalThis.Go;
       synchronous: local,
       writeFileFrom: async (path) => {
         const name = typeof path === "string" ? path : path.path;
-        throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: "ENOTSUP" });
+        throw objectAssign(new ErrorConstructor(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: "ENOTSUP" });
       }
     });
   }
   function toldLive(call, live) {
-    const native = Promise.resolve(call);
+    const native = promiseResolve(call);
     live?.(native);
     return native;
   }

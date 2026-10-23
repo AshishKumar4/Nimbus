@@ -20,7 +20,7 @@
  * `require`, which every read, scan and write goes through.
  */
 import { isFeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
-import { JSONParse, JSONStringify } from '@nimbus-sh/core/_shared/primordials.js';
+import { Error, JSONParse, JSONStringify, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
 export function createCoherence() {
     let t = null;
     /**
@@ -64,7 +64,7 @@ export function createCoherence() {
         sealed: () => (isSealed ? sealReason : null),
         seal(reason) {
             isSealed = true;
-            sealReason = String(reason || 'resealed');
+            sealReason = stringOf(reason || 'resealed');
             read = null;
         },
         unseal() {

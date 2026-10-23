@@ -11,6 +11,7 @@ import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '@nimbus-s
 import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '@nimbus-sh/platform/limits.js';
 import { RESIDENT_ROW_BYTES, residentBytes } from './cell-cost.js';
 import { rootOf } from '@nimbus-sh/core/runtime/feed-position.js';
+import { arrayCopy, arrayIsArray, mathFloor, mathMax, mathMin, SafeList, typedArrayByteLength } from '@nimbus-sh/core/_shared/primordials.js';
 export function createPages(coherence, admission, namespace) {
     let clock = null;
     let total = null;
@@ -24,9 +25,9 @@ export function createPages(coherence, admission, namespace) {
         // A one-shot's heap has a fixed budget, which the pages may have half of.
         // A facet's storage grows by grants as it needs, and its pages are held to
         // a share of what the ledger has left instead.
-        const half = admission.inHeap && admission.cap !== null ? Math.floor(admission.cap / 2) : Infinity;
-        const share = admission.available === null ? Infinity : Math.floor(RESIDENT_PAGE_CACHE_FREE_SHARE * (held() + admission.available));
-        return Math.min(RESIDENT_PAGE_CACHE_BYTES, half, share);
+        const half = admission.inHeap && admission.cap !== null ? mathFloor(admission.cap / 2) : Infinity;
+        const share = admission.available === null ? Infinity : mathFloor(RESIDENT_PAGE_CACHE_FREE_SHARE * (held() + admission.available));
+        return mathMin(RESIDENT_PAGE_CACHE_BYTES, half, share);
     };
     const get = (path, rev, part) => {
         const t = coherence.require();
@@ -39,7 +40,7 @@ export function createPages(coherence, admission, namespace) {
     /** Hold a page, the least recently used out first to stay in bounds. False when it cannot be held. */
     const put = (path, rev, part, bytes) => {
         const t = coherence.require();
-        const size = bytes.byteLength;
+        const size = typedArrayByteLength(bytes);
         const limit = bound();
         if (size > limit)
             return false;
@@ -47,7 +48,8 @@ export function createPages(coherence, admission, namespace) {
             const oldest = t.pageOldest(16);
             if (oldest.length === 0)
                 break;
-            for (const row of oldest) {
+            for (let i = 0; i < oldest.length; i++) {
+                const row = oldest[i];
                 t.pageDelete(row.path, row.rev, row.part);
                 total = held() - row.size;
                 if (total + size <= limit)
@@ -70,39 +72,44 @@ export function createPages(coherence, admission, namespace) {
         // epoch costs nothing.
         const epoch = rootOf(cursor).epoch;
         const keyed = epoch + '\u0000' + k;
-        const out = new Array(last - first + 1);
-        const missing = [];
+        const out = new SafeList(last - first + 1);
+        const missing = new SafeList();
         for (let part = first; part <= last; part++) {
             const page = get(keyed, rev, part);
             if (page !== undefined)
                 out[part - first] = page;
             else
-                missing.push(part);
+                missing[missing.length] = part;
         }
-        const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
+        const perBatch = mathMax(1, mathMin(FS_READ_BATCH_PATH_LIMIT, mathFloor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
         for (let at = 0; at < missing.length; at += perBatch) {
-            const batch = missing.slice(at, at + perBatch);
-            const ranges = batch.map((part) => {
-                const offset = part * RESIDENT_PAGE_BYTES;
-                return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
-            });
+            const batch = new SafeList();
+            for (let i = at; i < missing.length && i < at + perBatch; i++)
+                batch[batch.length] = missing[i];
+            const ranges = new SafeList();
+            let room = 0;
+            for (let i = 0; i < batch.length; i++) {
+                const offset = batch[i] * RESIDENT_PAGE_BYTES;
+                ranges[i] = { path: '/' + k, offset, length: mathMin(RESIDENT_PAGE_BYTES, mathMax(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
+                room += ranges[i].length + RESIDENT_ROW_BYTES;
+            }
             // N18: room asked for first; a page the ledger will not admit is still read, only not held.
-            await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+            await admission.ensureRoom(room);
             let results;
             try {
-                results = await supervisor.fsReadBatch(ranges);
+                results = await supervisor.fsReadBatch(arrayCopy(ranges));
             }
             catch {
                 return null;
             }
-            if (!Array.isArray(results) || results.length !== ranges.length)
+            if (!arrayIsArray(results) || results.length !== ranges.length)
                 return null;
             for (let i = 0; i < batch.length; i++) {
                 const entry = results[i];
                 if (!entry || entry.error || entry.bytes == null)
                     return null;
                 const bytes = residentBytes(entry.bytes);
-                if (bytes.byteLength !== ranges[i].length)
+                if (typedArrayByteLength(bytes) !== ranges[i].length)
                     return null;
                 out[batch[i] - first] = bytes;
                 if (learning.installs(k))

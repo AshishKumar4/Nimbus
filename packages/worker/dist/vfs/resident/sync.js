@@ -27,6 +27,7 @@ import { feedFor, isFeedPosition, rootEpochFor, sameClock } from '@nimbus-sh/cor
 import { nsDescribes, nsKey, nsRowAt } from './namespace.js';
 import { NS_FILE, RK_OWN_WRITE } from './tables.js';
 import { messageOf } from './transport.js';
+import { arrayIncludes, arrayIsArray, Error, mathCeil, mathMax, objectAssign, objectKeys, ownValue, SafeList, SafeMap, SafeSet, stringCharCodeAt, stringEndsWith, stringIncludes, stringOf, stringSlice, stringSplit, stringStartsWith, } from '@nimbus-sh/core/_shared/primordials.js';
 /** Dependencies and VCS state: written in bulk, read through the module map or not at all. */
 const PUSH_EXCLUDE = ['node_modules', '.git'];
 export function createSync(coherence, admission, namespace, cells, transport) {
@@ -42,7 +43,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
      * synchronous read may want, held from boot beside the module map. A launch
      * with none (a re-entry by an inbound request) holds what it already had.
      */
-    let plan = new Set();
+    let plan = new SafeSet();
     /**
      * Every package.json the launch's listing names, held from boot: the data
      * plan's `package-json` rule (facets/data-plan.ts) for a launch the session
@@ -61,13 +62,18 @@ export function createSync(coherence, admission, namespace, cells, transport) {
      * Null: no such rule (a resident's plan names its manifests itself).
      */
     let manifests = null;
-    const isManifest = (path) => (path === 'package.json' || path.endsWith('/package.json')) && !('/' + path).includes('/.git/');
+    const isManifest = (path) => (path === 'package.json' || stringEndsWith(path, '/package.json')) && !stringIncludes(('/' + path), '/.git/');
     const pushable = (path) => {
-        for (const root of pushRoots) {
-            if (root !== '' && path !== root && !path.startsWith(root + '/'))
+        for (let i = 0; i < pushRoots.length; i++) {
+            const root = pushRoots[i];
+            if (root !== '' && path !== root && !stringStartsWith(path, root + '/'))
                 continue;
-            const rest = root === '' ? path : path.slice(root.length + 1);
-            if (!rest.split('/').some((seg) => PUSH_EXCLUDE.includes(seg)))
+            const rest = root === '' ? path : stringSlice(path, root.length + 1);
+            const segments = stringSplit(rest, '/');
+            let excluded = false;
+            for (let j = 0; j < segments.length && !excluded; j++)
+                excluded = arrayIncludes(PUSH_EXCLUDE, segments[j]);
+            if (!excluded)
                 return true;
         }
         return false;
@@ -86,8 +92,10 @@ export function createSync(coherence, admission, namespace, cells, transport) {
     const applyAcquire = async (supervisor, result) => {
         await admission.roomForPushed(result);
         const applied = cells.admit(result);
-        for (const dir of applied.relist)
+        for (let i = 0; i < applied.relist.length; i++) {
+            const dir = applied.relist[i];
             await transport.relist(supervisor, dir);
+        }
         return applied;
     };
     /**
@@ -116,11 +124,12 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         const applied = await applyAcquire(supervisor, result);
         // A dropped row was held, so it is wanted again at its new revision.
         const refetch = [];
-        for (const path of applied.dropped) {
+        for (let i = 0; i < applied.dropped.length; i++) {
+            const path = applied.dropped[i];
             const found = namespace.resolve(path, false);
             if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE)
                 continue;
-            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
+            refetch[refetch.length] = { path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) };
         }
         if (refetch.length > 0)
             await transport.fetchFiles(supervisor, refetch);
@@ -210,7 +219,9 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         // complete enumeration: a truncated one cannot tell a path that was removed
         // from one that was never walked.
         const judgeable = listing.complete;
-        const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
+        let describable = judgeable;
+        for (let i = 0; describable && i < listing.names.length; i++)
+            describable = nsDescribes(listing.names[i].stat);
         // May a held revision of `path` be COMPARED with a listed one? Only on one
         // clock: its feed in one incarnation. Across a restart the clocks are
         // unrelated, and an untouched path lists at rev 0, which would vouch for anything.
@@ -221,24 +232,27 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         // SQLite holds was written at a generation past 0). Its row is never
         // vouched for, so a reconcile refetches what the mount holds now.
         const vouches = (entry, rev) => entry !== undefined && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
-        const listed = new Map();
-        for (const file of listing.entries)
+        const listed = new SafeMap();
+        for (let i = 0; i < listing.entries.length; i++) {
+            const file = listing.entries[i];
             listed.set(file.path, file);
+        }
         const rows = t.fileRows();
-        const current = new Set();
+        const current = new SafeSet();
         const dropped = [];
         const own = [];
         let rekeyed = 0;
         /** Dated files the listing proved current: kept, so never swept with the rest. */
         let vouched = 0;
-        for (const row of rows) {
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
             const entry = listed.get(row.path);
             if (row.rev === RK_OWN_WRITE) {
                 current.add(row.path);
-                own.push({
+                own[own.length] = {
                     path: row.path,
                     rev: !comparable(row.path) ? null : entry !== undefined ? entry.rev : feedFor(at, row.path).cursor,
-                });
+                };
                 continue;
             }
             if (vouches(entry, row.rev)) {
@@ -255,13 +269,13 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             // says this credential may read them (a chmod or chown moves the
             // revision and no byte). Equal keys are equal bytes, so this needs no
             // comparable clock.
-            if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey && namespace.readable(entry.stat)) {
+            if (entry !== undefined && row.ckey !== null && ownValue(entry, 'ckey') != null && row.ckey === ownValue(entry, 'ckey') && namespace.readable(ownValue(entry, 'stat'))) {
                 t.fileSetRev(row.path, entry.rev);
                 current.add(row.path);
                 rekeyed++;
                 continue;
             }
-            dropped.push(row.path);
+            dropped[dropped.length] = row.path;
         }
         // Cells held in the heap (own writes the store had no room for) are judged
         // as file rows are, on every path a file row is (N18). Undated, a write-back
@@ -269,13 +283,16 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         // own. Dated: kept only where the listing proves it current; otherwise it
         // goes, and is fetched again like any dropped row, so a sync read of it is
         // a miss rather than bytes the authority has replaced.
-        for (const [path, rev] of cells.heldRevisions()) {
+        const heldRevisions = cells.heldRevisions();
+        for (let i = 0; i < heldRevisions.length; i++) {
+            const path = heldRevisions[i][0];
+            const rev = heldRevisions[i][1];
             if (current.has(path))
                 continue;
             const entry = listed.get(path);
             if (rev === RK_OWN_WRITE) {
                 current.add(path);
-                own.push({ path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor });
+                own[own.length] = { path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor };
                 continue;
             }
             if (vouches(entry, rev)) {
@@ -288,7 +305,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 continue;
             }
             cells.forget(path);
-            dropped.push(path);
+            dropped[dropped.length] = path;
         }
         // Sweep what could not be vouched for. When NOTHING could — a new supervisor
         // incarnation, whose revisions say nothing about ours, and no other feed's
@@ -301,7 +318,8 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             t.dropDatedFiles();
         }
         else {
-            for (const path of dropped) {
+            for (let i = 0; i < dropped.length; i++) {
+                const path = dropped[i];
                 t.chunkDelete(path);
                 t.fileDelete(path);
             }
@@ -310,10 +328,11 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         // stale — it was held for a reason — and what the pushes a poison lost
         // would have carried: files under the push roots changed since the cursor
         // (all of them there, when the revisions are not comparable).
-        const wanted = new Set(dropped);
+        const wanted = new SafeSet(dropped);
         const fetch = [];
         const copied = [];
-        for (const file of listing.entries) {
+        for (let i = 0; i < listing.entries.length; i++) {
+            const file = listing.entries[i];
             if (current.has(file.path))
                 continue;
             if (manifests !== null && isManifest(file.path)) {
@@ -321,20 +340,21 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 // where the listing says this credential may read them; otherwise the
                 // session is asked, and answers.
                 const copy = manifests.get(file.path);
-                if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey && namespace.readable(file.stat))
-                    copied.push({ file, text: String(copy[1]) });
+                const ckey = ownValue(file, 'ckey');
+                if (arrayIsArray(copy) && ckey !== null && copy[0] === ckey && namespace.readable(ownValue(file, 'stat')))
+                    copied[copied.length] = { file, text: stringOf(copy[1]) };
                 else
-                    fetch.push(file);
+                    fetch[fetch.length] = file;
                 continue;
             }
             if (plan.has(file.path) || wanted.has(file.path)
                 || (pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held, file.path).cursor)))
-                fetch.push(file);
+                fetch[fetch.length] = file;
         }
         // Reserve mandatory metadata growth while optional data is fetched, but
         // retain the existing namespace publication order across the await.
         const heap = coherence.heap;
-        const namespaceGrowth = admission.inHeap && describable && heap !== null ? Math.max(0, listing.namespaceBytes - heap.nsBytes()) : 0;
+        const namespaceGrowth = admission.inHeap && describable && heap !== null ? mathMax(0, ownValue(listing, 'namespaceBytes') - heap.nsBytes()) : 0;
         const refused = admission.namespaceRefusal(namespaceGrowth);
         if (refused !== null)
             namespace.refuse(t, refused);
@@ -344,13 +364,16 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             // A copy holds the bytes the listing names (equal content keys), dated at
             // its revision; one the store has no room for is fetched like the rest.
             let copiedBytes = 0;
-            for (const { text } of copied)
+            for (let i = 0; i < copied.length; i++) {
+                const { text } = copied[i];
                 copiedBytes += residentCellCost(text);
+            }
             if (copiedBytes > 0)
                 await admission.ensureRoom(copiedBytes);
-            for (const { file, text } of copied) {
-                if (!cells.put(t, file.path, text, file.rev, file.ckey))
-                    fetch.push(file);
+            for (let i = 0; i < copied.length; i++) {
+                const { file, text } = copied[i];
+                if (!cells.put(t, file.path, text, file.rev, ownValue(file, 'ckey')))
+                    fetch[fetch.length] = file;
             }
             filled = await transport.fetchFiles(supervisor, fetch);
         }
@@ -420,12 +443,14 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             coherence.unseal();
             return null;
         }
-        for (const path of Object.keys(bundle || {})) {
+        const paths = objectKeys(bundle || {});
+        for (let i = 0; i < paths.length; i++) {
+            const path = paths[i];
             cells.put(t, path, bundle[path], feedFor(moduleCursor, path).cursor);
         }
         return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
     };
-    const fail = (pass) => (pass && (pass.skipped || pass.incomplete)) || null;
+    const fail = (pass) => (pass && (ownValue(pass, 'skipped') || ownValue(pass, 'incomplete'))) || null;
     return {
         /**
          * Make this incarnation's store servable before the program's first
@@ -479,8 +504,9 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 catch (e) {
                     failure = messageOf(e);
                 }
-                if (pass && pass.cursor)
-                    return { cursor: await catchUp(supervisor, pass.cursor), failure: null };
+                const passed = pass === null ? undefined : ownValue(pass, 'cursor');
+                if (passed)
+                    return { cursor: await catchUp(supervisor, passed), failure: null };
                 failure = 'a kept store could not be reconciled ('
                     + (failure || fail(pass) || 'the listing vouched for nothing')
                     + '); it was emptied and this launch booted from its own snapshot';
@@ -494,11 +520,12 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             let bytes = moduleBytes;
             if (typeof bytes !== 'number') {
                 bytes = 0;
-                for (const path of Object.keys(bundle || {}))
-                    bytes += residentCellCost(bundle[path]);
+                const paths = objectKeys(bundle || {});
+                for (let i = 0; i < paths.length; i++)
+                    bytes += residentCellCost(bundle[paths[i]]);
             }
             if (!(await admission.ensureRoom(bytes))) {
-                throw Object.assign(new Error('ENOSPC: workspace storage is full: this process\'s modules (' + Math.ceil(bytes / 1048576)
+                throw objectAssign(new Error('ENOSPC: workspace storage is full: this process\'s modules (' + mathCeil(bytes / 1048576)
                     + ' MiB) do not fit in what is left of the session\'s storage'), { code: 'ENOSPC' });
             }
             const adopted = adoptModuleBundle(bundle, moduleCursor);
@@ -514,23 +541,47 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             catch (e) {
                 failure = messageOf(e);
             }
-            if (pass && pass.cursor)
-                return { cursor: await catchUp(supervisor, pass.cursor), failure };
+            const passed = pass === null ? undefined : ownValue(pass, 'cursor');
+            if (passed)
+                return { cursor: await catchUp(supervisor, passed), failure };
             return { cursor: adopted, failure: failure || fail(pass) };
         },
         setPushRoots(roots) {
-            pushRoots = (Array.isArray(roots) ? roots : []).map((r) => String(r).replace(/^\/+|\/+$/g, ''));
+            const given = arrayIsArray(roots) ? roots : [];
+            const trimmed = new SafeList();
+            for (let i = 0; i < given.length; i++) {
+                // Its slashes at either end dropped (/^\/+|\/+$/g).
+                const root = stringOf(given[i]);
+                let from = 0;
+                let to = root.length;
+                while (from < to && stringCharCodeAt(root, from) === 0x2f)
+                    from++;
+                while (to > from && stringCharCodeAt(root, to - 1) === 0x2f)
+                    to--;
+                trimmed[i] = stringSlice(root, from, to);
+            }
+            pushRoots = trimmed;
         },
         pushable,
         acquireOptions,
         applyAcquire,
         setPlan(paths) {
-            plan = new Set(Array.isArray(paths) ? paths.map((p) => nsKey(p)) : []);
+            plan = new SafeSet();
+            if (arrayIsArray(paths))
+                for (let i = 0; i < paths.length; i++)
+                    plan.add(nsKey(paths[i]));
         },
         setManifests(given) {
-            const files = given && typeof given === 'object' && given.files && typeof given.files === 'object'
-                ? given.files : null;
-            manifests = files === null ? null : new Map(Object.entries(files));
+            const listed = given && typeof given === 'object' ? ownValue(given, 'files') : undefined;
+            const files = listed && typeof listed === 'object' ? listed : null;
+            if (files === null) {
+                manifests = null;
+                return;
+            }
+            manifests = new SafeMap();
+            const names = objectKeys(files);
+            for (let i = 0; i < names.length; i++)
+                manifests.set(names[i], files[names[i]]);
         },
         adoptModuleBundle,
         synchronize,
@@ -546,8 +597,13 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             if (cursor === null)
                 return { requested: 0, filled: 0, failed: 0, bytes: 0 };
             const fetch = [];
-            const seen = new Set();
-            for (const path of [...dropped, ...plan]) {
+            const seen = new SafeSet();
+            const asked = new SafeList();
+            for (let i = 0; i < dropped.length; i++)
+                asked[asked.length] = dropped[i];
+            plan.forEach((path) => { asked[asked.length] = path; });
+            for (let i = 0; i < asked.length; i++) {
+                const path = asked[i];
                 if (seen.has(path))
                     continue;
                 seen.add(path);
@@ -556,7 +612,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 const row = nsRowAt(t, path);
                 if (row === undefined || row.kind !== NS_FILE)
                     continue;
-                fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
+                fetch[fetch.length] = { path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) };
             }
             return transport.fetchFiles(supervisor, fetch);
         },

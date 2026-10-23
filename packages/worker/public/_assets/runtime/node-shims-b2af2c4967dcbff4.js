@@ -312,14 +312,29 @@ var arrayBufferByteLength = (() => {
 var arrayShift = uncurryThis(Array.prototype.shift);
 var setValuesOf = uncurryThis(Set.prototype.values);
 var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Set()).values()) ?? {}, "next"));
+var mapValuesOf = uncurryThis(Map.prototype.values);
+var mapIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Map()).values()) ?? {}, "next"));
+function mapFind(map, test) {
+  const iterator = mapValuesOf(map);
+  for (let step = mapIteratorNext(iterator); !step.done; step = mapIteratorNext(iterator)) if (test(step.value)) return step.value;
+  return void 0;
+}
 function setFind(set, test) {
   const iterator = setValuesOf(set);
   for (let step = setIteratorNext(iterator); !step.done; step = setIteratorNext(iterator)) if (test(step.value)) return step.value;
   return void 0;
 }
+function ownValue(record, key) {
+  return objectHasOwn(record, key) ? record[key] : void 0;
+}
 var promiseThen = uncurryThis(Promise.prototype.then);
 var promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
 var promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+function promiseRace(list) {
+  return new PromiseConstructor((resolve, reject) => {
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [resolve, reject]);
+  });
+}
 function promiseFinally(promise, onFinally) {
   return promiseThen(
     promise,
@@ -328,6 +343,11 @@ function promiseFinally(promise, onFinally) {
       throw reason;
     })
   );
+}
+function setOfList(list) {
+  const set = new SafeSet();
+  for (let i = 0; i < list.length; i++) set.add(list[i]);
+  return set;
 }
 function setList(set) {
   const list = new SafeList();
@@ -351,20 +371,39 @@ function mapKeyList(map) {
   });
   return list;
 }
+var arrayPop = uncurryThis(Array.prototype.pop);
+function stringSplit(text, separator) {
+  const parts = new SafeList();
+  let from = 0;
+  for (let at = stringIndexOf(text, separator); at >= 0; at = stringIndexOf(text, separator, from)) {
+    parts[parts.length] = stringSlice(text, from, at);
+    from = at + separator.length;
+  }
+  parts[parts.length] = stringSlice(text, from);
+  return parts;
+}
 var stringLocaleCompare = uncurryThis(String.prototype.localeCompare);
 var stringPadStart = uncurryThis(String.prototype.padStart);
 var mathTrunc = Math.trunc;
 var numberIsFinite = Number.isFinite;
 var typedArrayFill = uncurryThis(Uint8Array.prototype.fill);
-function bytesView(bytes, start, end = typedArrayByteLength(bytes)) {
-  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + start, end > start ? end - start : 0);
+function relativeIndex(at, length) {
+  const integer = at !== at ? 0 : mathTrunc(at);
+  return integer < 0 ? mathMax(length + integer, 0) : mathMin(integer, length);
 }
-function bytesCopy(bytes, start = 0, end = typedArrayByteLength(bytes)) {
-  const copy = new Uint8ArrayConstructor(end > start ? end - start : 0);
-  typedArraySet(copy, bytesView(bytes, start, end));
+function bytesView(bytes, start = 0, end) {
+  const length = typedArrayByteLength(bytes);
+  const from = relativeIndex(start, length);
+  const to = end === void 0 ? length : relativeIndex(end, length);
+  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + from, to > from ? to - from : 0);
+}
+function bytesCopy(bytes, start = 0, end) {
+  const view = bytesView(bytes, start, end);
+  const copy = new Uint8ArrayConstructor(typedArrayByteLength(view));
+  typedArraySet(copy, view);
   return copy;
 }
-return { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: ProxyConstructor, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, bytesCopy, bytesView, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mapKeyList, mapValueList, mathAbs, mathCeil, mathFloor, mathMax, mathMin, mathTrunc, newTextEncoder, newURL, numberIsFinite, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseFinally, promiseReject, promiseResolve, promiseSettled, promiseThen, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, setList, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringLocaleCompare, stringOf, stringPadStart, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArrayFill, typedArraySet, useCaptureStackTrace };
+return { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: ProxyConstructor, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPop, arrayPush, arrayShift, arraySort, arraySplice, bytesCopy, bytesView, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapFind, mapGet, mapKeyList, mapValueList, mathAbs, mathCeil, mathFloor, mathMax, mathMin, mathTrunc, newTextEncoder, newURL, numberIsFinite, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, ownValue, parseFloatOf, parseIntOf, promiseAll, promiseFinally, promiseRace, promiseReject, promiseResolve, promiseSettled, promiseThen, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, setList, setOfList, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringLocaleCompare, stringOf, stringPadStart, stringSlice, stringSplit, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArrayFill, typedArraySet, useCaptureStackTrace };
 })();
 
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, tlsCertAltnameFormat, tlsCertAltnameInvalid, useNodeErrorInspect } = (() => {

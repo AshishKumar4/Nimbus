@@ -8,6 +8,7 @@
  */
 import type { RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
+import { SafeMap } from '../../_shared/primordials.js';
 export interface OwnNamesOptions {
     /** The view's own word, this process's aside (HolderStore.entry). */
     entry(key: string): ResidentEntry | null | undefined;
@@ -18,7 +19,7 @@ export interface OwnNames {
     /** This process's word on `key`: what it decided, or absent for a name not made in a directory it made. Undefined where it has none. */
     entry(key: string): ResidentEntry | null | undefined;
     /** What it decided, by name (null: removed): read as the holder decides; a name decided again is the deciding grant's. */
-    readonly decided: ReadonlyMap<string, ResidentEntry | null>;
+    readonly decided: SafeMap<string, ResidentEntry | null>;
     /** Decide `key` (null: removed): a new decision there, of a new generation. */
     decide(key: string, entry: ResidentEntry | null): void;
     /** The generation of its decision at `key`: undefined where it has none. */

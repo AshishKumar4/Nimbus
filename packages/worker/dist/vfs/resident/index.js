@@ -161,7 +161,7 @@ import { createSync } from './sync.js';
 import { createTransport } from './transport.js';
 import { heapTables } from './tables.js';
 import { kvTables } from './kv-tables.js';
-import { SafeList, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
+import { Error, ownValue, reflectApply, reflectGet, SafeList, stringOf, symbolIterator } from '@nimbus-sh/core/_shared/primordials.js';
 export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
 export { ANONYMOUS_DEV } from '@nimbus-sh/core/vfs/composite.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
@@ -176,22 +176,26 @@ export { processFilesystem } from '@nimbus-sh/core/runtime/wasi/process-filesyst
  * room. Read first, so a facet that has none writes nothing.
  */
 function dropSqlStore(storage) {
-    const exec = storage.sql?.exec;
+    // The platform's SQL, an accessor of ctx.storage's, and its cursor's own iterator.
+    const sql = reflectGet(storage, 'sql');
+    const exec = sql === undefined || sql === null ? undefined : reflectGet(sql, 'exec');
     if (typeof exec !== 'function')
         return;
-    const sql = storage.sql;
     const held = new SafeList();
-    for (const row of exec.call(sql, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')")) {
-        held[held.length] = stringOf(row.name);
+    const rows = reflectApply(exec, sql, ["SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')"]);
+    const iterator = reflectApply(reflectGet(rows, symbolIterator), rows, []);
+    const next = reflectGet(iterator, 'next');
+    for (let step = reflectApply(next, iterator, []); !step.done; step = reflectApply(next, iterator, [])) {
+        held[held.length] = stringOf(step.value.name);
     }
     for (let i = 0; i < held.length; i++)
-        exec.call(sql, 'DROP TABLE IF EXISTS ' + held[i]);
+        reflectApply(exec, sql, ['DROP TABLE IF EXISTS ' + held[i]]);
 }
 export function createResidentStore(options = {}) {
     const coherence = createCoherence();
     const admission = createAdmission(coherence);
     const namespace = createNamespace(coherence, admission);
-    const observeRead = options.observeRead ?? null;
+    const observeRead = ownValue(options, 'observeRead') ?? null;
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
@@ -209,7 +213,8 @@ export function createResidentStore(options = {}) {
     return {
         bundle: cells.bundle,
         bind(ctx) {
-            const storage = ctx?.storage;
+            // ctx.storage: an accessor of the platform's state object.
+            const storage = typeof ctx === 'object' && ctx !== null ? reflectGet(ctx, 'storage') : undefined;
             if (!storage || typeof storage.kv?.get !== 'function' || typeof storage.put !== 'function') {
                 throw new Error('Nimbus: this facet has no synchronous key-value storage (ctx.storage.kv); '
                     + 'the resident set cannot be served and every sync read would raise EAGAIN');

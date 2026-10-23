@@ -45,6 +45,6 @@ export interface ReadDirectoryPool {
      */
     dispose(): Promise<void>;
 }
-export declare function readDirectoryPool({ call, store, client, before, endWaitMs }: Options): ReadDirectoryPool;
+export declare function readDirectoryPool(options: Options): ReadDirectoryPool;
 export {};
 //# sourceMappingURL=read-directory-pool.d.ts.map

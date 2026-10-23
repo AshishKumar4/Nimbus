@@ -8,9 +8,10 @@
 import { sqlJournal } from '../../_shared/process-fs-journal.js';
 import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '../vfs-supervisor.js';
 import { residentFilesystem } from './resident-filesystem.js';
+import { ownValue, reflectApply, reflectDeleteProperty, reflectGet, stringIncludes, stringSlice, stringStartsWith } from '../../_shared/primordials.js';
 /** Whether `key` is a home directory itself (`home/<name>`, root's `root`): never held, so the editor and shell there recall nothing. */
 export function isHomeDirectory(key) {
-    return key === 'root' || (key.startsWith('home/') && key.length > 'home/'.length && !key.slice('home/'.length).includes('/'));
+    return key === 'root' || (stringStartsWith(key, 'home/') && key.length > 'home/'.length && !stringIncludes(stringSlice(key, 'home/'.length), '/'));
 }
 /**
  * The process's filesystem over `supervisor` (an RPC stub, or one already
@@ -18,14 +19,19 @@ export function isHomeDirectory(key) {
  */
 export function processFilesystem(supervisor, view, options = {}) {
     const authority = supervisorFilesystem(supervisor);
-    const { journalSql, holdsGrants, ...delegation } = options;
+    const journalSql = ownValue(options, 'journalSql');
+    const holdsGrants = ownValue(options, 'holdsGrants');
+    const { ...delegation } = options;
+    reflectDeleteProperty(delegation, 'journalSql');
+    reflectDeleteProperty(delegation, 'holdsGrants');
     // Its refusals rethrown as the errors they are, as the authority's are.
     const directories = answeringSupervisor(supervisor);
     return residentFilesystem(authority, view, {
         ...delegation,
         session: supervisorSession(supervisor, authority, undefined, holdsGrants !== false),
         isHomeRoot: isHomeDirectory,
-        ...(typeof directories.fsReadDirectories === 'function' ? { readDirectories: (request) => directories.fsReadDirectories(request) } : {}),
+        ...(typeof reflectGet(directories, 'fsReadDirectories') === 'function'
+            ? { readDirectories: (request) => reflectApply(reflectGet(directories, 'fsReadDirectories'), directories, [request]) } : {}),
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
     });
 }

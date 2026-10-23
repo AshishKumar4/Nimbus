@@ -24,7 +24,7 @@ import type { Cells } from './cells.js';
 import type { Coherence } from './coherence.js';
 import { type Namespace } from './namespace.js';
 import type { Pages } from './pages.js';
-import type { ResidentCred } from './permissions.js';
+import { type ResidentCred } from './permissions.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import type { Sync } from './sync.js';
 import type { Transport } from './transport.js';

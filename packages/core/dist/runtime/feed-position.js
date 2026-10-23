@@ -10,7 +10,7 @@
  * feedOf, and only the composite reads them whole (feedsOf). So nothing that
  * compares the root reads anything but the root's feed.
  */
-import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringSlice, stringStartsWith, TypeError } from '../_shared/primordials.js';
+import { objectHasOwn, objectKeys, ownField, SafeWeakMap, stringCharCodeAt, stringSlice, stringStartsWith, TypeError } from '../_shared/primordials.js';
 /** The root's mount point: its feed is the SQLite namespace's. */
 export const ROOT_FEED = '/';
 export function positionOf(table, feeds) {
@@ -36,13 +36,14 @@ export function rootOf(position) {
 export function isFeedPosition(value) {
     if (value === null || typeof value !== 'object')
         return false;
-    const { table, feeds } = value;
+    const table = ownField(value, 'table');
+    const feeds = ownField(value, 'feeds');
     if (typeof table !== 'string' || feeds === null || typeof feeds !== 'object')
         return false;
     const points = objectKeys(feeds);
     for (let i = 0; i < points.length; i++) {
         const feed = feeds[points[i]];
-        if (feed === null || typeof feed !== 'object' || typeof feed.epoch !== 'string' || typeof feed.cursor !== 'number')
+        if (feed === null || typeof feed !== 'object' || typeof ownField(feed, 'epoch') !== 'string' || typeof ownField(feed, 'cursor') !== 'number')
             return false;
     }
     return objectHasOwn(feeds, ROOT_FEED);

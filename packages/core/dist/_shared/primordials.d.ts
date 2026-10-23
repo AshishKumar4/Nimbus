@@ -182,7 +182,7 @@ export declare const stringIncludes: (text: string, search: string) => boolean;
 export declare const stringIndexOf: (text: string, search: string, position?: number) => number;
 export declare const stringToLowerCase: (text: string) => string;
 export declare const arrayIncludes: <T>(list: readonly T[], value: T) => boolean;
-export declare const arrayIndexOf: <T>(list: readonly T[], value: T) => number;
+export declare const arrayIndexOf: <T>(list: readonly T[], value: T, from?: number) => number;
 export declare const setForEach: <T>(set: ReadonlySet<T>, each: (value: T) => void) => void;
 /** Array.prototype.sort of a SafeList, which inherits nothing it could read or write past its end. */
 export declare const arraySort: <T>(list: SafeList<T>, compare: (a: T, b: T) => number) => SafeList<T>;
@@ -241,8 +241,12 @@ export declare const typedArrayByteOffset: (view: Uint8Array) => number;
 export declare const arrayBufferByteLength: (buffer: ArrayBufferLike) => number;
 /** Array.prototype.shift: unlike splice, it makes no array, so it consults no species. */
 export declare const arrayShift: <T>(list: T[]) => T | undefined;
+/** The first value of `map` that `test` holds of, or undefined: a walk that stops there, on the Map iterator as the launch found it. */
+export declare function mapFind<K, V>(map: ReadonlyMap<K, V>, test: (value: V) => boolean): V | undefined;
 /** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
 export declare function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined;
+/** `record`'s own `key`, or undefined: an optional field read without the prototype chain, typed as its contract types it. */
+export declare function ownValue<T extends object, K extends keyof T>(record: T, key: K): T[K] | undefined;
 /** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
 export declare const promiseThen: <T, R1 = T, R2 = never>(promise: Promise<T>, onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null) => Promise<R1 | R2>;
 /** `Promise.resolve(value)`, of the launch's Promise. */
@@ -252,21 +256,28 @@ export declare const promiseResolve: {
 };
 /** `Promise.reject(reason)`, of the launch's Promise. */
 export declare const promiseReject: <T = never>(reason?: unknown) => Promise<T>;
+/** Settled as the first of `list` to settle: Promise.race, without the list's iterator or the program's Promise.resolve and then. */
+export declare function promiseRace<T>(list: ArrayLike<T>): Promise<Awaited<T>>;
 /** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
 export declare function promiseFinally<T>(promise: Promise<T>, onFinally: () => unknown): Promise<T>;
+/** A SafeSet of `list`'s members, in its order: `new Set(list)` without the list's iterator. */
+export declare function setOfList<T>(list: ArrayLike<T>): SafeSet<T>;
 /** The members of `set`, in its order: a SafeList, by SafeSet's forEach as the launch captured it. */
 export declare function setList<T>(set: ReadonlySet<T>): SafeList<T>;
 /** The values of `map`, in its order: a SafeList. */
 export declare function mapValueList<K, V>(map: ReadonlyMap<K, V>): SafeList<V>;
 /** The keys of `map`, in its order: a SafeList. */
 export declare function mapKeyList<K, V>(map: ReadonlyMap<K, V>): SafeList<K>;
+export declare const arrayPop: <T>(list: T[]) => T | undefined;
+/** `text.split(separator)` for a separator that is a nonempty string, without asking it for Symbol.split: a SafeList. */
+export declare function stringSplit(text: string, separator: string): SafeList<string>;
 export declare const stringLocaleCompare: (text: string, other: string) => number;
 export declare const stringPadStart: (text: string, length: number, fill?: string) => string;
 export declare const mathTrunc: (x: number) => number;
 export declare const numberIsFinite: (number: unknown) => boolean;
 export declare const typedArrayFill: (view: Uint8Array, value: number, start?: number, end?: number) => Uint8Array;
 /** `bytes.subarray(start, end)` without the view's constructor or species: a view of the same buffer. */
-export declare function bytesView(bytes: Uint8Array, start: number, end?: number): Uint8Array;
+export declare function bytesView(bytes: Uint8Array, start?: number, end?: number): Uint8Array;
 /** `bytes.slice(start, end)` without the view's constructor or species: a copy. */
 export declare function bytesCopy(bytes: Uint8Array, start?: number, end?: number): Uint8Array;
 //# sourceMappingURL=primordials.d.ts.map

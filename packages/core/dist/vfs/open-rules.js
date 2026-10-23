@@ -1,3 +1,4 @@
+import { ownValue } from '../_shared/primordials.js';
 /**
  * Where an open looks its name up (CompositeVFS.pin): through a link at it,
  * unless it declines to (O_NOFOLLOW) or answers for the name itself
@@ -32,5 +33,5 @@ export function openAccess(flags, directory, describes = true) {
  * O_DIRECTORY changes none of these. Any other open of a directory opens.
  */
 export function refusesDirectory(flags, describes = true) {
-    return flags.create === true || flags.truncate === true || flags.append === true || (flags.write === true && !describes);
+    return ownValue(flags, 'create') === true || ownValue(flags, 'truncate') === true || ownValue(flags, 'append') === true || (ownValue(flags, 'write') === true && !describes);
 }

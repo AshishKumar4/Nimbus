@@ -1,6 +1,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
 import { FILESYSTEM_METHODS, refusalData, supervisorRefusalError } from './filesystem-methods.js';
+import { arrayCopy, Error, objectAssign, objectHasOwn, objectKeys, promiseResolve, Proxy, reflectGet, reflectSet, reflectSetPrototypeOf, SafeList, symbolFor } from '../_shared/primordials.js';
 // The method table (filesystem-methods.ts) and the typed mirrors core's
 // build writes from it (filesystem-mirrors.generated.ts).
 export { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './filesystem-mirrors.generated.js';
@@ -22,29 +23,40 @@ const NODE_SHIM_RPC_METHODS = [
     'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsListTree',
     'fsReadDirectories',
 ];
-export const SUPERVISOR_ANSWERED_METHODS = [
-    ...FILESYSTEM_ANSWERED_RPC_METHODS,
-    ...NODE_SHIM_RPC_METHODS,
-];
+export const SUPERVISOR_ANSWERED_METHODS = (() => {
+    const methods = new SafeList();
+    for (let i = 0; i < FILESYSTEM_ANSWERED_RPC_METHODS.length; i++)
+        methods[methods.length] = FILESYSTEM_ANSWERED_RPC_METHODS[i];
+    for (let i = 0; i < NODE_SHIM_RPC_METHODS.length; i++)
+        methods[methods.length] = NODE_SHIM_RPC_METHODS[i];
+    return arrayCopy(methods);
+})();
 // A table that inherits nothing, made as the module loads: a guest's every
 // supervisor call asks it, after its program may have replaced
 // Set.prototype.has (or put a name on Object.prototype).
 const ANSWERED = {};
-Reflect.setPrototypeOf(ANSWERED, null);
-for (const name of SUPERVISOR_ANSWERED_METHODS)
+reflectSetPrototypeOf(ANSWERED, null);
+for (let i = 0; i < SUPERVISOR_ANSWERED_METHODS.length; i++) {
+    const name = SUPERVISOR_ANSWERED_METHODS[i];
     ANSWERED[name] = true;
+}
 // The answered calls that wait on the session for as long as it likes (FILESYSTEM_METHODS `waits`).
 const WAITS = {};
-Reflect.setPrototypeOf(WAITS, null);
-for (const method of Object.values(FILESYSTEM_METHODS))
-    if ('waits' in method)
-        WAITS[method.rpc] = true;
+reflectSetPrototypeOf(WAITS, null);
+{
+    const names = objectKeys(FILESYSTEM_METHODS);
+    for (let i = 0; i < names.length; i++) {
+        const method = FILESYSTEM_METHODS[names[i]];
+        if (objectHasOwn(method, 'waits'))
+            WAITS[method.rpc] = true;
+    }
+}
 export function isSupervisorAnsweredMethod(name) {
     return typeof name === 'string' && ANSWERED[name] === true;
 }
 /** The refusal `error` is, or undefined when it is not one (no string `code`) and must still throw. */
 export function supervisorRefusal(error) {
-    if (!(error instanceof Error) || typeof Reflect.get(error, 'code') !== 'string')
+    if (!(error instanceof Error) || typeof reflectGet(error, 'code') !== 'string')
         return undefined;
     return refusalData(error);
 }
@@ -70,10 +82,10 @@ export async function supervisorAnswer(call) {
  * launch's copy of this module and the store bundle's (vfs/resident) agree
  * on it, or the second would answer through the first's `answer` again.
  */
-const ANSWERING = Symbol.for('nimbus.answering-supervisor');
+const ANSWERING = symbolFor('nimbus.answering-supervisor');
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor) {
-    return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, 'answer') === 'function';
+    return reflectGet(supervisor, ANSWERING) !== true && typeof reflectGet(supervisor, 'answer') === 'function';
 }
 /**
  * `supervisor`, with its filesystem calls made through `answer` and each
@@ -99,12 +111,12 @@ export function answeringSupervisor(supervisor, live) {
             if (name === ANSWERING)
                 return true;
             if (!isSupervisorAnsweredMethod(name))
-                return Reflect.get(target, name);
+                return reflectGet(target, name);
             return async (...args) => {
                 const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
                 const answer = await asked;
                 try {
-                    if ('refusal' in answer)
+                    if (objectHasOwn(answer, 'refusal'))
                         throw supervisorRefusalError(answer.refusal);
                     return answer.value;
                 }
@@ -121,7 +133,7 @@ export function answeringSupervisor(supervisor, live) {
  * (SUPERVISOR_ANSWERING_SRC).
  */
 export function installAnsweringSupervisor() {
-    Reflect.set(globalThis, '__nimbusAnsweringSupervisor', answeringSupervisor);
+    reflectSet(globalThis, '__nimbusAnsweringSupervisor', answeringSupervisor);
 }
 /**
  * Remote facets use the same typed supervisor RPC methods. A synchronous view
@@ -138,7 +150,7 @@ export function supervisorFilesystem(remote, local, live) {
         // sends it as a W7 stream (writeStream), which does.
         writeFileFrom: async (path) => {
             const name = typeof path === 'string' ? path : path.path;
-            throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
+            throw objectAssign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
         },
     });
 }
@@ -148,7 +160,7 @@ export function supervisorFilesystem(remote, local, live) {
  * follows promises (node's __nimbusTrackOp) cannot follow.
  */
 function toldLive(call, live) {
-    const native = Promise.resolve(call);
+    const native = promiseResolve(call);
     live?.(native);
     return native;
 }

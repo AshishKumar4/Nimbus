@@ -61,6 +61,9 @@ var __nimbusResidentModule = (() => {
   var SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
+  // nimbus-launch-captures:launch-captures
+  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigInt2, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError: RangeError2, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxError2, TypeError: TypeError2, URIError: URIError2, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPop, arrayPush, arrayShift, arraySort, arraySplice, bytesCopy, bytesView, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapFind, mapGet, mapKeyList, mapValueList, mathAbs, mathCeil, mathFloor, mathMax, mathMin, mathTrunc, newTextEncoder, newURL, numberIsFinite, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, ownValue, parseFloatOf, parseIntOf, promiseAll, promiseFinally, promiseRace, promiseReject, promiseResolve, promiseSettled, promiseThen, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, setList, setOfList, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringLocaleCompare, stringOf, stringPadStart, stringSlice, stringSplit, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArrayFill, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
+
   // ../core/dist/vfs/vfs-error.js
   var VFS_ERRNO = {
     E2BIG: -7,
@@ -87,13 +90,13 @@ var __nimbusResidentModule = (() => {
     EFBIG: -27
   };
   function errnoCodeOf(error) {
-    const code = typeof error === "object" && error !== null ? error.code : void 0;
-    return typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : void 0;
+    const code = typeof error === "object" && error !== null ? ownField(error, "code") : void 0;
+    return typeof code === "string" && regExpExec(/^E[A-Z0-9]+$/, code) !== null ? code : void 0;
   }
   function isVfsErrorCode(code) {
-    return typeof code === "string" && Object.hasOwn(VFS_ERRNO, code);
+    return typeof code === "string" && objectHasOwn(VFS_ERRNO, code);
   }
-  var SYSCALL_VERDICTS = /* @__PURE__ */ new Set([
+  var SYSCALL_VERDICTS = new SafeSet([
     "ENOENT",
     "EEXIST",
     "EISDIR",
@@ -112,6 +115,19 @@ var __nimbusResidentModule = (() => {
     "EXDEV",
     "ENXIO",
     "E2BIG"
+  ]);
+  var RENAME_REFUSALS = new SafeSet([
+    "EACCES",
+    "EPERM",
+    "EBUSY",
+    "EEXIST",
+    "ENOTEMPTY",
+    "ENOTDIR",
+    "EISDIR",
+    "EINVAL",
+    "EXDEV",
+    "EROFS",
+    "ENOSPC"
   ]);
   var VFS_DESCRIPTION = {
     E2BIG: "argument list too long",
@@ -159,7 +175,7 @@ var __nimbusResidentModule = (() => {
     EHOSTDOWN: "host is down"
   };
   function errnoDescription(code) {
-    return Object.prototype.hasOwnProperty.call(ERRNO_DESCRIPTION, code) ? ERRNO_DESCRIPTION[code] : void 0;
+    return objectHasOwn(ERRNO_DESCRIPTION, code) ? ERRNO_DESCRIPTION[code] : void 0;
   }
   var OTHER_ERRNO = {
     ENODATA: -61,
@@ -183,30 +199,29 @@ var __nimbusResidentModule = (() => {
   function errnoOf(code) {
     if (isVfsErrorCode(code))
       return VFS_ERRNO[code];
-    return Object.prototype.hasOwnProperty.call(OTHER_ERRNO, code) ? OTHER_ERRNO[code] : void 0;
+    return objectHasOwn(OTHER_ERRNO, code) ? OTHER_ERRNO[code] : void 0;
   }
   function systemErrorMessage(code, said, path, dest) {
     return `${code}: ${said}${path !== void 0 ? ` '${path}'` : ""}${dest !== void 0 ? ` -> '${dest}'` : ""}`;
   }
   function fsError(code, syscall, path, dest, options = {}) {
-    const words = options.detail ?? errnoDescription(code);
-    const error = new Error(systemErrorMessage(code, words === void 0 ? syscall : `${words}, ${syscall}`, path, dest), options.cause === void 0 ? void 0 : { cause: options.cause });
+    const given = ownValue(options, "detail");
+    const cause = ownValue(options, "cause");
+    const words = given ?? errnoDescription(code);
+    const error = new Error2(systemErrorMessage(code, words === void 0 ? syscall : `${words}, ${syscall}`, path, dest), cause === void 0 ? void 0 : { cause });
     const errno2 = errnoOf(code);
-    return Object.assign(error, {
+    return objectAssign(error, {
       code,
       ...errno2 === void 0 ? {} : { errno: errno2 },
       syscall,
       ...path === void 0 ? {} : { path },
       ...dest === void 0 ? {} : { dest },
-      ...options.detail === void 0 ? {} : { detail: options.detail }
+      ...given === void 0 ? {} : { detail: given }
     });
   }
 
   // ../core/dist/runtime/storage-ledger.js
   var LEDGER_ROW_BYTES = 256;
-
-  // nimbus-launch-captures:launch-captures
-  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigInt2, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError: RangeError2, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxError2, TypeError: TypeError2, URIError: URIError2, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, bytesCopy, bytesView, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mapKeyList, mapValueList, mathAbs, mathCeil, mathFloor, mathMax, mathMin, mathTrunc, newTextEncoder, newURL, numberIsFinite, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseFinally, promiseReject, promiseResolve, promiseSettled, promiseThen, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, setList, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringLocaleCompare, stringOf, stringPadStart, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArrayFill, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // ../core/dist/constants.js
   var NODE_RELEASE = "22.23.4";
@@ -408,24 +423,24 @@ var __nimbusResidentModule = (() => {
     };
     const askGrant = (bytes) => {
       const asked = supervisor;
-      if (cap === null) return Promise.resolve(true);
-      if (facet === null || !asked || typeof asked.fsStorageGrant !== "function") return Promise.resolve(false);
+      if (cap === null) return promiseResolve(true);
+      if (facet === null || !asked || typeof asked.fsStorageGrant !== "function") return promiseResolve(false);
       if (grantAsk) {
-        return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap || askGrant(bytes));
+        return promiseThen(grantAsk, () => dbBytes() + reservedBytes + bytes <= cap || askGrant(bytes));
       }
       const want = mathMax(0, dbBytes() + reservedBytes + bytes - cap);
       const named = facet;
-      grantAsk = (async () => {
+      grantAsk = promiseFinally((async () => {
         try {
           const answer = await asked.fsStorageGrant(named, want, dbBytes());
-          cap += Number(answer && answer.granted) || 0;
+          cap += NumberOf(answer && answer.granted) || 0;
           if (answer && typeof answer.available === "number") available = answer.available;
         } catch {
         }
-      })().finally(() => {
+      })(), () => {
         grantAsk = null;
       });
-      return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap);
+      return promiseThen(grantAsk, () => dbBytes() + reservedBytes + bytes <= cap);
     };
     const fits = (bytes, ask = true) => {
       if (cap === null) return true;
@@ -448,18 +463,21 @@ var __nimbusResidentModule = (() => {
       bindHeap(budget) {
         inHeap = true;
         facet = null;
-        cap = Number(budget);
+        cap = NumberOf(budget);
         namespaceOverlayBytes = 0;
         namespaceReserveBytes = 0;
         pinnedBytes = 0;
       },
       setStorage(storage, given) {
         supervisor = given || null;
-        const allowance = storage;
-        available = allowance && typeof allowance.available === "number" ? allowance.available : null;
-        if (!allowance || typeof allowance.facet !== "string" || typeof allowance.grant !== "number") return;
-        facet = allowance.facet;
-        cap = dbBytes() + allowance.grant;
+        const allowance = typeof storage === "object" && storage !== null ? storage : null;
+        const room = allowance === null ? void 0 : ownField(allowance, "available");
+        available = typeof room === "number" ? room : null;
+        const named = allowance === null ? void 0 : ownField(allowance, "facet");
+        const grant = allowance === null ? void 0 : ownField(allowance, "grant");
+        if (typeof named !== "string" || typeof grant !== "number") return;
+        facet = named;
+        cap = dbBytes() + grant;
       },
       storageCap() {
         return cap;
@@ -502,9 +520,9 @@ var __nimbusResidentModule = (() => {
       /** Reserve room for a fill of `path` before its bytes arrive: true once it is held for it. */
       reserve(path, bytes) {
         release(path);
-        if (cap === null) return Promise.resolve(true);
-        if (reserveQueue.length === 0 && holdRoom(path, bytes)) return Promise.resolve(true);
-        return new Promise((resolve) => {
+        if (cap === null) return promiseResolve(true);
+        if (reserveQueue.length === 0 && holdRoom(path, bytes)) return promiseResolve(true);
+        return new PromiseConstructor((resolve) => {
           arrayPush(reserveQueue, { path, bytes, resolve });
           void serveReserves();
         });
@@ -514,13 +532,14 @@ var __nimbusResidentModule = (() => {
       ensureRoom,
       /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
       async roomForPushed(result) {
-        const answer = result;
-        if (cap === null || !answer || !arrayIsArray(answer.paths)) return;
-        const paths = answer.paths;
+        const listed = cap === null || typeof result !== "object" || result === null ? void 0 : ownField(result, "paths");
+        if (cap === null || !arrayIsArray(listed)) return;
+        const paths = listed;
         let bytes = 0;
         for (let i = 0; i < paths.length; i++) {
           const entry = paths[i];
-          if (entry && entry.bytes != null) bytes += residentCellCost(residentBytes(entry.bytes));
+          const held = typeof entry === "object" && entry !== null ? ownField(entry, "bytes") : void 0;
+          if (held != null) bytes += residentCellCost(residentBytes(held));
         }
         if (bytes > 0) await ensureRoom(bytes);
       },
@@ -549,9 +568,10 @@ var __nimbusResidentModule = (() => {
     return (permissions >> shift & requested) === requested;
   }
   function modeAllows(stat, want, cred) {
-    if (stat.mode === void 0)
+    const mode = ownValue(stat, "mode");
+    if (mode === void 0)
       return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
+    return posixAccess({ mode, uid: ownValue(stat, "uid") ?? -1, gid: ownValue(stat, "gid") ?? -1, type: stat.type }, want, cred);
   }
   function stickyRefusal(parent, entry, cred) {
     return (parent.mode & 512) !== 0 && cred.uid !== 0 && cred.uid !== parent.uid && cred.uid !== entry.uid ? "EPERM" : null;
@@ -582,7 +602,7 @@ var __nimbusResidentModule = (() => {
     return typeof atime === "number" || typeof mtime === "number";
   }
   function timeAt(time, kept, now) {
-    return time === "omit" ? kept : time === "now" ? now : Math.trunc(time);
+    return time === "omit" ? kept : time === "now" ? now : mathTrunc(time);
   }
   function utimesRefusal(entry, explicit, cred) {
     if (!explicit)
@@ -591,13 +611,18 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/permissions.ts
-  var groupsOf = (cred) => Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
+  var groupsOf = (cred) => {
+    const groups = ownValue(cred, "groups");
+    const out = new SafeList();
+    if (arrayIsArray(groups)) for (let i = 0; i < groups.length; i++) out[i] = NumberOf(groups[i]);
+    return out;
+  };
   function namespaceAllows(cred, meta, type, want) {
     if (!cred) return true;
     return posixAccess(
-      { mode: Number(meta?.mode), uid: Number(meta?.uid), gid: Number(meta?.gid), type },
+      { mode: NumberOf(meta === void 0 ? void 0 : ownValue(meta, "mode")), uid: NumberOf(meta === void 0 ? void 0 : ownValue(meta, "uid")), gid: NumberOf(meta === void 0 ? void 0 : ownValue(meta, "gid")), type },
       want,
-      { uid: Number(cred.uid), gid: Number(cred.gid), groups: groupsOf(cred) }
+      { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: groupsOf(cred) }
     );
   }
 
@@ -619,13 +644,14 @@ var __nimbusResidentModule = (() => {
   function isFeedPosition(value) {
     if (value === null || typeof value !== "object")
       return false;
-    const { table, feeds } = value;
+    const table = ownField(value, "table");
+    const feeds = ownField(value, "feeds");
     if (typeof table !== "string" || feeds === null || typeof feeds !== "object")
       return false;
     const points = objectKeys(feeds);
     for (let i = 0; i < points.length; i++) {
       const feed = feeds[points[i]];
-      if (feed === null || typeof feed !== "object" || typeof feed.epoch !== "string" || typeof feed.cursor !== "number")
+      if (feed === null || typeof feed !== "object" || typeof ownField(feed, "epoch") !== "string" || typeof ownField(feed, "cursor") !== "number")
         return false;
     }
     return objectHasOwn(feeds, ROOT_FEED);
@@ -848,7 +874,7 @@ var __nimbusResidentModule = (() => {
     };
     const nsDrop = (parent, name) => {
       const dir = ns.get(parent);
-      const row = dir?.get(name);
+      const row = dir === void 0 ? void 0 : dir.get(name);
       if (dir === void 0 || row === void 0) return;
       dir.delete(name);
       names--;
@@ -1082,7 +1108,8 @@ var __nimbusResidentModule = (() => {
         namespaceBytes = 0;
       },
       pageGet(path, rev, part) {
-        return pages.get(pageKey(path, rev, part))?.bin.slice();
+        const row = pages.get(pageKey(path, rev, part));
+        return row === void 0 ? void 0 : bytesCopy(row.bin);
       },
       pageUse(path, rev, part, stamp) {
         const row = pages.get(pageKey(path, rev, part));
@@ -1091,36 +1118,42 @@ var __nimbusResidentModule = (() => {
       pagePut(path, rev, part, bin, stamp) {
         const key = pageKey(path, rev, part);
         const had = pages.get(key);
-        const bytes = residentBytes(bin).slice();
-        if (had !== void 0) used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+        const bytes = bytesCopy(residentBytes(bin));
+        if (had !== void 0) used -= RESIDENT_ROW_BYTES + typedArrayByteLength(had.bin);
         pages.set(key, { path, rev, part, bin: bytes, used: stamp });
-        used += RESIDENT_ROW_BYTES + bytes.byteLength;
-        return had === void 0 ? 0 : had.bin.byteLength;
+        used += RESIDENT_ROW_BYTES + typedArrayByteLength(bytes);
+        return had === void 0 ? 0 : typedArrayByteLength(had.bin);
       },
       pageDelete(path, rev, part) {
         const key = pageKey(path, rev, part);
         const had = pages.get(key);
         if (had === void 0) return;
         pages.delete(key);
-        used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+        used -= RESIDENT_ROW_BYTES + typedArrayByteLength(had.bin);
       },
       pageOldest(limit) {
-        const rows = [...pages.values()].sort((a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
-        return rows.slice(0, limit).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: row.bin.byteLength }));
+        const rows = arraySort(mapValueList(pages), (a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
+        const out = new SafeList();
+        for (let i = 0; i < rows.length && i < limit; i++) out[out.length] = { path: rows[i].path, rev: rows[i].rev, part: rows[i].part, size: typedArrayByteLength(rows[i].bin) };
+        return arrayCopy(out);
       },
       pageBytes() {
         let n = 0;
-        for (const row of pages.values()) n += row.bin.byteLength;
+        pages.forEach((row) => {
+          n += typedArrayByteLength(row.bin);
+        });
         return n;
       },
       pageMaxUsed() {
         let n = 0;
-        for (const row of pages.values()) n = Math.max(n, row.used);
+        pages.forEach((row) => {
+          n = mathMax(n, row.used);
+        });
         return n;
       },
       nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
         let dir = ns.get(parent);
-        const previous = dir?.get(name);
+        const previous = dir === void 0 ? void 0 : dir.get(name);
         const bytes = namespaceRowBytes(parent, name, target);
         const growth = bytes - (previous === void 0 ? 0 : namespaceRowBytes(parent, name, previous.target));
         if (!dir) {
@@ -1364,7 +1397,7 @@ var __nimbusResidentModule = (() => {
   function nsKindCode(type) {
     return type === "directory" ? NS_DIR : type === "symlink" ? NS_LINK : NS_FILE;
   }
-  function ownValue(record, key) {
+  function ownValue2(record, key) {
     return objectHasOwn(record, key) ? record[key] : void 0;
   }
   function nsDescribes(stat) {
@@ -1466,8 +1499,8 @@ var __nimbusResidentModule = (() => {
         ino: NumberOf(stat.ino) || 0,
         rev: NumberOf(rev) || 0,
         target: null,
-        dev: NumberOf(ownValue(stat, "dev")) || 0,
-        nlink: NumberOf(ownValue(stat, "nlink")) || 1
+        dev: NumberOf(ownValue2(stat, "dev")) || 0,
+        nlink: NumberOf(ownValue2(stat, "nlink")) || 1
       };
     };
     const put = (t, k, stat, rev, target, unlistedAt) => {
@@ -1482,7 +1515,7 @@ var __nimbusResidentModule = (() => {
         if (refused !== null) refuse(t, refused);
       }
       const ino = NumberOf(stat.ino) || 0;
-      const dev = NumberOf(ownValue(stat, "dev")) || 0;
+      const dev = NumberOf(ownValue2(stat, "dev")) || 0;
       t.nsPut(
         parent,
         name,
@@ -1498,7 +1531,7 @@ var __nimbusResidentModule = (() => {
         NumberOf(rev) || 0,
         stored,
         dev,
-        NumberOf(ownValue(stat, "nlink")) || 1
+        NumberOf(ownValue2(stat, "nlink")) || 1
       );
       if (kind === NS_LINK) links.add(k);
       else links.delete(k);
@@ -1634,7 +1667,7 @@ var __nimbusResidentModule = (() => {
       unknown(k, followLeaf, listing, own) {
         if (unlisted.size === 0) return null;
         const found = lookup(k, followLeaf, own);
-        if (found === "ELOOP" || ownValue(found, "own") !== void 0 || found.table === null) return null;
+        if (found === "ELOOP" || ownValue2(found, "own") !== void 0 || found.table === null) return null;
         if (found.row === void 0) return unlistedOver(found.table, false);
         return listing ? unlistedOver(found.table, true) : null;
       },
@@ -1649,7 +1682,7 @@ var __nimbusResidentModule = (() => {
        * the mode and owner is no grant: the session is asked instead, and answers.
        */
       readable(stat) {
-        if (!stat || !numberIsInteger(NumberOf(ownValue(stat, "mode"))) || !numberIsInteger(NumberOf(ownValue(stat, "uid"))) || !numberIsInteger(NumberOf(ownValue(stat, "gid")))) return false;
+        if (!stat || !numberIsInteger(NumberOf(ownValue2(stat, "mode"))) || !numberIsInteger(NumberOf(ownValue2(stat, "uid"))) || !numberIsInteger(NumberOf(ownValue2(stat, "gid")))) return false;
         return namespaceAllows(cred, stat, "file", 4);
       },
       /**
@@ -1666,18 +1699,18 @@ var __nimbusResidentModule = (() => {
         };
         if (k === "") {
           moved2(true);
-          const stat2 = ownValue(entry, "stat");
+          const stat2 = ownValue2(entry, "stat");
           if (stat2) setRoot(stat2, entry.rev);
           return null;
         }
-        const stat = ownValue(entry, "stat");
+        const stat = ownValue2(entry, "stat");
         if (stat === null) {
           moved2(true);
           deleteTree(t, k, true);
           return null;
         }
         const before = nsRowAt(t, k);
-        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue(entry, "linkTarget"))) {
+        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue2(entry, "linkTarget"))) {
           moved2(true);
           return null;
         }
@@ -1689,9 +1722,9 @@ var __nimbusResidentModule = (() => {
         }
         const was = before !== void 0 && traversable(before);
         const now = traversable(after3);
-        moved2(!(before !== void 0 && before.kind === NS_DIR && before.ino === after3.ino && before.dev === after3.dev && was === now && !ownValue(entry, "structural") && !ownValue(entry, "subtree")));
+        moved2(!(before !== void 0 && before.kind === NS_DIR && before.ino === after3.ino && before.dev === after3.dev && was === now && !ownValue2(entry, "structural") && !ownValue2(entry, "subtree")));
         if (lazy) {
-          if (ownValue(entry, "structural") || ownValue(entry, "subtree") || was !== now) deleteTree(t, k, false);
+          if (ownValue2(entry, "structural") || ownValue2(entry, "subtree") || was !== now) deleteTree(t, k, false);
           return null;
         }
         if (was && !now) deleteTree(t, k, false);
@@ -1722,8 +1755,8 @@ var __nimbusResidentModule = (() => {
             const parent = nsParent(k);
             const name = nsName(k);
             const held = t.nsGet(parent, name);
-            const linkTarget = ownValue(entry, "linkTarget");
-            const unlistedAt = ownValue(entry, "unlisted");
+            const linkTarget = ownValue2(entry, "linkTarget");
+            const unlistedAt = ownValue2(entry, "unlisted");
             if (held && namespaceRowBytes(parent, name, held.target) > namespaceRowBytes(parent, name, linkTarget ?? unlistedAt)) {
               put(t, k, entry.stat, entry.rev, linkTarget, unlistedAt ?? null);
             }
@@ -1736,8 +1769,8 @@ var __nimbusResidentModule = (() => {
           names.add(k);
           const held = nsRowAt(t, k);
           const s = entry.stat;
-          const linkTarget = ownValue(entry, "linkTarget");
-          const unlistedAt = ownValue(entry, "unlisted");
+          const linkTarget = ownValue2(entry, "linkTarget");
+          const unlistedAt = ownValue2(entry, "unlisted");
           if (held !== void 0 && held.kind === nsKindCode(s.type) && held.size === NumberOf(s.size) && held.mode === NumberOf(s.mode) && held.uid === NumberOf(s.uid) && held.gid === NumberOf(s.gid) && held.mtime === NumberOf(s.mtime) && held.ctime === NumberOf(s.ctime) && held.ino === NumberOf(s.ino) && held.dev === (NumberOf(s.dev) || 0) && held.rev === NumberOf(entry.rev) && (held.target ?? null) === (linkTarget ?? unlistedAt ?? null)) continue;
           put(t, k, s, entry.rev, linkTarget, unlistedAt ?? null);
         }
@@ -1760,7 +1793,7 @@ var __nimbusResidentModule = (() => {
         tryPut(t, k, {
           type: "file",
           size,
-          mode: held ? held.mode : 33206 & ~NumberOf((cred === null ? void 0 : ownValue(cred, "umask")) ?? 18),
+          mode: held ? held.mode : 33206 & ~NumberOf((cred === null ? void 0 : ownValue2(cred, "umask")) ?? 18),
           uid: held ? held.uid : NumberOf(cred === null ? 0 : cred.uid),
           gid: held ? held.gid : NumberOf(cred === null ? 0 : cred.gid),
           atime: now,
@@ -1804,7 +1837,7 @@ var __nimbusResidentModule = (() => {
           return;
         }
         if (!nsDescribes(stat)) return;
-        const target = ownValue(stat, "linkTarget") ?? ownValue(stat, "target") ?? null;
+        const target = ownValue2(stat, "linkTarget") ?? ownValue2(stat, "target") ?? null;
         if (stat.type === "symlink" && target === null) return;
         tryPut(t, k, stat, written ?? now, target);
       },
@@ -1875,7 +1908,7 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/cells.ts
-  function ownValue2(record, key) {
+  function ownValue3(record, key) {
     return objectHasOwn(record, key) ? record[key] : void 0;
   }
   function createCells(coherence, admission, namespace, observeRead) {
@@ -2019,7 +2052,7 @@ var __nimbusResidentModule = (() => {
       const dropped = new SafeList();
       const relist = new SafeList();
       let kept = 0, pushed = 0;
-      const position = result ? ownValue2(result, "position") : void 0;
+      const position = result ? ownValue3(result, "position") : void 0;
       if (!isFeedPosition(position)) {
         throw new Error2(
           "Nimbus: fsAcquire returned no cursor; the resident store stays sealed rather than serving rows it cannot date"
@@ -2032,10 +2065,10 @@ var __nimbusResidentModule = (() => {
       }
       const nsOk = namespace.ok;
       const paths = result && arrayIsArray(result.paths) ? result.paths : null;
-      let followable = !!result && !result.poison && (ownValue2(result, "namespace") === true || paths !== null && paths.length === 0);
+      let followable = !!result && !result.poison && (ownValue3(result, "namespace") === true || paths !== null && paths.length === 0);
       if (followable && paths !== null) {
         for (let i = 0; i < paths.length; i++) {
-          const stat = ownValue2(paths[i], "stat");
+          const stat = ownValue3(paths[i], "stat");
           if (stat !== null && !nsDescribes(stat)) {
             followable = false;
             break;
@@ -2061,9 +2094,9 @@ var __nimbusResidentModule = (() => {
               namespace.fence(again);
             }
           }
-          const subtree = ownValue2(entry, "subtree");
-          const stat = ownValue2(entry, "stat");
-          if (subtree || ownValue2(entry, "structural")) {
+          const subtree = ownValue3(entry, "subtree");
+          const stat = ownValue3(entry, "stat");
+          if (subtree || ownValue3(entry, "structural")) {
             const end = prefixEnd(path + "/");
             const rows = t.fileRevsIn(path + "/", end);
             for (let j = 0; j < rows.length; j++) {
@@ -2102,13 +2135,13 @@ var __nimbusResidentModule = (() => {
             }
             forgetHeld(path);
           }
-          const contentKey = ownValue2(entry, "contentKey");
+          const contentKey = ownValue3(entry, "contentKey");
           if (isHeld && heldKey !== null && contentKey != null && heldKey === stringOf(contentKey) && namespace.readable(stat)) {
             t.fileSetRev(path, entryRev);
             kept++;
             continue;
           }
-          const bytes = ownValue2(entry, "bytes");
+          const bytes = ownValue3(entry, "bytes");
           if (bytes != null && stat && stat.type === "file") {
             const incoming = residentBytes(bytes);
             if (isHeld && holds(t, path, incoming)) {
@@ -2487,7 +2520,7 @@ var __nimbusResidentModule = (() => {
       bound: () => t !== null,
       serving: () => t !== null && !isSealed,
       tables(doing) {
-        if (t === null) throw new Error("Nimbus: " + doing + " before the store was bound");
+        if (t === null) throw new Error2("Nimbus: " + doing + " before the store was bound");
         return t;
       },
       get heap() {
@@ -2495,12 +2528,12 @@ var __nimbusResidentModule = (() => {
       },
       require() {
         if (t === null) {
-          throw new Error(
+          throw new Error2(
             "Nimbus: the resident store was read before its facet bound its storage. store.bind(ctx) must run in the process DO constructor, ahead of the program."
           );
         }
         if (isSealed) {
-          throw new Error(
+          throw new Error2(
             "Nimbus: the resident store is sealed \u2014 " + sealReason + ". cells.admit(fsAcquire(...)) must apply the authority's delta before the program runs; serving a row now would serve bytes of unknown age."
           );
         }
@@ -2509,7 +2542,7 @@ var __nimbusResidentModule = (() => {
       sealed: () => isSealed ? sealReason : null,
       seal(reason) {
         isSealed = true;
-        sealReason = String(reason || "resealed");
+        sealReason = stringOf(reason || "resealed");
         read = null;
       },
       unseal() {
@@ -2614,14 +2647,18 @@ var __nimbusResidentModule = (() => {
       const cursor = coherence.cursor();
       if (cursor === null || answer.poison === true) return answer;
       if (notAfter(answer.position, cursor)) return { ...answer, position: cursor, paths: [] };
-      const paths = answer.paths.filter((entry) => entry.rev > floorFor(answer.position, cursor, entry.path));
-      return paths.length === answer.paths.length ? answer : { ...answer, paths };
+      const news = new SafeList();
+      for (let i = 0; i < answer.paths.length; i++) {
+        const entry = answer.paths[i];
+        if (entry.rev > floorFor(answer.position, cursor, entry.path)) news[news.length] = entry;
+      }
+      return news.length === answer.paths.length ? answer : { ...answer, paths: arrayCopy(news) };
     };
     const delivered = (given) => {
       if (!given || typeof given !== "object") return null;
       const { args, answer } = given;
       const cursor = coherence.cursor();
-      if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths)) return null;
+      if (cursor === null || !args || !answer || answer.poison === true || !arrayIsArray(answer.paths)) return null;
       if (!isFeedPosition(answer.position) || !isFeedPosition(args.position) || !notAfter(args.position, cursor)) return null;
       return current(answer);
     };
@@ -2698,7 +2735,7 @@ var __nimbusResidentModule = (() => {
           } catch {
             repaired = null;
           }
-          if (!repaired || !repaired.cursor) {
+          if (!repaired || !ownValue(repaired, "cursor")) {
             if (answer !== null) cells.admit(answer);
             else cells.dropDated();
             try {
@@ -2707,33 +2744,42 @@ var __nimbusResidentModule = (() => {
               repaired = null;
             }
           }
-          repairOwed = !(repaired && repaired.cursor);
+          repairOwed = !(repaired && ownValue(repaired, "cursor"));
         };
         const repair = (answer) => {
-          if (repairing === null) repairing = runRepair(answer).finally(() => {
+          if (repairing === null) repairing = promiseFinally(runRepair(answer), () => {
             repairing = null;
           });
           return repairing;
         };
-        const refetching = /* @__PURE__ */ new Map();
+        const refetching = new SafeMap();
         const refetch = (keys) => {
-          if (keys.length === 0) return [];
-          const read = sync.refillFromNamespace(supervisor, keys).catch(() => void 0);
+          const done = new SafeList();
+          if (keys.length === 0) return done;
+          const read = promiseThen(sync.refillFromNamespace(supervisor, keys), void 0, () => void 0);
           const t = coherence.require();
-          return keys.map((k) => {
-            const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: Promise.resolve() };
-            record.done = read.then(() => {
+          for (let i = 0; i < keys.length; i++) {
+            const k = keys[i];
+            const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: promiseResolve() };
+            record.done = promiseFinally(promiseThen(promiseThen(read, () => {
               const newer = refetching.get(k);
-              return Promise.all([newer !== void 0 && newer !== record ? newer.read : void 0, repairing ?? void 0]);
-            }).then(() => void 0, () => void 0).finally(() => {
+              const waits = new SafeList();
+              waits[0] = newer !== void 0 && newer !== record ? newer.read : void 0;
+              waits[1] = repairing ?? void 0;
+              return promiseAll(waits);
+            }), () => void 0, () => void 0), () => {
               if (refetching.get(k) === record) refetching.delete(k);
             });
             refetching.set(k, record);
-            return record.done;
-          });
+            done[i] = record.done;
+          }
+          return done;
         };
         const enumerated = async (first, lease) => {
-          const joined = [...refetching.values()].map((record) => record.done);
+          const joined2 = new SafeList();
+          refetching.forEach((record) => {
+            joined2[joined2.length] = record.done;
+          });
           let answer = first;
           let namespaceAsked = false;
           let repaired = false;
@@ -2760,9 +2806,25 @@ var __nimbusResidentModule = (() => {
           }
           const applied = await sync.applyAcquire(supervisor, answer);
           if (!namespace.ready()) return { landed: false };
-          const named = answer.paths.map((entry) => nsKey(entry.path));
-          const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === "" || k.startsWith(at + "/")));
-          await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
+          const named = new SafeList();
+          for (let i = 0; i < answer.paths.length; i++) named[i] = nsKey(answer.paths[i].path);
+          const again = new SafeList();
+          for (let i = 0; i < applied.dropped.length; i++) again[again.length] = applied.dropped[i];
+          const fetching = mapKeyList(refetching);
+          for (let i = 0; i < fetching.length; i++) {
+            const k = fetching[i];
+            if (arrayIncludes(applied.dropped, k)) continue;
+            for (let j = 0; j < named.length; j++) {
+              const at = named[j];
+              if (at === k || at === "" || stringStartsWith(k, at + "/")) {
+                again[again.length] = k;
+                break;
+              }
+            }
+          }
+          const waits = refetch(again);
+          for (let i = 0; i < joined2.length; i++) waits[waits.length] = joined2[i];
+          await promiseAll(waits);
           return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
         };
         const lazily = async (answer) => {
@@ -2773,8 +2835,8 @@ var __nimbusResidentModule = (() => {
           return applied && answer.readLease ? { landed, applied, readLease: answer.readLease } : { landed, applied };
         };
         const view = {
-          device: Number(device),
-          cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
+          device: NumberOf(device),
+          cred: { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: arrayCopy(groupsOf(cred)) },
           ready: () => namespace.ready(),
           entry(k) {
             if (namespace.fenced(k)) return void 0;
@@ -2793,7 +2855,7 @@ var __nimbusResidentModule = (() => {
               uid: row.uid,
               gid: row.gid,
               revision: row.rev,
-              target: row.target == null ? null : String(row.target)
+              target: row.target == null ? null : stringOf(row.target)
             };
           },
           children(k) {
@@ -2812,7 +2874,7 @@ var __nimbusResidentModule = (() => {
               if (stamped !== void 0 && stamped !== RK_OWN_WRITE && stamped < revision) return void 0;
             }
             const cell = cells.get(k);
-            if (cell === void 0 || typeof cell === "object" && "error" in cell) return void 0;
+            if (cell === void 0 || typeof cell === "object" && objectHasOwn(cell, "error")) return void 0;
             return typeof cell === "string" ? encoder6.encode(cell) : cell;
           },
           async fill(k, entry) {
@@ -2827,14 +2889,22 @@ var __nimbusResidentModule = (() => {
           async fillMany(files) {
             const cursor = coherence.cursor();
             if (cursor === null || files.length === 0) return;
-            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
+            const wanted = new SafeList();
+            for (let i = 0; i < files.length; i++) {
+              const k = files[i][0];
+              const entry = files[i][1];
+              wanted[i] = { path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry };
+            }
+            await transport.fetchFiles(supervisor, wanted);
           },
           acquireArgs: () => argsNow(),
           repairOwed: () => repairOwed,
           async barrier(options = {}) {
-            const standIn = options.answer === void 0 ? delivered(options.delivered) : null;
-            const answer = options.answer !== void 0 ? current(options.answer) : standIn ?? await acquire(options.lease);
-            const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+            const given = ownValue(options, "answer");
+            const lease = ownValue(options, "lease");
+            const standIn = given === void 0 ? delivered(ownValue(options, "delivered")) : null;
+            const answer = given !== void 0 ? current(given) : standIn ?? await acquire(lease);
+            const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, lease);
             return standIn === null ? result : { ...result, fromDelivery: true };
           },
           cursor: () => coherence.cursor(),
@@ -2843,7 +2913,7 @@ var __nimbusResidentModule = (() => {
           keep(k, revision, bytes) {
             const row = nsRowAt(coherence.require(), k);
             if (row === void 0 || row.rev !== revision || view.content(k, revision) !== void 0) return;
-            cells.keep(coherence.require(), k, new Uint8Array(bytes), revision);
+            cells.keep(coherence.require(), k, new Uint8ArrayConstructor(bytes), revision);
           },
           // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
           onAdmitted(listener) {
@@ -2865,9 +2935,9 @@ var __nimbusResidentModule = (() => {
       return ++clock;
     };
     const bound = () => {
-      const half = admission.inHeap && admission.cap !== null ? Math.floor(admission.cap / 2) : Infinity;
-      const share = admission.available === null ? Infinity : Math.floor(RESIDENT_PAGE_CACHE_FREE_SHARE * (held() + admission.available));
-      return Math.min(RESIDENT_PAGE_CACHE_BYTES, half, share);
+      const half = admission.inHeap && admission.cap !== null ? mathFloor(admission.cap / 2) : Infinity;
+      const share = admission.available === null ? Infinity : mathFloor(RESIDENT_PAGE_CACHE_FREE_SHARE * (held() + admission.available));
+      return mathMin(RESIDENT_PAGE_CACHE_BYTES, half, share);
     };
     const get = (path, rev, part) => {
       const t = coherence.require();
@@ -2878,13 +2948,14 @@ var __nimbusResidentModule = (() => {
     };
     const put = (path, rev, part, bytes) => {
       const t = coherence.require();
-      const size = bytes.byteLength;
+      const size = typedArrayByteLength(bytes);
       const limit = bound();
       if (size > limit) return false;
       while (held() + size > limit) {
         const oldest = t.pageOldest(16);
         if (oldest.length === 0) break;
-        for (const row of oldest) {
+        for (let i = 0; i < oldest.length; i++) {
+          const row = oldest[i];
           t.pageDelete(row.path, row.rev, row.part);
           total = held() - row.size;
           if (total + size <= limit) break;
@@ -2900,33 +2971,37 @@ var __nimbusResidentModule = (() => {
       if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
       const epoch = rootOf(cursor).epoch;
       const keyed = epoch + "\0" + k;
-      const out = new Array(last - first + 1);
-      const missing = [];
+      const out = new SafeList(last - first + 1);
+      const missing = new SafeList();
       for (let part = first; part <= last; part++) {
         const page = get(keyed, rev, part);
         if (page !== void 0) out[part - first] = page;
-        else missing.push(part);
+        else missing[missing.length] = part;
       }
-      const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
+      const perBatch = mathMax(1, mathMin(FS_READ_BATCH_PATH_LIMIT, mathFloor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
       for (let at = 0; at < missing.length; at += perBatch) {
-        const batch = missing.slice(at, at + perBatch);
-        const ranges = batch.map((part) => {
-          const offset = part * RESIDENT_PAGE_BYTES;
-          return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
-        });
-        await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+        const batch = new SafeList();
+        for (let i = at; i < missing.length && i < at + perBatch; i++) batch[batch.length] = missing[i];
+        const ranges = new SafeList();
+        let room = 0;
+        for (let i = 0; i < batch.length; i++) {
+          const offset = batch[i] * RESIDENT_PAGE_BYTES;
+          ranges[i] = { path: "/" + k, offset, length: mathMin(RESIDENT_PAGE_BYTES, mathMax(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
+          room += ranges[i].length + RESIDENT_ROW_BYTES;
+        }
+        await admission.ensureRoom(room);
         let results;
         try {
-          results = await supervisor.fsReadBatch(ranges);
+          results = await supervisor.fsReadBatch(arrayCopy(ranges));
         } catch {
           return null;
         }
-        if (!Array.isArray(results) || results.length !== ranges.length) return null;
+        if (!arrayIsArray(results) || results.length !== ranges.length) return null;
         for (let i = 0; i < batch.length; i++) {
           const entry = results[i];
           if (!entry || entry.error || entry.bytes == null) return null;
           const bytes = residentBytes(entry.bytes);
-          if (bytes.byteLength !== ranges[i].length) return null;
+          if (typedArrayByteLength(bytes) !== ranges[i].length) return null;
           out[batch[i] - first] = bytes;
           if (learning.installs(k)) put(keyed, rev, batch[i], bytes);
         }
@@ -2954,7 +3029,7 @@ var __nimbusResidentModule = (() => {
   var BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
   var MAX_LIST_PAGES = 4096;
   var RELIST_ATTEMPTS = 3;
-  function ownValue3(record, key) {
+  function ownValue4(record, key) {
     return objectHasOwn(record, key) ? record[key] : void 0;
   }
   function method(supervisor, name) {
@@ -3023,7 +3098,7 @@ var __nimbusResidentModule = (() => {
           }
           if (entry.stat) {
             if (admission.inHeap && admission.cap !== null) {
-              incomingBytes += namespaceRowBytes(nsParent(k), nsName(k), ownValue3(entry, "linkTarget") ?? ownValue3(entry, "unlisted"));
+              incomingBytes += namespaceRowBytes(nsParent(k), nsName(k), ownValue4(entry, "linkTarget") ?? ownValue4(entry, "unlisted"));
               const refused = admission.namespaceRefusal(incomingBytes - replaceBytes);
               if (refused !== null) {
                 namespace.markReady(t, false, refused);
@@ -3050,7 +3125,7 @@ var __nimbusResidentModule = (() => {
       namespace.deleteTree(t, dir, false);
       for (let i = 0; i < seen.length; i++) {
         const entry = seen[i];
-        namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue3(entry, "linkTarget"), ownValue3(entry, "unlisted") ?? null);
+        namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue4(entry, "linkTarget"), ownValue4(entry, "unlisted") ?? null);
       }
       namespace.relisted(dir);
     };
@@ -3076,7 +3151,7 @@ var __nimbusResidentModule = (() => {
       const fetching = new SafeSet();
       for (let i = 0; i < wantedFiles.length; i++) {
         const file = wantedFiles[i];
-        const ckey = ownValue3(file, "ckey");
+        const ckey = ownValue4(file, "ckey");
         if (ckey != null) {
           if (cells.copyByKey(t, file.path, ckey, file.rev)) {
             copied++;
@@ -3095,8 +3170,8 @@ var __nimbusResidentModule = (() => {
         const file = files[i];
         const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
         const dated = file.rev !== 0 && file.epoch !== null;
-        const version = dated ? null : ownValue3(file, "version") ?? ownValue3(file, "stat") ?? null;
-        const ckey = ownValue3(file, "ckey") ?? null;
+        const version = dated ? null : ownValue4(file, "version") ?? ownValue4(file, "stat") ?? null;
+        const ckey = ownValue4(file, "ckey") ?? null;
         for (let part = 0; part < parts; part++) {
           const offset = part * RESIDENT_CHUNK_BYTES;
           ranges[ranges.length] = {
@@ -3156,8 +3231,8 @@ var __nimbusResidentModule = (() => {
         }
         for (let i = 0; i < batch.length; i++) {
           const range = batch[i];
-          const entry = results && ownValue3(results, i);
-          const error = entry && ownValue3(entry, "error");
+          const entry = results && ownValue4(results, i);
+          const error = entry && ownValue4(entry, "error");
           if (!entry || error) {
             const code = error ? ownField(error, "code") : void 0;
             if (code === "EACCES" && range.part === 0) {
@@ -3166,7 +3241,7 @@ var __nimbusResidentModule = (() => {
             } else failedPaths.add(range.path);
             continue;
           }
-          const bytes2 = ownValue3(entry, "bytes");
+          const bytes2 = ownValue4(entry, "bytes");
           if (bytes2 === null || bytes2 === void 0) {
             failedPaths.add(range.path);
             continue;
@@ -3200,7 +3275,7 @@ var __nimbusResidentModule = (() => {
       });
       for (let i = 0; i < later.length; i++) {
         const file = later[i];
-        if (!outdated(t, learning, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue3(file, "ckey"), file.rev)) copied++;
+        if (!outdated(t, learning, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue4(file, "ckey"), file.rev)) copied++;
         else failed++;
       }
       if (ranges.length > 0) await admission.reportSize();
@@ -3238,7 +3313,7 @@ var __nimbusResidentModule = (() => {
           if (entry.stat) {
             if (admission.inHeap && admission.cap !== null) {
               const key = nsKey(entry.path);
-              if (key) namespaceBytes += namespaceRowBytes(nsParent(key), nsName(key), ownValue3(entry, "linkTarget") ?? ownValue3(entry, "unlisted"));
+              if (key) namespaceBytes += namespaceRowBytes(nsParent(key), nsName(key), ownValue4(entry, "linkTarget") ?? ownValue4(entry, "unlisted"));
               const heap = coherence.heap;
               const refused = admission.namespaceRefusal(namespaceBytes - (heap === null ? 0 : heap.nsBytes()));
               if (refused !== null) namespace.refuse(t, refused);
@@ -3253,7 +3328,7 @@ var __nimbusResidentModule = (() => {
           if (!numberIsSafeInteger(size) || size < 0 || !numberIsSafeInteger(rev) || rev < 0) {
             throw new Error2("Nimbus: fsList returned unusable metadata for '" + path + "'");
           }
-          const contentKey = ownValue3(entry, "contentKey");
+          const contentKey = ownValue4(entry, "contentKey");
           entries[entries.length] = { path, size, rev, epoch: rootEpochFor(cursor, path), ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
         }
         if (listed.next === null || listed.next === void 0) {
@@ -3288,9 +3363,9 @@ var __nimbusResidentModule = (() => {
         if (!arrayIsArray(answers) || answers.length !== requests.length) return false;
         let reachedLast = false;
         for (let i = 0; i < batch.length; i++) {
-          const answer = ownValue3(answers, i);
-          const stat = answer && ownValue3(answer, "stat");
-          if (!answer || ownValue3(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
+          const answer = ownValue4(answers, i);
+          const stat = answer && ownValue4(answer, "stat");
+          if (!answer || ownValue4(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
           let target;
           if (stat.type === "symlink") {
             try {
@@ -3307,14 +3382,14 @@ var __nimbusResidentModule = (() => {
           if (stat.type !== "directory") break;
         }
         if (withContent && reachedLast) {
-          const lastAnswer = ownValue3(answers, batch.length - 1);
-          const before = lastAnswer && ownValue3(lastAnswer, "stat");
-          const read = ownValue3(answers, batch.length);
-          const after3 = ownValue3(answers, batch.length + 1);
-          const content = read && !ownValue3(read, "error") && ownValue3(read, "bytes");
+          const lastAnswer = ownValue4(answers, batch.length - 1);
+          const before = lastAnswer && ownValue4(lastAnswer, "stat");
+          const read = ownValue4(answers, batch.length);
+          const after3 = ownValue4(answers, batch.length + 1);
+          const content = read && !ownValue4(read, "error") && ownValue4(read, "bytes");
           const bytes = content ? residentBytes(content) : null;
           const size = bytes === null ? 0 : typedArrayByteLength(bytes);
-          const afterStat = after3 && !ownValue3(after3, "error") ? ownValue3(after3, "stat") : null;
+          const afterStat = after3 && !ownValue4(after3, "error") ? ownValue4(after3, "stat") : null;
           if (before && before.type === "file" && bytes !== null && size === NumberOf(before.size) && afterStat && afterStat.type === "file" && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision) && await admission.ensureRoom(residentCellCost(bytes)) && learning.installs(last)) {
             cells.fill(last, bytes, NumberOf(before.revision) || 0);
           }
@@ -3356,9 +3431,9 @@ var __nimbusResidentModule = (() => {
           }
           if (!arrayIsArray(answers) || answers.length !== batch.length) return false;
           for (let j = 0; j < batch.length; j++) {
-            const answer = ownValue3(answers, j);
-            if (!answer || ownValue3(answer, "error")) return false;
-            const stat = ownValue3(answer, "stat");
+            const answer = ownValue4(answers, j);
+            if (!answer || ownValue4(answer, "error")) return false;
+            const stat = ownValue4(answer, "stat");
             if (stat === null || stat === void 0 || !nsDescribes(stat)) return false;
             stats.set(batch[j], stat);
           }
@@ -3421,8 +3496,8 @@ var __nimbusResidentModule = (() => {
           const entry = tree.entries[i];
           const k = nsKey(entry.path);
           if (!entry.stat || !nsDescribes(entry.stat)) return false;
-          const unlisted = ownValue3(entry, "unlisted");
-          if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue3(entry, "linkTarget"), unlisted ?? null)) return false;
+          const unlisted = ownValue4(entry, "unlisted");
+          if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue4(entry, "linkTarget"), unlisted ?? null)) return false;
           written.add(k);
           if (entry.kind === "directory" && !unlisted) listed[listed.length] = k;
         }
@@ -3451,14 +3526,18 @@ var __nimbusResidentModule = (() => {
   var PUSH_EXCLUDE = ["node_modules", ".git"];
   function createSync(coherence, admission, namespace, cells, transport) {
     let pushRoots = [];
-    let plan = /* @__PURE__ */ new Set();
+    let plan = new SafeSet();
     let manifests = null;
-    const isManifest = (path) => (path === "package.json" || path.endsWith("/package.json")) && !("/" + path).includes("/.git/");
+    const isManifest = (path) => (path === "package.json" || stringEndsWith(path, "/package.json")) && !stringIncludes("/" + path, "/.git/");
     const pushable = (path) => {
-      for (const root of pushRoots) {
-        if (root !== "" && path !== root && !path.startsWith(root + "/")) continue;
-        const rest = root === "" ? path : path.slice(root.length + 1);
-        if (!rest.split("/").some((seg) => PUSH_EXCLUDE.includes(seg))) return true;
+      for (let i = 0; i < pushRoots.length; i++) {
+        const root = pushRoots[i];
+        if (root !== "" && path !== root && !stringStartsWith(path, root + "/")) continue;
+        const rest = root === "" ? path : stringSlice(path, root.length + 1);
+        const segments = stringSplit(rest, "/");
+        let excluded = false;
+        for (let j = 0; j < segments.length && !excluded; j++) excluded = arrayIncludes(PUSH_EXCLUDE, segments[j]);
+        if (!excluded) return true;
       }
       return false;
     };
@@ -3466,7 +3545,10 @@ var __nimbusResidentModule = (() => {
     const applyAcquire = async (supervisor, result) => {
       await admission.roomForPushed(result);
       const applied = cells.admit(result);
-      for (const dir of applied.relist) await transport.relist(supervisor, dir);
+      for (let i = 0; i < applied.relist.length; i++) {
+        const dir = applied.relist[i];
+        await transport.relist(supervisor, dir);
+      }
       return applied;
     };
     const catchUp = async (supervisor, cursor) => {
@@ -3482,10 +3564,11 @@ var __nimbusResidentModule = (() => {
       }
       const applied = await applyAcquire(supervisor, result);
       const refetch = [];
-      for (const path of applied.dropped) {
+      for (let i = 0; i < applied.dropped.length; i++) {
+        const path = applied.dropped[i];
         const found = namespace.resolve(path, false);
         if (!found || found === "ELOOP" || found.row.kind !== NS_FILE) continue;
-        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
+        refetch[refetch.length] = { path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) };
       }
       if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
       return applied.cursor;
@@ -3509,26 +3592,31 @@ var __nimbusResidentModule = (() => {
       }
       const held = coherence.cursor();
       const judgeable = listing.complete;
-      const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
+      let describable = judgeable;
+      for (let i = 0; describable && i < listing.names.length; i++) describable = nsDescribes(listing.names[i].stat);
       const at = listing.cursor;
       const comparable = (path) => judgeable && held !== null && sameClock(held, at, path);
       const vouches = (entry, rev) => entry !== void 0 && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
-      const listed = /* @__PURE__ */ new Map();
-      for (const file of listing.entries) listed.set(file.path, file);
+      const listed = new SafeMap();
+      for (let i = 0; i < listing.entries.length; i++) {
+        const file = listing.entries[i];
+        listed.set(file.path, file);
+      }
       const rows = t.fileRows();
-      const current = /* @__PURE__ */ new Set();
+      const current = new SafeSet();
       const dropped = [];
       const own = [];
       let rekeyed = 0;
       let vouched = 0;
-      for (const row of rows) {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
         const entry = listed.get(row.path);
         if (row.rev === RK_OWN_WRITE) {
           current.add(row.path);
-          own.push({
+          own[own.length] = {
             path: row.path,
             rev: !comparable(row.path) ? null : entry !== void 0 ? entry.rev : feedFor(at, row.path).cursor
-          });
+          };
           continue;
         }
         if (vouches(entry, row.rev)) {
@@ -3540,20 +3628,23 @@ var __nimbusResidentModule = (() => {
           current.add(row.path);
           continue;
         }
-        if (entry !== void 0 && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey && namespace.readable(entry.stat)) {
+        if (entry !== void 0 && row.ckey !== null && ownValue(entry, "ckey") != null && row.ckey === ownValue(entry, "ckey") && namespace.readable(ownValue(entry, "stat"))) {
           t.fileSetRev(row.path, entry.rev);
           current.add(row.path);
           rekeyed++;
           continue;
         }
-        dropped.push(row.path);
+        dropped[dropped.length] = row.path;
       }
-      for (const [path, rev] of cells.heldRevisions()) {
+      const heldRevisions = cells.heldRevisions();
+      for (let i = 0; i < heldRevisions.length; i++) {
+        const path = heldRevisions[i][0];
+        const rev = heldRevisions[i][1];
         if (current.has(path)) continue;
         const entry = listed.get(path);
         if (rev === RK_OWN_WRITE) {
           current.add(path);
-          own.push({ path, rev: !comparable(path) ? null : entry !== void 0 ? entry.rev : feedFor(at, path).cursor });
+          own[own.length] = { path, rev: !comparable(path) ? null : entry !== void 0 ? entry.rev : feedFor(at, path).cursor };
           continue;
         }
         if (vouches(entry, rev)) {
@@ -3566,41 +3657,48 @@ var __nimbusResidentModule = (() => {
           continue;
         }
         cells.forget(path);
-        dropped.push(path);
+        dropped[dropped.length] = path;
       }
       if (dropped.length > 0 && vouched === 0 && rekeyed === 0) {
         t.dropDatedFiles();
       } else {
-        for (const path of dropped) {
+        for (let i = 0; i < dropped.length; i++) {
+          const path = dropped[i];
           t.chunkDelete(path);
           t.fileDelete(path);
         }
       }
-      const wanted = new Set(dropped);
+      const wanted = new SafeSet(dropped);
       const fetch = [];
       const copied = [];
-      for (const file of listing.entries) {
+      for (let i = 0; i < listing.entries.length; i++) {
+        const file = listing.entries[i];
         if (current.has(file.path)) continue;
         if (manifests !== null && isManifest(file.path)) {
           const copy = manifests.get(file.path);
-          if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey && namespace.readable(file.stat)) copied.push({ file, text: String(copy[1]) });
-          else fetch.push(file);
+          const ckey = ownValue(file, "ckey");
+          if (arrayIsArray(copy) && ckey !== null && copy[0] === ckey && namespace.readable(ownValue(file, "stat"))) copied[copied.length] = { file, text: stringOf(copy[1]) };
+          else fetch[fetch.length] = file;
           continue;
         }
-        if (plan.has(file.path) || wanted.has(file.path) || pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held, file.path).cursor)) fetch.push(file);
+        if (plan.has(file.path) || wanted.has(file.path) || pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held, file.path).cursor)) fetch[fetch.length] = file;
       }
       const heap = coherence.heap;
-      const namespaceGrowth = admission.inHeap && describable && heap !== null ? Math.max(0, listing.namespaceBytes - heap.nsBytes()) : 0;
+      const namespaceGrowth = admission.inHeap && describable && heap !== null ? mathMax(0, ownValue(listing, "namespaceBytes") - heap.nsBytes()) : 0;
       const refused = admission.namespaceRefusal(namespaceGrowth);
       if (refused !== null) namespace.refuse(t, refused);
       const giveBack = admission.reserveNamespace(namespaceGrowth);
       let filled;
       try {
         let copiedBytes = 0;
-        for (const { text } of copied) copiedBytes += residentCellCost(text);
+        for (let i = 0; i < copied.length; i++) {
+          const { text } = copied[i];
+          copiedBytes += residentCellCost(text);
+        }
         if (copiedBytes > 0) await admission.ensureRoom(copiedBytes);
-        for (const { file, text } of copied) {
-          if (!cells.put(t, file.path, text, file.rev, file.ckey)) fetch.push(file);
+        for (let i = 0; i < copied.length; i++) {
+          const { file, text } = copied[i];
+          if (!cells.put(t, file.path, text, file.rev, ownValue(file, "ckey"))) fetch[fetch.length] = file;
         }
         filled = await transport.fetchFiles(supervisor, fetch);
       } finally {
@@ -3632,19 +3730,21 @@ var __nimbusResidentModule = (() => {
     const adoptModuleBundle = (bundle, moduleCursor) => {
       const t = coherence.tables("adoptModuleBundle");
       if (coherence.cursor() !== null) {
-        throw new Error("Nimbus: a module bundle is adopted only into an empty store");
+        throw new Error2("Nimbus: a module bundle is adopted only into an empty store");
       }
       if (!isFeedPosition(moduleCursor)) {
         coherence.setUndated(true);
         coherence.unseal();
         return null;
       }
-      for (const path of Object.keys(bundle || {})) {
+      const paths = objectKeys(bundle || {});
+      for (let i = 0; i < paths.length; i++) {
+        const path = paths[i];
         cells.put(t, path, bundle[path], feedFor(moduleCursor, path).cursor);
       }
       return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
     };
-    const fail2 = (pass) => pass && (pass.skipped || pass.incomplete) || null;
+    const fail2 = (pass) => pass && (ownValue(pass, "skipped") || ownValue(pass, "incomplete")) || null;
     return {
       /**
        * Make this incarnation's store servable before the program's first
@@ -3697,7 +3797,8 @@ var __nimbusResidentModule = (() => {
           } catch (e) {
             failure2 = messageOf(e);
           }
-          if (pass2 && pass2.cursor) return { cursor: await catchUp(supervisor, pass2.cursor), failure: null };
+          const passed2 = pass2 === null ? void 0 : ownValue(pass2, "cursor");
+          if (passed2) return { cursor: await catchUp(supervisor, passed2), failure: null };
           failure2 = "a kept store could not be reconciled (" + (failure2 || fail2(pass2) || "the listing vouched for nothing") + "); it was emptied and this launch booted from its own snapshot";
         }
         cells.clear();
@@ -3705,11 +3806,12 @@ var __nimbusResidentModule = (() => {
         let bytes = moduleBytes;
         if (typeof bytes !== "number") {
           bytes = 0;
-          for (const path of Object.keys(bundle || {})) bytes += residentCellCost(bundle[path]);
+          const paths = objectKeys(bundle || {});
+          for (let i = 0; i < paths.length; i++) bytes += residentCellCost(bundle[paths[i]]);
         }
         if (!await admission.ensureRoom(bytes)) {
-          throw Object.assign(new Error(
-            "ENOSPC: workspace storage is full: this process's modules (" + Math.ceil(bytes / 1048576) + " MiB) do not fit in what is left of the session's storage"
+          throw objectAssign(new Error2(
+            "ENOSPC: workspace storage is full: this process's modules (" + mathCeil(bytes / 1048576) + " MiB) do not fit in what is left of the session's storage"
           ), { code: "ENOSPC" });
         }
         const adopted = adoptModuleBundle(bundle, moduleCursor);
@@ -3720,21 +3822,40 @@ var __nimbusResidentModule = (() => {
         } catch (e) {
           failure2 = messageOf(e);
         }
-        if (pass && pass.cursor) return { cursor: await catchUp(supervisor, pass.cursor), failure: failure2 };
+        const passed = pass === null ? void 0 : ownValue(pass, "cursor");
+        if (passed) return { cursor: await catchUp(supervisor, passed), failure: failure2 };
         return { cursor: adopted, failure: failure2 || fail2(pass) };
       },
       setPushRoots(roots) {
-        pushRoots = (Array.isArray(roots) ? roots : []).map((r) => String(r).replace(/^\/+|\/+$/g, ""));
+        const given = arrayIsArray(roots) ? roots : [];
+        const trimmed = new SafeList();
+        for (let i = 0; i < given.length; i++) {
+          const root = stringOf(given[i]);
+          let from = 0;
+          let to = root.length;
+          while (from < to && stringCharCodeAt(root, from) === 47) from++;
+          while (to > from && stringCharCodeAt(root, to - 1) === 47) to--;
+          trimmed[i] = stringSlice(root, from, to);
+        }
+        pushRoots = trimmed;
       },
       pushable,
       acquireOptions,
       applyAcquire,
       setPlan(paths) {
-        plan = new Set(Array.isArray(paths) ? paths.map((p) => nsKey(p)) : []);
+        plan = new SafeSet();
+        if (arrayIsArray(paths)) for (let i = 0; i < paths.length; i++) plan.add(nsKey(paths[i]));
       },
       setManifests(given) {
-        const files = given && typeof given === "object" && given.files && typeof given.files === "object" ? given.files : null;
-        manifests = files === null ? null : new Map(Object.entries(files));
+        const listed = given && typeof given === "object" ? ownValue(given, "files") : void 0;
+        const files = listed && typeof listed === "object" ? listed : null;
+        if (files === null) {
+          manifests = null;
+          return;
+        }
+        manifests = new SafeMap();
+        const names = objectKeys(files);
+        for (let i = 0; i < names.length; i++) manifests.set(names[i], files[names[i]]);
       },
       adoptModuleBundle,
       synchronize,
@@ -3749,14 +3870,20 @@ var __nimbusResidentModule = (() => {
         const cursor = coherence.cursor();
         if (cursor === null) return { requested: 0, filled: 0, failed: 0, bytes: 0 };
         const fetch = [];
-        const seen = /* @__PURE__ */ new Set();
-        for (const path of [...dropped, ...plan]) {
+        const seen = new SafeSet();
+        const asked = new SafeList();
+        for (let i = 0; i < dropped.length; i++) asked[asked.length] = dropped[i];
+        plan.forEach((path) => {
+          asked[asked.length] = path;
+        });
+        for (let i = 0; i < asked.length; i++) {
+          const path = asked[i];
           if (seen.has(path)) continue;
           seen.add(path);
           if (cells.has(path)) continue;
           const row = nsRowAt(t, path);
           if (row === void 0 || row.kind !== NS_FILE) continue;
-          fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
+          fetch[fetch.length] = { path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) };
         }
         return transport.fetchFiles(supervisor, fetch);
       },
@@ -3791,9 +3918,33 @@ var __nimbusResidentModule = (() => {
   var DELETE_BATCH = 128;
   var SEP = "";
   var RESERVED = /[\u0000\u0001]/;
-  var encodePart = (text) => RESERVED.test(text) ? text.replace(/[\u0000\u0001]/g, (c) => c === "\0" ? "" : "") : text;
-  var decodePart = (text) => text.indexOf("") < 0 ? text : text.replace(/\u0001[\u0002\u0003]/g, (c) => c === "" ? "\0" : "");
-  var pad = (n) => stringOf(NumberOf(n)).padStart(17, "0");
+  var encodePart = (text) => {
+    if (regExpExec(RESERVED, text) === null) return text;
+    let out = "";
+    for (let i = 0; i < text.length; i++) {
+      const c = stringCharCodeAt(text, i);
+      out += c === 0 ? "" : c === 1 ? "" : text[i];
+    }
+    return out;
+  };
+  var decodePart = (text) => {
+    let at = stringIndexOf(text, "");
+    if (at < 0) return text;
+    let out = "";
+    let from = 0;
+    while (at >= 0) {
+      const next = stringCharCodeAt(text, at + 1);
+      if (next !== 2 && next !== 3) {
+        at = stringIndexOf(text, "", at + 1);
+        continue;
+      }
+      out += stringSlice(text, from, at) + (next === 2 ? "\0" : "");
+      from = at + 2;
+      at = stringIndexOf(text, "", from);
+    }
+    return out + stringSlice(text, from);
+  };
+  var pad = (n) => stringPadStart(stringOf(NumberOf(n)), 17, "0");
   var FILE = "F";
   var CHUNK = "C";
   var CHUNK_KEYS = "X";
@@ -3812,6 +3963,33 @@ var __nimbusResidentModule = (() => {
       write();
     };
     const kv = storage.kv;
+    const listEach = (options, visit) => {
+      const listed = kv.list(options);
+      const iterator = reflectApply(reflectGet(listed, symbolIterator), listed, []);
+      const next = reflectGet(iterator, "next");
+      for (; ; ) {
+        const step = reflectApply(next, iterator, []);
+        if (step.done) return;
+        let stop = false;
+        let visited = false;
+        try {
+          stop = visit(step.value[0], step.value[1]);
+          visited = true;
+        } finally {
+          if (!visited || stop === true) {
+            const close = reflectGet(iterator, "return");
+            if (typeof close === "function") {
+              if (visited) reflectApply(close, iterator, []);
+              else try {
+                reflectApply(close, iterator, []);
+              } catch {
+              }
+            }
+          }
+        }
+        if (stop === true) return;
+      }
+    };
     const put = (key, value) => {
       storage.put(key, value, UNCONFIRMED);
     };
@@ -3831,7 +4009,9 @@ var __nimbusResidentModule = (() => {
     };
     const keysOf = (options) => {
       const out = new SafeList();
-      for (const [key] of kv.list(options)) out[out.length] = key;
+      listEach(options, (key) => {
+        out[out.length] = key;
+      });
       return out;
     };
     const rangeOf = (tag, from, to) => ({
@@ -3850,7 +4030,7 @@ var __nimbusResidentModule = (() => {
     const NUMBER = SEP.length + 17;
     const unpage = (tail) => {
       const at = tail.length - 2 * NUMBER;
-      return { path: decodePart(tail.slice(0, at)), rev: NumberOf(tail.slice(at + SEP.length, at + NUMBER)), part: NumberOf(tail.slice(at + NUMBER + SEP.length)) };
+      return { path: decodePart(stringSlice(tail, 0, at)), rev: NumberOf(stringSlice(tail, at + SEP.length, at + NUMBER)), part: NumberOf(stringSlice(tail, at + NUMBER + SEP.length)) };
     };
     const chunkRow = (value) => typeof value === "string" ? { txt: value, bin: null } : { txt: null, bin: value };
     const setFile = (path, kind, size, chunks, rev, ckey) => {
@@ -3876,7 +4056,7 @@ var __nimbusResidentModule = (() => {
       const keys = new SafeList();
       for (let i = 0; i < parts.length; i++) {
         keys[keys.length] = parts[i];
-        keys[keys.length] = CHUNK + parts[i].slice(1);
+        keys[keys.length] = CHUNK + stringSlice(parts[i], 1);
       }
       drop(keys);
     };
@@ -3888,19 +4068,21 @@ var __nimbusResidentModule = (() => {
     };
     const files = () => {
       const out = new SafeList();
-      for (const [key, value] of kv.list({ prefix: FILE })) out[out.length] = [decodePart(key.slice(1)), value];
+      listEach({ prefix: FILE }, (key, value) => {
+        out[out.length] = [decodePart(stringSlice(key, 1)), value];
+      });
       return out;
     };
     const chunkPaths = () => {
       const out = new SafeList();
       let last = null;
-      for (const [key] of kv.list({ prefix: CHUNK_KEYS })) {
-        const path = decodePart(key.slice(1, key.lastIndexOf(SEP)));
+      listEach({ prefix: CHUNK_KEYS }, (key) => {
+        const path = decodePart(stringSlice(key, 1, stringLastIndexOf(key, SEP)));
         if (path !== last) {
           out[out.length] = path;
           last = path;
         }
-      }
+      });
       return out;
     };
     const dropWhere = (keepFile, keepChunkPath) => writeRows(void 0, () => {
@@ -3917,23 +4099,28 @@ var __nimbusResidentModule = (() => {
     };
     const nsRows = (options) => {
       const out = new SafeList();
-      for (const [key, value] of kv.list(options)) {
-        const at = key.indexOf(SEP);
-        out[out.length] = [{ parent: decodePart(key.slice(1, at)), name: decodePart(key.slice(at + SEP.length)) }, value];
-      }
+      listEach(options, (key, value) => {
+        const at = stringIndexOf(key, SEP);
+        out[out.length] = [{ parent: decodePart(stringSlice(key, 1, at)), name: decodePart(stringSlice(key, at + SEP.length)) }, value];
+      });
       return out;
     };
     const deleteKeys = (options) => drop(keysOf(options));
+    const sqlSize = () => {
+      const sql = reflectGet(storage, "sql");
+      return sql === void 0 || sql === null ? void 0 : reflectGet(sql, "databaseSize");
+    };
     if (kv.get(META + "schema") !== RESIDENT_SCHEMA) {
-      for (const tag of [FILE, CHUNK, CHUNK_KEYS, BY_CKEY, NS, PAGE, PAGE_ROWS, PAGE_USED, META]) deleteKeys({ prefix: tag });
+      const tags = [FILE, CHUNK, CHUNK_KEYS, BY_CKEY, NS, PAGE, PAGE_ROWS, PAGE_USED, META];
+      for (let i = 0; i < tags.length; i++) deleteKeys({ prefix: tags[i] });
       put(META + "schema", RESIDENT_SCHEMA);
     }
     return {
       bytes() {
-        return NumberOf(storage.sql?.databaseSize ?? 0);
+        return NumberOf(sqlSize() ?? 0);
       },
       databaseSize() {
-        return NumberOf(storage.sql?.databaseSize ?? 0);
+        return NumberOf(sqlSize() ?? 0);
       },
       metaGet(k) {
         const v = kv.get(META + k);
@@ -3982,26 +4169,34 @@ var __nimbusResidentModule = (() => {
       },
       fileByKey(ckey, notPath) {
         const prefix = byKeyPrefix(stringOf(ckey));
-        for (const [key] of kv.list({ prefix })) {
-          const path = decodePart(key.slice(prefix.length + NUMBER));
-          if (path === notPath) continue;
+        let found;
+        listEach({ prefix }, (key) => {
+          const path = decodePart(stringSlice(key, prefix.length + NUMBER));
+          if (path === notPath) return false;
           const row = fileOf(path);
-          if (row !== void 0 && row[3] >= 0) return { path, kind: row[0], size: row[1], chunks: row[2] };
-        }
-        return void 0;
+          if (row === void 0 || row[3] < 0) return false;
+          found = { path, kind: row[0], size: row[1], chunks: row[2] };
+          return true;
+        });
+        return found;
       },
       filePaths(from, to) {
         const out = new SafeList();
-        for (const [key] of kv.list(rangeOf(FILE, from, to))) out[out.length] = decodePart(key.slice(1));
+        listEach(rangeOf(FILE, from, to), (key) => {
+          out[out.length] = decodePart(stringSlice(key, 1));
+        });
         return arrayCopy(out);
       },
       fileAny(from, to) {
-        for (const _entry of kv.list({ ...rangeOf(FILE, from, to), limit: 1 })) return true;
-        return false;
+        let any = false;
+        listEach({ ...rangeOf(FILE, from, to), limit: 1 }, () => any = true);
+        return any;
       },
       fileRevsIn(from, to) {
         const out = new SafeList();
-        for (const [key, value] of kv.list(rangeOf(FILE, from, to))) out[out.length] = { path: decodePart(key.slice(1)), rev: value[3] };
+        listEach(rangeOf(FILE, from, to), (key, value) => {
+          out[out.length] = { path: decodePart(stringSlice(key, 1)), rev: value[3] };
+        });
         return arrayCopy(out);
       },
       fileAllPaths() {
@@ -4034,21 +4229,25 @@ var __nimbusResidentModule = (() => {
       },
       chunkParts(path) {
         const out = new SafeList();
-        for (const [, value] of kv.list({ prefix: CHUNK + encodePart(path) + SEP })) out[out.length] = chunkRow(value);
+        listEach({ prefix: CHUNK + encodePart(path) + SEP }, (_key, value) => {
+          out[out.length] = chunkRow(value);
+        });
         return arrayCopy(out);
       },
       chunkAddText(path, part, txt) {
         addChunk(path, NumberOf(part), stringOf(txt), false);
       },
       chunkAddBin(path, part, bin) {
-        addChunk(path, NumberOf(part), residentBytes(bin).slice(), false);
+        addChunk(path, NumberOf(part), bytesCopy(residentBytes(bin)), false);
       },
       chunkSetBin(path, part, bin) {
-        addChunk(path, NumberOf(part), residentBytes(bin).slice(), true);
+        addChunk(path, NumberOf(part), bytesCopy(residentBytes(bin)), true);
       },
       chunkCopy(to, from) {
         const parts = new SafeList();
-        for (const [key, value] of kv.list({ prefix: CHUNK + encodePart(from) + SEP })) parts[parts.length] = [key.slice(key.lastIndexOf(SEP) + SEP.length), value];
+        listEach({ prefix: CHUNK + encodePart(from) + SEP }, (key, value) => {
+          parts[parts.length] = [stringSlice(key, stringLastIndexOf(key, SEP) + SEP.length), value];
+        });
         for (let i = 0; i < parts.length; i++) {
           if (kv.get(CHUNK_KEYS + encodePart(to) + SEP + parts[i][0]) !== void 0) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
         }
@@ -4078,9 +4277,11 @@ var __nimbusResidentModule = (() => {
       },
       clear() {
         writeRows(void 0, () => {
-          for (const tag of [CHUNK, CHUNK_KEYS, FILE, BY_CKEY]) deleteKeys({ prefix: tag });
+          const tags2 = [CHUNK, CHUNK_KEYS, FILE, BY_CKEY];
+          for (let i = 0; i < tags2.length; i++) deleteKeys({ prefix: tags2[i] });
         });
-        for (const tag of [NS, PAGE, PAGE_ROWS, PAGE_USED]) deleteKeys({ prefix: tag });
+        const tags = [NS, PAGE, PAGE_ROWS, PAGE_USED];
+        for (let i = 0; i < tags.length; i++) deleteKeys({ prefix: tags[i] });
         const meta = keysOf({ prefix: META });
         const keep = new SafeList();
         for (let i = 0; i < meta.length; i++) if (meta[i] !== META + "schema") keep[keep.length] = meta[i];
@@ -4101,11 +4302,11 @@ var __nimbusResidentModule = (() => {
       pagePut(path, rev, part, bin, used) {
         const tail = pageTail(path, rev, part);
         const had = kv.get(PAGE_ROWS + tail);
-        const bytes = residentBytes(bin).slice();
+        const bytes = bytesCopy(residentBytes(bin));
         if (had !== void 0) dropOne(PAGE_USED + pad(had[0]) + SEP + tail);
         put(PAGE + tail, bytes);
-        put(PAGE_ROWS + tail, [NumberOf(used), bytes.byteLength]);
-        put(PAGE_USED + pad(used) + SEP + tail, bytes.byteLength);
+        put(PAGE_ROWS + tail, [NumberOf(used), typedArrayByteLength(bytes)]);
+        put(PAGE_USED + pad(used) + SEP + tail, typedArrayByteLength(bytes));
         return had === void 0 ? 0 : had[1];
       },
       pageDelete(path, rev, part) {
@@ -4120,20 +4321,26 @@ var __nimbusResidentModule = (() => {
       },
       pageOldest(limit) {
         const out = new SafeList();
-        for (const [key, value] of kv.list({ prefix: PAGE_USED, limit })) {
-          const { path, rev, part: n } = unpage(key.slice(1 + NUMBER));
+        listEach({ prefix: PAGE_USED, limit }, (key, value) => {
+          const { path, rev, part: n } = unpage(stringSlice(key, 1 + NUMBER));
           out[out.length] = { path, rev, part: n, size: value };
-        }
+        });
         return arrayCopy(out);
       },
       pageBytes() {
         let n = 0;
-        for (const [, value] of kv.list({ prefix: PAGE_ROWS })) n += value[1];
+        listEach({ prefix: PAGE_ROWS }, (_key, value) => {
+          n += value[1];
+        });
         return n;
       },
       pageMaxUsed() {
-        for (const [key] of kv.list({ prefix: PAGE_USED, reverse: true, limit: 1 })) return NumberOf(key.slice(1, 18));
-        return 0;
+        let most = 0;
+        listEach({ prefix: PAGE_USED, reverse: true, limit: 1 }, (key) => {
+          most = NumberOf(stringSlice(key, 1, 18));
+          return true;
+        });
+        return most;
       },
       nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
         put(nsKey2(parent, name), {
@@ -4183,7 +4390,8 @@ var __nimbusResidentModule = (() => {
         const rows = nsRows({ prefix: NS });
         const out = new SafeList();
         for (let i = 0; i < rows.length; i++) {
-          const [key, row] = rows[i];
+          const key = rows[i][0];
+          const row = rows[i][1];
           if (row.kind === NS_DIR && row.target !== null) out[out.length] = { parent: key.parent, name: key.name, target: row.target };
         }
         return arrayCopy(out);
@@ -4191,15 +4399,17 @@ var __nimbusResidentModule = (() => {
       nsChildren(parent) {
         const out = new SafeList();
         const prefix = nsChildren(parent);
-        for (const [key, value] of kv.list({ prefix })) {
+        listEach({ prefix }, (key, value) => {
           const row = value;
-          out[out.length] = { name: decodePart(key.slice(prefix.length)), kind: row.kind, mode: row.mode };
-        }
+          out[out.length] = { name: decodePart(stringSlice(key, prefix.length)), kind: row.kind, mode: row.mode };
+        });
         return arrayCopy(out);
       },
       nsCount() {
         let n = 0;
-        for (const _entry of kv.list({ prefix: NS })) n++;
+        listEach({ prefix: NS }, () => {
+          n++;
+        });
         return n;
       }
     };
@@ -4706,41 +4916,52 @@ var __nimbusResidentModule = (() => {
     "fsListTree",
     "fsReadDirectories"
   ];
-  var SUPERVISOR_ANSWERED_METHODS = [
-    ...FILESYSTEM_ANSWERED_RPC_METHODS,
-    ...NODE_SHIM_RPC_METHODS
-  ];
+  var SUPERVISOR_ANSWERED_METHODS = (() => {
+    const methods = new SafeList();
+    for (let i = 0; i < FILESYSTEM_ANSWERED_RPC_METHODS.length; i++)
+      methods[methods.length] = FILESYSTEM_ANSWERED_RPC_METHODS[i];
+    for (let i = 0; i < NODE_SHIM_RPC_METHODS.length; i++)
+      methods[methods.length] = NODE_SHIM_RPC_METHODS[i];
+    return arrayCopy(methods);
+  })();
   var ANSWERED = {};
-  Reflect.setPrototypeOf(ANSWERED, null);
-  for (const name of SUPERVISOR_ANSWERED_METHODS)
+  reflectSetPrototypeOf(ANSWERED, null);
+  for (let i = 0; i < SUPERVISOR_ANSWERED_METHODS.length; i++) {
+    const name = SUPERVISOR_ANSWERED_METHODS[i];
     ANSWERED[name] = true;
+  }
   var WAITS = {};
-  Reflect.setPrototypeOf(WAITS, null);
-  for (const method2 of Object.values(FILESYSTEM_METHODS))
-    if ("waits" in method2)
-      WAITS[method2.rpc] = true;
+  reflectSetPrototypeOf(WAITS, null);
+  {
+    const names = objectKeys(FILESYSTEM_METHODS);
+    for (let i = 0; i < names.length; i++) {
+      const method2 = FILESYSTEM_METHODS[names[i]];
+      if (objectHasOwn(method2, "waits"))
+        WAITS[method2.rpc] = true;
+    }
+  }
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
-  var ANSWERING = /* @__PURE__ */ Symbol.for("nimbus.answering-supervisor");
+  var ANSWERING = symbolFor("nimbus.answering-supervisor");
   function isAnsweringStub(supervisor) {
-    return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, "answer") === "function";
+    return reflectGet(supervisor, ANSWERING) !== true && typeof reflectGet(supervisor, "answer") === "function";
   }
   function answeringSupervisor(supervisor, live) {
     if (!isAnsweringStub(supervisor))
       return supervisor;
     const stub = supervisor;
-    return new Proxy(supervisor, {
+    return new Proxy2(supervisor, {
       get(target, name) {
         if (name === ANSWERING)
           return true;
         if (!isSupervisorAnsweredMethod(name))
-          return Reflect.get(target, name);
+          return reflectGet(target, name);
         return async (...args) => {
           const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
           const answer = await asked;
           try {
-            if ("refusal" in answer)
+            if (objectHasOwn(answer, "refusal"))
               throw supervisorRefusalError(answer.refusal);
             return answer.value;
           } finally {
@@ -4757,12 +4978,12 @@ var __nimbusResidentModule = (() => {
       // sends it as a W7 stream (writeStream), which does.
       writeFileFrom: async (path) => {
         const name = typeof path === "string" ? path : path.path;
-        throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: "ENOTSUP" });
+        throw objectAssign(new Error2(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: "ENOTSUP" });
       }
     });
   }
   function toldLive(call, live) {
-    const native = Promise.resolve(call);
+    const native = promiseResolve(call);
     live?.(native);
     return native;
   }
@@ -4803,29 +5024,37 @@ var __nimbusResidentModule = (() => {
   function handedSpelling(handoff, reached, trailing) {
     if (handoff === null)
       return reached;
-    const spelling = `${handoff.base === "/" ? "" : handoff.base}/${handoff.rest.join("/")}`;
-    return trailing && !spelling.endsWith("/") ? spelling + "/" : spelling;
+    const spelling = `${handoff.base === "/" ? "" : handoff.base}/${arrayJoin(handoff.rest, "/")}`;
+    return trailing && !stringEndsWith(spelling, "/") ? spelling + "/" : spelling;
   }
-  function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling = "/" + root) {
+  var walkBeneath = safeGenerator(function* (root, path, follow, cred, handedOver, rootSpelling = "/" + root) {
     const name = typeof path === "string" ? path : path.path;
     const anchored = rootSpelling !== "/" + root;
     let fromRoot = true;
-    const named = (reached2) => !anchored || !fromRoot ? "/" + reached2 : reached2.length === root.length ? rootSpelling : `${rootSpelling === "/" ? "" : rootSpelling}${reached2.slice(root.length)}`;
+    const named = (reached2) => !anchored || !fromRoot ? "/" + reached2 : reached2.length === root.length ? rootSpelling : `${rootSpelling === "/" ? "" : rootSpelling}${stringSlice(reached2, root.length)}`;
     if (root !== "")
       yield { stat: rootSpelling };
-    if (name.startsWith("/"))
+    if (stringStartsWith(name, "/"))
       throw fsError2("ENOTCAPABLE", "path", path);
-    const pending2 = name.split("/");
-    const resolved = root === "" ? [] : root.split("/");
+    let pending2 = stringSplit(name, "/");
+    const resolved = root === "" ? new SafeList() : stringSplit(root, "/");
     let hops = 0;
     let handoff = null;
     while (pending2.length > 0) {
-      const segment = pending2.shift();
+      const segment = arrayShift(pending2);
       if (segment === void 0)
         break;
-      const dir = resolved.join("/");
+      const dir = arrayJoin(resolved, "/");
       const candidate = dir === "" ? segment : `${dir}/${segment}`;
-      const to = "/" + [dir, segment, ...pending2].filter(Boolean).join("/");
+      const spelled = new SafeList();
+      if (dir !== "")
+        spelled[spelled.length] = dir;
+      if (segment !== "")
+        spelled[spelled.length] = segment;
+      for (let i = 0; i < pending2.length; i++)
+        if (pending2[i] !== "")
+          spelled[spelled.length] = pending2[i];
+      const to = "/" + arrayJoin(spelled, "/");
       const handed = handedOver("/" + dir, to) || segment !== "." && segment !== ".." && handedOver("/" + candidate, to);
       if (!handed) {
         const searched = yield { stat: named(dir) };
@@ -4841,12 +5070,18 @@ var __nimbusResidentModule = (() => {
       if (segment === "..") {
         if (dir === root)
           throw fsError2("ENOTCAPABLE", "path", path);
-        resolved.pop();
+        arrayPop(resolved);
         continue;
       }
       if (handed) {
-        handoff ??= { base: named(dir), rest: [segment, ...pending2] };
-        resolved.push(segment);
+        if (handoff === null) {
+          const rest = new SafeList();
+          rest[0] = segment;
+          for (let i = 0; i < pending2.length; i++)
+            rest[rest.length] = pending2[i];
+          handoff = { base: named(dir), rest };
+        }
+        resolved[resolved.length] = segment;
         continue;
       }
       const isFinal = pending2.length === 0;
@@ -4854,7 +5089,7 @@ var __nimbusResidentModule = (() => {
       if (stat === null && !isFinal)
         throw fsError2("ENOENT", "path", path);
       if (stat === null || stat.type !== "symlink" || isFinal && !follow) {
-        resolved.push(segment);
+        resolved[resolved.length] = segment;
         continue;
       }
       if (++hops > MAX_LINK_HOPS)
@@ -4862,18 +5097,21 @@ var __nimbusResidentModule = (() => {
       const target = yield { readlink: named(candidate) };
       if (target === null)
         throw fsError2("ENOTCAPABLE", "path", path);
-      if (target.startsWith("/")) {
+      if (stringStartsWith(target, "/")) {
         resolved.length = 0;
         fromRoot = false;
       }
-      pending2.unshift(...target.split("/"));
+      const parts = stringSplit(target, "/");
+      for (let i = 0; i < pending2.length; i++)
+        parts[parts.length] = pending2[i];
+      pending2 = parts;
       handoff = null;
     }
-    const reached = resolved.join("/");
-    if (root !== "" && reached !== root && !reached.startsWith(root + "/"))
+    const reached = arrayJoin(resolved, "/");
+    if (root !== "" && reached !== root && !stringStartsWith(reached, root + "/"))
       throw fsError2("ENOTCAPABLE", "path", path);
-    return { reached, spelling: handedSpelling(handoff, named(reached), name.endsWith("/")) };
-  }
+    return { reached, spelling: handedSpelling(handoff, named(reached), stringEndsWith(name, "/")) };
+  });
 
   // ../core/dist/vfs/open-rules.js
   function openFollows(flags) {
@@ -4883,7 +5121,7 @@ var __nimbusResidentModule = (() => {
     return flags.create && flags.directory ? "EINVAL" : null;
   }
   function refusesDirectory(flags, describes = true) {
-    return flags.create === true || flags.truncate === true || flags.append === true || flags.write === true && !describes;
+    return ownValue(flags, "create") === true || ownValue(flags, "truncate") === true || ownValue(flags, "append") === true || ownValue(flags, "write") === true && !describes;
   }
 
   // ../core/dist/runtime/descriptors.js
@@ -4976,24 +5214,24 @@ var __nimbusResidentModule = (() => {
 
   // ../core/dist/runtime/wasi/own-names.js
   function parentKey2(key) {
-    const at = key.lastIndexOf("/");
-    return at < 0 ? "" : key.slice(0, at);
+    const at = stringLastIndexOf(key, "/");
+    return at < 0 ? "" : stringSlice(key, 0, at);
   }
   function nameOf(key) {
-    return key.slice(key.lastIndexOf("/") + 1);
+    return stringSlice(key, stringLastIndexOf(key, "/") + 1);
   }
   function within(key, root) {
-    return key === root || key.startsWith(`${root}/`);
+    return key === root || stringStartsWith(key, `${root}/`);
   }
   function ownNames(options) {
-    const decided = /* @__PURE__ */ new Map();
-    const born = /* @__PURE__ */ new Map();
+    const decided = new SafeMap();
+    const born = new SafeMap();
     let generations = 0;
-    const own = /* @__PURE__ */ new Map();
-    const added = /* @__PURE__ */ new Map();
-    const removed2 = /* @__PURE__ */ new Map();
+    const own = new SafeMap();
+    const added = new SafeMap();
+    const removed2 = new SafeMap();
     let barriers = 0;
-    const made = /* @__PURE__ */ new Set();
+    const made = new SafeSet();
     const madeHere = (key) => made.has(key) && decided.get(key)?.type === "directory" && !options.entry(key);
     const forget = (key) => {
       const entry = decided.get(key);
@@ -5001,9 +5239,14 @@ var __nimbusResidentModule = (() => {
       decided.delete(key);
       born.delete(key);
       made.delete(key);
-      added.get(parentKey2(key))?.delete(nameOf(key));
-      removed2.get(parentKey2(key))?.delete(nameOf(key));
-      if (added.get(key)?.size === 0)
+      const madeIn = added.get(parentKey2(key));
+      if (madeIn !== void 0)
+        madeIn.delete(nameOf(key));
+      const goneIn = removed2.get(parentKey2(key));
+      if (goneIn !== void 0)
+        goneIn.delete(nameOf(key));
+      const madeThere = added.get(key);
+      if (madeThere !== void 0 && madeThere.size === 0)
         added.delete(key);
       options.forgot(key, entry);
     };
@@ -5013,7 +5256,10 @@ var __nimbusResidentModule = (() => {
         if (mine !== void 0 || made.size === 0)
           return mine;
         const dir = parentKey2(key);
-        return key !== "" && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : void 0;
+        if (key === "" || !madeHere(dir))
+          return void 0;
+        const madeIn = added.get(dir);
+        return madeIn === void 0 || !madeIn.has(nameOf(key)) ? null : void 0;
       },
       decided,
       decide: (key, entry) => {
@@ -5031,9 +5277,10 @@ var __nimbusResidentModule = (() => {
         born.delete(key);
       },
       superseded: (key) => {
-        for (const name of [...decided.keys()])
-          if (within(name, key))
-            forget(name);
+        const names = mapKeyList(decided);
+        for (let i = 0; i < names.length; i++)
+          if (within(names[i], key))
+            forget(names[i]);
       },
       settled: (key, generation) => {
         if (generation === void 0 || born.get(key) !== generation)
@@ -5043,22 +5290,26 @@ var __nimbusResidentModule = (() => {
       },
       note: (dir, name, type) => {
         if (type === null) {
-          added.get(dir)?.delete(name);
+          const madeIn = added.get(dir);
+          if (madeIn !== void 0)
+            madeIn.delete(name);
           let gone = removed2.get(dir);
           if (gone === void 0)
-            removed2.set(dir, gone = /* @__PURE__ */ new Set());
+            removed2.set(dir, gone = new SafeSet());
           gone.add(name);
         } else {
-          removed2.get(dir)?.delete(name);
+          const goneIn = removed2.get(dir);
+          if (goneIn !== void 0)
+            goneIn.delete(name);
           let made2 = added.get(dir);
           if (made2 === void 0)
-            added.set(dir, made2 = /* @__PURE__ */ new Map());
+            added.set(dir, made2 = new SafeMap());
           made2.set(name, type);
         }
       },
       madeDirectory: (key) => {
         made.add(key);
-        added.set(key, added.get(key) ?? /* @__PURE__ */ new Map());
+        added.set(key, added.get(key) ?? new SafeMap());
       },
       removedDirectory: (key) => {
         made.delete(key);
@@ -5072,62 +5323,86 @@ var __nimbusResidentModule = (() => {
           return base;
         if (base === void 0 && !madeHere(key))
           return void 0;
-        const out = /* @__PURE__ */ new Map();
-        for (const child of base ?? [])
-          if (!gone?.has(child.name))
-            out.set(child.name, child.type);
-        for (const [name, type] of made2 ?? [])
-          out.set(name, type);
-        return [...out].map(([name, type]) => ({ name, type }));
+        const out = new SafeMap();
+        if (base !== void 0) {
+          for (let i = 0; i < base.length; i++)
+            if (gone === void 0 || !gone.has(base[i].name))
+              out.set(base[i].name, base[i].type);
+        }
+        if (made2 !== void 0)
+          made2.forEach((type, name) => {
+            out.set(name, type);
+          });
+        const listed = new SafeList();
+        out.forEach((type, name) => {
+          listed[listed.length] = { name, type };
+        });
+        return arrayCopy(listed);
       },
       move: (from, to) => {
-        const moved2 = (key) => to + key.slice(from.length);
-        for (const [key, value] of [...decided]) {
+        const moved2 = (key) => to + stringSlice(key, from.length);
+        const keys = mapKeyList(decided);
+        const values = mapValueList(decided);
+        for (let i = 0; i < keys.length; i++) {
+          const key = keys[i];
           if (key === from || !within(key, from))
             continue;
           decided.delete(key);
           born.delete(key);
-          decided.set(moved2(key), value);
+          decided.set(moved2(key), values[i]);
           born.set(moved2(key), ++generations);
         }
-        for (const key of [...made])
-          if (within(key, from)) {
-            made.delete(key);
-            made.add(moved2(key));
+        const dirs = setList(made);
+        for (let i = 0; i < dirs.length; i++)
+          if (within(dirs[i], from)) {
+            made.delete(dirs[i]);
+            made.add(moved2(dirs[i]));
           }
-        for (const map of [added, removed2]) {
-          for (const [key, value] of [...map])
-            if (within(key, from)) {
-              map.delete(key);
-              map.set(moved2(key), value);
+        const moveAll = (map) => {
+          const at = mapKeyList(map);
+          const held = mapValueList(map);
+          for (let i = 0; i < at.length; i++)
+            if (within(at[i], from)) {
+              map.delete(at[i]);
+              map.set(moved2(at[i]), held[i]);
             }
-        }
-        for (const key of [...own.keys()])
-          if (key !== from && within(key, from))
-            own.delete(key);
+        };
+        moveAll(added);
+        moveAll(removed2);
+        const owned2 = mapKeyList(own);
+        for (let i = 0; i < owned2.length; i++)
+          if (owned2[i] !== from && within(owned2[i], from))
+            own.delete(owned2[i]);
       },
       released: (root) => {
-        for (const key of decided.keys())
+        decided.forEach((_entry, key) => {
           if (within(key, root))
             own.set(key, { barrier: barriers, generation: born.get(key) });
+        });
       },
       barrierBegun: () => ++barriers,
       // A subtree held again since does not keep it: what the session has there now is what the view read.
       retire: (begun) => {
-        for (const [key, { barrier, generation }] of [...own]) {
-          if (born.get(key) !== generation)
-            own.delete(key);
+        const keys = mapKeyList(own);
+        const stamps = mapValueList(own);
+        for (let i = 0; i < keys.length; i++) {
+          const { barrier, generation } = stamps[i];
+          if (born.get(keys[i]) !== generation)
+            own.delete(keys[i]);
           else if (barrier < begun)
-            forget(key);
+            forget(keys[i]);
         }
       }
     };
   }
 
   // ../core/dist/runtime/wasi/inode-fold.js
-  function owned(bytes, length = bytes.byteLength) {
-    const copy = new Uint8Array(length);
-    copy.set(bytes.subarray(0, length));
+  var isModeChange = (attrs) => objectHasOwn(attrs, "mode");
+  var isOwnerChange = (attrs) => objectHasOwn(attrs, "uid");
+  var isTimesChange = (attrs) => objectHasOwn(attrs, "atime");
+  function owned(bytes, length = typedArrayByteLength(bytes)) {
+    const copy = new Uint8ArrayConstructor(length);
+    typedArraySet(copy, bytesView(bytes, 0, length));
     return copy;
   }
   function copyState(state) {
@@ -5135,37 +5410,37 @@ var __nimbusResidentModule = (() => {
   }
   function grown(state, size) {
     const bytes = state.bytes;
-    if (size <= bytes.byteLength)
+    if (size <= typedArrayByteLength(bytes))
       return bytes;
-    const next = new Uint8Array(Math.max(size, bytes.byteLength * 2, 4096));
-    next.set(bytes.subarray(0, state.size));
+    const next = new Uint8ArrayConstructor(mathMax(size, typedArrayByteLength(bytes) * 2, 4096));
+    typedArraySet(next, bytesView(bytes, 0, state.size));
     return next;
   }
   function applyOp(state, op) {
     switch (op.kind) {
       case "write":
       case "append": {
-        if (op.data.byteLength === 0)
+        if (typedArrayByteLength(op.data) === 0)
           return state;
         const offset = op.kind === "append" ? state.size : op.offset;
-        const end = offset + op.data.byteLength;
+        const end = offset + typedArrayByteLength(op.data);
         if (state.bytes !== null) {
           const bytes = grown(state, end);
           if (offset > state.size)
-            bytes.fill(0, state.size, offset);
-          bytes.set(op.data, offset);
+            typedArrayFill(bytes, 0, state.size, offset);
+          typedArraySet(bytes, op.data, offset);
           state.bytes = bytes;
         }
-        state.size = Math.max(state.size, end);
+        state.size = mathMax(state.size, end);
         state.mtime = state.ctime = op.at;
         return state;
       }
       case "truncate": {
         if (op.size === 0)
-          state.bytes = new Uint8Array(0);
+          state.bytes = new Uint8ArrayConstructor(0);
         else if (state.bytes !== null && op.size > state.size) {
           const bytes = grown(state, op.size);
-          bytes.fill(0, state.size, op.size);
+          typedArrayFill(bytes, 0, state.size, op.size);
           state.bytes = bytes;
         }
         state.size = op.size;
@@ -5191,8 +5466,8 @@ var __nimbusResidentModule = (() => {
   }
   function foldOps(baseline, ops) {
     let state = copyState(baseline);
-    for (const op of ops)
-      state = applyOp(state, op);
+    for (let i = 0; i < ops.length; i++)
+      state = applyOp(state, ops[i]);
     return state;
   }
 
@@ -5201,37 +5476,51 @@ var __nimbusResidentModule = (() => {
   var RECORD_COST = 160;
   var INODE_COST = 320;
   var stringCost = (text) => text.length * 2;
-  var retained = (bytes) => bytes?.buffer.byteLength ?? 0;
-  var payloadOf = (op) => "data" in op ? op.data.byteLength : 0;
+  var retained = (bytes) => bytes === null || bytes === void 0 ? 0 : arrayBufferByteLength(typedArrayBuffer(bytes));
+  var mutationAfter = (answer) => {
+    const mutation = answer === void 0 ? void 0 : ownValue(answer, "mutation");
+    return mutation === void 0 ? void 0 : mutation.after;
+  };
+  var payloadOf = (op) => op.kind === "write" || op.kind === "append" ? typedArrayByteLength(op.data) : 0;
   function parentKey3(key) {
-    const at = key.lastIndexOf("/");
-    return at < 0 ? "" : key.slice(0, at);
+    const at = stringLastIndexOf(key, "/");
+    return at < 0 ? "" : stringSlice(key, 0, at);
   }
   function nameOf2(key) {
-    return key.slice(key.lastIndexOf("/") + 1);
+    return stringSlice(key, stringLastIndexOf(key, "/") + 1);
   }
   function within2(key, root) {
-    return key === root || key.startsWith(`${root}/`);
+    return key === root || stringStartsWith(key, `${root}/`);
   }
-  var descriptionId = () => crypto.randomUUID().replaceAll("-", "");
-  var NO_RECORDS = Object.freeze([]);
-  var NO_RETAINED = Object.freeze([]);
-  var WHOLE_WRITTEN = /* @__PURE__ */ Symbol("written whole");
+  var descriptionId = () => {
+    const id = crypto.randomUUID();
+    let out = "";
+    for (let i = 0; i < id.length; i++)
+      if (id[i] !== "-")
+        out += id[i];
+    return out;
+  };
+  var NO_RECORDS = objectFreeze([]);
+  var NO_RETAINED = objectFreeze([]);
+  var WHOLE_WRITTEN = SymbolConstructor("written whole");
   function provisional(host2) {
-    const table = /* @__PURE__ */ new Map();
-    const held = /* @__PURE__ */ new Set();
-    const loose = /* @__PURE__ */ new Set();
-    const inodeAtNumber = (dev, ino) => table.get(dev)?.get(ino);
+    const table = new SafeMap();
+    const held = new SafeSet();
+    const loose = new SafeSet();
+    const inodeAtNumber = (dev, ino) => {
+      const numbers = table.get(dev);
+      return numbers === void 0 ? void 0 : numbers.get(ino);
+    };
     const addInode = (inode) => {
       let numbers = table.get(inode.dev);
       if (numbers === void 0)
-        table.set(inode.dev, numbers = /* @__PURE__ */ new Map());
+        table.set(inode.dev, numbers = new SafeMap());
       numbers.set(inode.ino, inode);
       (inode.cell === void 0 ? loose : held).add(inode);
     };
     const removeInode = (inode) => {
       const numbers = table.get(inode.dev);
-      if (numbers?.get(inode.ino) !== inode)
+      if (numbers === void 0 || numbers.get(inode.ino) !== inode)
         return;
       numbers.delete(inode.ino);
       if (numbers.size === 0)
@@ -5241,7 +5530,7 @@ var __nimbusResidentModule = (() => {
     };
     const setCell = (inode, cell) => {
       if (cell === void 0)
-        delete inode.cell;
+        inode.cell = void 0;
       else
         inode.cell = cell;
       if (inodeAtNumber(inode.dev, inode.ino) !== inode)
@@ -5249,24 +5538,31 @@ var __nimbusResidentModule = (() => {
       (cell === void 0 ? held : loose).delete(inode);
       (cell === void 0 ? loose : held).add(inode);
     };
-    const everyInode = () => [...held, ...loose];
-    const pendingMoves = /* @__PURE__ */ new Set();
+    const everyInode = () => {
+      const every = setList(held);
+      loose.forEach((inode) => {
+        every[every.length] = inode;
+      });
+      return every;
+    };
+    const pendingMoves = new SafeSet();
     const pendingGrowth = (key, origin) => {
       if (pendingMoves.size === 0)
         return 0;
       let total = 0;
-      for (const { from, to } of pendingMoves)
+      pendingMoves.forEach(({ from, to }) => {
         if (within2(key, from))
-          total += Math.max(0, 2 * stringCost(to + key.slice(from.length)) - stringCost(key) - stringCost(origin));
+          total += mathMax(0, 2 * stringCost(to + stringSlice(key, from.length)) - stringCost(key) - stringCost(origin));
+      });
       return total;
     };
-    const descs = /* @__PURE__ */ new Map();
-    const sessions = /* @__PURE__ */ new Map();
-    const layer = /* @__PURE__ */ new Map();
-    const added = /* @__PURE__ */ new Map();
-    const removed2 = /* @__PURE__ */ new Map();
+    const descs = new SafeMap();
+    const sessions = new SafeMap();
+    const layer = new SafeMap();
+    const added = new SafeMap();
+    const removed2 = new SafeMap();
     const nameRecords = [];
-    const touched = /* @__PURE__ */ new Set();
+    const touched = new SafeSet();
     let ids = 0;
     let barriers = 0;
     let localIno = LOCAL_INOS;
@@ -5293,15 +5589,15 @@ var __nimbusResidentModule = (() => {
       return s === null ? nlink === row.nlink ? row : { ...row, nlink } : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
     };
     const viewNameBeneathMoved = (key) => {
-      for (let at = key.lastIndexOf("/"); at > 0; at = key.lastIndexOf("/", at - 1)) {
-        const dir = key.slice(0, at);
+      for (let at = stringLastIndexOf(key, "/"); at > 0; at = stringLastIndexOf(key, "/", at - 1)) {
+        const dir = stringSlice(key, 0, at);
         if (!layer.has(dir))
           continue;
         const inode = layer.get(dir);
         if (inode === null || inode.local)
           return void 0;
         if (inode.origin !== dir)
-          return inode.origin + key.slice(at);
+          return inode.origin + stringSlice(key, at);
       }
       return void 0;
     };
@@ -5320,7 +5616,7 @@ var __nimbusResidentModule = (() => {
       if (touched.size > 0) {
         const row = known !== void 0 ? known : host2.row(key);
         const changed = row ? inodeAtNumber(row.dev, row.ino) : void 0;
-        if (changed !== void 0 && changed.state !== null && !changed.local && changed.cell === void 0 && changed.heldAt === void 0 && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
+        if (changed !== void 0 && changed.state !== null && !changed.local && changed.cell === void 0 && changed.heldAt === void 0 && changed.records.length === 0 && mapFind(layer, (placed) => placed === changed) === void 0) {
           renamed(changed, key, key, true);
           changed.row = row;
           changed.base = changed.state = null;
@@ -5336,10 +5632,13 @@ var __nimbusResidentModule = (() => {
         return void 0;
       const dir = parentKey3(key);
       const made2 = layer.get(dir);
-      return made2 && made2.local && !added.get(dir)?.has(nameOf2(key)) ? null : void 0;
+      if (!made2 || !made2.local)
+        return void 0;
+      const madeIn = added.get(dir);
+      return madeIn === void 0 || !madeIn.has(nameOf2(key)) ? null : void 0;
     };
     const expecting = (row, key) => {
-      if (host2.mounted?.(key) === true)
+      if (ownValue(host2, "mounted")?.(key) === true)
         return {};
       if (row === null)
         return { expect: null };
@@ -5357,7 +5656,7 @@ var __nimbusResidentModule = (() => {
     const inodeAt = (key, row) => {
       let inode = inodeAtNumber(row.dev, row.ino);
       if (inode === void 0) {
-        inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0 };
+        inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0, lost: void 0, merged: void 0, pin: void 0, cell: void 0, heldAt: void 0, made: void 0, over: void 0 };
         addInode(inode);
       }
       return inode;
@@ -5380,7 +5679,7 @@ var __nimbusResidentModule = (() => {
       if (!row || row.dev !== inode.dev || row.ino !== inode.ino)
         return void 0;
       const held2 = inode.type === "file" ? host2.content(name, row.revision) : void 0;
-      return { name, row, bytes: held2 !== void 0 && held2.byteLength === row.size ? held2 : void 0 };
+      return { name, row, bytes: held2 !== void 0 && typedArrayByteLength(held2) === row.size ? held2 : void 0 };
     };
     const pinned = (inode, seen, revision) => {
       const pin = inode.pin;
@@ -5401,51 +5700,68 @@ var __nimbusResidentModule = (() => {
       }
       const row = inode.row;
       const held2 = seen?.bytes ?? pinned(inode, seen, row.revision);
-      const bytes = held2 === void 0 ? row.size === 0 ? new Uint8Array(0) : null : owned(held2);
+      const bytes = held2 === void 0 ? row.size === 0 ? new Uint8ArrayConstructor(0) : null : owned(held2);
       return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
     };
     const cost = (inode) => {
       let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (pendingMoves.size === 0 || inode.cell?.detached !== void 0 ? 0 : pendingGrowth(inode.key, inode.origin)) + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base ? 0 : retained(inode.state?.bytes)) + retained(inode.pin?.bytes) + inode.recordsCost;
       return total;
     };
-    const recordCost = (record) => RECORD_COST + (record.room?.byteLength ?? payloadOf(record.op));
+    const recordCost = (record) => RECORD_COST + (record.room === void 0 ? payloadOf(record.op) : typedArrayByteLength(record.room));
+    const opsCost = (ops) => {
+      let sum = 0;
+      for (let i = 0; i < ops.length; i++)
+        sum += RECORD_COST + payloadOf(ops[i]);
+      return sum;
+    };
     const dropRecords = (inode, leaving) => {
       if (leaving.size === 0)
         return;
-      inode.records = inode.records.filter((record) => {
-        if (!leaving.has(record))
-          return true;
+      const kept = new SafeList();
+      for (let i = 0; i < inode.records.length; i++) {
+        const record = inode.records[i];
+        if (!leaving.has(record)) {
+          kept[kept.length] = record;
+          continue;
+        }
         record.gone = true;
         inode.recordsCost -= recordCost(record);
-        return false;
-      });
+      }
+      inode.records = kept;
+    };
+    const opsOf = (records) => {
+      const ops = new SafeList();
+      for (let i = 0; i < records.length; i++)
+        ops[i] = records[i].op;
+      return ops;
     };
     const projectedCost = (inode, ops) => {
       if (ops.length === 0)
         return cost(inode);
       let baseBytes = inode.base === null ? 0 : retained(inode.base.bytes);
-      let capacity = inode.state?.bytes?.byteLength ?? 0;
+      let capacity = inode.state === null || inode.state.bytes === null ? 0 : typedArrayByteLength(inode.state.bytes);
       let known = inode.state !== null && inode.state.bytes !== null;
       let size = inode.state?.size ?? inode.row.size;
       if (inode.base === null) {
         const seen = inode.local || inode.cell !== void 0 ? void 0 : viewed(inode);
-        const held2 = inode.cell !== void 0 ? inode.cell.bytes.subarray(0, inode.cell.length) : seen?.bytes ?? pinned(inode, seen, seen?.row.revision ?? inode.row.revision);
+        const held2 = inode.cell !== void 0 ? bytesView(inode.cell.bytes, 0, inode.cell.length) : seen?.bytes ?? pinned(inode, seen, seen?.row.revision ?? inode.row.revision);
         known = held2 !== void 0 || inode.row.size === 0;
-        baseBytes = held2?.byteLength ?? 0;
+        baseBytes = held2 === void 0 ? 0 : typedArrayByteLength(held2);
         capacity = baseBytes;
-        size = held2?.byteLength ?? inode.row.size;
+        size = held2 === void 0 ? inode.row.size : typedArrayByteLength(held2);
       }
       let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
-      for (const op of ops) {
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
         if (op.kind === "truncate" && op.size === 0)
           known = true;
-        const end = op.kind === "write" ? op.offset + op.data.byteLength : op.kind === "append" ? size + op.data.byteLength : op.kind === "truncate" ? op.size : size;
+        const end = op.kind === "write" ? op.offset + typedArrayByteLength(op.data) : op.kind === "append" ? size + typedArrayByteLength(op.data) : op.kind === "truncate" ? op.size : size;
         if (known && end > capacity)
-          capacity = Math.max(end, capacity * 2, 4096);
+          capacity = mathMax(end, capacity * 2, 4096);
         if (op.kind === "truncate")
           size = op.size;
         else if (op.kind === "write" || op.kind === "append")
-          size = Math.max(size, end);
+          size = mathMax(size, end);
         total += RECORD_COST + payloadOf(op);
       }
       return total + (known ? capacity : 0);
@@ -5453,11 +5769,11 @@ var __nimbusResidentModule = (() => {
     const fit = (inode) => {
       let need = cost(inode) - inode.reserved;
       if (need > 0 && !host2.reserve(need)) {
-        delete inode.pin;
+        inode.pin = void 0;
         if (inode.base !== null)
           inode.base = { ...inode.base, bytes: null };
         if (inode.state !== null)
-          inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op));
+          inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, opsOf(inode.records));
         need = cost(inode) - inode.reserved;
         if (need > 0 && !host2.reserve(need))
           need = 0;
@@ -5480,7 +5796,7 @@ var __nimbusResidentModule = (() => {
       if (need > 0)
         inode.reserved += need;
       if (current)
-        delete inode.lost;
+        inode.lost = void 0;
       fit(inode);
     };
     const admitOps = (inode, ops, syscall, path) => {
@@ -5517,11 +5833,11 @@ var __nimbusResidentModule = (() => {
       return recorded(inode, op, description);
     };
     const recorded = (inode, op, description) => {
-      const record = { id: ++ids, op, owner: inode, ...description === void 0 ? {} : { description }, answered: false, answeredAt: 0 };
+      const record = { id: ++ids, op, owner: inode, description, answered: false, answeredAt: 0, room: void 0, after: void 0, gone: void 0 };
       if (inode.records === NO_RECORDS)
         inode.records = [record];
       else
-        inode.records.push(record);
+        inode.records[inode.records.length] = record;
       inode.recordsCost += recordCost(record);
       inode.state = applyOp(inode.state, op);
       return record;
@@ -5529,12 +5845,13 @@ var __nimbusResidentModule = (() => {
     const release = (inode) => {
       if (inode.records.length > 0 || inode.descs > 0 || inode.answers > 0 || inode.cell !== void 0)
         return;
-      for (const value of layer.values())
-        if (value === inode)
+      if (mapFind(layer, (value) => value === inode) !== void 0)
+        return;
+      for (let i = 0; i < nameRecords.length; i++) {
+        const record = nameRecords[i];
+        if (arrayIncludes(record.places, inode))
           return;
-      for (const record of nameRecords)
-        if (record.places.includes(inode))
-          return;
+      }
       if (inode.state !== null && named(inode))
         return;
       touched.delete(inode);
@@ -5557,29 +5874,31 @@ var __nimbusResidentModule = (() => {
       };
       if (awaited) {
         const answer = host2.client.submit(op);
-        void answer.then((answered) => settled(false, answered), () => settled(true, void 0)).catch(endedOnly);
+        void promiseThen(promiseThen(answer, (answered) => settled(false, answered), () => settled(true, void 0)), void 0, endedOnly);
         return answer;
       }
       settles(host2.client.submit(op, { acknowledged: true }), settle);
       return void 0;
     };
     const settles = (answer, settle) => {
-      void answer.then((answered) => {
-        settle(answered.failed?.refused === true, answered);
+      void promiseThen(promiseThen(answer, (answered) => {
+        const failed = ownValue(answered, "failed");
+        settle(failed !== void 0 && ownValue(failed, "refused") === true, answered);
         host2.sent();
       }, () => {
         settle(false, void 0);
         host2.sent();
-      }).catch(endedOnly);
+      }), void 0, endedOnly);
     };
     const refold = (inode) => {
       if (inode.base === null)
         return;
-      inode.state = foldOps(inode.base, inode.records.map((record) => record.op));
+      inode.state = foldOps(inode.base, opsOf(inode.records));
     };
     const settleRecords = (records, refused, after3) => {
       if (!refused) {
-        for (const record of records) {
+        for (let i = 0; i < records.length; i++) {
+          const record = records[i];
           if (record.gone)
             continue;
           record.answered = true;
@@ -5589,50 +5908,61 @@ var __nimbusResidentModule = (() => {
         }
         return;
       }
-      const refusedOf = /* @__PURE__ */ new Map();
-      for (const record of records) {
+      const refusedOf = new SafeMap();
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
         if (record.gone)
           continue;
         let mine = refusedOf.get(record.owner);
         if (mine === void 0)
-          refusedOf.set(record.owner, mine = /* @__PURE__ */ new Set());
+          refusedOf.set(record.owner, mine = new SafeSet());
         mine.add(record);
       }
-      for (const [inode, mine] of refusedOf) {
+      refusedOf.forEach((mine, inode) => {
         dropRecords(inode, mine);
         refold(inode);
         fit(inode);
         release(inode);
-      }
+      });
     };
-    const nameCost = (keys, target = "") => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
-    const loggedOn = (records, op, awaited = false) => logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
+    const nameCost = (keys, target = "") => {
+      let sum = 0;
+      for (let i = 0; i < keys.length; i++)
+        sum += stringCost(keys[i]);
+      return RECORD_COST + sum + stringCost(target);
+    };
+    const loggedOn = (records, op, awaited = false) => logged(op, (refused, answer) => settleRecords(records, refused, mutationAfter(answer)), awaited);
     const extended2 = (record, data, at) => {
       const op = record.op;
-      const before = op.data.byteLength;
-      const length = before + data.byteLength;
+      const before = typedArrayByteLength(op.data);
+      const length = before + typedArrayByteLength(data);
       const counted = recordCost(record);
       let room = record.room;
-      if (room === void 0 || room.byteLength < length) {
-        const grown2 = new Uint8Array(Math.max(length, before * 2));
-        grown2.set(op.data);
+      if (room === void 0 || typedArrayByteLength(room) < length) {
+        const grown2 = new Uint8ArrayConstructor(mathMax(length, before * 2));
+        typedArraySet(grown2, op.data);
         record.room = room = grown2;
       }
-      room.set(data, before);
-      op.data = room.subarray(0, length);
+      typedArraySet(room, data, before);
+      op.data = bytesView(room, 0, length);
       op.at = at;
       record.owner.recordsCost += recordCost(record) - counted;
     };
     const replay = () => {
-      for (const inode of everyInode())
-        renamed(inode, inode.origin, inode.origin);
+      const every = everyInode();
+      for (let i = 0; i < every.length; i++)
+        renamed(every[i], every[i].origin, every[i].origin);
       layer.clear();
       added.clear();
       removed2.clear();
-      for (const record of nameRecords)
+      for (let i = 0; i < nameRecords.length; i++) {
+        const record = nameRecords[i];
         record.replay();
+      }
       touched.clear();
-      for (const inode of everyInode()) {
+      const now = everyInode();
+      for (let i = 0; i < now.length; i++) {
+        const inode = now[i];
         if (inode.state !== null)
           touched.add(inode);
         fit(inode);
@@ -5640,26 +5970,36 @@ var __nimbusResidentModule = (() => {
       activity();
     };
     const loggedName = (op, keys, cost2, apply, settled, retired, awaited = false) => {
-      const over = keys.map((key) => host2.generation(key));
+      const over = new SafeList();
+      for (let i = 0; i < keys.length; i++)
+        over[i] = host2.generation(keys[i]);
       apply();
-      const places = keys.flatMap((key) => {
-        const placed = layer.get(key);
-        return placed ? [placed] : [];
-      });
-      const record = { id: ++ids, keys, over, cost: cost2, places, replay: apply, ...retired === void 0 ? {} : { retired }, answered: false, answeredAt: 0 };
-      nameRecords.push(record);
-      for (const key of keys)
+      const places = new SafeList();
+      for (let i = 0; i < keys.length; i++) {
+        const placed = layer.get(keys[i]);
+        if (placed)
+          places[places.length] = placed;
+      }
+      const record = { id: ++ids, keys, over, cost: cost2, places, replay: apply, retired, answered: false, answeredAt: 0 };
+      nameRecords[nameRecords.length] = record;
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
         host2.count(key);
+      }
       return logged(op, (refused, answer) => {
         if (refused) {
-          const at = nameRecords.indexOf(record);
-          if (at >= 0)
-            nameRecords.splice(at, 1);
+          const at = arrayIndexOf(nameRecords, record);
+          if (at >= 0) {
+            for (let i = at; i < nameRecords.length - 1; i++)
+              nameRecords[i] = nameRecords[i + 1];
+            nameRecords.length--;
+          }
           host2.release(record.cost);
           replay();
-          for (const inode of everyInode())
-            if (inode.local)
-              release(inode);
+          const every = everyInode();
+          for (let i = 0; i < every.length; i++)
+            if (every[i].local)
+              release(every[i]);
         } else {
           record.answered = true;
           record.answeredAt = barriers;
@@ -5669,16 +6009,20 @@ var __nimbusResidentModule = (() => {
     };
     const note = (dir, name, type) => {
       if (type === null) {
-        added.get(dir)?.delete(name);
+        const madeIn = added.get(dir);
+        if (madeIn !== void 0)
+          madeIn.delete(name);
         let gone = removed2.get(dir);
         if (gone === void 0)
-          removed2.set(dir, gone = /* @__PURE__ */ new Set());
+          removed2.set(dir, gone = new SafeSet());
         gone.add(name);
       } else {
-        removed2.get(dir)?.delete(name);
+        const goneIn = removed2.get(dir);
+        if (goneIn !== void 0)
+          goneIn.delete(name);
         let made2 = added.get(dir);
         if (made2 === void 0)
-          added.set(dir, made2 = /* @__PURE__ */ new Map());
+          added.set(dir, made2 = new SafeMap());
         made2.set(name, type);
       }
     };
@@ -5697,7 +6041,7 @@ var __nimbusResidentModule = (() => {
     };
     const writableParent = (key, path, syscall) => {
       const parent = rowAt(parentKey3(key));
-      if (parent === void 0 || parent === null || parent.dev !== host2.device && host2.mounted?.(key) !== true)
+      if (parent === void 0 || parent === null || parent.dev !== host2.device && ownValue(host2, "mounted")?.(key) !== true)
         return void 0;
       if (parent.type !== "directory")
         throw fsError2("ENOTDIR", syscall, path);
@@ -5725,7 +6069,7 @@ var __nimbusResidentModule = (() => {
         dev: host2.device,
         ino: localIno++,
         nlink: type === "directory" ? 2 : 1,
-        size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
+        size: target === null ? 0 : typedArrayByteLength(new TextEncoder().encode(target)),
         atime: at,
         mtime: at,
         ctime: at,
@@ -5735,9 +6079,9 @@ var __nimbusResidentModule = (() => {
         revision: 0,
         target
       };
-      const inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0 };
+      const inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0, lost: void 0, merged: void 0, pin: void 0, cell: void 0, heldAt: void 0, made: void 0, over: void 0 };
       if (type === "file") {
-        inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
+        inode.base = { bytes: new Uint8ArrayConstructor(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
         inode.state = copyState(inode.base);
         touched.add(inode);
         activity();
@@ -5753,7 +6097,7 @@ var __nimbusResidentModule = (() => {
         admit(more, syscall, path);
         return;
       }
-      const held2 = seen.bytes.byteLength;
+      const held2 = typedArrayByteLength(seen.bytes);
       admit(more + 2 * held2, syscall, path);
       inode.reserved += 2 * held2;
       inode.base = baseline(inode);
@@ -5762,7 +6106,7 @@ var __nimbusResidentModule = (() => {
       fit(inode);
     };
     const reconcile = (inode, answer, creating) => {
-      const receipt = answer?.receipt;
+      const receipt = answer === void 0 ? void 0 : ownValue(answer, "receipt");
       const file = receipt !== void 0 && creating && inode.local ? canonicalize(inode, receipt) : inode;
       fit(file);
       return file;
@@ -5776,57 +6120,85 @@ var __nimbusResidentModule = (() => {
         made2.ino = receipt.ino;
         addInode(made2);
       } else {
-        for (const desc of descs.values())
+        descs.forEach((desc) => {
           if (desc.inode === made2)
             desc.inode = owner;
-        for (const record of made2.records)
+        });
+        for (let i = 0; i < made2.records.length; i++) {
+          const record = made2.records[i];
           record.owner = owner;
-        owner.records = [...owner.records, ...made2.records].sort((a, b) => a.id - b.id);
+        }
+        const records = new SafeList();
+        for (let i = 0; i < owner.records.length; i++)
+          records[records.length] = owner.records[i];
+        for (let i = 0; i < made2.records.length; i++)
+          records[records.length] = made2.records[i];
+        owner.records = arraySort(records, (a, b) => a.id - b.id);
         owner.recordsCost += made2.recordsCost;
         owner.descs += made2.descs;
         owner.answers += made2.answers;
-        owner.retained = [...owner.retained, ...made2.retained];
-        for (const [key, value] of layer)
+        const retained2 = new SafeList();
+        for (let i = 0; i < owner.retained.length; i++)
+          retained2[retained2.length] = owner.retained[i];
+        for (let i = 0; i < made2.retained.length; i++)
+          retained2[retained2.length] = made2.retained[i];
+        owner.retained = retained2;
+        layer.forEach((value, key) => {
           if (value === made2)
             layer.set(key, owner);
-        for (const record of nameRecords)
-          record.places = record.places.map((inode) => inode === made2 ? owner : inode);
+        });
+        for (let i = 0; i < nameRecords.length; i++) {
+          const record = nameRecords[i];
+          const places = new SafeList();
+          for (let j = 0; j < record.places.length; j++)
+            places[j] = record.places[j] === made2 ? owner : record.places[j];
+          record.places = places;
+        }
         touched.delete(made2);
         host2.release(made2.reserved);
         made2.reserved = 0;
         bury(made2, owner);
       }
       owner.row = { ...owner.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
-      owner.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
+      owner.base = { bytes: receipt.size === 0 ? new Uint8ArrayConstructor(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
       refold(owner);
       return owner;
     };
     const bury = (dead, owner) => {
-      for (const field of Object.keys(dead)) {
-        Object.defineProperty(dead, field, {
-          get: () => {
-            throw new Error(`a merged Inode's ${field} used after its merge (canonical)`);
-          },
-          configurable: true
-        });
+      const fields = objectKeys(dead);
+      for (let i = 0; i < fields.length; i++) {
+        const field = fields[i];
+        if (dead[field] === void 0)
+          continue;
+        const thrower = objectCreate(null);
+        thrower.get = () => {
+          throw new Error2(`a merged Inode's ${field} used after its merge (canonical)`);
+        };
+        thrower.configurable = true;
+        reflectDefineProperty(dead, field, thrower);
       }
-      Object.defineProperty(dead, "merged", { value: owner });
+      reflectDefineProperty(dead, "merged", dataDescriptor(owner, false, false, false));
     };
     const openAnswered = (opened, description, records, creating, read) => (refused, answer) => {
       let inode = canonical2(opened);
       inode.answers--;
-      if (!refused && answer?.receipt?.handle !== void 0)
-        sessions.set(description, { handle: answer.receipt.handle, read });
+      const receipt = answer === void 0 ? void 0 : ownValue(answer, "receipt");
+      if (!refused && receipt?.handle !== void 0)
+        sessions.set(description, { handle: receipt.handle, read });
       if (inode.made === description)
-        delete inode.made;
+        inode.made = void 0;
       if (!refused)
         inode = reconcile(inode, answer, creating);
-      if (refused && inode.retained.includes(description)) {
-        inode.retained = inode.retained.filter((kept) => kept !== description);
+      if (refused && arrayIncludes(inode.retained, description)) {
+        const retained2 = new SafeList();
+        for (let i = 0; i < inode.retained.length; i++)
+          if (inode.retained[i] !== description)
+            retained2[retained2.length] = inode.retained[i];
+        inode.retained = retained2;
         sessions.delete(description);
       }
       closeRetained(inode);
-      settleRecords(records, refused, answer?.mutation?.after);
+      settleRecords(records, refused, mutationAfter(answer));
       fit(inode);
       release(inode);
     };
@@ -5835,7 +6207,8 @@ var __nimbusResidentModule = (() => {
         return;
       const retained2 = inode.retained;
       inode.retained = NO_RETAINED;
-      for (const description of retained2) {
+      for (let i = 0; i < retained2.length; i++) {
+        const description = retained2[i];
         sessions.delete(description);
         logged({ type: "call", call: { call: "close", path: inode.key, description } }, () => {
         });
@@ -5844,14 +6217,14 @@ var __nimbusResidentModule = (() => {
     const descriptor = (inode, path, flags, description) => {
       const id = host2.nextHandle();
       const write = flags.write === true || flags.append === true;
-      descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, ...description === void 0 ? {} : { description }, lastRecord: null, lastAnswer: null });
+      descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, description, opening: void 0, lastRecord: null, lastAnswer: null });
       inode.descs++;
       return { id, path };
     };
     const descOf = (handleId) => {
       const desc = descs.get(handleId);
       if (desc === void 0)
-        throw fsError2("EBADF", "fd", String(handleId));
+        throw fsError2("EBADF", "fd", stringOf(handleId));
       return desc;
     };
     const bytesOf = (inode, syscall, path) => {
@@ -5877,29 +6250,29 @@ var __nimbusResidentModule = (() => {
             throw fsError2("ESTALE", syscall, path);
           return void 0;
         }
-        return { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength };
+        return { bytes: inode.pin.bytes, size: typedArrayByteLength(inode.pin.bytes) };
       }
       inode.row = seen.row;
       if (seen.bytes === void 0) {
         const pin = pinned(inode, seen, seen.row.revision);
-        return pin === void 0 ? void 0 : { bytes: pin, size: pin.byteLength };
+        return pin === void 0 ? void 0 : { bytes: pin, size: typedArrayByteLength(pin) };
       }
       if (inode.descs > 0 && inode.pin?.bytes !== seen.bytes) {
         inode.pin = { revision: seen.row.revision, bytes: seen.bytes };
         fit(inode);
       }
-      return { bytes: seen.bytes, size: seen.bytes.byteLength };
+      return { bytes: seen.bytes, size: typedArrayByteLength(seen.bytes) };
     };
     const anchorOf = (inode, read = false) => {
       if (inode.descs === 0)
         return void 0;
-      for (const description of inode.retained)
+      for (let i = 0; i < inode.retained.length; i++) {
+        const description = inode.retained[i];
         if (!read || sessions.get(description)?.read === true)
           return description;
-      for (const desc of descs.values())
-        if (desc.inode === inode && desc.description !== void 0 && (!read || sessions.get(desc.description)?.read === true))
-          return desc.description;
-      return void 0;
+      }
+      const desc = mapFind(descs, (each) => each.inode === inode && each.description !== void 0 && (!read || sessions.get(each.description)?.read === true));
+      return desc === void 0 ? void 0 : desc.description;
     };
     const by = (desc) => {
       const description = desc.description ?? anchorOf(desc.inode);
@@ -5921,7 +6294,7 @@ var __nimbusResidentModule = (() => {
       const record = recorded(desc.inode, op, desc.description);
       desc.lastRecord = record;
       desc.lastAnswer = answer;
-      settles(answer, (refused, answered) => settleRecords([record], refused, answered?.mutation?.after));
+      settles(answer, (refused, answered) => settleRecords([record], refused, mutationAfter(answered)));
     };
     const continued = (desc, start, bytes, at) => {
       const inode = desc.inode;
@@ -5929,18 +6302,18 @@ var __nimbusResidentModule = (() => {
       if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== void 0 || inode.state === null)
         return false;
       const was = last.op;
-      if (!("data" in was) || (start === void 0 ? was.kind !== "append" : was.kind !== "write" || start !== was.offset + was.data.byteLength))
+      if (was.kind !== "write" && was.kind !== "append" || (start === void 0 ? was.kind !== "append" : was.kind !== "write" || start !== was.offset + typedArrayByteLength(was.data)))
         return false;
       unshared(inode);
       const state = inode.state;
-      const before = was.data.byteLength;
-      const length = before + bytes.byteLength;
-      const recordRoom = last.room !== void 0 && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
-      const capacity = state.bytes?.byteLength ?? 0;
-      const end = start === void 0 ? state.size + bytes.byteLength : start + bytes.byteLength;
-      const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0);
+      const before = typedArrayByteLength(was.data);
+      const length = before + typedArrayByteLength(bytes);
+      const recordRoom = last.room !== void 0 && typedArrayByteLength(last.room) >= length ? typedArrayByteLength(last.room) : mathMax(length, before * 2);
+      const capacity = state.bytes === null ? 0 : typedArrayByteLength(state.bytes);
+      const end = start === void 0 ? state.size + typedArrayByteLength(bytes) : start + typedArrayByteLength(bytes);
+      const growth = recordRoom - (last.room === void 0 ? before : typedArrayByteLength(last.room)) + (state.bytes !== null && end > capacity ? mathMax(end, capacity * 2, 4096) - capacity : 0);
       host2.drain();
-      host2.client.fitsSync(bytes.byteLength, desc.path);
+      host2.client.fitsSync(typedArrayByteLength(bytes), desc.path);
       if (growth > 0) {
         const need = cost(inode) + growth - inode.reserved;
         admit(need, "write", desc.path);
@@ -5965,11 +6338,11 @@ var __nimbusResidentModule = (() => {
       return true;
     };
     const judgeAttrs = (row, attrs, syscall, path) => {
-      const refused = "mode" in attrs ? chmodRefusal(row, host2.cred) : "uid" in attrs ? chownRefusal(row, attrs.uid, attrs.gid, host2.cred) : utimesRefusal(row, explicitTimes(attrs.atime, attrs.mtime), host2.cred);
+      const refused = isModeChange(attrs) ? chmodRefusal(row, host2.cred) : isOwnerChange(attrs) ? chownRefusal(row, attrs.uid, attrs.gid, host2.cred) : utimesRefusal(row, explicitTimes(attrs.atime, attrs.mtime), host2.cred);
       if (refused !== null)
         throw fsError2(refused, syscall, path);
     };
-    const attrOp = (attrs, at) => "mode" in attrs ? { kind: "chmod", mode: attrs.mode, at } : "uid" in attrs ? { kind: "chown", uid: attrs.uid, gid: attrs.gid, by: host2.cred.uid, at } : { kind: "utimes", atime: attrs.atime, mtime: attrs.mtime, at };
+    const attrOp = (attrs, at) => isModeChange(attrs) ? { kind: "chmod", mode: attrs.mode, at } : isOwnerChange(attrs) ? { kind: "chown", uid: attrs.uid, gid: attrs.gid, by: host2.cred.uid, at } : { kind: "utimes", atime: attrs.atime, mtime: attrs.mtime, at };
     const openToWrite = (key, path, flags, row, given, close, chmod, awaited = false) => {
       const bytes = given === null ? null : owned(given);
       const read = flags.read === true;
@@ -5997,13 +6370,13 @@ var __nimbusResidentModule = (() => {
       const at = host2.now();
       const ops = [];
       if (flags.truncate)
-        ops.push({ kind: "truncate", size: 0, at });
-      if (bytes !== null && bytes.byteLength > 0)
-        ops.push({ kind: "write", offset: 0, data: bytes, at });
+        ops[ops.length] = { kind: "truncate", size: 0, at };
+      if (bytes !== null && typedArrayByteLength(bytes) > 0)
+        ops[ops.length] = { kind: "write", offset: 0, data: bytes, at };
       if (chmod !== void 0)
-        ops.push({ kind: "chmod", mode: chmod, at });
+        ops[ops.length] = { kind: "chmod", mode: chmod, at };
       host2.drain();
-      host2.client.fitsSync(bytes?.byteLength ?? 0, path);
+      host2.client.fitsSync(bytes === null ? 0 : typedArrayByteLength(bytes), path);
       const inode = row === null ? null : inodeAt(key, row);
       if (inode !== null) {
         try {
@@ -6013,8 +6386,8 @@ var __nimbusResidentModule = (() => {
           throw error;
         }
       } else {
-        const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
-        admit(madeCost(key) + nameCost([key]) + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), "open", path);
+        const written = bytes !== null && typedArrayByteLength(bytes) > 0 ? mathMax(typedArrayByteLength(bytes), 4096) : 0;
+        admit(madeCost(key) + nameCost([key]) + written + opsCost(ops), "open", path);
       }
       const description = descriptionId();
       const open = {
@@ -6039,15 +6412,17 @@ var __nimbusResidentModule = (() => {
       if (row === null) {
         target = made(key, "file", 32768 | asked & ~umask, parent);
         target.made = description;
-        target.reserved += (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
+        target.reserved += (bytes !== null && typedArrayByteLength(bytes) > 0 ? mathMax(typedArrayByteLength(bytes), 4096) : 0) + opsCost(ops);
       } else {
         target = inode;
       }
-      if (close && bytes !== null && chmod === void 0 && host2.mounted?.(key) === true) {
-        const records = ops.map((op) => fold(target, op));
+      if (close && bytes !== null && chmod === void 0 && ownValue(host2, "mounted")?.(key) === true) {
+        const records = new SafeList();
+        for (let i = 0; i < ops.length; i++)
+          records[i] = fold(target, ops[i]);
         const whole = { type: "call", call: { call: "writeFile", path: key, mode: asked, umask, data: bytes } };
         const settled = (refused, answer) => {
-          settleRecords(records, refused, answer?.mutation?.after);
+          settleRecords(records, refused, mutationAfter(answer));
           fit(target);
           release(target);
         };
@@ -6061,7 +6436,10 @@ var __nimbusResidentModule = (() => {
         return WHOLE_WRITTEN;
       }
       target.answers++;
-      const opened = ops.filter((op) => op.kind !== "write").map((op) => fold(target, op, description));
+      const opened = new SafeList();
+      for (let i = 0; i < ops.length; i++)
+        if (ops[i].kind !== "write")
+          opened[opened.length] = fold(target, ops[i], description);
       const answered = openAnswered(target, description, opened, row === null, read);
       let opening;
       if (row === null) {
@@ -6070,7 +6448,8 @@ var __nimbusResidentModule = (() => {
         host2.count(key);
         opening = logged(open, answered, awaited);
       }
-      for (const op of ops) {
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
         if (op.kind !== "write")
           continue;
         loggedOn([fold(target, op, description)], { type: "call", call: { call: "write", path: key, description, offset: op.offset, data: op.data } });
@@ -6101,17 +6480,25 @@ var __nimbusResidentModule = (() => {
       },
       heldDescriptor: (inode, path, read, append) => {
         const id = host2.nextHandle();
-        descs.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
+        descs.set(id, { inode, read, write: true, append, position: 0, path, description: void 0, opening: void 0, lastRecord: null, lastAnswer: null });
         inode.descs++;
         return { id, path };
       },
       descriptor: (handleId) => descs.get(handleId),
       descriptorsOf: (inode) => {
+        const found = new SafeList();
         if (inode.descs === 0)
-          return [];
-        return [...new Set(descs.values())].filter((desc) => desc.inode === inode);
+          return found;
+        const seen = new SafeSet();
+        descs.forEach((desc) => {
+          if (desc.inode !== inode || seen.has(desc))
+            return;
+          seen.add(desc);
+          found[found.length] = desc;
+        });
+        return found;
       },
-      cells: () => [...held],
+      cells: () => setList(held),
       hold: (inode, cell) => setCell(inode, cell),
       dropCell: (inode) => {
         setCell(inode, void 0);
@@ -6120,25 +6507,37 @@ var __nimbusResidentModule = (() => {
       },
       planMove: (from, to, path) => {
         const plan = { from, to };
-        const beneath = () => everyInode().filter((inode) => inode.cell?.detached === void 0 && within2(inode.key, from));
+        const beneath = () => {
+          const every = everyInode();
+          const found = new SafeList();
+          for (let i = 0; i < every.length; i++) {
+            const inode = every[i];
+            if ((inode.cell === void 0 || inode.cell.detached === void 0) && within2(inode.key, from))
+              found[found.length] = inode;
+          }
+          return found;
+        };
         pendingMoves.add(plan);
         let need = 0;
-        for (const inode of beneath())
-          need += Math.max(0, cost(inode) - inode.reserved);
+        const under = beneath();
+        for (let i = 0; i < under.length; i++)
+          need += mathMax(0, cost(under[i]) - under[i].reserved);
         if (need > 0 && !host2.reserve(need)) {
           pendingMoves.delete(plan);
           throw fsError2("ENOSPC", "rename", path);
         }
-        for (const inode of beneath())
-          inode.reserved = Math.max(inode.reserved, cost(inode));
+        const reserving = beneath();
+        for (let i = 0; i < reserving.length; i++)
+          reserving[i].reserved = mathMax(reserving[i].reserved, cost(reserving[i]));
         const settle = (made2) => {
           if (!pendingMoves.has(plan))
             return;
           const files = beneath();
           pendingMoves.delete(plan);
-          for (const inode of files) {
+          for (let i = 0; i < files.length; i++) {
+            const inode = files[i];
             if (made2)
-              renamed(inode, to + inode.key.slice(from.length), to + inode.key.slice(from.length));
+              renamed(inode, to + stringSlice(inode.key, from.length), to + stringSlice(inode.key, from.length));
             else
               fit(inode);
           }
@@ -6151,7 +6550,7 @@ var __nimbusResidentModule = (() => {
           return;
         setCell(inode, void 0);
         inode.row = { ...entry, size: cell.length };
-        const bytes = cell.bytes.byteLength === cell.length && retained(cell.bytes) === cell.length ? cell.bytes : owned(cell.bytes, cell.length);
+        const bytes = typedArrayByteLength(cell.bytes) === cell.length && retained(cell.bytes) === cell.length ? cell.bytes : owned(cell.bytes, cell.length);
         inode.base = { bytes, size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
         inode.state = inode.base;
         inode.heldAt = Infinity;
@@ -6160,9 +6559,10 @@ var __nimbusResidentModule = (() => {
         activity();
       },
       answeredHeld: (root) => {
-        for (const inode of loose)
+        loose.forEach((inode) => {
           if (inode.heldAt === Infinity && (within2(inode.key, root) || within2(inode.origin, root)))
             inode.heldAt = barriers;
+        });
       },
       pending: (dev, ino) => {
         const inode = inodeAtNumber(dev, ino);
@@ -6182,10 +6582,13 @@ var __nimbusResidentModule = (() => {
       },
       kept: () => {
         let total = 0;
-        for (const inode of everyInode())
-          total += cost(inode);
-        for (const record of nameRecords)
+        const every = everyInode();
+        for (let i = 0; i < every.length; i++)
+          total += cost(every[i]);
+        for (let i = 0; i < nameRecords.length; i++) {
+          const record = nameRecords[i];
           total += record.cost;
+        }
         return total;
       },
       owns: (handleId) => descs.size > 0 && descs.has(handleId),
@@ -6194,16 +6597,21 @@ var __nimbusResidentModule = (() => {
           return false;
         if (layer.has(key) || layer.has(parentKey3(key)))
           return true;
-        for (const name of layer.keys())
-          if (within2(name, key))
-            return true;
+        let above = false;
+        layer.forEach((_placed, name) => {
+          if (!above && within2(name, key))
+            above = true;
+        });
+        if (above)
+          return true;
         const row = host2.row(key);
         return row ? inodeAtNumber(row.dev, row.ino)?.state != null : false;
       },
       setStatus: (handleId, status) => {
         const desc = descOf(handleId);
-        if (status.append !== void 0)
-          desc.append = status.append;
+        const append = ownValue(status, "append");
+        if (append !== void 0)
+          desc.append = append;
       },
       entry: provisionalEntry,
       children: (key, base) => {
@@ -6219,13 +6627,21 @@ var __nimbusResidentModule = (() => {
         const listed = dir && dir.local ? [] : viewed2;
         if (listed === void 0)
           return void 0;
-        const out = /* @__PURE__ */ new Map();
-        for (const child of listed)
-          if (!gone?.has(child.name))
+        const out = new SafeMap();
+        for (let i = 0; i < listed.length; i++) {
+          const child = listed[i];
+          if (gone === void 0 || !gone.has(child.name))
             out.set(child.name, child.type);
-        for (const [name, type] of made2 ?? [])
-          out.set(name, type);
-        return [...out].map(([name, type]) => ({ name, type }));
+        }
+        if (made2 !== void 0)
+          made2.forEach((type, name) => {
+            out.set(name, type);
+          });
+        const children = new SafeList();
+        out.forEach((type, name) => {
+          children[children.length] = { name, type };
+        });
+        return arrayCopy(children);
       },
       open: (key, path, flags, row, awaited = false) => {
         if (row !== null && flags.create && flags.exclusive)
@@ -6234,7 +6650,7 @@ var __nimbusResidentModule = (() => {
         if (write || flags.truncate || row === null && flags.create) {
           const handle = openToWrite(key, path, flags, row, null, false, void 0, awaited);
           if (handle === WHOLE_WRITTEN)
-            throw new Error("internal: an open with nothing to write was written whole");
+            throw new Error2("internal: an open with nothing to write was written whole");
           if (handle !== void 0)
             descOf(handle.id).write = write;
           return handle;
@@ -6264,10 +6680,10 @@ var __nimbusResidentModule = (() => {
         const held2 = bytesOf(desc.inode, "read", desc.path);
         if (held2 === void 0)
           return void 0;
-        const start = Math.min(offset ?? desc.position, held2.size);
-        const chunk = owned(held2.bytes.subarray(start, Math.min(held2.size, start + length)));
+        const start = mathMin(offset ?? desc.position, held2.size);
+        const chunk = owned(bytesView(held2.bytes, start, mathMin(held2.size, start + length)));
         if (offset === null)
-          desc.position = start + chunk.byteLength;
+          desc.position = start + typedArrayByteLength(chunk);
         return chunk;
       },
       write: (handleId, offset, bytes) => {
@@ -6277,20 +6693,20 @@ var __nimbusResidentModule = (() => {
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
         if (continued(desc, start, bytes, at)) {
-          desc.position = start === void 0 ? desc.inode.state.size : offset === null ? start + bytes.byteLength : desc.position;
-          return bytes.byteLength;
+          desc.position = start === void 0 ? desc.inode.state.size : offset === null ? start + typedArrayByteLength(bytes) : desc.position;
+          return typedArrayByteLength(bytes);
         }
         const data = owned(bytes);
         if (desc.append) {
-          contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, data.byteLength, "write");
+          contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, typedArrayByteLength(data), "write");
           desc.position = desc.inode.state.size;
         } else {
           const start2 = offset ?? desc.position;
-          contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, data.byteLength, "write");
+          contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, typedArrayByteLength(data), "write");
           if (offset === null)
-            desc.position = start2 + data.byteLength;
+            desc.position = start2 + typedArrayByteLength(data);
         }
-        return bytes.byteLength;
+        return typedArrayByteLength(bytes);
       },
       ftruncate: (handleId, size) => {
         const desc = descOf(handleId);
@@ -6332,7 +6748,7 @@ var __nimbusResidentModule = (() => {
         const desc = descOf(handleId);
         const inode = desc.inode;
         const attrs = change;
-        const syscall = "mode" in attrs ? "fchmod" : "uid" in attrs ? "fchown" : "futimes";
+        const syscall = isModeChange(attrs) ? "fchmod" : isOwnerChange(attrs) ? "fchown" : "futimes";
         const described = desc.description ?? anchorOf(inode);
         if (described === void 0 && !named(inode))
           throw fsError2("ESTALE", syscall, desc.path);
@@ -6345,26 +6761,29 @@ var __nimbusResidentModule = (() => {
         fit(inode);
       },
       abandon: (handleId) => {
-        delete descOf(handleId).description;
+        descOf(handleId).description = void 0;
         provisional2.close(handleId);
       },
       close: (handleId) => {
         const desc = descOf(handleId);
         descs.delete(handleId);
-        for (const other of descs.values())
-          if (other === desc)
-            return;
+        if (mapFind(descs, (other) => other === desc) !== void 0)
+          return;
         const inode = desc.inode;
         inode.descs--;
         if (desc.description !== void 0) {
-          if (inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === void 0 || desc.description === inode.made)
-            inode.retained = [...inode.retained, desc.description];
-          else
+          if (inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === void 0 || desc.description === inode.made) {
+            const retained2 = new SafeList();
+            for (let i = 0; i < inode.retained.length; i++)
+              retained2[i] = inode.retained[i];
+            retained2[retained2.length] = desc.description;
+            inode.retained = retained2;
+          } else
             logged({ type: "call", call: { call: "close", path: inode.key, description: desc.description } }, () => {
             });
         }
         closeRetained(inode);
-        if (desc.description !== void 0 && !inode.retained.includes(desc.description))
+        if (desc.description !== void 0 && !arrayIncludes(inode.retained, desc.description))
           sessions.delete(desc.description);
         if (inode.descs === 0 && inode.cell?.detached !== void 0)
           setCell(inode, void 0);
@@ -6399,7 +6818,9 @@ var __nimbusResidentModule = (() => {
           host2.drain();
           admitOps(inode, records, "open", desc.path);
           inode.answers++;
-          const made2 = records.map((op) => fold(inode, op, description));
+          const made2 = new SafeList();
+          for (let i = 0; i < records.length; i++)
+            made2[i] = fold(inode, records[i], description);
           logged(open, openAnswered(inode, description, made2, false, read));
           fit(inode);
         }
@@ -6429,7 +6850,7 @@ var __nimbusResidentModule = (() => {
         const inode = made(key, "directory", 16384 | perm, parent);
         return loggedName({ type: "call", call: { call: "mkdir", path: key, mode: mode & 511, umask } }, [key], nameCost([key]), () => {
           place(key, inode);
-          added.set(key, added.get(key) ?? /* @__PURE__ */ new Map());
+          added.set(key, added.get(key) ?? new SafeMap());
         }, void 0, void 0, awaited) ?? true;
       },
       unlink: (key, path, row, awaited) => {
@@ -6496,58 +6917,76 @@ var __nimbusResidentModule = (() => {
         host2.drain();
         const known = layer.get(from) ?? inodeAtNumber(source.dev, source.ino);
         const moves = known === void 0 ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
-        const beneath = /* @__PURE__ */ new Map();
-        for (const [key, value] of layer)
+        const beneath = new SafeMap();
+        layer.forEach((value, key) => {
           if (value !== null && key !== from && within2(key, from))
-            beneath.set(value, Math.max(0, stringCost(to + key.slice(from.length)) - stringCost(key)));
+            beneath.set(value, mathMax(0, stringCost(to + stringSlice(key, from.length)) - stringCost(key)));
+        });
         let viewGrowth = 0;
-        for (const inode of everyInode())
-          if (within2(inode.origin, from))
-            viewGrowth += Math.max(0, stringCost(to + inode.origin.slice(from.length)) - stringCost(inode.origin));
+        const every = everyInode();
+        for (let i = 0; i < every.length; i++)
+          if (within2(every[i].origin, from))
+            viewGrowth += mathMax(0, stringCost(to + stringSlice(every[i].origin, from.length)) - stringCost(every[i].origin));
         const names = nameCost([from, to]) + viewGrowth;
-        keepForDescriptors(target === null ? void 0 : inodeAtNumber(target.dev, target.ino), names + moves + [...beneath.values()].reduce((sum, grows) => sum + grows, 0), "rename", path);
+        let grown2 = 0;
+        beneath.forEach((grows) => {
+          grown2 += grows;
+        });
+        keepForDescriptors(target === null ? void 0 : inodeAtNumber(target.dev, target.ino), names + moves + grown2, "rename", path);
         const moving = known ?? inodeAt(from, source);
         moving.reserved += moves;
-        for (const [inode, grows] of beneath)
+        beneath.forEach((grows, inode) => {
           inode.reserved += grows;
-        const { expect: expectTo } = expecting(target, to);
+        });
+        const expectTo = ownValue(expecting(target, to), "expect");
         const answer = loggedName({ type: "rename", from, to, ...expecting(source, from), ...expectTo === void 0 ? {} : { expectTo } }, [from, to], names, () => {
-          for (const [key, value] of [...layer]) {
+          const keys = mapKeyList(layer);
+          const values = mapValueList(layer);
+          for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            const value = values[i];
             if (key === from || !within2(key, from))
               continue;
             layer.delete(key);
-            const moved2 = to + key.slice(from.length);
+            const moved2 = to + stringSlice(key, from.length);
             layer.set(moved2, value);
             if (value !== null)
               renamed(value, moved2, value.origin);
           }
-          for (const map of [added, removed2]) {
-            for (const [key, value] of [...map])
-              if (within2(key, from)) {
-                map.delete(key);
-                map.set(to + key.slice(from.length), value);
+          const moveAll = (map) => {
+            const at = mapKeyList(map);
+            const held2 = mapValueList(map);
+            for (let i = 0; i < at.length; i++)
+              if (within2(at[i], from)) {
+                map.delete(at[i]);
+                map.set(to + stringSlice(at[i], from.length), held2[i]);
               }
-          }
+          };
+          moveAll(added);
+          moveAll(removed2);
           place(from, null);
           place(to, moving);
         }, void 0, () => {
-          for (const inode of everyInode()) {
+          const moved2 = everyInode();
+          for (let i = 0; i < moved2.length; i++) {
+            const inode = moved2[i];
             if (within2(inode.origin, from))
-              renamed(inode, inode.key, to + inode.origin.slice(from.length));
+              renamed(inode, inode.key, to + stringSlice(inode.origin, from.length));
           }
         }, awaited);
         fit(moving);
-        for (const inode of beneath.keys())
+        beneath.forEach((_grows, inode) => {
           fit(inode);
+        });
         return answer ?? true;
       },
       setattr: (key, path, attrs, row, awaited, link = false) => {
         if (row === void 0)
           return false;
         const own = link && row !== null && row.type === "symlink";
-        if (own && ("mode" in attrs || "atime" in attrs && (typeof attrs.atime !== "number" || typeof attrs.mtime !== "number")))
+        if (own && (isModeChange(attrs) || isTimesChange(attrs) && (typeof attrs.atime !== "number" || typeof attrs.mtime !== "number")))
           return false;
-        const syscall = "mode" in attrs ? "chmod" : "uid" in attrs ? link ? "lchown" : "chown" : link ? "lutime" : "utime";
+        const syscall = isModeChange(attrs) ? "chmod" : isOwnerChange(attrs) ? link ? "lchown" : "chown" : link ? "lutime" : "utime";
         if (row === null)
           throw fsError2("ENOENT", syscall, path);
         judgeAttrs(row, attrs, syscall, path);
@@ -6561,7 +7000,7 @@ var __nimbusResidentModule = (() => {
           throw error;
         }
         host2.count(key);
-        const logged2 = !own ? { type: "setattr", path: key, attrs, ...expecting(row, key) } : "uid" in attrs ? { type: "call", call: { call: "lchown", path: key, uid: attrs.uid, gid: attrs.gid } } : { type: "call", call: { call: "lutimes", path: key, atime: attrs.atime, mtime: attrs.mtime } };
+        const logged2 = !own ? { type: "setattr", path: key, attrs, ...expecting(row, key) } : isOwnerChange(attrs) ? { type: "call", call: { call: "lchown", path: key, uid: attrs.uid, gid: attrs.gid } } : { type: "call", call: { call: "lutimes", path: key, atime: attrs.atime, mtime: attrs.mtime } };
         const answer = loggedOn([fold(inode, op)], logged2, awaited);
         fit(inode);
         return answer ?? true;
@@ -6574,13 +7013,13 @@ var __nimbusResidentModule = (() => {
         const own = inodeAtNumber(source.dev, source.ino);
         const held2 = own === void 0 ? void 0 : bytesOf(own, "copyfile", path);
         const stored = own === void 0 ? host2.content(from, source.revision) : void 0;
-        const data = held2 !== void 0 ? held2.bytes.subarray(0, held2.size) : stored !== void 0 && stored.byteLength === source.size ? stored : void 0;
+        const data = held2 !== void 0 ? bytesView(held2.bytes, 0, held2.size) : stored !== void 0 && typedArrayByteLength(stored) === source.size ? stored : void 0;
         if (data === void 0)
           return false;
         const umask = host2.umask();
         const asked = copiedPermissions(source.mode, false);
         const opened = target === null ? asked & ~umask : target.mode & 4095;
-        const mode = keepMode ? copyfileMode(source.mode, data.byteLength, host2.cred.uid) : opened;
+        const mode = keepMode ? copyfileMode(source.mode, typedArrayByteLength(data), host2.cred.uid) : opened;
         return openToWrite(to, path, { write: true, create: true, truncate: true, mode: asked, umask }, target, data, true, keepMode ? mode : void 0) !== void 0;
       },
       content: (entry) => {
@@ -6598,28 +7037,46 @@ var __nimbusResidentModule = (() => {
       },
       barrierBegun: () => ++barriers,
       retire: (begun) => {
-        const kept = nameRecords.filter((record) => {
-          if (!record.answered || record.answeredAt >= begun || record.keys.some((key) => host2.unreported?.(key) === true))
-            return true;
-          record.keys.forEach((key, at) => host2.settled(key, record.over[at]));
+        const kept = new SafeList();
+        for (let i = 0, count = nameRecords.length; i < count; i++) {
+          const record = nameRecords[i];
+          let stays = !record.answered || record.answeredAt >= begun;
+          for (let j = 0; !stays && j < record.keys.length; j++)
+            stays = ownValue(host2, "unreported")?.(record.keys[j]) === true;
+          if (stays) {
+            kept[kept.length] = record;
+            continue;
+          }
+          for (let j = 0; j < record.keys.length; j++)
+            host2.settled(record.keys[j], record.over[j]);
           host2.release(record.cost);
-          record.retired?.();
-          return false;
-        });
+          if (record.retired !== void 0)
+            record.retired();
+        }
         if (kept.length < nameRecords.length) {
-          nameRecords.splice(0, nameRecords.length, ...kept);
+          for (let i = 0; i < kept.length; i++)
+            nameRecords[i] = kept[i];
+          nameRecords.length = kept.length;
           replay();
         }
-        const keeping = [];
-        for (const inode of [...loose]) {
-          if (host2.unreported?.(inode.key) === true)
+        const keeping = new SafeList();
+        const visiting = setList(loose);
+        for (let v = 0; v < visiting.length; v++) {
+          const inode = visiting[v];
+          if (ownValue(host2, "unreported")?.(inode.key) === true)
             continue;
           if (inode.heldAt !== void 0) {
             if (inode.heldAt >= begun)
               continue;
-            delete inode.heldAt;
+            inode.heldAt = void 0;
           }
-          const retired = inode.records.length === 0 ? NO_RECORDS : inode.records.filter((record) => record.answered && record.answeredAt < begun);
+          let retired = NO_RECORDS;
+          if (inode.records.length > 0) {
+            retired = new SafeList();
+            for (let i = 0; i < inode.records.length; i++)
+              if (inode.records[i].answered && inode.records[i].answeredAt < begun)
+                retired[retired.length] = inode.records[i];
+          }
           if (retired.length === 0 && inode.records.length > 0)
             continue;
           if (inode.records.length === 0 && inode.descs === 0 && inode.answers === 0) {
@@ -6631,43 +7088,52 @@ var __nimbusResidentModule = (() => {
             if (inodeAtNumber(inode.dev, inode.ino) !== inode)
               continue;
           }
-          const rewritten = retired.some((record) => record.op.kind === "write" || record.op.kind === "append" || record.op.kind === "truncate");
+          let rewritten = false;
+          for (let i = 0; !rewritten && i < retired.length; i++)
+            rewritten = retired[i].op.kind === "write" || retired[i].op.kind === "append" || retired[i].op.kind === "truncate";
           let seen = viewed(inode);
           if (retired.length > 0 && inode.over !== void 0) {
             if (host2.settled(inode.over.key, inode.over.generation))
               seen = viewed(inode);
-            delete inode.over;
+            inode.over = void 0;
           }
           if (seen === void 0) {
-            if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0))
+            let carries = false;
+            for (let i = 0; !carries && i < retired.length; i++)
+              carries = payloadOf(retired[i].op) > 0;
+            if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && carries)
               continue;
-            dropRecords(inode, new Set(retired));
+            dropRecords(inode, setOfList(retired));
             unshared(inode);
             if (inode.base !== null)
-              for (const record of retired)
+              for (let i = 0; i < retired.length; i++) {
+                const record = retired[i];
                 inode.base = applyOp(inode.base, record.op);
+              }
             if (inode.records.length === 0 && inode.descs === 0) {
               inode.base = null;
               inode.state = null;
             }
           } else if (inode.records.length === retired.length) {
             const last = retired[retired.length - 1];
-            if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision === last.after && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
-              keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
+            if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision === last.after && seen.row.size === inode.state.size && typedArrayByteLength(inode.state.bytes) >= inode.state.size) {
+              keeping[keeping.length] = [seen.name, seen.row, bytesView(inode.state.bytes, 0, inode.state.size)];
             }
-            dropRecords(inode, new Set(retired));
+            dropRecords(inode, setOfList(retired));
             inode.row = (retired.length > 0 ? host2.absorb(seen.name, entryOf(inode)) : void 0) ?? seen.row;
             if (inode.descs > 0 && inode.state?.bytes)
-              inode.pin = { revision: null, bytes: inode.state.bytes.subarray(0, inode.state.size) };
+              inode.pin = { revision: null, bytes: bytesView(inode.state.bytes, 0, inode.state.size) };
             else if (rewritten)
-              delete inode.pin;
+              inode.pin = void 0;
             inode.base = null;
             inode.state = null;
           } else {
             if (rewritten)
-              delete inode.pin;
-            dropRecords(inode, new Set(retired));
-            const folded2 = inode.base === null ? null : retired.reduce((state, record) => applyOp(state, record.op), inode.base);
+              inode.pin = void 0;
+            dropRecords(inode, setOfList(retired));
+            let folded2 = inode.base;
+            for (let i = 0; folded2 !== null && i < retired.length; i++)
+              folded2 = applyOp(folded2, retired[i].op);
             const decision = folded2 === null ? void 0 : host2.absorb(seen.name, { ...seen.row, size: folded2.size, mode: folded2.mode, uid: folded2.uid, gid: folded2.gid, atime: folded2.atime, mtime: folded2.mtime, ctime: folded2.ctime });
             if (decision === void 0) {
               inode.base = baseline(inode);
@@ -6684,8 +7150,8 @@ var __nimbusResidentModule = (() => {
           fit(inode);
           release(inode);
         }
-        for (const [key, row, bytes] of keeping)
-          host2.keep?.(key, row, bytes);
+        for (let i = 0; i < keeping.length; i++)
+          ownValue(host2, "keep")?.(keeping[i][0], keeping[i][1], keeping[i][2]);
         activity();
       }
     };
@@ -7708,7 +8174,7 @@ var __nimbusResidentModule = (() => {
   var DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
   var DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
   var DATA_PIECE_BYTES = WAVE_BYTES;
-  var FOLD_BUFFER = /* @__PURE__ */ Symbol("process-fs-fold-buffer");
+  var FOLD_BUFFER = SymbolConstructor("process-fs-fold-buffer");
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
   var LINGER_MS = 10;
@@ -7726,7 +8192,7 @@ var __nimbusResidentModule = (() => {
   var GRANT_INOS = 4096;
   var GRANT_BYTES = 64 * 1024 * 1024;
   var RECALL_POLL_MS = 2e4;
-  var recallWaitMs = (n) => Math.min(10 * 2 ** n, 1e3);
+  var recallWaitMs = (n) => mathMin(10 * 2 ** n, 1e3);
   var WAVE_RECALL_BOUND_MS = DELEGATION_RECALL_TIMEOUT_MS + 1e3;
   function standingOf(grant, key) {
     if (grant.ended || grant.closing || grant.shared)
@@ -7743,13 +8209,41 @@ var __nimbusResidentModule = (() => {
         return false;
     return true;
   }
+  function removeAt(list, at) {
+    const item = list[at];
+    for (let i = at; i < list.length - 1; i++)
+      list[i] = list[i + 1];
+    list.length--;
+    return item;
+  }
+  function takeAll(list) {
+    const taken = new SafeList();
+    for (let i = 0; i < list.length; i++)
+      taken[i] = list[i];
+    list.length = 0;
+    return taken;
+  }
+  function joined(first, second) {
+    const both = new SafeList();
+    for (let i = 0; i < first.length; i++)
+      both[both.length] = first[i];
+    for (let i = 0; i < second.length; i++)
+      both[both.length] = second[i];
+    return both;
+  }
+  function anyNumbered(list) {
+    for (let i = 0; i < list.length; i++)
+      if (list[i].seq !== 0)
+        return true;
+    return false;
+  }
   function commonAncestor(left, right) {
-    const a = left.split("/");
-    const b = right.split("/");
-    const out = [];
-    for (let index = 0; index < Math.min(a.length, b.length) && a[index] === b[index]; index++)
-      out.push(a[index]);
-    return out.join("/");
+    const a = stringSplit(left, "/");
+    const b = stringSplit(right, "/");
+    const out = new SafeList();
+    for (let index = 0; index < mathMin(a.length, b.length) && a[index] === b[index]; index++)
+      out[out.length] = a[index];
+    return arrayJoin(out, "/");
   }
   var GLOBAL_TIMERS2 = {
     setTimeout: (callback, ms) => setTimeout(callback, ms),
@@ -7767,45 +8261,52 @@ var __nimbusResidentModule = (() => {
     }
   }
   function canonical(path) {
-    return path !== "" && path.split("/").every((part) => part !== "" && part !== "." && part !== "..") && !path.includes("\0");
+    if (path === "")
+      return false;
+    const parts = stringSplit(path, "/");
+    for (let i = 0; i < parts.length; i++)
+      if (parts[i] === "" || parts[i] === "." || parts[i] === "..")
+        return false;
+    return !stringIncludes(path, "\0");
   }
   function nameOf3(op) {
     return op.type === "call" ? op.call.call : op.type;
   }
   function fsError3(errno2, message, path) {
-    return Object.assign(new Error(message), { code: errno2, path });
+    return objectAssign(new Error2(message), { code: errno2, path });
   }
   function isProcessGone(error) {
-    return "code" in error && error.code === "ESRCH";
+    return ownField(error, "code") === "ESRCH";
   }
   function descriptionOf(call) {
-    return "description" in call ? call.description : void 0;
+    return ownField(call, "description");
   }
+  var carriesData = (call) => objectHasOwn(call, "data");
   function extended(call, data, buffer) {
-    const size = call.data.byteLength + data.byteLength;
-    if (buffer === null || buffer.byteLength < size) {
-      buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
-      buffer.set(call.data);
+    const size = typedArrayByteLength(call.data) + typedArrayByteLength(data);
+    if (buffer === null || typedArrayByteLength(buffer) < size) {
+      buffer = new Uint8ArrayConstructor(mathMin(DATA_PIECE_BYTES, mathMax(size, (buffer === null ? typedArrayByteLength(call.data) : typedArrayByteLength(buffer)) * 2)));
+      typedArraySet(buffer, call.data);
     }
-    buffer.set(data, call.data.byteLength);
-    const joined = buffer.subarray(0, size);
-    return { op: { type: "call", call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
+    typedArraySet(buffer, data, typedArrayByteLength(call.data));
+    const joined2 = bytesView(buffer, 0, size);
+    return { op: { type: "call", call: { ...call, data: joined2 } }, buffer, append: bytesView(joined2, typedArrayByteLength(call.data)) };
   }
   function foldOf(last, next) {
-    if (last.type !== "call" || next.type !== "call" || !("data" in last.call) || !("data" in next.call))
+    if (last.type !== "call" || next.type !== "call" || !carriesData(last.call) || !carriesData(next.call))
       return null;
     const a = last.call;
     const b = next.call;
-    if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
+    if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || typedArrayByteLength(a.data) + typedArrayByteLength(b.data) > DATA_PIECE_BYTES)
       return null;
-    const inoOf = (call) => "ino" in call ? call.ino : void 0;
+    const inoOf = (call) => ownField(call, "ino");
     if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile"))
       return "replaces";
     if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile"))
       return "extends";
     if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b))
       return "extends";
-    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset)
+    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + typedArrayByteLength(a.data) === b.offset)
       return "extends";
     return null;
   }
@@ -7820,26 +8321,26 @@ var __nimbusResidentModule = (() => {
     return extended(a, b.data, buffer);
   }
   function pieces(op) {
-    if (op.type !== "call" || !("data" in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES)
+    if (op.type !== "call" || !carriesData(op.call) || typedArrayByteLength(op.call.data) <= DATA_PIECE_BYTES)
       return [op];
     const call = op.call;
     const data = call.data;
-    const out = [{ type: "call", call: { ...call, data: data.subarray(0, DATA_PIECE_BYTES) } }];
-    for (let at = DATA_PIECE_BYTES; at < data.byteLength; at += DATA_PIECE_BYTES) {
-      const piece = data.subarray(at, Math.min(data.byteLength, at + DATA_PIECE_BYTES));
-      const ino = "ino" in call ? call.ino : void 0;
+    const out = [{ type: "call", call: { ...call, data: bytesView(data, 0, DATA_PIECE_BYTES) } }];
+    for (let at = DATA_PIECE_BYTES; at < typedArrayByteLength(data); at += DATA_PIECE_BYTES) {
+      const piece = bytesView(data, at, mathMin(typedArrayByteLength(data), at + DATA_PIECE_BYTES));
+      const ino = ownField(call, "ino");
       const description = descriptionOf(call);
       const by = description === void 0 ? {} : { description };
-      out.push(call.call === "append" || call.call === "appendFile" ? { type: "call", call: { call: "append", path: call.path, ...ino === void 0 ? {} : { ino }, ...by, data: piece } } : { type: "call", call: { call: "write", path: call.path, ...ino === void 0 ? {} : { ino }, ...by, offset: (call.call === "write" ? call.offset : 0) + at, data: piece } });
+      out[out.length] = call.call === "append" || call.call === "appendFile" ? { type: "call", call: { call: "append", path: call.path, ...ino === void 0 ? {} : { ino }, ...by, data: piece } } : { type: "call", call: { call: "write", path: call.path, ...ino === void 0 ? {} : { ino }, ...by, offset: (call.call === "write" ? call.offset : 0) + at, data: piece } };
     }
     return out;
   }
   function processFsClient(options) {
     const { session } = options;
-    const timers = options.timers ?? GLOBAL_TIMERS2;
-    const now = options.now ?? Date.now;
-    const journal = options.journal ?? memoryJournal();
-    const syncCap = options.syncCapBytes ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
+    const timers = ownValue(options, "timers") ?? GLOBAL_TIMERS2;
+    const now = ownValue(options, "now") ?? dateNow;
+    const journal = ownValue(options, "journal") ?? memoryJournal();
+    const syncCap = ownValue(options, "syncCapBytes") ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
     let heapBytes = 0;
     const queue = [];
     let inFlight = null;
@@ -7883,14 +8384,14 @@ var __nimbusResidentModule = (() => {
       readRecalls: 0,
       readReleased: 0
     };
-    const grantAfter = options.grantAfter ?? GRANT_AFTER;
-    const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
-    const recallPollMs = options.recallPollMs ?? RECALL_POLL_MS;
-    const lingerMs = options.lingerMs ?? LINGER_MS;
+    const grantAfter = ownValue(options, "grantAfter") ?? GRANT_AFTER;
+    const grantIdleMs = ownValue(options, "grantIdleMs") ?? GRANT_IDLE_MS;
+    const recallPollMs = ownValue(options, "recallPollMs") ?? RECALL_POLL_MS;
+    const lingerMs = ownValue(options, "lingerMs") ?? LINGER_MS;
     const grants = [];
-    const mutations = /* @__PURE__ */ new Map();
-    const refusedRoots = /* @__PURE__ */ new Set();
-    const rangeOf = /* @__PURE__ */ new Map();
+    const mutations = new SafeMap();
+    const refusedRoots = new SafeSet();
+    const rangeOf = new SafeMap();
     let claiming = null;
     let paused = false;
     let sealed = false;
@@ -7904,17 +8405,17 @@ var __nimbusResidentModule = (() => {
         pendingSyncBytes -= entry.bytes;
         pendingSyncOps--;
       }
-      answered = Math.max(answered, entry.order);
+      answered = mathMax(answered, entry.order);
       for (let at = marks.length - 1; at >= 0; at--) {
         if (marks[at].mark <= answered)
-          marks.splice(at, 1)[0].resolve();
+          removeAt(marks, at).resolve();
       }
     };
     const fail2 = (entry, errno2, message, refused = false) => {
       settled(entry);
       const path = entry.paths[0] ?? "";
       if (entry.acknowledged) {
-        failures.push({ op: entry.name, path, errno: errno2, message });
+        failures[failures.length] = { op: entry.name, path, errno: errno2, message };
         entry.resolve({ failed: { errno: errno2, message, ...refused ? { refused: true } : {} } });
       } else {
         entry.reject(fsError3(errno2, message, path));
@@ -7928,22 +8429,22 @@ var __nimbusResidentModule = (() => {
     const retirePending = async () => {
       while (retiring.length > 0) {
         try {
-          await session.retireWriter?.(retiring[0]);
+          await ownValue(session, "retireWriter")?.(retiring[0]);
         } catch (error) {
-          if (processGone === null || !(error instanceof Error) || !isProcessGone(error))
+          if (processGone === null || !(error instanceof Error2) || !isProcessGone(error))
             throw error;
         }
-        retiring.shift();
+        arrayShift(retiring);
       }
     };
     const writerFor = async (entries) => {
-      const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
+      const numberedPending = anyNumbered(entries) || anyNumbered(queue);
       if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2))
         return epoch.writer;
       await retirePending();
       const openedAt = now();
       const first = counters.epochs === 0;
-      const writer = await openWaveEpoch(() => session.openWriter(first), { ...options.retry === void 0 ? {} : { retry: options.retry }, timers });
+      const writer = await openWaveEpoch(() => session.openWriter(first), { ...ownValue(options, "retry") === void 0 ? {} : { retry: ownValue(options, "retry") }, timers });
       epoch = { writer, openedAt, numbering: null };
       counters.epochs++;
       ack = 0;
@@ -7952,7 +8453,8 @@ var __nimbusResidentModule = (() => {
     };
     const numberEntries = (entries) => {
       const current = epoch;
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         if (entry.seq !== 0)
           continue;
         if (current.numbering === null) {
@@ -7964,22 +8466,32 @@ var __nimbusResidentModule = (() => {
       }
     };
     const cut = () => {
-      const limit = marks.reduce((least, waiting) => Math.min(least, waiting.mark), Infinity);
+      let limit = Infinity;
+      for (let i = 0; i < marks.length; i++)
+        limit = mathMin(limit, marks[i].mark);
       const taken = [];
-      const owned2 = /* @__PURE__ */ new Set();
+      const owned2 = new SafeSet();
       let pathBytes = 0;
       let bytes = 0;
       while (queue.length > 0) {
         const next = queue[0];
-        const fresh = next.paths.filter((path) => !owned2.has(path));
-        const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
+        const fresh = new SafeList();
+        let freshBytes = 0;
+        for (let i = 0; i < next.paths.length; i++) {
+          if (owned2.has(next.paths[i]))
+            continue;
+          fresh[fresh.length] = next.paths[i];
+          freshBytes += utf8Length(next.paths[i]);
+        }
         if (taken.length > 0 && (next.order > limit || owned2.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES))
           break;
-        for (const path of fresh)
+        for (let i = 0; i < fresh.length; i++) {
+          const path = fresh[i];
           owned2.add(path);
+        }
         pathBytes += freshBytes;
         bytes += next.bytes;
-        taken.push(queue.shift());
+        taken[taken.length] = arrayShift(queue);
       }
       return taken;
     };
@@ -7990,46 +8502,57 @@ var __nimbusResidentModule = (() => {
           await escaped;
         writer = await writerFor(entries);
       } catch (error2) {
-        if (error2 instanceof Error && classifyMessage(error2.message) === "subrequest_cap") {
+        if (error2 instanceof Error2 && classifyMessage(reflectGet(error2, "message")) === "subrequest_cap") {
           exhaustedInvocation(entries, error2);
           return;
         }
-        if (error2 instanceof Error && isProcessGone(error2)) {
+        if (error2 instanceof Error2 && isProcessGone(error2)) {
           endedProcess(entries, error2, epoch?.writer ?? null);
           return;
         }
-        for (const entry of entries)
-          fail2(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`, true);
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          fail2(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error2 ? reflectGet(error2, "message") : stringOf(error2)}`, true);
+        }
         forget(entries[entries.length - 1].jid, false);
         return;
       }
       let ops;
       let bytes;
       try {
-        ops = entries.map(opOf2);
-        for (const entry of entries)
+        const listed = new SafeList();
+        for (let i = 0; i < entries.length; i++)
+          listed[i] = opOf2(entries[i]);
+        ops = arrayCopy(listed);
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
           if (entry.op !== null) {
             heapBytes -= entry.bytes;
             entry.op = null;
             if (entry[FOLD_BUFFER] !== void 0)
               entry[FOLD_BUFFER] = void 0;
           }
+        }
         bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
         numberEntries(entries);
       } catch (error2) {
-        const code = error2?.code;
-        const errno2 = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
-        for (const entry of entries)
-          fail2(entry, errno2, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`, true);
+        const code = typeof error2 === "object" && error2 !== null ? ownField(error2, "code") : void 0;
+        const errno2 = typeof code === "string" && regExpExec(/^E[A-Z0-9]+$/, code) !== null ? code : "EIO";
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          fail2(entry, errno2, `this write could not be sent: ${error2 instanceof Error2 ? reflectGet(error2, "message") : stringOf(error2)}`, true);
+        }
         forget(entries[entries.length - 1].jid, false);
         epoch = null;
-        for (const entry of queue)
+        for (let i = 0; i < queue.length; i++) {
+          const entry = queue[i];
           entry.seq = 0;
+        }
         return;
       }
       const firstSeq = entries[0].seq;
       counters.waves++;
-      counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
+      counters.maxWaveOps = mathMax(counters.maxWaveOps, entries.length);
       wave++;
       let result;
       try {
@@ -8040,22 +8563,22 @@ var __nimbusResidentModule = (() => {
           streamed: false,
           wave,
           ...writer === null ? {} : { sequence: { seq: firstSeq, ack } },
-          ...options.retry === void 0 ? {} : { retry: options.retry },
+          ...ownValue(options, "retry") === void 0 ? {} : { retry: ownValue(options, "retry") },
           resent: () => {
             counters.resends++;
           },
           timers
         });
       } catch (error2) {
-        if (error2 instanceof Error && classifyMessage(error2.message) === "subrequest_cap") {
+        if (error2 instanceof Error2 && classifyMessage(reflectGet(error2, "message")) === "subrequest_cap") {
           exhaustedInvocation(entries, error2);
           return;
         }
-        if (error2 instanceof Error && isProcessGone(error2)) {
+        if (error2 instanceof Error2 && isProcessGone(error2)) {
           endedProcess(entries, error2, writer);
           return;
         }
-        lostEpoch(entries, `the session did not answer this write: ${error2 instanceof Error ? error2.message : String(error2)}`, writer);
+        lostEpoch(entries, `the session did not answer this write: ${error2 instanceof Error2 ? reflectGet(error2, "message") : stringOf(error2)}`, writer);
         return;
       }
       const answer = result;
@@ -8065,30 +8588,34 @@ var __nimbusResidentModule = (() => {
         lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? "no error"}`, writer);
         return;
       }
-      ack = Math.max(ack, cursor);
+      ack = mathMax(ack, cursor);
       ownHeld = answer.held === true;
       if (!ownHeld)
-        ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
+        ownThrough = mathMax(ownThrough, answer.revision ?? Infinity);
       const recalling = error?.recall === true;
       const refused = recalling ? null : writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
       let receipt = 0;
       const back = [];
-      const mutations2 = new Map((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+      const mutations2 = new SafeMap();
+      const answeredMutations = answer.mutations ?? [];
+      for (let i = 0; i < answeredMutations.length; i++)
+        mutations2.set(answeredMutations[i].index, answeredMutations[i]);
       if (answer.held === true)
         heldWaves++;
-      for (const [index, entry] of entries.entries()) {
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
           fail2(entry, refused.errno, refused.message, true);
           if (writer === null)
-            ack = Math.max(ack, entry.seq);
+            ack = mathMax(ack, entry.seq);
           continue;
         }
         if (entry.seq <= cursor) {
           settled(entry);
           let answered2 = {};
           const op = ops[index];
-          const path = op.type === "call" && ("data" in op.call || op.call.call === "open" || op.call.call === "copyFile") ? op.call.path : null;
+          const path = op.type === "call" && (carriesData(op.call) || op.call.call === "open" || op.call.call === "copyFile") ? op.call.path : null;
           const published = answer.receipts[receipt];
           if (path !== null && published?.path === path) {
             receipt++;
@@ -8097,11 +8624,11 @@ var __nimbusResidentModule = (() => {
           }
           const mutation = mutations2.get(index);
           if (mutation !== void 0)
-            answered2.mutation = { before: mutation.before, after: mutation.after };
+            answered2 = { ...answered2, mutation: { before: mutation.before, after: mutation.after } };
           entry.resolve(answered2);
           continue;
         }
-        back.push(entry);
+        back[back.length] = entry;
       }
       const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
       if (answeredThrough >= entries[0].jid)
@@ -8115,11 +8642,17 @@ var __nimbusResidentModule = (() => {
       if (!recalling)
         recalled = null;
       if (answer.ok || refused !== null || recalled !== null && now() - recalled.since < WAVE_RECALL_BOUND_MS) {
-        for (const entry of back)
+        for (let i = 0; i < back.length; i++) {
+          const entry = back[i];
           entry.lingers = false;
-        queue.unshift(...back);
+        }
+        const rest = takeAll(queue);
+        for (let i = 0; i < back.length; i++)
+          queue[i] = back[i];
+        for (let i = 0; i < rest.length; i++)
+          queue[back.length + i] = rest[i];
         if (recalled !== null)
-          await new Promise((resolve) => {
+          await new PromiseConstructor((resolve) => {
             timers.setTimeout(resolve, recallWaitMs(recalled.waits++));
           });
         return;
@@ -8128,49 +8661,54 @@ var __nimbusResidentModule = (() => {
       lostEpoch(back, `the session could not apply this write: ${error?.message ?? "no error"}`, writer);
     };
     const lostEpoch = (entries, message, writer) => {
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         counters.lost++;
         if (!entry.acknowledged)
-          failures.push({ op: entry.name, path: entry.paths[0] ?? "", errno: "EIO", message });
+          failures[failures.length] = { op: entry.name, path: entry.paths[0] ?? "", errno: "EIO", message };
         fail2(entry, "EIO", message);
       }
       forget(entries[entries.length - 1].jid, false);
       if (writer !== null)
-        retiring.push(writer);
+        retiring[retiring.length] = writer;
       epoch = null;
       ownThrough = Infinity;
-      for (const entry of queue)
+      for (let i = 0; i < queue.length; i++) {
+        const entry = queue[i];
         entry.seq = 0;
+      }
     };
     const endedProcess = (entries, refusal, writer) => {
       processGone ??= refusal;
-      const ended = [...entries, ...queue.splice(0)];
-      for (const entry of ended) {
+      const ended = joined(entries, takeAll(queue));
+      for (let i = 0; i < ended.length; i++) {
+        const entry = ended[i];
         if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
           if (entry[FOLD_BUFFER] !== void 0)
             entry[FOLD_BUFFER] = void 0;
         }
-        fail2(entry, "ESRCH", processGone.message);
+        fail2(entry, "ESRCH", reflectGet(processGone, "message"));
       }
       forget(ended[ended.length - 1].jid, false);
       if (writer !== null)
-        retiring.push(writer);
+        retiring[retiring.length] = writer;
       epoch = null;
       ownThrough = Infinity;
     };
     const exhaustedInvocation = (entries, refusal) => {
-      processGone ??= fsError3("EIO", refusal.message, "");
-      const stopped = [...entries, ...queue.splice(0)];
-      for (const entry of stopped) {
+      processGone ??= fsError3("EIO", reflectGet(refusal, "message"), "");
+      const stopped = joined(entries, takeAll(queue));
+      for (let i = 0; i < stopped.length; i++) {
+        const entry = stopped[i];
         if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
           if (entry[FOLD_BUFFER] !== void 0)
             entry[FOLD_BUFFER] = void 0;
         }
-        fail2(entry, "EIO", refusal.message);
+        fail2(entry, "EIO", reflectGet(refusal, "message"));
       }
       forget(stopped[stopped.length - 1].jid, false);
       epoch = null;
@@ -8182,7 +8720,10 @@ var __nimbusResidentModule = (() => {
         return;
       if (queue.length === 0)
         return;
-      if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
+      let lingering = true;
+      for (let i = 0; lingering && i < queue.length; i++)
+        lingering = queue[i].lingers;
+      if (marks.length === 0 && lingering) {
         lingerTimer ??= timers.setTimeout(() => {
           lingerTimer = null;
           client.hurry();
@@ -8195,34 +8736,44 @@ var __nimbusResidentModule = (() => {
         lingerTimer = null;
       }
       inFlight = entries;
-      sending = send(entries).finally(() => {
+      sending = promiseFinally(send(entries), () => {
         inFlight = null;
         sending = null;
         pump();
       });
     };
     const entered = (given, submitOptions, foldOnly) => {
-      const acknowledged = submitOptions?.acknowledged === true;
-      if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true)))
+      const acknowledged = (submitOptions === void 0 ? void 0 : ownValue(submitOptions, "acknowledged")) === true;
+      const decided = (submitOptions === void 0 ? void 0 : ownValue(submitOptions, "decided")) === true;
+      if (processGone !== null && !(sealed && (acknowledged || decided)))
         throw processGone;
-      const op = withUmaskOf(given, options.umask);
+      const op = withUmaskOf(given, ownValue(options, "umask"));
       const named = pathsOf(op);
-      const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
-      for (const path of named)
+      let lingers = acknowledged || decided;
+      for (let i = 0; lingers && i < named.length; i++)
+        lingers = heldGrant(named[i]) !== void 0;
+      for (let i = 0; i < named.length; i++) {
+        const path = named[i];
         if (!canonical(path))
           throw fsError3("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+      }
       if (op.type === "call" && op.call.call === "symlink" && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
         throw fsError3("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
       }
       const parts = pieces(op);
-      const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
+      let bytes = 0;
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        if (part.type === "call" && carriesData(part.call))
+          bytes += typedArrayByteLength(part.call.data);
+      }
       if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap)
         throw syncCapRefusal(bytes, pathsOf(op)[0] ?? "");
       const tail = foldTail(parts, named, acknowledged);
       const merged = tail !== void 0 ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
       if (merged !== null && tail !== void 0) {
-        const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
-        journal.replace(tail.jid, merged.op, merged.append);
+        const mergedBytes = merged.op.type === "call" && carriesData(merged.op.call) ? typedArrayByteLength(merged.op.call.data) : 0;
+        journal.replace(tail.jid, merged.op, ownValue(merged, "append"));
         const grown2 = mergedBytes - tail.bytes;
         tail.op = merged.op;
         if (merged.buffer !== null || tail[FOLD_BUFFER] !== void 0)
@@ -8238,22 +8789,24 @@ var __nimbusResidentModule = (() => {
           pendingSyncBytes += grown2;
         counters.ops++;
         counters.folded++;
-        options.logged?.(op);
+        ownValue(options, "logged")?.(op);
         return tail.answer;
       }
       if (foldOnly)
         return void 0;
-      options.logged?.(op);
-      const answers = parts.map((part) => {
+      ownValue(options, "logged")?.(op);
+      const answers = new SafeList();
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
         let entry;
-        const answer2 = new Promise((resolve, reject) => {
-          const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
+        const answer2 = new PromiseConstructor((resolve, reject) => {
+          const partBytes = part.type === "call" && carriesData(part.call) ? typedArrayByteLength(part.call.data) : 0;
           const jid = journal.append(part);
           const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
           if (kept)
             heapBytes += partBytes;
           entry = { op: kept ? part : null, jid, name: nameOf3(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
-          queue.push(entry);
+          queue[queue.length] = entry;
           pendingBytes += partBytes;
           if (acknowledged) {
             pendingSyncBytes += partBytes;
@@ -8263,24 +8816,40 @@ var __nimbusResidentModule = (() => {
         });
         if (entry !== void 0)
           entry.answer = answer2;
-        return { entry, answer: answer2 };
-      });
+        answers[i] = { entry, answer: answer2 };
+      }
       schedule();
-      const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
-        const first = all[0]?.mutation;
+      const waits = new SafeList();
+      for (let i = 0; i < answers.length; i++)
+        waits[i] = answers[i].answer;
+      const answer = promiseThen(promiseAll(waits), (all) => {
+        const first = all.length === 0 ? void 0 : ownValue(all[0], "mutation");
         const last = all[all.length - 1];
         if (last === void 0)
           return {};
-        const failures2 = all.filter((piece) => piece.failed !== void 0);
-        if (failures2.length > 0) {
-          const { errno: errno2, message } = failures2[0].failed;
-          return { failed: failures2.length === all.length && failures2.every((piece) => piece.failed.refused === true) ? { errno: errno2, message, refused: true } : { errno: errno2, message } };
+        let failures2 = 0;
+        let refusedAll = true;
+        let failed;
+        for (let i = 0; i < all.length; i++) {
+          const fate = ownValue(all[i], "failed");
+          if (fate === void 0)
+            continue;
+          failures2++;
+          failed ??= fate;
+          if (ownValue(fate, "refused") !== true)
+            refusedAll = false;
         }
-        const { mutation: _mutation, ...rest } = last;
-        return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+        if (failed !== void 0) {
+          const { errno: errno2, message } = failed;
+          return { failed: failures2 === all.length && refusedAll ? { errno: errno2, message, refused: true } : { errno: errno2, message } };
+        }
+        const rest = { ...last };
+        reflectDeleteProperty(rest, "mutation");
+        const lastMutation = ownValue(last, "mutation");
+        return first !== void 0 && lastMutation !== void 0 ? { ...rest, mutation: { before: first.before, after: lastMutation.after } } : rest;
       });
       if (acknowledged)
-        answer.catch(() => {
+        promiseThen(answer, void 0, () => {
         });
       const only = answers.length === 1 ? answers[0].entry : void 0;
       if (only !== void 0)
@@ -8301,18 +8870,24 @@ var __nimbusResidentModule = (() => {
       while (sending !== null)
         await sending;
     };
-    const live = () => grants.filter((grant) => !grant.ended);
-    const allowedRoot = (root) => root !== "" && !(options.isHomeRoot?.(root) ?? false);
+    const live = () => {
+      const found = new SafeList();
+      for (let i = 0; i < grants.length; i++)
+        if (!grants[i].ended)
+          found[found.length] = grants[i];
+      return found;
+    };
+    const allowedRoot = (root) => root !== "" && !(ownValue(options, "isHomeRoot")?.(root) ?? false);
     const close = (grant) => {
       if (grant.closed !== void 0)
         return grant.closed;
       const wasClosing = grant.closing;
       grant.closing = true;
       try {
-        options.freezing?.(grant.root);
+        ownValue(options, "freezing")?.(grant.root);
       } catch {
         grant.closing = wasClosing;
-        return Promise.resolve(false);
+        return promiseResolve(false);
       }
       grant.closed = (async () => {
         await client.flush();
@@ -8325,18 +8900,18 @@ var __nimbusResidentModule = (() => {
       if (grant.ended)
         return;
       grant.ended = true;
-      const at = grants.indexOf(grant);
+      const at = arrayIndexOf(grants, grant);
       if (at >= 0)
-        grants.splice(at, 1);
+        removeAt(grants, at);
       counters.released++;
-      options.released?.(grant.root);
+      ownValue(options, "released")?.(grant.root);
       try {
-        await session.grants?.release(grant.owner);
+        await ownValue(session, "grants")?.release(grant.owner);
       } catch {
       }
     };
     const answerRecalls = async (grant) => {
-      const port = session.grants;
+      const port = ownValue(session, "grants");
       while (!grant.ended) {
         let kind;
         try {
@@ -8344,10 +8919,10 @@ var __nimbusResidentModule = (() => {
         } catch {
           if (!grant.ended) {
             grant.ended = true;
-            const at = grants.indexOf(grant);
+            const at = arrayIndexOf(grants, grant);
             if (at >= 0)
-              grants.splice(at, 1);
-            options.released?.(grant.root);
+              removeAt(grants, at);
+            ownValue(options, "released")?.(grant.root);
           }
           return;
         }
@@ -8356,12 +8931,12 @@ var __nimbusResidentModule = (() => {
         counters.recalls++;
         const wasClosing = grant.closing;
         grant.closing = true;
-        options.freezing?.(grant.root);
+        ownValue(options, "freezing")?.(grant.root);
         await client.flush();
         if (kind === "share") {
           grant.shared = true;
           grant.closing = wasClosing;
-          options.released?.(grant.root);
+          ownValue(options, "released")?.(grant.root);
         }
         try {
           await port.recalled(grant.owner, kind);
@@ -8369,32 +8944,34 @@ var __nimbusResidentModule = (() => {
         }
         if (kind === "revoke") {
           grant.ended = true;
-          const at = grants.indexOf(grant);
+          const at = arrayIndexOf(grants, grant);
           if (at >= 0)
-            grants.splice(at, 1);
-          options.released?.(grant.root);
+            removeAt(grants, at);
+          ownValue(options, "released")?.(grant.root);
           return;
         }
       }
     };
     let readLease = null;
-    const endedReadLeases = /* @__PURE__ */ new Set();
+    const endedReadLeases = new SafeSet();
     const endReadLease = (owner) => {
       endedReadLeases.add(owner);
       if (endedReadLeases.size > 64)
-        endedReadLeases.delete(endedReadLeases.values().next().value);
+        endedReadLeases.delete(setFind(endedReadLeases, () => true));
       if (readLease?.owner === owner)
         readLease = null;
     };
     const giveBackReadLease = async (owner) => {
       endReadLease(owner);
       counters.readReleased++;
-      await session.grants?.release(owner).catch(() => {
-      });
+      const grants2 = ownValue(session, "grants");
+      if (grants2 !== void 0)
+        await promiseThen(grants2.release(owner), void 0, () => {
+        });
     };
     let runEnded = false;
     const answerReadRecalls = async (owner) => {
-      const port = session.grants;
+      const port = ownValue(session, "grants");
       for (; ; ) {
         const polled = now();
         let kind;
@@ -8427,24 +9004,32 @@ var __nimbusResidentModule = (() => {
         return;
       idleTimer = timers.setTimeout(() => {
         idleTimer = null;
-        const idle = live().filter((grant) => !grant.closing && now() - grant.lastUsed >= grantIdleMs);
+        const held = live();
+        const idle = new SafeList();
+        for (let i = 0; i < held.length; i++)
+          if (!held[i].closing && now() - held[i].lastUsed >= grantIdleMs)
+            idle[idle.length] = held[i];
         if (idle.length === 0 || settling) {
           armIdle();
           return;
         }
-        void Promise.all(idle.map(close)).then(armIdle);
+        const closes = new SafeList();
+        for (let i = 0; i < idle.length; i++)
+          closes[i] = close(idle[i]);
+        void promiseThen(promiseAll(closes), armIdle);
       }, grantIdleMs);
     };
     const claim = (root) => {
-      const port = session.grants;
+      const port = ownValue(session, "grants");
       if (port === void 0 || claiming !== null || settling)
         return;
-      claiming = (async () => {
+      claiming = promiseFinally((async () => {
         let target = root;
         const held = live();
         if (held.length >= MAX_DELEGATIONS_PER_PROCESS) {
           let best = "";
-          for (const grant2 of held) {
+          for (let i = 0; i < held.length; i++) {
+            const grant2 = held[i];
             const shared = commonAncestor(grant2.root, root);
             if (shared.length > best.length)
               best = shared;
@@ -8453,11 +9038,23 @@ var __nimbusResidentModule = (() => {
             return;
           target = best;
         }
-        const covered = live().filter((grant2) => within3(grant2.root, target));
+        const holding = live();
+        const covered = new SafeList();
+        for (let i = 0; i < holding.length; i++)
+          if (within3(holding[i].root, target))
+            covered[covered.length] = holding[i];
         if (covered.length > 0) {
-          if (!(await Promise.all(covered.map(close))).every(Boolean))
-            return;
-          if (covered.some((grant2) => grant2.root !== target))
+          const closes = new SafeList();
+          for (let i = 0; i < covered.length; i++)
+            closes[i] = close(covered[i]);
+          const given = await promiseAll(closes);
+          for (let i = 0; i < given.length; i++)
+            if (!given[i])
+              return;
+          let wider = false;
+          for (let i = 0; !wider && i < covered.length; i++)
+            wider = covered[i].root !== target;
+          if (wider)
             counters.widened++;
           else
             counters.renewed++;
@@ -8465,12 +9062,12 @@ var __nimbusResidentModule = (() => {
         await client.flush();
         paused = true;
         await quiet();
-        const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : options.grantInos ?? GRANT_INOS;
+        const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : ownValue(options, "grantInos") ?? GRANT_INOS;
         let granted;
         try {
           granted = await port.acquire("/" + target, { reads: true, inos, bytes: GRANT_BYTES });
         } catch (error) {
-          if (error?.code !== "ENOENT")
+          if ((typeof error === "object" && error !== null ? ownField(error, "code") : void 0) !== "ENOENT")
             refusedRoots.add(target);
           counters.grantsRefused++;
           return;
@@ -8481,7 +9078,8 @@ var __nimbusResidentModule = (() => {
           owner: granted.owner,
           umask: granted.umask ?? 18,
           confined: granted.confined === true,
-          ...granted.certificate === void 0 ? {} : { certificate: granted.certificate },
+          certificate: granted.certificate,
+          closed: void 0,
           nextIno: granted.inos?.first ?? 0,
           endIno: granted.inos?.end ?? 0,
           inos,
@@ -8491,20 +9089,27 @@ var __nimbusResidentModule = (() => {
           ended: false,
           lastUsed: now()
         };
-        grants.push(grant);
+        grants[grants.length] = grant;
         counters.grants++;
         void answerRecalls(grant);
         armIdle();
-      })().finally(() => {
+      })(), () => {
         claiming = null;
         paused = false;
-        for (const key of [...mutations.keys()])
-          if (within3(key, root) || within3(root, key))
-            mutations.delete(key);
+        const counted = mapKeyList(mutations);
+        for (let i = 0; i < counted.length; i++)
+          if (within3(counted[i], root) || within3(root, counted[i]))
+            mutations.delete(counted[i]);
         schedule();
       });
     };
-    const heldGrant = (key) => escaped !== null ? void 0 : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within3(key, grant.root));
+    const heldGrant = (key) => escaped !== null ? void 0 : grantWhere((grant) => !grant.ended && !grant.closing && !grant.shared && within3(key, grant.root));
+    const grantWhere = (test) => {
+      for (let i = 0; i < grants.length; i++)
+        if (test(grants[i]))
+          return grants[i];
+      return void 0;
+    };
     const syncCapRefusal = (bytes, path) => fsError3("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
     const client = {
       holder(key) {
@@ -8515,13 +9120,13 @@ var __nimbusResidentModule = (() => {
           held.lastUsed = now();
           return held;
         }
-        if (session.grants === void 0 || settling || escaped !== null)
+        if (ownValue(session, "grants") === void 0 || settling || escaped !== null)
           return void 0;
-        if (grants.some((grant) => !grant.ended && within3(key, grant.root)))
+        if (grantWhere((grant) => !grant.ended && within3(key, grant.root)) !== void 0)
           return void 0;
         let deepest;
         for (let root = parentKey(key); allowedRoot(root); root = parentKey(root)) {
-          if ([...refusedRoots].some((refused) => within3(root, refused)))
+          if (setFind(refusedRoots, (refused) => within3(root, refused)) !== void 0)
             break;
           const seen = (mutations.get(root) ?? 0) + 1;
           mutations.set(root, seen);
@@ -8551,7 +9156,7 @@ var __nimbusResidentModule = (() => {
         return heldGrant(key);
       },
       holds(key) {
-        return grants.some((grant) => !grant.ended && within3(key, grant.root));
+        return grantWhere((grant) => !grant.ended && within3(key, grant.root)) !== void 0;
       },
       vouch(key, root) {
         if (client.pending() || ownHeld || root.cursor < ownThrough)
@@ -8562,7 +9167,8 @@ var __nimbusResidentModule = (() => {
         if (escaped !== null)
           return void 0;
         let found;
-        for (const grant of grants) {
+        for (let i = 0; i < grants.length; i++) {
+          const grant = grants[i];
           const certificate = grant.certificate;
           if (certificate === void 0 || certificate.epoch !== root.epoch || root.cursor < certificate.revision)
             continue;
@@ -8597,8 +9203,10 @@ var __nimbusResidentModule = (() => {
         return entered(given, submitOptions, true);
       },
       hurry() {
-        for (const entry of queue)
+        for (let i = 0; i < queue.length; i++) {
+          const entry = queue[i];
           entry.lingers = false;
+        }
         schedule();
       },
       seal() {
@@ -8609,16 +9217,16 @@ var __nimbusResidentModule = (() => {
         }
       },
       flush() {
-        options.drain?.();
+        ownValue(options, "drain")?.();
         const mark = logged;
-        const flushed = answered >= mark ? Promise.resolve() : new Promise((resolve) => {
-          marks.push({ mark, resolve });
+        const flushed = answered >= mark ? promiseResolve() : new PromiseConstructor((resolve) => {
+          marks[marks.length] = { mark, resolve };
         });
         schedule();
-        return flushed.then(async () => {
+        return promiseThen(flushed, async () => {
           if (processGone === null)
             return;
-          await retirePending().catch(() => {
+          await promiseThen(retirePending(), void 0, () => {
           });
           throw processGone;
         });
@@ -8626,38 +9234,41 @@ var __nimbusResidentModule = (() => {
       effect() {
         if (processGone !== null)
           return null;
-        options.drain?.();
+        ownValue(options, "drain")?.();
         return answered >= logged ? null : client.flush();
       },
       published() {
-        const ask = options.session.published;
+        const ask = ownValue(options.session, "published");
         if (processGone !== null || ask === void 0 || publishedThrough === heldWaves)
           return null;
         const through = heldWaves;
-        return ask.call(options.session, false).then(() => {
+        return promiseThen(reflectApply(ask, options.session, [false]), () => {
           if (publishedThrough < through)
             publishedThrough = through;
         });
       },
       rawSocket() {
-        const ask = options.session.published;
+        const ask = ownValue(options.session, "published");
         if (processGone !== null)
-          return Promise.reject(processGone);
+          return promiseReject(processGone);
         if (ask === void 0)
           return null;
         if (escaped === null) {
           const through = heldWaves;
-          escaped = ask.call(options.session, true).then(() => {
+          escaped = promiseThen(reflectApply(ask, options.session, [true]), () => {
             escapeLanded = true;
-            publishedThrough = Math.max(publishedThrough, through);
+            publishedThrough = mathMax(publishedThrough, through);
           });
-          escaped.catch(() => {
+          promiseThen(escaped, void 0, () => {
           });
         }
         const logged2 = client.effect();
         if (escapeLanded && logged2 === null)
           return client.published();
-        return Promise.all([escaped, logged2]).then(() => client.published() ?? void 0);
+        const both = new SafeList();
+        both[0] = escaped;
+        both[1] = logged2;
+        return promiseThen(promiseAll(both), () => client.published() ?? void 0);
       },
       async settle() {
         settling = true;
@@ -8674,24 +9285,26 @@ var __nimbusResidentModule = (() => {
             timers.clearTimeout(idleTimer);
             idleTimer = null;
           }
-          for (const grant of live()) {
-            grant.closing = true;
-            options.freezing?.(grant.root);
+          const closing = live();
+          for (let i = 0; i < closing.length; i++) {
+            closing[i].closing = true;
+            ownValue(options, "freezing")?.(closing[i].root);
           }
           await client.flush();
-          for (const grant of live())
-            void end(grant);
+          const ending = live();
+          for (let i = 0; i < ending.length; i++)
+            void end(ending[i]);
           settling = false;
         }
         if (processGone !== null)
-          await retirePending().catch(() => {
+          await promiseThen(retirePending(), void 0, () => {
           });
         const failure2 = client.takeFailuresError();
         if (failure2 !== null)
           throw failure2;
       },
       takeFailures() {
-        return failures.splice(0, failures.length);
+        return arrayCopy(takeAll(failures));
       },
       readTrusted() {
         return readLease !== null && readLease.logged === logged && now() < readLease.until;
@@ -8700,12 +9313,12 @@ var __nimbusResidentModule = (() => {
         return !runEnded && readLease?.owner === owner && readLease.logged === logged;
       },
       readLeaseAsk() {
-        if (session.grants === void 0 || runEnded)
+        if (ownValue(session, "grants") === void 0 || runEnded)
           return null;
         return { at: now(), logged: answered === logged ? logged : -1 };
       },
       readLeaseAnswered(lease) {
-        if (session.grants === void 0 || endedReadLeases.has(lease.owner))
+        if (ownValue(session, "grants") === void 0 || endedReadLeases.has(lease.owner))
           return;
         if (readLease?.owner === lease.owner) {
           readLease.confirmedAt = now();
@@ -8727,13 +9340,13 @@ var __nimbusResidentModule = (() => {
         counters.readConfirms++;
       },
       takeFailuresError() {
-        const taken = failures.splice(0, failures.length);
+        const taken = takeAll(failures);
         if (processGone !== null)
           return processGone;
         return taken.length === 0 ? null : failuresError(taken);
       },
       noteFailure(failure2) {
-        failures.push(failure2);
+        failures[failures.length] = failure2;
       },
       get pendingBytes() {
         return pendingBytes;
@@ -8749,29 +9362,40 @@ var __nimbusResidentModule = (() => {
   }
   var DRAIN_WAVE_BASE = 2 ** 40;
   function failuresError(failures) {
-    const gone = failures.find((failure2) => failure2.errno === "ESRCH");
-    if (gone !== void 0)
-      return Object.assign(new Error(gone.message), { code: "ESRCH", failures });
-    return Object.assign(new Error(`${failures.length} filesystem change${failures.length === 1 ? "" : "s"} this process made did not reach the session:
-` + failures.map((failure2) => `  ${failure2.op} ${failure2.path}: ${failure2.errno}: ${failure2.message}`).join("\n")), { code: "EIO", failures });
+    const said = new SafeList();
+    for (let i = 0; i < failures.length; i++) {
+      const failure2 = failures[i];
+      if (failure2.errno === "ESRCH")
+        return objectAssign(new Error2(failure2.message), { code: "ESRCH", failures });
+      said[i] = `  ${failure2.op} ${failure2.path}: ${failure2.errno}: ${failure2.message}`;
+    }
+    return objectAssign(new Error2(`${failures.length} filesystem change${failures.length === 1 ? "" : "s"} this process made did not reach the session:
+` + arrayJoin(said, "\n")), { code: "EIO", failures });
   }
 
   // ../core/dist/runtime/wasi/delegation-holder.js
   var FIRST_LOCAL_HANDLE = -1;
-  var descriptionId3 = () => crypto.randomUUID().replaceAll("-", "");
+  var descriptionId3 = () => {
+    const id = crypto.randomUUID();
+    let out = "";
+    for (let i = 0; i < id.length; i++)
+      if (id[i] !== "-")
+        out += id[i];
+    return out;
+  };
   function parentKey4(key) {
-    const at = key.lastIndexOf("/");
-    return at < 0 ? "" : key.slice(0, at);
+    const at = stringLastIndexOf(key, "/");
+    return at < 0 ? "" : stringSlice(key, 0, at);
   }
   function nameOf4(key) {
-    return key.slice(key.lastIndexOf("/") + 1);
+    return stringSlice(key, stringLastIndexOf(key, "/") + 1);
   }
   function within4(key, root) {
-    return key === root || key.startsWith(`${root}/`);
+    return key === root || stringStartsWith(key, `${root}/`);
   }
   function delegationHolder(options) {
     const { store } = options;
-    const now = options.now ?? Date.now;
+    const now = ownValue(options, "now") ?? dateNow;
     const names = ownNames({
       entry: (key) => store.entry(key),
       // A cell goes with its name, but for bytes still unlogged or open.
@@ -8784,12 +9408,12 @@ var __nimbusResidentModule = (() => {
     });
     const { decided } = names;
     let nextHandle = FIRST_LOCAL_HANDLE;
-    const dirty = /* @__PURE__ */ new Set();
+    const dirty = new SafeSet();
     let changes = 0;
     let sentAt = 0;
     const acknowledged = (op) => client.submit(op, { acknowledged: true });
     const deciding = (key) => {
-      if (options.cannotWait?.() === true && client.held(key) === void 0)
+      if (ownValue(options, "cannotWait")?.() === true && client.held(key) === void 0)
         return void 0;
       const grant = client.holder(key);
       return grant === void 0 || provisionalActive && prov.touches(key) ? void 0 : grant;
@@ -8800,7 +9424,7 @@ var __nimbusResidentModule = (() => {
       if (cell === void 0 || cell.detached !== void 0)
         return;
       dirty.delete(inode);
-      delete cell.logged;
+      cell.logged = void 0;
       const mode = cell.umask === void 0 ? cell.mode : cell.mode & ~cell.umask;
       const entry = decided.get(inode.key) ?? store.entry(inode.key) ?? {
         type: "file",
@@ -8817,18 +9441,23 @@ var __nimbusResidentModule = (() => {
         revision: 0,
         target: null
       };
-      const opened = prov.descriptorsOf(inode).filter((desc) => desc.description === void 0 && desc.write);
-      opened.forEach((desc, at) => {
+      const descs = prov.descriptorsOf(inode);
+      const opened = new SafeList();
+      for (let i = 0; i < descs.length; i++)
+        if (descs[i].description === void 0 && descs[i].write)
+          opened[opened.length] = descs[i];
+      for (let at = 0; at < opened.length; at++) {
+        const desc = opened[at];
         const description = desc.description = descriptionId3();
         const creating = made !== void 0 && at === 0;
         const making = creating ? { create: true, exclusive: true, ino: made, ...cell.umask === void 0 ? {} : { umask: cell.umask } } : {};
         const read = desc.read;
-        void acknowledged({ type: "call", call: { call: "open", path: inode.key, mode: cell.mode, ...making, access: read ? "readwrite" : "write", description } }).then((answered) => prov.anchored(description, answered.receipt?.handle, read), () => {
+        void promiseThen(acknowledged({ type: "call", call: { call: "open", path: inode.key, mode: cell.mode, ...making, access: read ? "readwrite" : "write", description } }), (answered) => prov.anchored(description, ownValue(answered, "receipt")?.handle, read), () => {
         });
         if (creating && cell.length > 0) {
           acknowledged({ type: "call", call: { call: "write", path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
         }
-      });
+      }
       prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: entry.mode & ~4095 | mode });
     };
     const atName = (inode) => {
@@ -8849,34 +9478,50 @@ var __nimbusResidentModule = (() => {
       const entry = decided.get(inode.key);
       if (entry === void 0 || entry === null || entry.ino !== inode.ino)
         return false;
-      for (const desc of prov.descriptorsOf(inode)) {
-        if (!modeAllows(entry, (desc.read ? 4 : 0) | (desc.write ? 2 : 0), store.cred))
+      const descs = prov.descriptorsOf(inode);
+      for (let i = 0; i < descs.length; i++) {
+        if (!modeAllows(entry, (descs[i].read ? 4 : 0) | (descs[i].write ? 2 : 0), store.cred))
           return true;
       }
       return false;
     };
     const throughAt = (keys) => {
-      const open = prov.cells().filter((inode) => inode.cell.detached === void 0 && inode.descs > 0 && (keys === void 0 || keys.some((key) => within4(inode.key, key))));
+      const cells = prov.cells();
+      const open = new SafeList();
+      for (let i = 0; i < cells.length; i++) {
+        const inode = cells[i];
+        if (inode.cell.detached !== void 0 || inode.descs === 0)
+          continue;
+        let under = keys === void 0;
+        for (let j = 0; !under && j < keys.length; j++)
+          under = within4(inode.key, keys[j]);
+        if (under)
+          open[open.length] = inode;
+      }
       if (open.length === 0)
         return;
       drain();
-      for (const inode of open)
+      for (let i = 0; i < open.length; i++) {
+        const inode = open[i];
         unhold(inode);
+      }
     };
     const drain = (except) => {
       if (dirty.size === 0)
         return;
       changes++;
-      for (const inode of [...dirty]) {
+      const files = setList(dirty);
+      for (let i = 0; i < files.length; i++) {
+        const inode = files[i];
         if (inode === except)
           continue;
         const file = inode.cell;
-        const from = Math.min(file.changedFrom ?? 0, file.logged ?? 0);
+        const from = mathMin(file.changedFrom ?? 0, file.logged ?? 0);
         const ino = file.made;
         if (ino !== void 0 && refusedByMode(inode)) {
           dirty.delete(inode);
-          delete file.changedFrom;
-          delete file.made;
+          file.changedFrom = void 0;
+          file.made = void 0;
           unhold(inode, ino);
           continue;
         }
@@ -8884,51 +9529,53 @@ var __nimbusResidentModule = (() => {
           if (file.length < file.logged)
             acknowledged({ type: "call", call: { call: "ftruncate", path: inode.key, size: file.length } });
           if (file.length > from)
-            acknowledged({ type: "call", call: { call: "write", path: inode.key, offset: from, data: file.bytes.slice(from, file.length) } });
+            acknowledged({ type: "call", call: { call: "write", path: inode.key, offset: from, data: bytesCopy(file.bytes, from, file.length) } });
         } else {
-          acknowledged({ type: "call", call: { call: "writeFile", path: inode.key, mode: file.mode, ...ino === void 0 ? {} : { ino }, ...file.umask === void 0 ? {} : { umask: file.umask }, data: file.bytes.slice(0, file.length) } });
+          acknowledged({ type: "call", call: { call: "writeFile", path: inode.key, mode: file.mode, ...ino === void 0 ? {} : { ino }, ...file.umask === void 0 ? {} : { umask: file.umask }, data: bytesCopy(file.bytes, 0, file.length) } });
         }
         dirty.delete(inode);
-        delete file.changedFrom;
-        delete file.made;
+        file.changedFrom = void 0;
+        file.made = void 0;
         file.logged = file.length;
       }
     };
     let lingerTimer = null;
     const dropDecisions = (root) => {
       drain();
-      for (const inode of prov.cells())
-        if (within4(inode.key, root))
-          unhold(inode);
+      const cells = prov.cells();
+      for (let i = 0; i < cells.length; i++)
+        if (within4(cells[i].key, root))
+          unhold(cells[i]);
       names.released(root);
       prov.answeredHeld(root);
-      options.sent?.();
+      ownValue(options, "sent")?.();
     };
     const client = processFsClient({
       session: options.session,
       now,
-      ...options.timers === void 0 ? {} : { timers: options.timers },
-      ...options.umask === void 0 ? {} : { umask: options.umask },
-      ...options.isHomeRoot === void 0 ? {} : { isHomeRoot: options.isHomeRoot },
-      ...options.grantAfter === void 0 ? {} : { grantAfter: options.grantAfter },
-      ...options.grantInos === void 0 ? {} : { grantInos: options.grantInos },
-      ...options.journal === void 0 ? {} : { journal: options.journal },
-      ...options.logged === void 0 ? {} : { logged: options.logged },
+      ...ownValue(options, "timers") === void 0 ? {} : { timers: ownValue(options, "timers") },
+      ...ownValue(options, "umask") === void 0 ? {} : { umask: ownValue(options, "umask") },
+      ...ownValue(options, "isHomeRoot") === void 0 ? {} : { isHomeRoot: ownValue(options, "isHomeRoot") },
+      ...ownValue(options, "grantAfter") === void 0 ? {} : { grantAfter: ownValue(options, "grantAfter") },
+      ...ownValue(options, "grantInos") === void 0 ? {} : { grantInos: ownValue(options, "grantInos") },
+      ...ownValue(options, "journal") === void 0 ? {} : { journal: ownValue(options, "journal") },
+      ...ownValue(options, "logged") === void 0 ? {} : { logged: ownValue(options, "logged") },
       released: dropDecisions,
       // Closing starts (a recall, an idle or renewing give-back): nothing more
       // is decided under it, and its files' descriptions write through from now
       // on, so the flush that follows covers everything accepted before.
       freezing: (root) => {
         drain();
-        for (const inode of prov.cells())
-          if (within4(inode.key, root))
-            unhold(inode);
+        const cells = prov.cells();
+        for (let i = 0; i < cells.length; i++)
+          if (within4(cells[i].key, root))
+            unhold(cells[i]);
       },
       drain
     });
     const heldContent = (entry) => {
       const cell = prov.inode(entry.dev, entry.ino)?.cell;
-      return cell === void 0 ? void 0 : cell.bytes.slice(0, cell.length);
+      return cell === void 0 ? void 0 : bytesCopy(cell.bytes, 0, cell.length);
     };
     const prov = provisional({
       // The store's, as it knows it when asked (it learns it at its first barrier).
@@ -8942,13 +9589,13 @@ var __nimbusResidentModule = (() => {
       children: (key) => names.children(key, store.children(key)),
       content: (key, revision) => {
         const entry = decided.get(key);
-        return (entry ? heldContent(entry) : void 0) ?? store.content?.(key, revision);
+        return (entry ? heldContent(entry) : void 0) ?? ownValue(store, "content")?.(key, revision);
       },
-      reserve: (bytes) => store.reserve?.(bytes) ?? true,
-      release: (bytes) => store.release?.(bytes),
+      reserve: (bytes) => ownValue(store, "reserve")?.(bytes) ?? true,
+      release: (bytes) => ownValue(store, "release")?.(bytes),
       client,
       drain,
-      sent: () => options.sent?.(),
+      sent: () => ownValue(options, "sent")?.(),
       // Reads by name and by number consult them only while the process sees any.
       active: (on) => {
         provisionalActive = on;
@@ -8957,7 +9604,7 @@ var __nimbusResidentModule = (() => {
       count: (key) => {
         client.holder(key);
       },
-      umask: () => options.umask?.() ?? 18,
+      umask: () => ownValue(options, "umask")?.() ?? 18,
       now,
       nextHandle: () => nextHandle--,
       unhold: (inode) => {
@@ -8966,9 +9613,9 @@ var __nimbusResidentModule = (() => {
       },
       generation: (key) => names.generation(key),
       settled: (key, generation) => names.settled(key, generation),
-      ...store.mounted === void 0 ? {} : { mounted: (key) => store.mounted(key) },
-      ...store.unreported === void 0 ? {} : { unreported: (key) => store.unreported(key) },
-      ...store.keep === void 0 ? {} : { keep: (key, row, bytes) => store.keep(key, row.revision, bytes) },
+      ...ownValue(store, "mounted") === void 0 ? {} : { mounted: (key) => ownValue(store, "mounted")(key) },
+      ...ownValue(store, "unreported") === void 0 ? {} : { unreported: (key) => ownValue(store, "unreported")(key) },
+      ...ownValue(store, "keep") === void 0 ? {} : { keep: (key, row, bytes) => ownValue(store, "keep")(key, row.revision, bytes) },
       absorb: (key, file) => {
         const decision = decided.get(key);
         if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)
@@ -9003,7 +9650,7 @@ var __nimbusResidentModule = (() => {
       if (covered <= sentAt)
         return;
       sentAt = covered;
-      options.sent?.();
+      ownValue(options, "sent")?.();
     };
     const entryOf = (key) => {
       const mine = names.entry(key);
@@ -9035,7 +9682,7 @@ var __nimbusResidentModule = (() => {
       const file = inode.cell;
       if (file.detached)
         return;
-      file.changedFrom = Math.min(file.changedFrom ?? from, from);
+      file.changedFrom = mathMin(file.changedFrom ?? from, from);
       dirty.delete(inode);
       dirty.add(inode);
       lingerTimer ??= setTimeout(() => {
@@ -9049,7 +9696,7 @@ var __nimbusResidentModule = (() => {
     const detach = (inode, entry) => {
       const file = inode.cell;
       file.detached = { ...entry, nlink: 0, size: file.length };
-      delete file.logged;
+      file.logged = void 0;
       dirty.delete(inode);
     };
     const heldEntry = (handle) => {
@@ -9064,30 +9711,33 @@ var __nimbusResidentModule = (() => {
     const heldDesc = (handleId) => {
       const desc = prov.descriptor(handleId);
       if (desc === void 0)
-        throw fsError2("EBADF", "fd", String(handleId));
+        throw fsError2("EBADF", "fd", stringOf(handleId));
       return desc.inode.cell === void 0 ? void 0 : desc;
     };
     const room = (file, key, length) => {
-      if (length <= file.bytes.byteLength)
+      if (length <= typedArrayByteLength(file.bytes))
         return true;
       const grant = client.held(key);
-      const size = Math.max(length, file.bytes.byteLength * 2, 4096);
-      if (grant !== void 0 && !client.draw(grant, size - file.bytes.byteLength))
+      const size = mathMax(length, typedArrayByteLength(file.bytes) * 2, 4096);
+      if (grant !== void 0 && !client.draw(grant, size - typedArrayByteLength(file.bytes)))
         return false;
-      const next = new Uint8Array(size);
-      next.set(file.bytes.subarray(0, file.length));
+      const next = new Uint8ArrayConstructor(size);
+      typedArraySet(next, bytesView(file.bytes, 0, file.length));
       file.bytes = next;
       return true;
     };
     const failed = () => {
       const failures = client.takeFailures();
       if (failures.length > 0) {
+        const said = new SafeList();
+        for (let i = 0; i < failures.length; i++)
+          said[i] = `${failures[i].op} ${failures[i].path}: ${failures[i].message}`;
         throw fsError2(failures[0].errno, "fsync", failures[0].path, void 0, {
-          detail: `the session refused what this process decided: ${failures.map((failure2) => `${failure2.op} ${failure2.path}: ${failure2.message}`).join("; ")}`
+          detail: `the session refused what this process decided: ${arrayJoin(said, "; ")}`
         });
       }
     };
-    const changedBy = (entry, attrs) => "mode" in attrs ? { ...entry, mode: entry.mode & ~4095 | attrs.mode & 4095, ctime: now() } : "uid" in attrs ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() } : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() };
+    const changedBy = (entry, attrs) => isModeChange(attrs) ? { ...entry, mode: entry.mode & ~4095 | attrs.mode & 4095, ctime: now() } : isOwnerChange(attrs) ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() } : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() };
     const holder = {
       client,
       provisional: prov,
@@ -9116,7 +9766,7 @@ var __nimbusResidentModule = (() => {
         const umask = grant.umask;
         const asked = copiedPermissions(source.mode, false);
         const opened = target === null ? asked & ~umask : target.mode & 4095;
-        const mode = keepMode ? copyfileMode(source.mode, bytes.byteLength, store.cred.uid) : opened;
+        const mode = keepMode ? copyfileMode(source.mode, typedArrayByteLength(bytes), store.cred.uid) : opened;
         if (keepMode && confinedModeRefusal(opened, mode) !== null)
           return false;
         let entry;
@@ -9130,25 +9780,25 @@ var __nimbusResidentModule = (() => {
             return false;
           const { uid, gid } = ownership(parent);
           const stamp = now();
-          entry = { type: "file", dev: store.device, ino: made, nlink: 1, size: bytes.byteLength, atime: stamp, mtime: stamp, ctime: stamp, mode: 32768 | mode, uid, gid, revision: 0, target: null };
+          entry = { type: "file", dev: store.device, ino: made, nlink: 1, size: typedArrayByteLength(bytes), atime: stamp, mtime: stamp, ctime: stamp, mode: 32768 | mode, uid, gid, revision: 0, target: null };
         } else {
           if (!modeAllows(target, 2, store.cred))
             throw fsError2("EACCES", "copyfile", path);
-          entry = { ...target, size: bytes.byteLength, mode: target.mode & ~4095 | mode, mtime: now(), ctime: now() };
+          entry = { ...target, size: typedArrayByteLength(bytes), mode: target.mode & ~4095 | mode, mtime: now(), ctime: now() };
         }
         const inode = known ?? prov.inodeFor(to, { ...entry });
         if (inode === void 0)
           return false;
         drain();
-        const file = inode.cell ?? { bytes: new Uint8Array(0), length: 0, mode };
-        if (!room(file, to, bytes.byteLength)) {
+        const file = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode, made: void 0, umask: void 0, logged: void 0, changedFrom: void 0, detached: void 0 };
+        if (!room(file, to, typedArrayByteLength(bytes))) {
           if (inode.cell === void 0)
             prov.dropCell(inode);
           return false;
         }
-        file.bytes.set(bytes);
-        file.length = bytes.byteLength;
-        file.logged = bytes.byteLength;
+        typedArraySet(file.bytes, bytes);
+        file.length = typedArrayByteLength(bytes);
+        file.logged = typedArrayByteLength(bytes);
         file.mode = mode;
         if (target === null)
           names.note(parentKey4(to), nameOf4(to), "file");
@@ -9157,7 +9807,7 @@ var __nimbusResidentModule = (() => {
         const description = descriptionId3();
         changes++;
         acknowledged({ type: "call", call: { call: "open", path: to, mode: asked, access: "write", ...made === void 0 ? {} : { ino: made, umask }, create: true, truncate: true, ...keepMode ? { fchmod: mode } : {}, description } });
-        acknowledged({ type: "call", call: { call: "write", path: to, ...made === void 0 ? {} : { ino: made }, description, offset: 0, data: bytes.slice() } });
+        acknowledged({ type: "call", call: { call: "write", path: to, ...made === void 0 ? {} : { ino: made }, description, offset: 0, data: bytesCopy(bytes) } });
         acknowledged({ type: "call", call: { call: "close", path: to, description } });
         return true;
       },
@@ -9212,7 +9862,7 @@ var __nimbusResidentModule = (() => {
             target: null
           };
           drain();
-          const file = { bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
+          const file = { bytes: new Uint8ArrayConstructor(0), length: 0, mode: asked, made: ino, umask, logged: void 0, changedFrom: void 0, detached: void 0 };
           if (initial > 0 && !room(file, key, initial))
             return void 0;
           inode = prov.inodeFor(key, { ...entry });
@@ -9237,7 +9887,7 @@ var __nimbusResidentModule = (() => {
           inode ??= prov.inodeFor(key, current);
           if (inode === void 0)
             return void 0;
-          const file = inode.cell ?? { bytes: new Uint8Array(0), length: 0, mode: current.mode & 4095 };
+          const file = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode: current.mode & 4095, made: void 0, umask: void 0, logged: void 0, changedFrom: void 0, detached: void 0 };
           if (initial > 0 && !room(file, key, initial)) {
             if (inode.cell === void 0)
               prov.dropCell(inode);
@@ -9251,7 +9901,7 @@ var __nimbusResidentModule = (() => {
         return prov.heldDescriptor(inode, path, !!flags.read, false);
       },
       writeFile: (key, path, bytes, flags) => {
-        const handle = holder.open(key, path, flags, bytes.byteLength);
+        const handle = holder.open(key, path, flags, typedArrayByteLength(bytes));
         if (handle === void 0)
           return void 0;
         holder.write(handle.id, 0, bytes);
@@ -9268,10 +9918,10 @@ var __nimbusResidentModule = (() => {
         if (!handle.read)
           throw fsError2("EBADF", "read", handle.path);
         const file = handle.inode.cell;
-        const start = Math.min(offset ?? handle.position, file.length);
-        const chunk = file.bytes.slice(start, Math.min(file.length, start + length));
+        const start = mathMin(offset ?? handle.position, file.length);
+        const chunk = bytesCopy(file.bytes, start, mathMin(file.length, start + length));
         if (offset === null)
-          handle.position = start + chunk.byteLength;
+          handle.position = start + typedArrayByteLength(chunk);
         return chunk;
       },
       write: (handleId, offset, bytes) => {
@@ -9283,19 +9933,19 @@ var __nimbusResidentModule = (() => {
         const inode = handle.inode;
         const file = inode.cell;
         const start = handle.append ? file.length : offset ?? handle.position;
-        const end = start + bytes.byteLength;
+        const end = start + typedArrayByteLength(bytes);
         if (!room(file, inode.key, end))
           throw fsError2("ENOSPC", "write", handle.path);
-        const from = Math.min(start, file.length);
+        const from = mathMin(start, file.length);
         if (start > file.length)
-          file.bytes.fill(0, file.length, start);
-        file.bytes.set(bytes, start);
-        file.length = Math.max(file.length, end);
+          typedArrayFill(file.bytes, 0, file.length, start);
+        typedArraySet(file.bytes, bytes, start);
+        file.length = mathMax(file.length, end);
         if (offset === null || handle.append)
           handle.position = end;
         resized(inode, file.length);
         written(inode, from);
-        return bytes.byteLength;
+        return typedArrayByteLength(bytes);
       },
       seek: (handleId, offset, whence) => {
         const handle = heldDesc(handleId);
@@ -9317,9 +9967,9 @@ var __nimbusResidentModule = (() => {
         const file = inode.cell;
         if (!room(file, inode.key, size))
           throw fsError2("ENOSPC", "ftruncate", handle.path);
-        const from = Math.min(size, file.length);
+        const from = mathMin(size, file.length);
         if (size > file.length)
-          file.bytes.fill(0, file.length, size);
+          typedArrayFill(file.bytes, 0, file.length, size);
         file.length = size;
         resized(inode, size);
         written(inode, from);
@@ -9337,20 +9987,25 @@ var __nimbusResidentModule = (() => {
           return prov.reopen(handleId, flags);
         const inode = handle.inode;
         const file = inode.cell;
-        if (flags.append)
+        const read = ownValue(flags, "read");
+        const write = ownValue(flags, "write");
+        const create = ownValue(flags, "create");
+        const exclusive = ownValue(flags, "exclusive");
+        const truncate = ownValue(flags, "truncate");
+        if (ownValue(flags, "append"))
           return void 0;
         const entry = file.detached ?? atName(inode);
         if (!entry)
           throw fsError2("EBADF", "open", handle.path);
-        if (flags.create && flags.exclusive)
+        if (create && exclusive)
           throw fsError2("EEXIST", "open", handle.path);
-        if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred))
+        if (!modeAllows(entry, (read ? 4 : 0) | (write || truncate ? 2 : 0), store.cred))
           throw fsError2("EACCES", "open", handle.path);
-        if (flags.truncate && !room(file, inode.key, 0))
+        if (truncate && !room(file, inode.key, 0))
           return void 0;
-        const opened = prov.heldDescriptor(inode, handle.path, !!flags.read, false);
-        prov.descriptor(opened.id).write = !!flags.write;
-        if (flags.truncate) {
+        const opened = prov.heldDescriptor(inode, handle.path, !!read, false);
+        prov.descriptor(opened.id).write = !!write;
+        if (truncate) {
           file.length = 0;
           resized(inode, 0);
           written(inode, 0);
@@ -9360,7 +10015,7 @@ var __nimbusResidentModule = (() => {
           path: handle.path,
           position: 0,
           closed: false,
-          flags: { read: !!flags.read, write: !!flags.write, append: false, create: !!flags.create, exclusive: !!flags.exclusive, directory: false, truncate: !!flags.truncate, followSymlinks: true }
+          flags: { read: !!read, write: !!write, append: false, create: !!create, exclusive: !!exclusive, directory: false, truncate: !!truncate, followSymlinks: true }
         };
       },
       mkdir: (key, path, mode, mask) => {
@@ -9475,11 +10130,11 @@ var __nimbusResidentModule = (() => {
           return false;
         if (store.cred.uid !== 0 && store.cred.uid !== current.uid)
           return false;
-        if ("uid" in attrs && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null)
+        if (isOwnerChange(attrs) && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null)
           return false;
-        if ("mode" in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
+        if (isModeChange(attrs) && confinedModeRefusal(current.mode, attrs.mode) !== null)
           return false;
-        if ("mode" in attrs) {
+        if (isModeChange(attrs)) {
           throughAt([key]);
           if (provisionalActive && prov.touches(key))
             return false;
@@ -9490,9 +10145,9 @@ var __nimbusResidentModule = (() => {
         const local = prov.inode(current.dev, current.ino)?.cell;
         if (local !== void 0) {
           local.mode = next.mode & 4095;
-          delete local.umask;
+          local.umask = void 0;
         }
-        log({ type: "setattr", path: key, attrs: "uid" in attrs ? { uid: next.uid, gid: next.gid } : attrs });
+        log({ type: "setattr", path: key, attrs: isOwnerChange(attrs) ? { uid: next.uid, gid: next.gid } : attrs });
         return true;
       },
       fsetattr: (handleId, change) => {
@@ -9505,7 +10160,7 @@ var __nimbusResidentModule = (() => {
         const file = inode.cell;
         const entry = file.detached ?? atName(inode);
         const at = now();
-        const attrs = entry && "atime" in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
+        const attrs = entry && isTimesChange(change) ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
         if (file.detached === void 0) {
           if (entry && holder.setattr(inode.key, attrs))
             return true;
@@ -9516,9 +10171,9 @@ var __nimbusResidentModule = (() => {
         }
         const detached = file.detached;
         const confined = client.held(inode.key)?.confined ?? true;
-        const refused = "mode" in attrs ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null) : "uid" in attrs ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred) : utimesRefusal(detached, "atime" in change && explicitTimes(change.atime, change.mtime), store.cred);
+        const refused = isModeChange(attrs) ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null) : isOwnerChange(attrs) ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred) : utimesRefusal(detached, isTimesChange(change) && explicitTimes(change.atime, change.mtime), store.cred);
         if (refused !== null)
-          throw fsError2(refused, "mode" in attrs ? "fchmod" : "uid" in attrs ? "fchown" : "futimes", "/" + inode.key);
+          throw fsError2(refused, isModeChange(attrs) ? "fchmod" : isOwnerChange(attrs) ? "fchown" : "futimes", "/" + inode.key);
         file.detached = changedBy(detached, attrs);
         file.mode = file.detached.mode & 4095;
         return true;
@@ -9570,40 +10225,48 @@ var __nimbusResidentModule = (() => {
 
   // ../core/dist/runtime/wasi/read-directory-pool.js
   function failure(code, message) {
-    return Object.assign(new Error(`${code}: ${message}`), { code });
+    return objectAssign(new Error2(`${code}: ${message}`), { code });
   }
   function asOpened(entry, current) {
     const seen = entry.opened;
     return seen !== null && current.mode === seen.mode && current.uid === seen.uid && current.gid === seen.gid && current.ctime === seen.ctime;
   }
   function keyOfPath(path) {
-    const named = typeof path === "string" ? path : "root" in path ? `${path.root}/${path.path}` : "";
-    return named.split("/").filter((segment) => segment !== "" && segment !== ".").join("/");
+    const named = typeof path === "string" ? path : objectHasOwn(path, "root") ? `${path.root}/${path.path}` : "";
+    const segments = stringSplit(named, "/");
+    const kept = new SafeList();
+    for (let i = 0; i < segments.length; i++)
+      if (segments[i] !== "" && segments[i] !== ".")
+        kept[kept.length] = segments[i];
+    return arrayJoin(kept, "/");
   }
-  function readDirectoryPool({ call, store, client, before, endWaitMs = DIRECTORY_END_WAIT_MS }) {
+  function readDirectoryPool(options) {
+    const { call, store, client, before } = options;
+    const waitMs = ownValue(options, "endWaitMs");
+    const endWaitMs = waitMs === void 0 ? DIRECTORY_END_WAIT_MS : waitMs;
     const channel = crypto.randomUUID();
     let sequence = 0, generation = 0, cancelled = 0;
     let owner = null, incarnation = null;
     let trustedAtIo = false, ended = false, uncertain = 0, reserved = 0;
     let unavailable = false;
-    let tail = Promise.resolve();
-    const unused = /* @__PURE__ */ new Map();
-    const owned2 = /* @__PURE__ */ new Map();
-    const retiring = /* @__PURE__ */ new Set();
-    const claiming = /* @__PURE__ */ new Set();
+    let tail = promiseResolve();
+    const unused = new SafeMap();
+    const owned2 = new SafeMap();
+    const retiring = new SafeSet();
+    const claiming = new SafeSet();
     const serial = (body) => {
-      const result = tail.then(body);
-      tail = result.then(() => {
+      const result = promiseThen(tail, body);
+      tail = promiseThen(result, () => {
       }, () => {
       });
       return result;
     };
     const outstanding = () => unused.size + owned2.size + retiring.size + uncertain + reserved;
     const discardUnused = () => {
-      for (const entry of unused.values()) {
+      unused.forEach((entry) => {
         claiming.delete(entry.handle.id);
         retiring.add(entry.handle.id);
-      }
+      });
       unused.clear();
     };
     const distrust = () => {
@@ -9647,8 +10310,8 @@ var __nimbusResidentModule = (() => {
       const ask = wantLease && cursor !== null ? client.readLeaseAsk() : null;
       const stamp = generation;
       const cancelAt = cancelled;
-      const sentRetire = [...retiring];
-      const sentClaim = [...claiming];
+      const sentRetire = arrayCopy(setList(retiring));
+      const sentClaim = arrayCopy(setList(claiming));
       const sentSequence = ++sequence;
       reserved += open.length;
       let result;
@@ -9657,7 +10320,7 @@ var __nimbusResidentModule = (() => {
           channel,
           sequence: sentSequence,
           position: cursor,
-          open: [...open],
+          open: arrayCopy(open),
           retire: sentRetire,
           claim: sentClaim,
           lease: ask !== null,
@@ -9675,13 +10338,19 @@ var __nimbusResidentModule = (() => {
         invalidate();
         throw failure("ESTALE", "directory batch reply belongs to another request");
       }
-      for (const id of result.retired)
+      for (let i = 0; i < result.retired.length; i++) {
+        const id = result.retired[i];
         retiring.delete(id);
-      for (const id of result.claimed)
+      }
+      for (let i = 0; i < result.claimed.length; i++) {
+        const id = result.claimed[i];
         claiming.delete(id);
+      }
       uncertain = 0;
-      for (const entry of result.opened)
+      for (let i = 0; i < result.opened.length; i++) {
+        const entry = result.opened[i];
         retiring.add(entry.handle.id);
+      }
       const lease = result.acquire.readLease;
       if (lease)
         client.readLeaseAnswered(lease);
@@ -9689,7 +10358,7 @@ var __nimbusResidentModule = (() => {
       const applies = current !== null && (sameEpochs(current, result.acquire.position) ? notAfter(current, result.acquire.position) : cursor !== null && sameEpochs(current, cursor) && generation === stamp);
       let admitted;
       try {
-        admitted = applies && (await store.barrier({ answer: result.acquire })).applied === true;
+        admitted = applies && ownValue(await store.barrier({ answer: result.acquire }), "applied") === true;
       } catch (error) {
         invalidate();
         throw error;
@@ -9702,8 +10371,10 @@ var __nimbusResidentModule = (() => {
         trustedAtIo = client.readTrusted();
       }
       if (open.length > 0 && (cancelled !== cancelAt || ended)) {
-        for (const entry of result.opened)
+        for (let i = 0; i < result.opened.length; i++) {
+          const entry = result.opened[i];
           retiring.add(entry.handle.id);
+        }
         throw failure("EAGAIN", "directory batch completed after its park ended");
       }
       return result.opened;
@@ -9716,7 +10387,7 @@ var __nimbusResidentModule = (() => {
     return {
       open(path, key, prefetch) {
         const began = cancelled;
-        return serial(async () => {
+        return promiseThen(serial(async () => {
           if (ended)
             throw failure("ESTALE", "directory pool ended");
           if (unavailable)
@@ -9736,21 +10407,30 @@ var __nimbusResidentModule = (() => {
             claiming.delete(hit.handle.id);
             retiring.add(hit.handle.id);
           }
-          for (const entry of unused.values())
+          unused.forEach((entry) => {
             claiming.add(entry.handle.id);
-          const candidates = (await prefetch()).filter((candidate) => !unused.has(keyOfPath(candidate)));
+          });
+          const guessed = await prefetch();
+          const candidates = new SafeList();
+          for (let i = 0; i < guessed.length; i++)
+            if (!unused.has(keyOfPath(guessed[i])))
+              candidates[candidates.length] = guessed[i];
           if (began !== cancelled)
             throw failure("EAGAIN", "directory open was cancelled while preparing");
           if (uncertain || outstanding() >= DIRECTORY_PREFETCH_LIMIT)
             await drain();
-          const credit = Math.min(DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT - outstanding());
+          const credit = mathMin(DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT - outstanding());
           if (credit <= 0)
             return null;
-          const opened = await exchange([path, ...candidates].slice(0, credit), true);
+          const open = new SafeList();
+          for (let i = -1; i < candidates.length && open.length < credit; i++)
+            open[open.length] = i < 0 ? path : candidates[i];
+          const opened = await exchange(open, true);
           const required = opened[0];
           if (!required)
             return null;
-          for (const entry of opened.slice(1)) {
+          for (let i = 1; i < opened.length; i++) {
+            const entry = opened[i];
             const current2 = local(entry);
             if (entry.key !== null && entry.key !== required.key && current2 && asOpened(entry, current2.entry) && !unused.has(entry.key)) {
               retiring.delete(entry.handle.id);
@@ -9758,9 +10438,9 @@ var __nimbusResidentModule = (() => {
             }
           }
           return claim(required);
-        }).catch((error) => {
+        }), void 0, (error) => {
           invalidate();
-          const code = error?.code;
+          const code = typeof error === "object" && error !== null ? ownField(error, "code") : void 0;
           if (!ended && (code === "ENOSPC" || code === "ESTALE")) {
             unavailable = true;
             return null;
@@ -9793,22 +10473,23 @@ var __nimbusResidentModule = (() => {
       async dispose() {
         ended = true;
         cancelled++;
-        for (const id of owned2.keys())
+        owned2.forEach((_entry, id) => {
           retiring.add(id);
+        });
         owned2.clear();
         claiming.clear();
         invalidate();
         if (sequence === 0)
           return;
         let timer = null;
-        await Promise.race([
-          exchange([], false, true).then(() => {
-          }, () => {
-          }),
-          new Promise((resolve) => {
-            timer = setTimeout(resolve, endWaitMs);
-          })
-        ]);
+        const ends = new SafeList();
+        ends[0] = promiseThen(exchange([], false, true), () => {
+        }, () => {
+        });
+        ends[1] = new PromiseConstructor((resolve) => {
+          timer = setTimeout(resolve, endWaitMs);
+        });
+        await promiseRace(ends);
         clearTimeout(timer);
       }
     };
@@ -9822,14 +10503,14 @@ var __nimbusResidentModule = (() => {
   var READ_AHEAD_FILE_BYTES = 256 * 1024;
   var READ_AHEAD_PROCESS_BYTES = 32 * 1024 * 1024;
   function extensionOf(name) {
-    const base = name.slice(name.lastIndexOf("/") + 1);
-    const dot = base.lastIndexOf(".");
-    return dot > 0 ? base.slice(dot) : "";
+    const base = stringSlice(name, stringLastIndexOf(name, "/") + 1);
+    const dot = stringLastIndexOf(base, ".");
+    return dot > 0 ? stringSlice(base, dot) : "";
   }
-  var DELEGATE = /* @__PURE__ */ Symbol("delegate");
+  var DELEGATE = SymbolConstructor("delegate");
   var ROOT_FOR_WALK = { type: "directory", mode: 16877, uid: 0, gid: 0 };
   var PASSED_THROUGH = { type: "directory", mode: 16749, uid: 0, gid: 0 };
-  var NAME_OR_ACCESS_CHANGES = /* @__PURE__ */ new Set([
+  var NAME_OR_ACCESS_CHANGES = new SafeSet([
     "chmod",
     "chown",
     "fchmod",
@@ -9843,7 +10524,7 @@ var __nimbusResidentModule = (() => {
     "writeBatch",
     "writeStream"
   ]);
-  var MUTATIONS = /* @__PURE__ */ new Set([
+  var MUTATIONS = new SafeSet([
     "writeFile",
     "writeFileFrom",
     "writeRange",
@@ -9868,9 +10549,9 @@ var __nimbusResidentModule = (() => {
     "writeBatch",
     "writeStream"
   ]);
-  var DESCRIPTOR_CALLS = /* @__PURE__ */ new Set(["read", "write", "close", "fstat", "dup", "seek", "setStatus", "readdirHandle", "ftruncate", "fchmod", "fchown", "futimes", "fsync"]);
-  var NOT_NOW = /* @__PURE__ */ Symbol("not now");
-  var REFUSED_ON_A_DIRECTORY = /* @__PURE__ */ new Set(["readFile", "readRange", "writeFile", "writeRange", "truncate", "unlink", "copyFile", "contentKey"]);
+  var DESCRIPTOR_CALLS = new SafeSet(["read", "write", "close", "fstat", "dup", "seek", "setStatus", "readdirHandle", "ftruncate", "fchmod", "fchown", "futimes", "fsync"]);
+  var NOT_NOW = SymbolConstructor("not now");
+  var REFUSED_ON_A_DIRECTORY = new SafeSet(["readFile", "readRange", "writeFile", "writeRange", "truncate", "unlink", "copyFile", "contentKey"]);
   var NAMESPACE_DEV = 0;
   function refusesADirectory(syscall, args) {
     if (syscall !== "open")
@@ -9881,31 +10562,50 @@ var __nimbusResidentModule = (() => {
   var notNow = () => {
     throw NOT_NOW;
   };
-  var CONTENT_READS = /* @__PURE__ */ new Set(["readFile", "read", "readRange"]);
-  var ANSWERED_REFUSALS = /* @__PURE__ */ new Set(["ENOENT", "ENOTDIR", "EACCES", "EISDIR", "ELOOP", "EPERM"]);
-  var NO_SYNCHRONOUS_FORM = /* @__PURE__ */ new Set(["synchronous", "subscribe", "writeStream", "writeBatch", "writeFileFrom", "acquire", "copyTree", "gateLaunch", "awaitRecall"]);
+  var CONTENT_READS = new SafeSet(["readFile", "read", "readRange"]);
+  var ANSWERED_REFUSALS = new SafeSet(["ENOENT", "ENOTDIR", "EACCES", "EISDIR", "ELOOP", "EPERM"]);
+  var NO_SYNCHRONOUS_FORM = new SafeSet(["synchronous", "subscribe", "writeStream", "writeBatch", "writeFileFrom", "acquire", "copyTree", "gateLaunch", "awaitRecall"]);
   function after2(value, next) {
-    return value instanceof Promise ? value.then(next) : next(value);
+    return value instanceof PromiseConstructor ? promiseThen(value, next) : next(value);
+  }
+  function climbs(path) {
+    for (let at = stringIndexOf(path, ".."); at >= 0; at = stringIndexOf(path, "..", at + 1)) {
+      if ((at === 0 || path[at - 1] === "/") && (at + 2 === path.length || path[at + 2] === "/"))
+        return true;
+    }
+    return false;
   }
   function keyOf(path) {
-    return path.split("/").filter((segment) => segment !== "" && segment !== ".").join("/");
+    let key = "";
+    for (let from = 0; from <= path.length; ) {
+      let at = stringIndexOf(path, "/", from);
+      if (at < 0)
+        at = path.length;
+      if (at > from && !(at === from + 1 && path[from] === "."))
+        key = key === "" ? stringSlice(path, from, at) : key + "/" + stringSlice(path, from, at);
+      from = at + 1;
+    }
+    return key;
   }
   function prefixes(root, name) {
-    const parts = [];
-    const keys = [];
-    for (const segment of [...root.split("/"), ...name.split("/")]) {
+    const parts = new SafeList();
+    const keys = new SafeList();
+    const rooted = stringSplit(root, "/");
+    const named = stringSplit(name, "/");
+    for (let i = 0; i < rooted.length + named.length; i++) {
+      const segment = i < rooted.length ? rooted[i] : named[i - rooted.length];
       if (segment === "" || segment === ".")
         continue;
       if (segment === "..")
         break;
-      parts.push(segment);
-      keys.push(parts.join("/"));
+      parts[parts.length] = segment;
+      keys[keys.length] = arrayJoin(parts, "/");
     }
     return keys;
   }
   function parentKey5(key) {
-    const at = key.lastIndexOf("/");
-    return at < 0 ? "" : key.slice(0, at);
+    const at = stringLastIndexOf(key, "/");
+    return at < 0 ? "" : stringSlice(key, 0, at);
   }
   function statOf(entry) {
     return {
@@ -9933,35 +10633,39 @@ var __nimbusResidentModule = (() => {
         throw NOT_NOW;
       counts.sessionCalls++;
       const value = io();
-      if (!(value instanceof Promise))
+      if (!(value instanceof PromiseConstructor))
         return value;
-      const started = Date.now();
-      return value.finally(() => {
-        counts.waitMs += Date.now() - started;
+      const started = dateNow();
+      return promiseFinally(value, () => {
+        counts.waitMs += dateNow() - started;
         directoryPool?.io();
       });
     };
     let holder = null;
-    const residency = delegation?.residency;
-    const authority = new Proxy(session, {
+    const residency = delegation === void 0 ? void 0 : ownValue(delegation, "residency");
+    const authority = new Proxy2(session, {
       get(target, name, receiver) {
-        const value = Reflect.get(target, name, receiver);
+        const value = reflectGet(target, name, receiver);
         if (typeof value !== "function")
           return value;
         return (...args) => {
           if (now)
             throw NOT_NOW;
           if (typeof name === "string" && DESCRIPTOR_CALLS.has(name) && typeof args[0] === "number" && directoryPool?.closed(args[0])) {
-            throw fsError2("EBADF", name, String(args[0]));
+            throw fsError2("EBADF", name, stringOf(args[0]));
           }
-          for (const arg of args) {
-            if (arg && typeof arg === "object" && "directory" in arg && "path" in arg && typeof arg.directory === "number" && typeof arg.path === "string" && directoryPool?.closed(arg.directory)) {
-              throw fsError2("EBADF", String(name), String(arg.directory));
+          for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            if (!arg || typeof arg !== "object" || !objectHasOwn(arg, "directory") || !objectHasOwn(arg, "path"))
+              continue;
+            const named = arg;
+            if (typeof named.directory === "number" && typeof named.path === "string" && directoryPool?.closed(named.directory)) {
+              throw fsError2("EBADF", stringOf(name), stringOf(named.directory));
             }
           }
           if (holder !== null && typeof name === "string" && NAME_OR_ACCESS_CHANGES.has(name))
             holder.changing();
-          return holder !== null && holder.pending() ? begin(() => holder.send().then(() => Reflect.apply(value, target, args))) : begin(() => Reflect.apply(value, target, args));
+          return holder !== null && holder.pending() ? begin(() => promiseThen(holder.send(), () => reflectApply(value, target, args))) : begin(() => reflectApply(value, target, args));
         };
       }
     });
@@ -9987,15 +10691,17 @@ var __nimbusResidentModule = (() => {
       // a delivered answer's, when its arguments were built (acquireArgs); one this process did not build vouches for nothing.
       barrier: (options) => {
         const begun = holder?.barrierBegun();
-        return begin(() => resident.barrier(options)).then((result) => {
-          const from = options?.answer ? void 0 : result.fromDelivery ? options?.delivered?.args.begin : begun;
+        return promiseThen(begin(() => resident.barrier(options)), (result) => {
+          const answered2 = options === void 0 ? void 0 : ownValue(options, "answer");
+          const carried = options === void 0 ? void 0 : ownValue(options, "delivered");
+          const from = answered2 ? void 0 : ownValue(result, "fromDelivery") ? carried === void 0 || carried === null ? void 0 : ownValue(carried.args, "begin") : begun;
           if (result.landed && typeof from === "number")
             holder?.retire(from);
           return result;
         });
       },
       acquireArgs: () => resident.acquireArgs(),
-      ...resident.repairOwed === void 0 ? {} : { repairOwed: () => resident.repairOwed() },
+      ...ownValue(resident, "repairOwed") === void 0 ? {} : { repairOwed: () => ownValue(resident, "repairOwed")() },
       cursor: () => resident.cursor(),
       reserve: (bytes) => resident.reserve(bytes),
       release: (bytes) => resident.release(bytes)
@@ -10008,21 +10714,22 @@ var __nimbusResidentModule = (() => {
     const owes = () => owed.input > caught.input || owed.own > caught.own;
     const catchUp = (given) => {
       const at = { input: owed.input, own: owed.own };
-      const own = given?.args.own;
+      const own = given === void 0 || given === null ? void 0 : ownValue(given.args, "own");
       const delivered = given && typeof own === "number" && owed.own <= own ? given : void 0;
       counts.barriers++;
       const client = holder?.client;
-      const ask = client !== void 0 && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
+      const ask = client !== void 0 && (delegation === void 0 ? void 0 : ownValue(delegation, "readLeases"))?.() === true ? client.readLeaseAsk() : null;
       const lease = ask === null ? void 0 : { answered: (terms) => client.readLeaseAnswered(terms) };
-      return store.barrier({ ...delivered ? { delivered } : {}, ...lease ? { lease } : {} }).then((result) => {
+      return promiseThen(store.barrier({ ...delivered ? { delivered } : {}, ...lease ? { lease } : {} }), (result) => {
         if (!result.landed)
           counts.barrierFailures++;
         if (!result.landed || !store.ready())
           return false;
-        if (ask !== null && result.readLease && !result.fromDelivery)
-          client.readLeased(result.readLease, ask);
-        caught.input = Math.max(caught.input, at.input);
-        caught.own = Math.max(caught.own, result.fromDelivery && typeof own === "number" ? own : at.own);
+        const readLease = ownValue(result, "readLease");
+        if (ask !== null && readLease && !ownValue(result, "fromDelivery"))
+          client.readLeased(readLease, ask);
+        caught.input = mathMax(caught.input, at.input);
+        caught.own = mathMax(caught.own, ownValue(result, "fromDelivery") && typeof own === "number" ? own : at.own);
         return true;
       });
     };
@@ -10042,18 +10749,18 @@ var __nimbusResidentModule = (() => {
           content: (key, revision) => resident.content(key, revision),
           reserve: (bytes) => resident.reserve(bytes),
           release: (bytes) => resident.release(bytes),
-          ...resident.keep === void 0 ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) },
+          ...ownValue(resident, "keep") === void 0 ? {} : { keep: (key, revision, bytes) => ownValue(resident, "keep")(key, revision, bytes) },
           mounted: (key) => walkedMounts && mountedName(key),
           unreported: (key) => walkedMounts && unreportedName(key)
         },
-        isHomeRoot: delegation.isHomeRoot,
-        ...delegation.grantAfter === void 0 ? {} : { grantAfter: delegation.grantAfter },
-        ...delegation.grantInos === void 0 ? {} : { grantInos: delegation.grantInos },
-        ...delegation.journal === void 0 ? {} : { journal: delegation.journal },
-        ...delegation.logged === void 0 ? {} : { logged: delegation.logged },
-        ...delegation.umask === void 0 ? {} : { umask: delegation.umask },
-        ...delegation.timers === void 0 ? {} : { timers: delegation.timers },
-        ...delegation.now === void 0 ? {} : { now: delegation.now },
+        isHomeRoot: ownValue(delegation, "isHomeRoot"),
+        ...ownValue(delegation, "grantAfter") === void 0 ? {} : { grantAfter: ownValue(delegation, "grantAfter") },
+        ...ownValue(delegation, "grantInos") === void 0 ? {} : { grantInos: ownValue(delegation, "grantInos") },
+        ...ownValue(delegation, "journal") === void 0 ? {} : { journal: ownValue(delegation, "journal") },
+        ...ownValue(delegation, "logged") === void 0 ? {} : { logged: ownValue(delegation, "logged") },
+        ...ownValue(delegation, "umask") === void 0 ? {} : { umask: ownValue(delegation, "umask") },
+        ...ownValue(delegation, "timers") === void 0 ? {} : { timers: ownValue(delegation, "timers") },
+        ...ownValue(delegation, "now") === void 0 ? {} : { now: ownValue(delegation, "now") },
         // A call of the synchronous view decides what no held subtree does, provisionally.
         cannotWait: () => now,
         // What it sent changed the session: the store catches up before it answers next.
@@ -10063,18 +10770,18 @@ var __nimbusResidentModule = (() => {
         }
       });
       const decisions = holder.provisional;
-      resident.onAdmitted?.((key, dev, ino) => {
+      ownValue(resident, "onAdmitted")?.((key, dev, ino) => {
         if (decisions.inode(dev, ino) === void 0)
           return;
         const entry = resident.entry(key);
         if (entry)
           decisions.admitted(key, entry);
       });
-      if (delegation.readDirectories)
+      if (ownValue(delegation, "readDirectories"))
         directoryPool = readDirectoryPool({
           call: (request) => {
             delegated("readDirectories");
-            return begin(() => delegation.readDirectories(request));
+            return begin(() => ownValue(delegation, "readDirectories")(request));
           },
           store,
           client: holder.client,
@@ -10084,43 +10791,44 @@ var __nimbusResidentModule = (() => {
           }
         });
     }
-    const readers = /* @__PURE__ */ new Set();
-    const readerKeys = /* @__PURE__ */ new Map();
-    const unwritten = /* @__PURE__ */ new Set();
-    const directories = /* @__PURE__ */ new Map();
-    const paged = /* @__PURE__ */ new Map();
-    const pins = /* @__PURE__ */ new Map();
+    const readers = new SafeSet();
+    const readerKeys = new SafeMap();
+    const unwritten = new SafeSet();
+    const directories = new SafeMap();
+    const paged = new SafeMap();
+    const pins = new SafeMap();
     const walkOnce = (root, name, follow, crossed) => {
       const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
       if (crossed !== void 0)
         crossed.length = 0;
-      for (let step = walk.next(); ; ) {
+      for (let step = generatorNext(walk); ; ) {
         if (step.done)
           return step.value === null ? null : step.value.reached;
         const lookup = step.value;
-        if ("readlink" in lookup) {
+        if (objectHasOwn(lookup, "readlink")) {
           const entry2 = store.entry(keyOf(lookup.readlink));
           if (!entry2 || entry2.type !== "symlink" || entry2.target === null)
             return DELEGATE;
-          step = walk.next(entry2.target);
+          step = generatorNext(walk, entry2.target);
           continue;
         }
         const key = keyOf(lookup.stat);
-        crossed?.push(key);
+        if (crossed !== void 0)
+          crossed[crossed.length] = key;
         if (key === "") {
-          step = walk.next(ROOT_FOR_WALK);
+          step = generatorNext(walk, ROOT_FOR_WALK);
           continue;
         }
         const entry = store.entry(key);
         if (entry === void 0) {
           if (!walkedMounts)
             return { missing: key };
-          step = walk.next(PASSED_THROUGH);
+          step = generatorNext(walk, PASSED_THROUGH);
           continue;
         }
         if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
           return DELEGATE;
-        step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
+        step = generatorNext(walk, entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
       }
     };
     const directoryKey = (handleId) => {
@@ -10134,24 +10842,39 @@ var __nimbusResidentModule = (() => {
     };
     const walkAfter = (key, within5, limit) => {
       const out = [];
-      const subdirectories = (dir) => byCodeUnit((store.children(dir) ?? []).filter((child) => child.type === "directory")).map((child) => dir === "" ? child.name : `${dir}/${child.name}`);
+      const subdirectories = (dir) => {
+        const children = store.children(dir) ?? [];
+        const directories2 = new SafeList();
+        for (let i = 0; i < children.length; i++)
+          if (children[i].type === "directory")
+            directories2[directories2.length] = children[i];
+        const ordered = byCodeUnit(directories2);
+        const names2 = new SafeList();
+        for (let i = 0; i < ordered.length; i++)
+          names2[i] = dir === "" ? ordered[i].name : `${dir}/${ordered[i].name}`;
+        return names2;
+      };
       const descend = (dir) => {
-        for (const child of subdirectories(dir)) {
+        const children = subdirectories(dir);
+        for (let i = 0; i < children.length; i++) {
+          const child = children[i];
           if (out.length >= limit)
             return;
-          out.push(child);
+          out[out.length] = child;
           descend(child);
         }
       };
       descend(key);
       for (let at = key; at !== within5 && out.length < limit; at = parentKey5(at)) {
-        const name = at.slice(at.lastIndexOf("/") + 1);
-        for (const sibling of subdirectories(parentKey5(at))) {
+        const name = stringSlice(at, stringLastIndexOf(at, "/") + 1);
+        const siblings = subdirectories(parentKey5(at));
+        for (let i = 0; i < siblings.length; i++) {
+          const sibling = siblings[i];
           if (out.length >= limit)
             break;
-          if (sibling.slice(sibling.lastIndexOf("/") + 1) <= name)
+          if (stringSlice(sibling, stringLastIndexOf(sibling, "/") + 1) <= name)
             continue;
-          out.push(sibling);
+          out[out.length] = sibling;
           descend(sibling);
         }
       }
@@ -10159,24 +10882,27 @@ var __nimbusResidentModule = (() => {
     };
     let walkRoot = null;
     const opening = [];
-    const previous = delegation?.walked ?? [];
+    const previous = (delegation === void 0 ? void 0 : ownValue(delegation, "walked")) ?? [];
     let along = 0;
     const repeated = (key, limit) => {
-      const at = previous.indexOf(key, along);
+      const at = arrayIndexOf(previous, key, along);
       if (at < 0)
         return [];
       along = at + 1;
-      return previous.slice(at + 1, at + 1 + limit);
+      const next = new SafeList();
+      for (let i = at + 1; i < previous.length && i < at + 1 + limit; i++)
+        next[next.length] = previous[i];
+      return next;
     };
-    const missesIn = /* @__PURE__ */ new Map();
+    const missesIn = new SafeMap();
     const miss = (dir) => {
       const misses = (missesIn.get(dir) ?? 0) + 1;
       missesIn.set(dir, misses);
       return misses;
     };
-    const unlistable = /* @__PURE__ */ new Set();
-    const foundIn = /* @__PURE__ */ new Map();
-    const fetchingAhead = /* @__PURE__ */ new Map();
+    const unlistable = new SafeSet();
+    const foundIn = new SafeMap();
+    const fetchingAhead = new SafeMap();
     let readAheadBytes = 0;
     const readAhead = (key, entry) => {
       const dir = parentKey5(key);
@@ -10185,13 +10911,24 @@ var __nimbusResidentModule = (() => {
       const children = store.children(dir);
       if (misses < 2 || ext === "" || children === void 0)
         return void 0;
-      const window = READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7);
-      const name = key.slice(key.lastIndexOf("/") + 1);
+      const window = READ_AHEAD_FIRST * 2 ** mathMin(misses - 2, 7);
+      const name = stringSlice(key, stringLastIndexOf(key, "/") + 1);
       const batch = [[key, entry]];
       let bytes = entry.size;
-      const ordered = byCodeUnit(children.filter((child) => child.type === "file" && child.name !== name && extensionOf(child.name) === ext));
-      const at = ordered.findIndex((child) => child.name > name);
-      for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
+      const files = new SafeList();
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (child.type === "file" && child.name !== name && extensionOf(child.name) === ext)
+          files[files.length] = child;
+      }
+      const ordered = byCodeUnit(files);
+      let at = 0;
+      while (at < ordered.length && !(ordered[at].name > name))
+        at++;
+      if (at === ordered.length)
+        at = 0;
+      for (let n = 0; n < ordered.length; n++) {
+        const child = ordered[(at + n) % ordered.length];
         if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT)
           break;
         const sibling = dir === "" ? child.name : `${dir}/${child.name}`;
@@ -10204,7 +10941,7 @@ var __nimbusResidentModule = (() => {
           continue;
         if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES)
           break;
-        batch.push([sibling, found]);
+        batch[batch.length] = [sibling, found];
         bytes += found.size;
       }
       if (batch.length === 1)
@@ -10213,39 +10950,42 @@ var __nimbusResidentModule = (() => {
       counts.fills += batch.length;
       counts.filledBytes += bytes;
       counts.readAhead += batch.length - 1;
-      const fetched = store.fillMany(batch).catch(() => {
+      const fetched = promiseThen(store.fillMany(batch), void 0, () => {
       });
-      for (const [path] of batch)
-        fetchingAhead.set(path, fetched);
-      void fetched.then(() => {
-        for (const [path] of batch)
-          if (fetchingAhead.get(path) === fetched)
-            fetchingAhead.delete(path);
+      for (let i = 0; i < batch.length; i++)
+        fetchingAhead.set(batch[i][0], fetched);
+      void promiseThen(fetched, () => {
+        for (let i = 0; i < batch.length; i++)
+          if (fetchingAhead.get(batch[i][0]) === fetched)
+            fetchingAhead.delete(batch[i][0]);
       });
       return fetched;
     };
     let faults = null;
-    let faulted = Promise.resolve();
-    const faulting = /* @__PURE__ */ new Set();
+    let faulted = promiseResolve();
+    const faulting = new SafeSet();
     const outstanding = (fetch) => {
       faulting.add(fetch);
-      void fetch.then(() => {
+      void promiseThen(fetch, () => {
         faulting.delete(fetch);
       });
       return fetch;
     };
     const faultsEnded = async () => {
       while (faulting.size > 0)
-        await Promise.all(faulting);
+        await promiseAll(setList(faulting));
     };
     let refusedFetch = null;
     const faultIn = (key, entry) => {
       if (residency === void 0)
         return null;
-      const held = () => store.content(key, entry.revision)?.byteLength === entry.size;
+      const held = () => {
+        const bytes = store.content(key, entry.revision);
+        return bytes !== void 0 && typedArrayByteLength(bytes) === entry.size;
+      };
       const out = fetchingAhead.get(key);
       if (out !== void 0)
-        return outstanding(out.then(held));
+        return outstanding(promiseThen(out, held));
       const speculation = residency.speculation();
       if (speculation !== null && !speculation.charge(entry.size))
         return null;
@@ -10253,33 +10993,33 @@ var __nimbusResidentModule = (() => {
       if (files === null) {
         const named = [];
         files = faults = named;
-        faulted = outstanding(Promise.resolve().then(() => {
+        faulted = outstanding(promiseThen(promiseThen(promiseResolve(), () => {
           faults = null;
           return store.fillMany(named);
-        }).catch(() => {
+        }), void 0, () => {
         }));
       }
       const batch = faulted;
-      files.push([key, entry]);
+      files[files.length] = [key, entry];
       counts.fills++;
       counts.faultIns++;
       counts.filledBytes += entry.size;
       fetchingAhead.set(key, batch);
-      void batch.then(() => {
+      void promiseThen(batch, () => {
         if (fetchingAhead.get(key) === batch)
           fetchingAhead.delete(key);
       });
-      return outstanding(batch.then(held));
+      return outstanding(promiseThen(batch, held));
     };
     const resolve = (path, follow, content = false, crossed) => {
       let root;
       let name;
       if (typeof path === "string") {
-        if (path.split("/").includes(".."))
+        if (climbs(path))
           return DELEGATE;
         root = "";
         name = keyOf(path);
-      } else if ("root" in path) {
+      } else if (objectHasOwn(path, "root")) {
         root = keyOf(path.root);
         name = path.path;
       } else {
@@ -10289,13 +11029,13 @@ var __nimbusResidentModule = (() => {
         root = key;
         name = path.path;
       }
-      const looked = /* @__PURE__ */ new Set();
+      const looked = new SafeSet();
       let caughtUps = 0;
       const attempt = (asked) => {
         if (!store.ready())
           return DELEGATE;
         if (owes() && !now)
-          return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => ok ? attempt(asked) : DELEGATE);
+          return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : promiseThen(catchUp(), (ok) => ok ? attempt(asked) : DELEGATE);
         const walked = walkOnce(root, name, follow, crossed);
         if (walked === null || walked === DELEGATE || typeof walked === "string")
           return walked;
@@ -10306,31 +11046,43 @@ var __nimbusResidentModule = (() => {
         const parent = parentKey5(walked.missing);
         if (miss(parent) >= 2 && parent !== "" && store.children(parent) === void 0) {
           const walking = foundIn.get(parent) === true && !unlistable.has(parent);
-          const whole = walking ? (counts.treeListings++, store.listTree(parent)) : Promise.resolve(false);
-          return whole.then((listed) => {
+          const whole = walking ? (counts.treeListings++, store.listTree(parent)) : promiseResolve(false);
+          return promiseThen(promiseThen(whole, (listed) => {
             if (listed)
               return true;
             if (walking)
               unlistable.add(parent);
             counts.listings++;
             return store.list(parent);
-          }).then((listed) => listed ? attempt(asked + 1) : DELEGATE);
+          }), (listed) => listed ? attempt(asked + 1) : DELEGATE);
         }
         if (!looked.has(walked.missing)) {
-          const spelled = prefixes(root, name).filter((key) => !looked.has(key) && store.entry(key) === void 0);
-          const keys = spelled.includes(walked.missing) ? spelled.slice(spelled.indexOf(walked.missing)) : [walked.missing];
-          for (const key of keys)
+          const named = prefixes(root, name);
+          const spelled = new SafeList();
+          for (let i = 0; i < named.length; i++)
+            if (!looked.has(named[i]) && store.entry(named[i]) === void 0)
+              spelled[spelled.length] = named[i];
+          const keys = new SafeList();
+          const from = arrayIndexOf(spelled, walked.missing);
+          if (from < 0)
+            keys[0] = walked.missing;
+          else
+            for (let i = from; i < spelled.length; i++)
+              keys[keys.length] = spelled[i];
+          for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
             looked.add(key);
+          }
           counts.lookups++;
           const target = spelled[spelled.length - 1];
-          return store.lookup(keys, content && keys[keys.length - 1] === target).then((known) => {
+          return promiseThen(store.lookup(keys, content && keys[keys.length - 1] === target), (known) => {
             if (known)
-              foundIn.set(parent, Boolean(store.entry(walked.missing)));
+              foundIn.set(parent, !!store.entry(walked.missing));
             return known ? attempt(asked + 1) : DELEGATE;
           });
         }
         counts.listings++;
-        return store.list(parentKey5(walked.missing)).then((listed) => listed ? attempt(asked + 1) : DELEGATE);
+        return promiseThen(store.list(parentKey5(walked.missing)), (listed) => listed ? attempt(asked + 1) : DELEGATE);
       };
       return attempt(0);
     };
@@ -10343,7 +11095,7 @@ var __nimbusResidentModule = (() => {
       return entry;
     };
     const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
-    const walkedMounts = delegation?.walkedMounts === true;
+    const walkedMounts = (delegation === void 0 ? void 0 : ownValue(delegation, "walkedMounts")) === true;
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
@@ -10353,11 +11105,12 @@ var __nimbusResidentModule = (() => {
       const at = feedPointOf(cursor, key);
       if (at === ROOT_FEED)
         return void 0;
-      const point = at.slice(1);
+      const point = stringSlice(at, 1);
       const root = point === key ? entry : store.entry(point);
       if (root === void 0 || root === null || root.dev !== entry.dev)
         return void 0;
-      return !(feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true);
+      const feed = feedOf(cursor, at);
+      return !((feed === void 0 ? void 0 : ownValue(feed, "fixed")) !== true && holder?.client.readTrusted() === true);
     };
     const nearestRow = (key) => {
       const own = store.entry(key);
@@ -10382,7 +11135,8 @@ var __nimbusResidentModule = (() => {
       if (cursor === null)
         return false;
       const at = feedPointOf(cursor, key);
-      return at !== ROOT_FEED && feedOf(cursor, at)?.fixed === true;
+      const feed = at === ROOT_FEED ? void 0 : feedOf(cursor, at);
+      return feed !== void 0 && ownValue(feed, "fixed") === true;
     };
     const onMount = (key) => {
       const cursor = store.cursor();
@@ -10403,11 +11157,11 @@ var __nimbusResidentModule = (() => {
       return cursor !== null && feedPointOf(cursor, key) === PROC_MOUNT_POINT;
     };
     const generated = (key) => {
-      const generate = procFileGenerator(("/" + key).slice(PROC_MOUNT_POINT.length + 1));
+      const generate = procFileGenerator(stringSlice("/" + key, PROC_MOUNT_POINT.length + 1));
       if (generate === void 0)
         return void 0;
       const content = generate({ ...store.cred, umask: 0 });
-      return typeof content === "string" ? new TextEncoder().encode(content) : content.slice();
+      return typeof content === "string" ? new TextEncoder().encode(content) : bytesCopy(content);
     };
     const contentOf = (key, entry) => {
       const decided = holder?.content(entry);
@@ -10415,9 +11169,9 @@ var __nimbusResidentModule = (() => {
         return decided;
       if (holder?.provisional.pending(entry.dev, entry.ino))
         return void 0;
-      const keep = (bytes) => bytes === null || bytes === void 0 || bytes.byteLength !== entry.size ? void 0 : bytes;
+      const keep = (bytes) => bytes === null || bytes === void 0 || typedArrayByteLength(bytes) !== entry.size ? void 0 : bytes;
       const held = store.content(key, entry.revision);
-      if (held !== void 0 && held.byteLength === entry.size)
+      if (held !== void 0 && typedArrayByteLength(held) === entry.size)
         return held;
       if (now) {
         refusedFetch = faultIn(key, entry);
@@ -10426,26 +11180,27 @@ var __nimbusResidentModule = (() => {
       const fill = () => {
         counts.fills++;
         counts.filledBytes += entry.size;
-        return store.fill(key, entry).then(keep);
+        return promiseThen(store.fill(key, entry), keep);
       };
       const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
       if (batch === void 0)
         return fill();
-      return batch.then(() => {
+      return promiseThen(batch, () => {
         const fetched = store.content(key, entry.revision);
-        return fetched !== void 0 && fetched.byteLength === entry.size ? fetched : fill();
+        return fetched !== void 0 && typedArrayByteLength(fetched) === entry.size ? fetched : fill();
       });
     };
     const wholeByPages = (key, entry) => {
       if (entry.size <= FS_READ_BATCH_REQUEST_BYTES)
         return DELEGATE;
-      return store.pages(key, entry.revision, entry.size, 0, Math.floor((entry.size - 1) / RESIDENT_PAGE_BYTES)).then((found) => {
+      return promiseThen(store.pages(key, entry.revision, entry.size, 0, mathFloor((entry.size - 1) / RESIDENT_PAGE_BYTES)), (found) => {
         if (found === null)
           return DELEGATE;
         counts.pagedReads++;
         counts.pagesFetched += found.fetched;
-        const whole = new Uint8Array(entry.size);
-        found.pages.forEach((page, at) => whole.set(page, at * RESIDENT_PAGE_BYTES));
+        const whole = new Uint8ArrayConstructor(entry.size);
+        for (let at = 0; at < found.pages.length; at++)
+          typedArraySet(whole, found.pages[at], at * RESIDENT_PAGE_BYTES);
         return whole;
       });
     };
@@ -10467,7 +11222,7 @@ var __nimbusResidentModule = (() => {
           delegated(name);
           return remote();
         }
-        return catchUp().then((ok) => {
+        return promiseThen(catchUp(), (ok) => {
           if (ok)
             return answer(name, local, remote, caughtUps + 1);
           delegated(name);
@@ -10479,8 +11234,8 @@ var __nimbusResidentModule = (() => {
     const caughtUpFor = (then, caughtUps = 0) => {
       if (now || !owes() || caughtUps >= MAX_CATCH_UPS_PER_CALL)
         return then();
-      return new Promise((resolve2, reject) => {
-        catchUp().then((ok) => resolve2(ok ? caughtUpFor(then, caughtUps + 1) : then()), reject);
+      return new PromiseConstructor((resolve2, reject) => {
+        promiseThen(catchUp(), (ok) => resolve2(ok ? caughtUpFor(then, caughtUps + 1) : then()), reject);
       });
     };
     const decide = (local) => {
@@ -10502,7 +11257,15 @@ var __nimbusResidentModule = (() => {
       if (holder.client.held(key) === void 0)
         return true;
       const cursor = store.cursor();
-      return walks.every((walk) => walk.crossed.every((name) => holder.entry(name) !== void 0 || cursor !== null && holder.client.certifies(name, rootOf(cursor)) !== void 0));
+      for (let i = 0; i < walks.length; i++) {
+        const crossed = walks[i].crossed;
+        for (let j = 0; j < crossed.length; j++) {
+          const name = crossed[j];
+          if (holder.entry(name) === void 0 && (cursor === null || holder.client.certifies(name, rootOf(cursor)) === void 0))
+            return false;
+        }
+      }
+      return true;
     };
     const changing = (name, call) => {
       if (now)
@@ -10519,38 +11282,42 @@ var __nimbusResidentModule = (() => {
         throw error;
       }
     };
-    const shown = (change) => holder === null ? change : after2(change, (value) => store.ready() ? catchUp().then(() => value, () => value) : value);
-    const fs = /* @__PURE__ */ Object.create(null);
-    const names = /* @__PURE__ */ new Set();
-    for (let at = session; at !== null && at !== Object.prototype; at = Reflect.getPrototypeOf(at)) {
-      for (const name of Reflect.ownKeys(at))
+    const shown = (change) => holder === null ? change : after2(change, (value) => store.ready() ? promiseThen(catchUp(), () => value, () => value) : value);
+    const fs = objectCreate(null);
+    const names = new SafeSet();
+    for (let at = session; at !== null && at !== ObjectPrototype; at = reflectGetPrototypeOf(at)) {
+      const keys = reflectOwnKeys(at);
+      for (let i = 0; i < keys.length; i++) {
+        const name = keys[i];
         if (typeof name === "string" && name !== "constructor")
           names.add(name);
+      }
     }
-    for (const name of names) {
-      const value = Reflect.get(authority, name);
+    names.forEach((name) => {
+      const value = reflectGet(authority, name);
       if (typeof value !== "function")
-        continue;
-      const call = (...args) => Reflect.apply(value, authority, args);
+        return;
+      const call = (args) => reflectApply(value, authority, args);
       const mutates = MUTATIONS.has(name);
-      Reflect.set(fs, name, mutates ? DESCRIPTOR_CALLS.has(name) ? (...args) => changing(name, () => call(...args)) : (...args) => shown(changing(name, () => call(...args))) : (...args) => {
+      reflectSet(fs, name, mutates ? DESCRIPTOR_CALLS.has(name) ? (...args) => changing(name, () => call(args)) : (...args) => shown(changing(name, () => call(args))) : (...args) => {
         if (now)
           throw NOT_NOW;
         delegated(name);
-        return call(...args);
+        return call(args);
       });
-    }
+    });
     fs.inbound = () => {
       owed.input++;
       directoryPool?.invalidate();
     };
     fs.catchUp = async (options = {}) => {
       fs.inbound();
-      if (options.viaIo === true && !options.delivered && owed.own <= caught.own && holder?.client.readTrusted() === true && store.ready() && store.repairOwed?.() !== true) {
+      const delivered = ownValue(options, "delivered");
+      if (ownValue(options, "viaIo") === true && !delivered && owed.own <= caught.own && holder?.client.readTrusted() === true && store.ready() && ownValue(store, "repairOwed")?.() !== true) {
         counts.leasedBarriers++;
         return;
       }
-      await catchUp(options.delivered);
+      await catchUp(delivered);
     };
     fs.acquireArgs = () => {
       const args = store.acquireArgs();
@@ -10561,7 +11328,7 @@ var __nimbusResidentModule = (() => {
       directoryPool?.cancelPending();
     };
     fs.holding = () => holder?.pending() ?? false;
-    Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
+    reflectDefineProperty(fs, "client", dataDescriptor(holder?.client ?? null, false, true, false));
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
       await holder?.flush();
@@ -10569,18 +11336,32 @@ var __nimbusResidentModule = (() => {
     fs.settle = async () => {
       const failures = [];
       await faultsEnded();
-      await Promise.all([directoryPool?.dispose(), holder?.settle()].map((ending) => Promise.resolve(ending).catch((error) => {
-        failures.push({ path: "/", dev: 0, ino: 0, error });
-      })));
+      const endings = new SafeList();
+      endings[0] = directoryPool?.dispose();
+      endings[1] = holder?.settle();
+      const ended = new SafeList();
+      for (let i = 0; i < endings.length; i++) {
+        ended[i] = promiseThen(promiseResolve(endings[i]), void 0, (error) => {
+          failures[failures.length] = { path: "/", dev: 0, ino: 0, error };
+        });
+      }
+      await promiseAll(ended);
       return failures;
     };
     fs.syncInode = () => holder?.flush();
     fs.walked = () => opening;
+    const pinnedTotal = () => {
+      let total = 0;
+      pins.forEach((pin) => {
+        total += typedArrayByteLength(pin.bytes);
+      });
+      return total;
+    };
     fs.stats = () => ({
       ...counts,
       delegated: { ...counts.delegated },
       pins: pins.size,
-      pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
+      pinnedBytes: pinnedTotal(),
       provisionalBytes: holder?.provisional.kept() ?? 0,
       ...holder === null ? {} : { client: holder.client.stats() }
     });
@@ -10597,13 +11378,13 @@ var __nimbusResidentModule = (() => {
         return entry === null ? null : statOf(entry);
       };
       const absent = (error) => {
-        if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+        if (typeof error === "object" && error !== null && ownField(error, "code") === "ENOENT")
           return null;
         throw error;
       };
       try {
         const resolved = resolve(path, follow, true);
-        return resolved instanceof Promise ? resolved.then(finish, absent) : finish(resolved);
+        return resolved instanceof PromiseConstructor ? promiseThen(resolved, finish, absent) : finish(resolved);
       } catch (error) {
         return absent(error);
       }
@@ -10634,7 +11415,7 @@ var __nimbusResidentModule = (() => {
             if (--pin.holders > 0)
               return;
             pins.delete(pinKey);
-            store.release(pin.bytes.byteLength);
+            store.release(typedArrayByteLength(pin.bytes));
           }
         };
       };
@@ -10642,7 +11423,7 @@ var __nimbusResidentModule = (() => {
       if (existing !== void 0)
         return pinned(existing);
       return after2(contentOf(key, entry), (bytes) => {
-        if (bytes === void 0 || !store.reserve(bytes.byteLength))
+        if (bytes === void 0 || !store.reserve(typedArrayByteLength(bytes)))
           return null;
         const pin = { bytes, holders: 0 };
         pins.set(pinKey, pin);
@@ -10679,7 +11460,7 @@ var __nimbusResidentModule = (() => {
         return DELEGATE;
       if (!modeAllows(entry, 4, store.cred))
         return DELEGATE;
-      return after2(listingOf(key), (entries) => entries === DELEGATE ? DELEGATE : byLocale(entries));
+      return after2(listingOf(key), (entries) => entries === DELEGATE ? DELEGATE : arrayCopy(byLocale(entries)));
     }), () => authority.readdir(path, options));
     const listingOf = (key) => {
       const known = store.children(key);
@@ -10688,13 +11469,19 @@ var __nimbusResidentModule = (() => {
       if (now)
         notNow();
       counts.treeListings++;
-      return store.listTree(key).then((whole) => whole ? true : store.list(key)).then((listed) => {
+      return promiseThen(promiseThen(store.listTree(key), (whole) => whole ? true : store.list(key)), (listed) => {
         const children = listed && !owes() ? store.children(key) : void 0;
         return children === void 0 ? DELEGATE : children;
       });
     };
-    const byLocale = (entries) => [...entries].sort((a, b) => a.name.localeCompare(b.name));
-    const byCodeUnit = (entries) => [...entries].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    const listCopy = (entries) => {
+      const copy = new SafeList();
+      for (let i = 0; i < entries.length; i++)
+        copy[i] = entries[i];
+      return copy;
+    };
+    const byLocale = (entries) => arraySort(listCopy(entries), (a, b) => stringLocaleCompare(a.name, b.name));
+    const byCodeUnit = (entries) => arraySort(listCopy(entries), (a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
     fs.readlink = (path) => answer("readlink", () => after2(resolve(path, false), (key) => {
       if (key === DELEGATE)
         return DELEGATE;
@@ -10746,27 +11533,53 @@ var __nimbusResidentModule = (() => {
         return answer("open", () => after2(resolve(path, true), async (key) => {
           if (key === DELEGATE || key === null || key === "" || entryAt(key)?.type !== "directory")
             return DELEGATE;
-          if (walkRoot === null || key !== walkRoot && !key.startsWith(walkRoot + "/"))
+          if (walkRoot === null || key !== walkRoot && !stringStartsWith(key, walkRoot + "/"))
             walkRoot = key;
           const within5 = walkRoot;
           const walking = opening.length > 0;
           if (opening.length < WALKED_DIRECTORIES)
-            opening.push(key);
+            opening[opening.length] = key;
           const handle = await directoryPool.open(path, key, async () => {
             const guessed = repeated(key, DIRECTORY_BATCH_LIMIT - 1);
             if (!walking && guessed.length === 0)
               return [];
             await listingOf(key);
-            const next = [.../* @__PURE__ */ new Set([...guessed, ...walkAfter(key, within5, DIRECTORY_BATCH_LIMIT - 1)])];
-            const beneath = (base) => next.filter((candidate) => base === "" || candidate.startsWith(base + "/"));
-            if (typeof path === "string")
-              return next.slice(0, DIRECTORY_BATCH_LIMIT - 1).map((candidate) => "/" + candidate);
-            if ("directory" in path) {
-              const base = path.path.replace(/\/$/, "");
-              return beneath(key).slice(0, DIRECTORY_BATCH_LIMIT - 1).map((candidate) => ({ ...path, path: (base === "" ? "" : base + "/") + candidate.slice(key.length + 1) }));
+            const named = new SafeSet();
+            const ordered = new SafeList();
+            const after3 = walkAfter(key, within5, DIRECTORY_BATCH_LIMIT - 1);
+            for (let i = 0; i < guessed.length + after3.length; i++) {
+              const candidate = i < guessed.length ? guessed[i] : after3[i - guessed.length];
+              if (!named.has(candidate)) {
+                named.add(candidate);
+                ordered[ordered.length] = candidate;
+              }
+            }
+            const limit = DIRECTORY_BATCH_LIMIT - 1;
+            const beneath = (base) => {
+              const under2 = new SafeList();
+              for (let i = 0; i < ordered.length && under2.length < limit; i++)
+                if (base === "" || stringStartsWith(ordered[i], base + "/"))
+                  under2[under2.length] = ordered[i];
+              return under2;
+            };
+            const candidates = new SafeList();
+            if (typeof path === "string") {
+              for (let i = 0; i < ordered.length && i < limit; i++)
+                candidates[i] = "/" + ordered[i];
+              return candidates;
+            }
+            if (objectHasOwn(path, "directory")) {
+              const base = path.path !== "" && path.path[path.path.length - 1] === "/" ? stringSlice(path.path, 0, path.path.length - 1) : path.path;
+              const under2 = beneath(key);
+              for (let i = 0; i < under2.length; i++)
+                candidates[i] = { ...path, path: (base === "" ? "" : base + "/") + stringSlice(under2[i], key.length + 1) };
+              return candidates;
             }
             const root = keyOf(path.root);
-            return beneath(root).slice(0, DIRECTORY_BATCH_LIMIT - 1).map((candidate) => ({ ...path, path: root === "" ? candidate : candidate.slice(root.length + 1) }));
+            const under = beneath(root);
+            for (let i = 0; i < under.length; i++)
+              candidates[i] = { ...path, path: root === "" ? under[i] : stringSlice(under[i], root.length + 1) };
+            return candidates;
           });
           if (handle === null)
             return DELEGATE;
@@ -10783,7 +11596,7 @@ var __nimbusResidentModule = (() => {
       if (holder === null || !store.ready())
         throw NOT_NOW;
       const walk = walkFor(path, follow);
-      if (walk === DELEGATE || walk instanceof Promise)
+      if (walk === DELEGATE || walk instanceof PromiseConstructor)
         throw NOT_NOW;
       const row = ownEntryAt(walk.key);
       if (row === void 0)
@@ -10803,18 +11616,28 @@ var __nimbusResidentModule = (() => {
       } catch {
         return session2();
       }
-      return shown(holder.flush().then(() => value));
+      return shown(promiseThen(holder.flush(), () => value));
     };
     const ownChange = (keys, decided, session2) => {
-      const rows = keys.map((key) => key === void 0 || !store.ready() ? void 0 : ownEntryAt(key));
-      const placed = rows.every((row) => row !== void 0) ? rows : void 0;
+      const rows = new SafeList();
+      let known = true;
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        rows[i] = key === void 0 || !store.ready() ? void 0 : ownEntryAt(key);
+        if (rows[i] === void 0)
+          known = false;
+      }
+      const placed = known ? rows : void 0;
       if (now) {
         if (placed === void 0 || decided(placed, false) === false)
           throw NOT_NOW;
         counts.local++;
         return void 0;
       }
-      if (placed !== void 0 && keys.every((key) => !holder.holds(key) || holder.provisional.touches(key))) {
+      let undecided = placed !== void 0;
+      for (let i = 0; undecided && i < keys.length; i++)
+        undecided = !holder.holds(keys[i]) || holder.provisional.touches(keys[i]);
+      if (undecided && placed !== void 0) {
         let answer2;
         try {
           answer2 = decided(placed, true);
@@ -10842,7 +11665,7 @@ var __nimbusResidentModule = (() => {
       try {
         done = read();
       } catch (error) {
-        if (now || error.code !== "ESTALE")
+        if (now || (typeof error === "object" && error !== null ? ownField(error, "code") : void 0) !== "ESTALE")
           throw error;
         return readByAnchor(handleId, offset, length);
       }
@@ -10857,7 +11680,7 @@ var __nimbusResidentModule = (() => {
       const at = holder.provisional.inodeOf(handleId);
       if (at === void 0)
         return readByAnchor(handleId, offset, length);
-      return Promise.resolve(contentOf(at.key, at.entry)).then(() => read() ?? readByAnchor(handleId, offset, length), (error) => {
+      return promiseThen(promiseResolve(contentOf(at.key, at.entry)), () => read() ?? readByAnchor(handleId, offset, length), (error) => {
         if (holder.provisional.sessionOf(handleId, "read") === void 0)
           throw error;
         return readByAnchor(handleId, offset, length);
@@ -10885,7 +11708,7 @@ var __nimbusResidentModule = (() => {
       delegated("read");
       const chunk = await authority.read(session2, start, length);
       if (offset === null)
-        holder.seek(handleId, start + chunk.byteLength, "set");
+        holder.seek(handleId, start + typedArrayByteLength(chunk), "set");
       return chunk;
     };
     const openOnSession = (path, flags) => {
@@ -10909,7 +11732,7 @@ var __nimbusResidentModule = (() => {
             const opening2 = holder.provisional.descriptor(opened.id)?.opening;
             if (opening2 === void 0)
               return heldOpen(opened);
-            return opening2.then(() => heldOpen(opened), (error) => {
+            return promiseThen(opening2, () => heldOpen(opened), (error) => {
               holder.provisional.abandon(opened.id);
               throw error;
             });
@@ -10975,10 +11798,10 @@ var __nimbusResidentModule = (() => {
             return DELEGATE;
           }
           if (offset >= now2.size)
-            return new Uint8Array(0);
-          const end = Math.min(now2.size, offset + length);
-          const first = Math.floor(offset / RESIDENT_PAGE_BYTES);
-          const last = Math.floor((end - 1) / RESIDENT_PAGE_BYTES);
+            return new Uint8ArrayConstructor(0);
+          const end = mathMin(now2.size, offset + length);
+          const first = mathFloor(offset / RESIDENT_PAGE_BYTES);
+          const last = mathFloor((end - 1) / RESIDENT_PAGE_BYTES);
           return after2(store.pages(file.key, now2.revision, now2.size, first, last), (found) => {
             if (found === null) {
               paged.delete(handleId);
@@ -10986,13 +11809,14 @@ var __nimbusResidentModule = (() => {
             }
             counts.pagedReads++;
             counts.pagesFetched += found.fetched;
-            const out = new Uint8Array(end - offset);
-            found.pages.forEach((page, i) => {
+            const out = new Uint8ArrayConstructor(end - offset);
+            for (let i = 0; i < found.pages.length; i++) {
+              const page = found.pages[i];
               const start = (first + i) * RESIDENT_PAGE_BYTES;
-              const from = Math.max(offset, start);
-              const to = Math.min(end, start + page.byteLength);
-              out.set(page.subarray(from - start, to - start), from - offset);
-            });
+              const from = mathMax(offset, start);
+              const to = mathMin(end, start + typedArrayByteLength(page));
+              typedArraySet(out, bytesView(page, from - start, to - start), from - offset);
+            }
             return out;
           });
         }), () => authority.read(handleId, offset, length));
@@ -11058,13 +11882,13 @@ var __nimbusResidentModule = (() => {
       const key = directoryKey(handleId);
       if (key === void 0)
         return DELEGATE;
-      return after2(listingOf(key), (entries) => entries === DELEGATE ? DELEGATE : byCodeUnit(entries));
+      return after2(listingOf(key), (entries) => entries === DELEGATE ? DELEGATE : arrayCopy(byCodeUnit(entries)));
     }, () => authority.readdirHandle(handleId));
     fs.fsync = (handleId) => {
       if (now) {
         if (handleId !== void 0 && !holder?.owns(handleId)) {
           if (handleId < 0)
-            throw fsError2("EBADF", "fsync", String(handleId));
+            throw fsError2("EBADF", "fsync", stringOf(handleId));
           throw NOT_NOW;
         }
         holder?.reportRecorded();
@@ -11079,23 +11903,23 @@ var __nimbusResidentModule = (() => {
       };
       return synced();
     };
-    const bySessionStatus = Reflect.get(fs, "setStatus");
+    const bySessionStatus = reflectGet(fs, "setStatus");
     if (typeof bySessionStatus === "function") {
-      Reflect.set(fs, "setStatus", (handleId, status) => {
+      reflectSet(fs, "setStatus", (handleId, status) => {
         if (holder?.owns(handleId)) {
           counts.local++;
           holder.setStatus(handleId, status);
           return;
         }
-        return Reflect.apply(bySessionStatus, fs, [handleId, status]);
+        return reflectApply(bySessionStatus, fs, [handleId, status]);
       });
     }
-    const bySessionReopen = Reflect.get(fs, "reopen");
+    const bySessionReopen = reflectGet(fs, "reopen");
     if (typeof bySessionReopen === "function") {
-      Reflect.set(fs, "reopen", (target, flags, options) => {
+      reflectSet(fs, "reopen", (target, flags, options) => {
         const held = holder;
         if (!held?.owns(target.handle))
-          return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
+          return reflectApply(bySessionReopen, fs, [target, flags, options]);
         const desc = held.provisional.descriptor(target.handle);
         const described = desc.inode.cell === void 0 && (desc.description !== void 0 || held.provisional.sessionOf(target.handle) !== void 0);
         const local = !now && described ? void 0 : held.reopen(target.handle, flags);
@@ -11107,16 +11931,25 @@ var __nimbusResidentModule = (() => {
           throw NOT_NOW;
         const identity2 = { dev: desc.inode.dev, ino: desc.inode.ino };
         const name = "/" + held.keyOf(target.handle);
-        return held.flush().then(() => held.provisional.sessionOf(target.handle)).then((session2) => session2 === void 0 ? openIdentified(fs, name, false, flags, identity2) : Reflect.apply(bySessionReopen, fs, [{ handle: session2 }, flags, options]));
+        return promiseThen(promiseThen(held.flush(), () => held.provisional.sessionOf(target.handle)), (session2) => session2 === void 0 ? openIdentified(fs, name, false, flags, identity2) : reflectApply(bySessionReopen, fs, [{ handle: session2 }, flags, options]));
       });
     }
-    for (const name of ["fchmod", "fchown", "futimes", "dup"]) {
-      const passed = Reflect.get(fs, name);
+    const argumentsOf = (first, rest) => {
+      const args = new SafeList();
+      args[0] = first;
+      for (let i = 0; i < rest.length; i++)
+        args[i + 1] = rest[i];
+      return args;
+    };
+    const byHandle = ["fchmod", "fchown", "futimes", "dup"];
+    for (let i = 0; i < byHandle.length; i++) {
+      const name = byHandle[i];
+      const passed = reflectGet(fs, name);
       if (typeof passed !== "function")
         continue;
-      Reflect.set(fs, name, (handleId, ...rest) => {
+      reflectSet(fs, name, (handleId, ...rest) => {
         if (!holder?.owns(handleId))
-          return Reflect.apply(passed, fs, [handleId, ...rest]);
+          return reflectApply(passed, fs, argumentsOf(handleId, rest));
         if (name === "dup")
           return holder.dup(handleId);
         return holderAttrs(name, handleId, rest);
@@ -11124,7 +11957,7 @@ var __nimbusResidentModule = (() => {
     }
     const ownerSide = (value) => typeof value === "number" && value !== -1 ? value : null;
     const holderAttrs = (name, handleId, rest) => {
-      const change = name === "fchmod" ? { mode: Number(rest[0]) } : name === "fchown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
+      const change = name === "fchmod" ? { mode: NumberOf(rest[0]) } : name === "fchown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
       if (holder.fsetattr(handleId, change) || now)
         return void 0;
       return holder.flush();
@@ -11169,7 +12002,7 @@ var __nimbusResidentModule = (() => {
       };
       try {
         const walk = walkFor(path, true);
-        return walk instanceof Promise ? walk.catch(missing) : walk;
+        return walk instanceof PromiseConstructor ? promiseThen(walk, void 0, missing) : walk;
       } catch (error) {
         return missing(error);
       }
@@ -11206,12 +12039,18 @@ var __nimbusResidentModule = (() => {
           return DELEGATE;
         return after2(holder.mkdir(walk.key, pathOf(path), mode, options?.umask), (done) => done ? void 0 : DELEGATE);
       }));
-      return after2(local, (done) => done !== DELEGATE ? void 0 : ownChange([named], ([row], awaited) => holder.provisional.mkdir(named, pathOf(path), mode, row, options?.umask, awaited), () => named !== void 0 ? byClient("mkdir", { type: "call", call: { call: "mkdir", path: named, mode, ...options?.umask === void 0 ? {} : { umask: options.umask } } }) : bySessionMkdir(path, options)));
+      return after2(local, (done) => done !== DELEGATE ? void 0 : ownChange([named], (rows, awaited) => holder.provisional.mkdir(named, pathOf(path), mode, rows[0], options?.umask, awaited), () => named !== void 0 ? byClient("mkdir", { type: "call", call: { call: "mkdir", path: named, mode, ...options?.umask === void 0 ? {} : { umask: options.umask } } }) : bySessionMkdir(path, options)));
     };
     const mkdirParents = (path, options) => {
-      const parts = path.split("/").filter((part) => part !== "" && part !== ".");
+      const segments = stringSplit(path, "/");
+      const parts = new SafeList();
+      for (let i = 0; i < segments.length; i++)
+        if (segments[i] !== "" && segments[i] !== ".")
+          parts[parts.length] = segments[i];
+      const askedMode = ownValue(options, "mode");
+      const askedUmask = ownValue(options, "umask");
       const planned = [];
-      const making = /* @__PURE__ */ new Set();
+      const making = new SafeSet();
       let current = "";
       for (let at = 0; at < parts.length; at++) {
         const part = parts[at];
@@ -11222,7 +12061,7 @@ var __nimbusResidentModule = (() => {
         }
         const next = current === "" ? part : `${current}/${part}`;
         if (making.has(current)) {
-          planned.push(next);
+          planned[planned.length] = next;
           making.add(next);
           current = next;
           continue;
@@ -11239,9 +12078,9 @@ var __nimbusResidentModule = (() => {
             throw NOT_NOW;
           if (!modeAllows(parent, 3, store.cred))
             throw fsError2("EACCES", "mkdir", path);
-          if (((options.mode ?? 511) & 3584) !== 0)
+          if (((askedMode ?? 511) & 3584) !== 0)
             throw NOT_NOW;
-          planned.push(walked);
+          planned[planned.length] = walked;
           making.add(walked);
           current = walked;
           continue;
@@ -11250,8 +12089,10 @@ var __nimbusResidentModule = (() => {
           throw fsError2(last ? "EEXIST" : "ENOTDIR", "mkdir", path);
         current = walked;
       }
-      for (const key of planned)
-        fs.mkdir("/" + key, { ...options.mode === void 0 ? {} : { mode: options.mode }, ...options.umask === void 0 ? {} : { umask: options.umask } });
+      for (let i = 0; i < planned.length; i++) {
+        const key = planned[i];
+        fs.mkdir("/" + key, { ...askedMode === void 0 ? {} : { mode: askedMode }, ...askedUmask === void 0 ? {} : { umask: askedUmask } });
+      }
       return void 0;
     };
     const bySessionUnlink = fs.unlink;
@@ -11267,7 +12108,7 @@ var __nimbusResidentModule = (() => {
           return DELEGATE;
         return after2(holder.unlink(walk.key, pathOf(path)), (done) => done ? void 0 : DELEGATE);
       }));
-      return after2(local, (done) => done !== DELEGATE ? void 0 : ownChange([named], ([row], awaited) => holder.provisional.unlink(named, pathOf(path), row, awaited), () => named !== void 0 ? byClient("unlink", { type: "call", call: { call: "unlink", path: named } }) : bySessionUnlink(path)));
+      return after2(local, (done) => done !== DELEGATE ? void 0 : ownChange([named], (rows, awaited) => holder.provisional.unlink(named, pathOf(path), rows[0], awaited), () => named !== void 0 ? byClient("unlink", { type: "call", call: { call: "unlink", path: named } }) : bySessionUnlink(path)));
     };
     const vouchedContent = ({ key }) => {
       const cursor = store.cursor();
@@ -11304,15 +12145,18 @@ var __nimbusResidentModule = (() => {
           return DELEGATE;
         return after2(holder.rename(source.key, target.key, pathOf(from)), (done) => done ? void 0 : DELEGATE);
       })));
-      return after2(local, (done) => done !== DELEGATE ? void 0 : ownChange(names2 ?? [void 0], ([source, target], awaited) => holder.provisional.rename(names2[0], names2[1], pathOf(from), source, target, awaited), () => names2 !== void 0 ? byClient("rename", { type: "rename", from: names2[0], to: names2[1] }) : bySessionRename(from, to)));
+      return after2(local, (done) => done !== DELEGATE ? void 0 : ownChange(names2 ?? [void 0], (rows, awaited) => holder.provisional.rename(names2[0], names2[1], pathOf(from), rows[0], rows[1], awaited), () => names2 !== void 0 ? byClient("rename", { type: "rename", from: names2[0], to: names2[1] }) : bySessionRename(from, to)));
     };
-    for (const name of ["chmod", "chown", "utimes"]) {
-      const passed = Reflect.get(fs, name);
-      Reflect.set(fs, name, (path, ...rest) => {
-        const link = name !== "chmod" && rest[2]?.followSymlinks === false;
-        const attrs = name === "chmod" ? { mode: Number(rest[0]) } : name === "chown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
+    const byPath = ["chmod", "chown", "utimes"];
+    for (let i = 0; i < byPath.length; i++) {
+      const name = byPath[i];
+      const passed = reflectGet(fs, name);
+      reflectSet(fs, name, (path, ...rest) => {
+        const linkOptions = rest[2];
+        const link = name !== "chmod" && linkOptions !== void 0 && linkOptions !== null && ownValue(linkOptions, "followSymlinks") === false;
+        const attrs = name === "chmod" ? { mode: NumberOf(rest[0]) } : name === "chown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
         if (holder === null)
-          return passed.call(fs, path, ...rest);
+          return reflectApply(passed, fs, argumentsOf(path, rest));
         let named;
         const local = decide(() => after2(walkFor(path, !link), (walk) => {
           if (walk === DELEGATE)
@@ -11326,7 +12170,7 @@ var __nimbusResidentModule = (() => {
           if (done !== DELEGATE)
             return void 0;
           const key = named;
-          return ownChange([key], ([row], awaited) => holder.provisional.setattr(key, pathOf(path), attrs, row, awaited, link), () => key === void 0 || !holder.holds(key) ? passed.call(fs, path, ...rest) : after2(passed.call(fs, path, ...rest), (receipt) => {
+          return ownChange([key], (rows, awaited) => holder.provisional.setattr(key, pathOf(path), attrs, rows[0], awaited, link), () => key === void 0 || !holder.holds(key) ? reflectApply(passed, fs, argumentsOf(path, rest)) : after2(reflectApply(passed, fs, argumentsOf(path, rest)), (receipt) => {
             holder.undecided(key);
             return receipt;
           }));
@@ -11335,16 +12179,16 @@ var __nimbusResidentModule = (() => {
     }
     const byName = (name, passed, pathAt, op, decided) => (...args) => {
       if (holder === null)
-        return passed(...args);
+        return reflectApply(passed, void 0, args);
       return after2(walkFor(args[pathAt], false), (walk) => {
         const key = walk === DELEGATE ? void 0 : walk.key;
-        return ownChange([key], ([row], awaited) => decided(key, row, args, awaited), () => key === void 0 ? passed(...args) : byClient(name, op(key, args)));
+        return ownChange([key], (rows, awaited) => decided(key, rows[0], args, awaited), () => key === void 0 ? reflectApply(passed, void 0, args) : byClient(name, op(key, args)));
       });
     };
     const bySessionRmdir = fs.rmdir;
-    fs.rmdir = byName("rmdir", (path) => bySessionRmdir(path), 0, (key) => ({ type: "call", call: { call: "rmdir", path: key } }), (key, row, [path], awaited) => holder.provisional.rmdir(key, pathOf(path), row, awaited));
+    fs.rmdir = byName("rmdir", (path) => bySessionRmdir(path), 0, (key) => ({ type: "call", call: { call: "rmdir", path: key } }), (key, row, args, awaited) => holder.provisional.rmdir(key, pathOf(args[0]), row, awaited));
     const bySessionSymlink = fs.symlink;
-    fs.symlink = byName("symlink", (target, path) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: "call", call: { call: "symlink", path: key, target } }), (key, row, [target, path], awaited) => holder.provisional.symlink(key, pathOf(path), target, row, awaited));
+    fs.symlink = byName("symlink", (target, path) => bySessionSymlink(target, path), 1, (key, args) => ({ type: "call", call: { call: "symlink", path: key, target: args[0] } }), (key, row, args, awaited) => holder.provisional.symlink(key, pathOf(args[1]), args[0], row, awaited));
     const openRefusal = (path, given) => {
       const flags = openFlags(given);
       const flagged = flagsRefusal(flags);
@@ -11368,13 +12212,13 @@ var __nimbusResidentModule = (() => {
     const notResident = (syscall, args) => {
       counts.notResident++;
       const target = args[0];
-      const path = typeof target === "number" ? holder?.owns(target) ? "/" + holder.keyOf(target) : String(target) : typeof target === "string" || typeof target === "object" && target !== null && "path" in target ? pathOf(target) : "";
-      if (syscall === "open" && typeof target === "string" && !target.split("/").includes("..")) {
+      const path = typeof target === "number" ? holder?.owns(target) ? "/" + holder.keyOf(target) : stringOf(target) : typeof target === "string" || typeof target === "object" && target !== null && objectHasOwn(target, "path") ? pathOf(target) : "";
+      if (syscall === "open" && typeof target === "string" && !climbs(target)) {
         const refusal = openRefusal(target, args[1]);
         if (refusal !== null)
           return refusal;
       }
-      if (typeof target === "string" && !target.split("/").includes("..")) {
+      if (typeof target === "string" && !climbs(target)) {
         const walked = walkOnce("", keyOf(target), true);
         const entry = typeof walked === "string" ? entryAt(walked) : void 0;
         if (entry?.type === "directory" && refusesADirectory(syscall, args))
@@ -11386,13 +12230,13 @@ var __nimbusResidentModule = (() => {
         detail: `resource temporarily unavailable, ${syscall} '${path}' \u2014 '${path}' exists but its content is not resident in this process, and a synchronous call cannot wait to fetch it`
       });
     };
-    const missed = /* @__PURE__ */ new Set();
+    const missed = new SafeSet();
     const keyFor = (target) => {
       if (typeof target === "number")
         return holder?.owns(target) ? holder.keyOf(target) : readerKeys.get(target);
       if (typeof target === "string")
         return keyOf(target);
-      if (typeof target === "object" && target !== null && "root" in target)
+      if (typeof target === "object" && target !== null && objectHasOwn(target, "root"))
         return keyOf(`${target.root}/${pathOf(target)}`);
       return void 0;
     };
@@ -11408,7 +12252,7 @@ var __nimbusResidentModule = (() => {
       if (missed.has(key))
         return;
       missed.add(key);
-      residency.missed?.(key);
+      ownValue(residency, "missed")?.(key);
     };
     const answered = (args) => {
       const key = keyFor(args[0]);
@@ -11423,13 +12267,13 @@ var __nimbusResidentModule = (() => {
       }
     };
     if (residency !== void 0) {
-      for (const name of CONTENT_READS) {
-        const passed = Reflect.get(fs, name);
+      CONTENT_READS.forEach((name) => {
+        const passed = reflectGet(fs, name);
         if (typeof passed !== "function")
-          continue;
-        Reflect.set(fs, name, (...args) => {
+          return;
+        reflectSet(fs, name, (...args) => {
           if (now || missed.size === 0)
-            return Reflect.apply(passed, fs, args);
+            return reflectApply(passed, fs, args);
           const refusal = (error) => {
             if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? ""))
               answered(args);
@@ -11437,20 +12281,20 @@ var __nimbusResidentModule = (() => {
           };
           let answer2;
           try {
-            answer2 = Reflect.apply(passed, fs, args);
+            answer2 = reflectApply(passed, fs, args);
           } catch (error) {
             return refusal(error);
           }
-          if (!(answer2 instanceof Promise)) {
+          if (!(answer2 instanceof PromiseConstructor)) {
             answered(args);
             return answer2;
           }
-          return answer2.then((value) => {
+          return promiseThen(answer2, (value) => {
             answered(args);
             return value;
           }, refusal);
         });
-      }
+      });
     }
     const knownAbsent = (key) => {
       if (!store.ready())
@@ -11465,24 +12309,25 @@ var __nimbusResidentModule = (() => {
     };
     fs.misses = async () => {
       await faultsEnded();
-      for (const key of [...missed])
-        if (knownAbsent(key))
-          missed.delete(key);
-      return [...missed];
+      const keys = setList(missed);
+      for (let i = 0; i < keys.length; i++)
+        if (knownAbsent(keys[i]))
+          missed.delete(keys[i]);
+      return arrayCopy(setList(missed));
     };
-    const synchronous = /* @__PURE__ */ Object.create(null);
-    for (const name of names) {
-      if (NO_SYNCHRONOUS_FORM.has(name) || typeof Reflect.get(fs, name) !== "function")
-        continue;
-      Reflect.set(synchronous, name, (...args) => {
+    const synchronous = objectCreate(null);
+    names.forEach((name) => {
+      if (NO_SYNCHRONOUS_FORM.has(name) || typeof reflectGet(fs, name) !== "function")
+        return;
+      reflectSet(synchronous, name, (...args) => {
         const was = now;
         now = true;
         try {
-          const value = Reflect.apply(Reflect.get(fs, name), fs, args);
-          if (value instanceof Promise) {
-            value.catch(() => {
+          const value = reflectApply(reflectGet(fs, name), fs, args);
+          if (value instanceof PromiseConstructor) {
+            promiseThen(value, void 0, () => {
             });
-            throw new Error(`${name}: the synchronous filesystem began a wait`);
+            throw new Error2(`${name}: the synchronous filesystem began a wait`);
           }
           return value;
         } catch (error) {
@@ -11497,44 +12342,51 @@ var __nimbusResidentModule = (() => {
           now = was;
         }
       });
-    }
-    Reflect.set(fs, "synchronous", synchronous);
+    });
+    reflectSet(fs, "synchronous", synchronous);
     return fs;
   }
 
   // ../core/dist/runtime/wasi/process-filesystem.js
   function isHomeDirectory(key) {
-    return key === "root" || key.startsWith("home/") && key.length > "home/".length && !key.slice("home/".length).includes("/");
+    return key === "root" || stringStartsWith(key, "home/") && key.length > "home/".length && !stringIncludes(stringSlice(key, "home/".length), "/");
   }
   function processFilesystem(supervisor, view, options = {}) {
     const authority = supervisorFilesystem(supervisor);
-    const { journalSql, holdsGrants, ...delegation } = options;
+    const journalSql = ownValue(options, "journalSql");
+    const holdsGrants = ownValue(options, "holdsGrants");
+    const { ...delegation } = options;
+    reflectDeleteProperty(delegation, "journalSql");
+    reflectDeleteProperty(delegation, "holdsGrants");
     const directories = answeringSupervisor(supervisor);
     return residentFilesystem(authority, view, {
       ...delegation,
       session: supervisorSession(supervisor, authority, void 0, holdsGrants !== false),
       isHomeRoot: isHomeDirectory,
-      ...typeof directories.fsReadDirectories === "function" ? { readDirectories: (request) => directories.fsReadDirectories(request) } : {},
+      ...typeof reflectGet(directories, "fsReadDirectories") === "function" ? { readDirectories: (request) => reflectApply(reflectGet(directories, "fsReadDirectories"), directories, [request]) } : {},
       ...journalSql === void 0 ? {} : { journal: sqlJournal(journalSql) }
     });
   }
 
   // src/vfs/resident/index.ts
   function dropSqlStore(storage) {
-    const exec = storage.sql?.exec;
+    const sql = reflectGet(storage, "sql");
+    const exec = sql === void 0 || sql === null ? void 0 : reflectGet(sql, "exec");
     if (typeof exec !== "function") return;
-    const sql = storage.sql;
     const held = new SafeList();
-    for (const row of exec.call(sql, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')")) {
-      held[held.length] = stringOf(row.name);
+    const rows = reflectApply(exec, sql, ["SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')"]);
+    const iterator = reflectApply(reflectGet(rows, symbolIterator), rows, []);
+    const next = reflectGet(iterator, "next");
+    for (let step = reflectApply(next, iterator, []); !step.done; step = reflectApply(next, iterator, [])) {
+      held[held.length] = stringOf(step.value.name);
     }
-    for (let i = 0; i < held.length; i++) exec.call(sql, "DROP TABLE IF EXISTS " + held[i]);
+    for (let i = 0; i < held.length; i++) reflectApply(exec, sql, ["DROP TABLE IF EXISTS " + held[i]]);
   }
   function createResidentStore(options = {}) {
     const coherence = createCoherence();
     const admission = createAdmission(coherence);
     const namespace = createNamespace(coherence, admission);
-    const observeRead = options.observeRead ?? null;
+    const observeRead = ownValue(options, "observeRead") ?? null;
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
@@ -11549,9 +12401,9 @@ var __nimbusResidentModule = (() => {
     return {
       bundle: cells.bundle,
       bind(ctx) {
-        const storage = ctx?.storage;
+        const storage = typeof ctx === "object" && ctx !== null ? reflectGet(ctx, "storage") : void 0;
         if (!storage || typeof storage.kv?.get !== "function" || typeof storage.put !== "function") {
-          throw new Error(
+          throw new Error2(
             "Nimbus: this facet has no synchronous key-value storage (ctx.storage.kv); the resident set cannot be served and every sync read would raise EAGAIN"
           );
         }

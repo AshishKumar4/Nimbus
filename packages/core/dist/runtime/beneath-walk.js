@@ -7,6 +7,7 @@
  */
 import { fsError as nodeFsError } from '../vfs/vfs-error.js';
 import { modeAllows } from '../vfs/posix-access.js';
+import { arrayJoin, arrayPop, arrayShift, SafeList, safeGenerator, stringEndsWith, stringSlice, stringSplit, stringStartsWith } from '../_shared/primordials.js';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export const MAX_LINK_HOPS = 40;
 /** vfs-error.ts's fsError for a call on a runtime path, named by its path. */
@@ -23,8 +24,8 @@ export function fsError(code, syscall, path, dest, options = {}) {
 export function handedSpelling(handoff, reached, trailing) {
     if (handoff === null)
         return reached;
-    const spelling = `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}`;
-    return trailing && !spelling.endsWith('/') ? spelling + '/' : spelling;
+    const spelling = `${handoff.base === '/' ? '' : handoff.base}/${arrayJoin(handoff.rest, '/')}`;
+    return trailing && !stringEndsWith(spelling, '/') ? spelling + '/' : spelling;
 }
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
@@ -50,29 +51,37 @@ export function handedSpelling(handoff, reached, trailing) {
  * lookup beneath it starts from until an absolute link leaves it; its
  * confinement is the normalized `root`'s.
  */
-export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling = '/' + root) {
+export const walkBeneath = safeGenerator(function* (root, path, follow, cred, handedOver, rootSpelling = '/' + root) {
     const name = typeof path === 'string' ? path : path.path;
     // Below a root with a spelling of its own, by descent from it (no absolute link since), a
     // name is that spelling, then the rest; else (every walk but one anchored so) the name itself.
     const anchored = rootSpelling !== '/' + root;
     let fromRoot = true;
     const named = (reached) => (!anchored || !fromRoot ? '/' + reached
-        : reached.length === root.length ? rootSpelling : `${rootSpelling === '/' ? '' : rootSpelling}${reached.slice(root.length)}`);
+        : reached.length === root.length ? rootSpelling : `${rootSpelling === '/' ? '' : rootSpelling}${stringSlice(reached, root.length)}`);
     if (root !== '')
         yield { stat: rootSpelling };
-    if (name.startsWith('/'))
+    if (stringStartsWith(name, '/'))
         throw fsError('ENOTCAPABLE', 'path', path);
-    const pending = name.split('/');
-    const resolved = root === '' ? [] : root.split('/');
+    let pending = stringSplit(name, '/');
+    const resolved = root === '' ? new SafeList() : stringSplit(root, '/');
     let hops = 0;
     let handoff = null;
     while (pending.length > 0) {
-        const segment = pending.shift();
+        const segment = arrayShift(pending);
         if (segment === undefined)
             break;
-        const dir = resolved.join('/');
+        const dir = arrayJoin(resolved, '/');
         const candidate = dir === '' ? segment : `${dir}/${segment}`;
-        const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
+        const spelled = new SafeList();
+        if (dir !== '')
+            spelled[spelled.length] = dir;
+        if (segment !== '')
+            spelled[spelled.length] = segment;
+        for (let i = 0; i < pending.length; i++)
+            if (pending[i] !== '')
+                spelled[spelled.length] = pending[i];
+        const to = '/' + arrayJoin(spelled, '/');
         const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
         if (!handed) {
             const searched = (yield { stat: named(dir) });
@@ -88,12 +97,18 @@ export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling 
         if (segment === '..') {
             if (dir === root)
                 throw fsError('ENOTCAPABLE', 'path', path);
-            resolved.pop();
+            arrayPop(resolved);
             continue;
         }
         if (handed) {
-            handoff ??= { base: named(dir), rest: [segment, ...pending] };
-            resolved.push(segment);
+            if (handoff === null) {
+                const rest = new SafeList();
+                rest[0] = segment;
+                for (let i = 0; i < pending.length; i++)
+                    rest[rest.length] = pending[i];
+                handoff = { base: named(dir), rest };
+            }
+            resolved[resolved.length] = segment;
             continue;
         }
         // Every component already walked is a directory, not a link, so a
@@ -103,7 +118,7 @@ export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling 
         if (stat === null && !isFinal)
             throw fsError('ENOENT', 'path', path);
         if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
-            resolved.push(segment);
+            resolved[resolved.length] = segment;
             continue;
         }
         if (++hops > MAX_LINK_HOPS)
@@ -113,16 +128,19 @@ export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling 
         // its backend covers it) cannot be followed beneath the root.
         if (target === null)
             throw fsError('ENOTCAPABLE', 'path', path);
-        if (target.startsWith('/')) {
+        if (stringStartsWith(target, '/')) {
             resolved.length = 0;
             fromRoot = false;
         }
-        pending.unshift(...target.split('/'));
+        const parts = stringSplit(target, '/');
+        for (let i = 0; i < pending.length; i++)
+            parts[parts.length] = pending[i];
+        pending = parts;
         // A link followed after a handoff: the rest as written is no longer what is reached.
         handoff = null;
     }
-    const reached = resolved.join('/');
-    if (root !== '' && reached !== root && !reached.startsWith(root + '/'))
+    const reached = arrayJoin(resolved, '/');
+    if (root !== '' && reached !== root && !stringStartsWith(reached, root + '/'))
         throw fsError('ENOTCAPABLE', 'path', path);
-    return { reached, spelling: handedSpelling(handoff, named(reached), name.endsWith('/')) };
-}
+    return { reached, spelling: handedSpelling(handoff, named(reached), stringEndsWith(name, '/')) };
+});

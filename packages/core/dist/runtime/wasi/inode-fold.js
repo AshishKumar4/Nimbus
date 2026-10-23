@@ -10,13 +10,19 @@
  * or a clock.
  */
 import { chownedMode, timeAt } from '../../vfs/posix-access.js';
+import { bytesView, mathMax, objectHasOwn, typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor } from '../../_shared/primordials.js';
+/** One of the process's own operations on an inode, as logged; `at` is when it was decided (its times). */
+/** Which change W7Attrs carries, by its own fields: a mode's, an owner's, or times'. */
+export const isModeChange = (attrs) => objectHasOwn(attrs, 'mode');
+export const isOwnerChange = (attrs) => objectHasOwn(attrs, 'uid');
+export const isTimesChange = (attrs) => objectHasOwn(attrs, 'atime');
 /**
  * A private copy of the first `length` of `bytes`: a plain array no one else
  * holds, whatever `bytes` is (a Buffer's slice is a view of it, not a copy).
  */
-export function owned(bytes, length = bytes.byteLength) {
-    const copy = new Uint8Array(length);
-    copy.set(bytes.subarray(0, length));
+export function owned(bytes, length = typedArrayByteLength(bytes)) {
+    const copy = new Uint8ArrayConstructor(length);
+    typedArraySet(copy, bytesView(bytes, 0, length));
     return copy;
 }
 /** A copy of `state` that folding into does not change `state`. */
@@ -26,10 +32,10 @@ export function copyState(state) {
 /** Room for `size` bytes in `state`'s buffer, its first `state.size` kept, the rest zero. */
 function grown(state, size) {
     const bytes = state.bytes;
-    if (size <= bytes.byteLength)
+    if (size <= typedArrayByteLength(bytes))
         return bytes;
-    const next = new Uint8Array(Math.max(size, bytes.byteLength * 2, 4096));
-    next.set(bytes.subarray(0, state.size));
+    const next = new Uint8ArrayConstructor(mathMax(size, typedArrayByteLength(bytes) * 2, 4096));
+    typedArraySet(next, bytesView(bytes, 0, state.size));
     return next;
 }
 /**
@@ -44,27 +50,27 @@ export function applyOp(state, op) {
     switch (op.kind) {
         case 'write':
         case 'append': {
-            if (op.data.byteLength === 0)
+            if (typedArrayByteLength(op.data) === 0)
                 return state;
             const offset = op.kind === 'append' ? state.size : op.offset;
-            const end = offset + op.data.byteLength;
+            const end = offset + typedArrayByteLength(op.data);
             if (state.bytes !== null) {
                 const bytes = grown(state, end);
                 if (offset > state.size)
-                    bytes.fill(0, state.size, offset);
-                bytes.set(op.data, offset);
+                    typedArrayFill(bytes, 0, state.size, offset);
+                typedArraySet(bytes, op.data, offset);
                 state.bytes = bytes;
             }
-            state.size = Math.max(state.size, end);
+            state.size = mathMax(state.size, end);
             state.mtime = state.ctime = op.at;
             return state;
         }
         case 'truncate': {
             if (op.size === 0)
-                state.bytes = new Uint8Array(0);
+                state.bytes = new Uint8ArrayConstructor(0);
             else if (state.bytes !== null && op.size > state.size) {
                 const bytes = grown(state, op.size);
-                bytes.fill(0, state.size, op.size);
+                typedArrayFill(bytes, 0, state.size, op.size);
                 state.bytes = bytes;
             }
             state.size = op.size;
@@ -91,7 +97,7 @@ export function applyOp(state, op) {
 /** `ops` folded over a copy of `baseline`, in order: what the inode is with them pending. */
 export function foldOps(baseline, ops) {
     let state = copyState(baseline);
-    for (const op of ops)
-        state = applyOp(state, op);
+    for (let i = 0; i < ops.length; i++)
+        state = applyOp(state, ops[i]);
     return state;
 }

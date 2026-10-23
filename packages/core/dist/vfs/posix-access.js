@@ -1,4 +1,4 @@
-import { arrayIncludes } from '../_shared/primordials.js';
+import { arrayIncludes, mathTrunc, ownValue } from '../_shared/primordials.js';
 /**
  * POSIX permission classes: the one calculation of whether a credential
  * holds `want` (r=4, w=2, x=1) on an entry whose mode, owner and type are
@@ -28,9 +28,10 @@ export function posixAccess(entry, want, cred) {
  * owner or group it keeps none of is no one's.
  */
 export function modeAllows(stat, want, cred) {
-    if (stat.mode === undefined)
+    const mode = ownValue(stat, 'mode');
+    if (mode === undefined)
         return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
+    return posixAccess({ mode, uid: ownValue(stat, 'uid') ?? -1, gid: ownValue(stat, 'gid') ?? -1, type: stat.type }, want, cred);
 }
 /**
  * A sticky directory's rule (unlink(2), rmdir(2), rename(2)): in a directory
@@ -80,7 +81,7 @@ export function explicitTimes(atime, mtime) {
 }
 /** `time` as the filesystem committing it lands it: an explicit one in whole ms, 'now' at `now`, 'omit' as `kept`. */
 export function timeAt(time, kept, now) {
-    return time === 'omit' ? kept : time === 'now' ? now : Math.trunc(time);
+    return time === 'omit' ? kept : time === 'now' ? now : mathTrunc(time);
 }
 /**
  * utimensat(2)'s rule: explicit times only by the owner or root (EPERM); the

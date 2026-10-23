@@ -16114,10 +16114,13 @@ var arrayBufferByteLength = (() => {
 var arrayShift = uncurryThis(Array.prototype.shift);
 var setValuesOf = uncurryThis(Set.prototype.values);
 var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((/* @__PURE__ */ new Set()).values()) ?? {}, "next"));
+var mapValuesOf = uncurryThis(Map.prototype.values);
+var mapIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((/* @__PURE__ */ new Map()).values()) ?? {}, "next"));
 var promiseThen = uncurryThis(Promise.prototype.then);
 var promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
 var promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
 var mapForEach = uncurryThis(Map.prototype.forEach);
+var arrayPop = uncurryThis(Array.prototype.pop);
 var stringLocaleCompare = uncurryThis(String.prototype.localeCompare);
 var stringPadStart = uncurryThis(String.prototype.padStart);
 var numberIsFinite = Number.isFinite;

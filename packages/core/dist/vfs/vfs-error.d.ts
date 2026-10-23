@@ -3,6 +3,7 @@
  * the message a person reads. Every backend throws it, so no caller matches
  * prose.
  */
+import { Error, SafeSet } from '../_shared/primordials.js';
 export type VfsErrorCode = 'E2BIG' | 'EPERM' | 'ENOENT' | 'EIO' | 'ENXIO' | 'EAGAIN' | 'EACCES' | 'EBUSY' | 'EEXIST' | 'EXDEV' | 'ENOTDIR' | 'EISDIR' | 'EINVAL' | 'ENOSPC' | 'EROFS' | 'ELOOP' | 'ENAMETOOLONG' | 'ENOTEMPTY' | 'ENOTSUP' | 'ESTALE' | 'EBADF' | 'EFBIG';
 /** Linux errno numbers, negative as libuv reports them. */
 export declare const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>>;
@@ -79,14 +80,14 @@ export declare function toVfsError(error: unknown, syscall: string, path: string
  * leaves the call's outcome unknown, which is a durability failure whatever
  * the caller does with it.
  */
-export declare const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode>;
+export declare const SYSCALL_VERDICTS: SafeSet<VfsErrorCode>;
 /**
  * What rename refuses with before it changes anything. A filesystem whose
  * rename fails after making part of it answers with another code (EIO), so
  * one of these means both names are as they were. EXDEV is among them, and
  * says only that this filesystem cannot make this rename in place.
  */
-export declare const RENAME_REFUSALS: ReadonlySet<VfsErrorCode>;
+export declare const RENAME_REFUSALS: SafeSet<VfsErrorCode>;
 /**
  * What a rename that failed did, where the filesystem knows it: 'none',
  * both names as they were, whatever the error's code; 'all', the new name

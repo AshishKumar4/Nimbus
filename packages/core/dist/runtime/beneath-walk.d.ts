@@ -72,9 +72,9 @@ type BeneathAnswer = {
  * lookup beneath it starts from until an absolute link leaves it; its
  * confinement is the normalized `root`'s.
  */
-export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: {
+export declare const walkBeneath: (root: string, path: RuntimeFsPath, follow: boolean, cred: {
     uid: number;
     gid: number;
     groups: readonly number[];
-}, handedOver: (path: string, to: string) => boolean, rootSpelling?: string): Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
+}, handedOver: (path: string, to: string) => boolean, rootSpelling?: string) => Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
 //# sourceMappingURL=beneath-walk.d.ts.map

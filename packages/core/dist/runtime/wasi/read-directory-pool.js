@@ -1,7 +1,8 @@
 /** Guest-side bookkeeping for real, single-use directory descriptions. It owns no filesystem authority. */
 import { DIRECTORY_BATCH_LIMIT, DIRECTORY_END_WAIT_MS, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
 import { notAfter, sameEpochs } from '../feed-position.js';
-function failure(code, message) { return Object.assign(new Error(`${code}: ${message}`), { code }); }
+import { arrayCopy, arrayJoin, Error, mathMin, objectAssign, objectHasOwn, ownField, ownValue, PromiseConstructor, promiseRace, promiseResolve, promiseThen, SafeList, SafeMap, SafeSet, setList, stringSplit, } from '../../_shared/primordials.js';
+function failure(code, message) { return objectAssign(new Error(`${code}: ${message}`), { code }); }
 /** Whether the store's entry shows the directory as the authority's access check saw it when it opened it. */
 function asOpened(entry, current) {
     const seen = entry.opened;
@@ -9,10 +10,18 @@ function asOpened(entry, current) {
 }
 /** A candidate's key as the batch reports it (no leading or trailing `/`), for one already prefetched; a descriptor-relative one never matches. */
 function keyOfPath(path) {
-    const named = typeof path === 'string' ? path : 'root' in path ? `${path.root}/${path.path}` : '';
-    return named.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+    const named = typeof path === 'string' ? path : objectHasOwn(path, 'root') ? `${path.root}/${path.path}` : '';
+    const segments = stringSplit(named, '/');
+    const kept = new SafeList();
+    for (let i = 0; i < segments.length; i++)
+        if (segments[i] !== '' && segments[i] !== '.')
+            kept[kept.length] = segments[i];
+    return arrayJoin(kept, '/');
 }
-export function readDirectoryPool({ call, store, client, before, endWaitMs = DIRECTORY_END_WAIT_MS }) {
+export function readDirectoryPool(options) {
+    const { call, store, client, before } = options;
+    const waitMs = ownValue(options, 'endWaitMs');
+    const endWaitMs = waitMs === undefined ? DIRECTORY_END_WAIT_MS : waitMs;
     const channel = crypto.randomUUID();
     let sequence = 0, generation = 0, cancelled = 0;
     /** The lease's owner, and the store's incarnation it was applied at (sameEpochs). */
@@ -20,22 +29,19 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     let trustedAtIo = false, ended = false, uncertain = 0, reserved = 0;
     /** The session refused the channel itself (its scope's channel budget, or the channel's own window): the batch is not used again. */
     let unavailable = false;
-    let tail = Promise.resolve();
-    const unused = new Map();
-    const owned = new Map();
-    const retiring = new Set();
-    const claiming = new Set();
+    let tail = promiseResolve();
+    const unused = new SafeMap();
+    const owned = new SafeMap();
+    const retiring = new SafeSet();
+    const claiming = new SafeSet();
     const serial = (body) => {
-        const result = tail.then(body);
-        tail = result.then(() => { }, () => { });
+        const result = promiseThen(tail, body);
+        tail = promiseThen(result, () => { }, () => { });
         return result;
     };
     const outstanding = () => unused.size + owned.size + retiring.size + uncertain + reserved;
     const discardUnused = () => {
-        for (const entry of unused.values()) {
-            claiming.delete(entry.handle.id);
-            retiring.add(entry.handle.id);
-        }
+        unused.forEach((entry) => { claiming.delete(entry.handle.id); retiring.add(entry.handle.id); });
         unused.clear();
     };
     /**
@@ -85,14 +91,14 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
         const ask = wantLease && cursor !== null ? client.readLeaseAsk() : null;
         const stamp = generation;
         const cancelAt = cancelled;
-        const sentRetire = [...retiring];
-        const sentClaim = [...claiming];
+        const sentRetire = arrayCopy(setList(retiring));
+        const sentClaim = arrayCopy(setList(claiming));
         const sentSequence = ++sequence;
         reserved += open.length;
         let result;
         try {
             result = await call({ channel, sequence: sentSequence, position: cursor,
-                open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
+                open: arrayCopy(open), retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
         }
         catch (error) {
             uncertain += open.length;
@@ -107,15 +113,21 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             invalidate();
             throw failure('ESTALE', 'directory batch reply belongs to another request');
         }
-        for (const id of result.retired)
+        for (let i = 0; i < result.retired.length; i++) {
+            const id = result.retired[i];
             retiring.delete(id);
-        for (const id of result.claimed)
+        }
+        for (let i = 0; i < result.claimed.length; i++) {
+            const id = result.claimed[i];
             claiming.delete(id);
+        }
         uncertain = 0; // advancing the channel retires an abandoned earlier answer
         // Account for every received ID before admission can yield or fail.
         // Successful adoption transfers it from this retirement set to unused/owned.
-        for (const entry of result.opened)
+        for (let i = 0; i < result.opened.length; i++) {
+            const entry = result.opened[i];
             retiring.add(entry.handle.id);
+        }
         const lease = result.acquire.readLease;
         if (lease)
             client.readLeaseAnswered(lease); // ownership precedes any admission/yield
@@ -125,7 +137,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             : cursor !== null && sameEpochs(current, cursor) && generation === stamp);
         let admitted;
         try {
-            admitted = applies && (await store.barrier({ answer: result.acquire })).applied === true;
+            admitted = applies && ownValue(await store.barrier({ answer: result.acquire }), 'applied') === true;
         }
         catch (error) {
             invalidate();
@@ -139,8 +151,10 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             trustedAtIo = client.readTrusted(); // a real batch reply, never a timer
         }
         if (open.length > 0 && (cancelled !== cancelAt || ended)) {
-            for (const entry of result.opened)
+            for (let i = 0; i < result.opened.length; i++) {
+                const entry = result.opened[i];
                 retiring.add(entry.handle.id);
+            }
             throw failure('EAGAIN', 'directory batch completed after its park ended');
         }
         return result.opened;
@@ -153,7 +167,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     return {
         open(path, key, prefetch) {
             const began = cancelled;
-            return serial(async () => {
+            return promiseThen(serial(async () => {
                 if (ended)
                     throw failure('ESTALE', 'directory pool ended');
                 if (unavailable)
@@ -178,23 +192,30 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
                     claiming.delete(hit.handle.id);
                     retiring.add(hit.handle.id);
                 }
-                for (const entry of unused.values())
-                    claiming.add(entry.handle.id);
-                const candidates = (await prefetch()).filter((candidate) => !unused.has(keyOfPath(candidate)));
+                unused.forEach((entry) => { claiming.add(entry.handle.id); });
+                const guessed = await prefetch();
+                const candidates = new SafeList();
+                for (let i = 0; i < guessed.length; i++)
+                    if (!unused.has(keyOfPath(guessed[i])))
+                        candidates[candidates.length] = guessed[i];
                 if (began !== cancelled)
                     throw failure('EAGAIN', 'directory open was cancelled while preparing');
                 // At capacity, ACK retirement first. Do not spend credits merely
                 // because a close was sent or a previous answer never arrived.
                 if (uncertain || outstanding() >= DIRECTORY_PREFETCH_LIMIT)
                     await drain();
-                const credit = Math.min(DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT - outstanding());
+                const credit = mathMin(DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT - outstanding());
                 if (credit <= 0)
                     return null;
-                const opened = await exchange([path, ...candidates].slice(0, credit), true);
+                const open = new SafeList();
+                for (let i = -1; i < candidates.length && open.length < credit; i++)
+                    open[open.length] = i < 0 ? path : candidates[i];
+                const opened = await exchange(open, true);
                 const required = opened[0];
                 if (!required)
                     return null;
-                for (const entry of opened.slice(1)) {
+                for (let i = 1; i < opened.length; i++) {
+                    const entry = opened[i];
                     const current = local(entry);
                     if (entry.key !== null && entry.key !== required.key && current && asOpened(entry, current.entry) && !unused.has(entry.key)) {
                         retiring.delete(entry.handle.id);
@@ -204,12 +225,12 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
                 // Even if the lease was recalled before admission, the required
                 // real descriptor is the completed open; never reopen it by name.
                 return claim(required);
-            }).catch((error) => {
+            }), undefined, (error) => {
                 invalidate();
                 // An optimization the session cannot account for: the directory is
                 // opened as any is (null), now and from now on. The open's own
                 // refusal (ENOENT, EACCES) and a park given up on stay the caller's.
-                const code = error?.code;
+                const code = typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined;
                 if (!ended && (code === 'ENOSPC' || code === 'ESTALE')) {
                     unavailable = true;
                     return null;
@@ -236,8 +257,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
         async dispose() {
             ended = true;
             cancelled++;
-            for (const id of owned.keys())
-                retiring.add(id);
+            owned.forEach((_entry, id) => { retiring.add(id); });
             owned.clear();
             claiming.clear();
             invalidate();
@@ -248,10 +268,10 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             // park the watchdog gave up on): its later sequence supersedes that
             // one. The run waits for it at most endWaitMs.
             let timer = null;
-            await Promise.race([
-                exchange([], false, true).then(() => { }, () => { }),
-                new Promise((resolve) => { timer = setTimeout(resolve, endWaitMs); }),
-            ]);
+            const ends = new SafeList();
+            ends[0] = promiseThen(exchange([], false, true), () => { }, () => { });
+            ends[1] = new PromiseConstructor((resolve) => { timer = setTimeout(resolve, endWaitMs); });
+            await promiseRace(ends);
             clearTimeout(timer);
         },
     };
