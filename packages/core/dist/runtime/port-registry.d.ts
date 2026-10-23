@@ -193,7 +193,8 @@ export declare class PortRegistry {
     /** Attach a normalized route target to ports previously reserved by a PID. */
     private attachFacetStubByPid;
     getRouteablePortsByPid(pid: number): number[];
-    waitForRouteablePortsByPid(pid: number, timeoutMs: number): Promise<number[]>;
+    /** `pid`'s routeable ports once it has one, or what it has (none) once `until` aborts. */
+    waitForRouteablePortsByPid(pid: number, until: AbortSignal): Promise<number[]>;
     /** Check if a port is registered. */
     has(port: number): boolean;
     /** Get all registered ports. */

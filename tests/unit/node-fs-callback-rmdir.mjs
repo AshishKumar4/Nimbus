@@ -35,7 +35,7 @@ authority.kfs.mkdir('home/user/app/lock', { recursive: true, mode: 0o755 });
 authority.kfs.mkdir('home/user/app/full', { recursive: true, mode: 0o755 });
 authority.kfs.writeFile('home/user/app/full/f', 'f');
 const { supervisor } = facetSupervisor(authority);
-await launchResident({ program: PROGRAM, env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
+await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
 const probe = globalThis.__probe;
 
 assert.equal(probe.typeOf, 'function', 'fs.rmdir is a function');

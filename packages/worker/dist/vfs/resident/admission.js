@@ -193,7 +193,7 @@ export function createAdmission(coherence) {
         storageCap() { return cap; },
         get available() { return available; },
         pin(bytes) {
-            if (inHeap ? !fits(bytes, false) : pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES)
+            if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES)
                 return false;
             pinnedBytes += bytes;
             return true;
@@ -204,9 +204,9 @@ export function createAdmission(coherence) {
         get heldBytes() { return heldBytes; },
         addHeld(bytes) { heldBytes += bytes; },
         heldLimit(maxBytes) {
-            // In a facet the held cells have their own bound. In a one-shot's heap they
-            // share the store's: what the cap leaves beside the tables.
-            return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
+            // In a facet the held cells share the process's own-write bound with what it pins. In a
+            // one-shot's heap they share the store's: what the cap leaves beside the tables.
+            return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : mathMax(0, maxBytes - pinnedBytes);
         },
         namespaceRefusal(bytes) { return refusal(dbBytes() + bytes); },
         rowRefusal(growth) { return refusal(tablesBytes() + heldBytes + namespaceOverlayBytes + namespaceReserveBytes + growth); },

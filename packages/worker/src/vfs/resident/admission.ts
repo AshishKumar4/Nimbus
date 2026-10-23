@@ -39,7 +39,8 @@ export interface Admission {
    * `bytes` held in the isolate's heap beside the store, whatever backs its
    * tables (a process's decided bytes, a descriptor's pinned content): a
    * one-shot's share the store's one budget; a facet's have their own bound
-   * (FACET_OWN_WRITE_MEMORY_BYTES). False where they do not fit.
+   * (FACET_OWN_WRITE_MEMORY_BYTES), with the own bytes the cells hold. False
+   * where they do not fit.
    */
   pin(bytes: number): boolean;
   unpin(bytes: number): void;
@@ -237,7 +238,7 @@ export function createAdmission(coherence: Coherence): Admission {
     storageCap() { return cap; },
     get available() { return available; },
     pin(bytes) {
-      if (inHeap ? !fits(bytes, false) : pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
+      if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
       pinnedBytes += bytes;
       return true;
     },
@@ -247,9 +248,9 @@ export function createAdmission(coherence: Coherence): Admission {
     get heldBytes() { return heldBytes; },
     addHeld(bytes) { heldBytes += bytes; },
     heldLimit(maxBytes) {
-      // In a facet the held cells have their own bound. In a one-shot's heap they
-      // share the store's: what the cap leaves beside the tables.
-      return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
+      // In a facet the held cells share the process's own-write bound with what it pins. In a
+      // one-shot's heap they share the store's: what the cap leaves beside the tables.
+      return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : mathMax(0, maxBytes - pinnedBytes);
     },
     namespaceRefusal(bytes) { return refusal(dbBytes() + bytes); },
     rowRefusal(growth) { return refusal(tablesBytes() + heldBytes + namespaceOverlayBytes + namespaceReserveBytes + growth); },

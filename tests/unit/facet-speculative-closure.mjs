@@ -136,7 +136,8 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   const entry=APP+'/app.cjs';
   const files={
     [APP+'/package.json']: '{"dependencies":{"a":"1","b":"1"}}',
-    [entry]: 'require("./keep.cjs");',
+    // It also loads by a computed name, so the greedy guess is made (opaque-loads.ts).
+    [entry]: 'require("./keep.cjs");if(process.env.PLUGIN)require(process.env.PLUGIN);',
     [APP+'/keep.cjs']: 'module.exports=1;',
     [nm+'/a/package.json']: '{"name":"a","main":"index.ts"}',
     // An enum's emit is far larger than its source: the transform grows the root.

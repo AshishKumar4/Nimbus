@@ -8,7 +8,7 @@
  * Spliced into the node facet bodies (worker facets/manager.ts) and the
  * opencode runner, which wrap their SUPERVISOR binding with it.
  *
- * Size: 6.60 KiB
+ * Size: 6.61 KiB
  */
 export declare const SUPERVISOR_ANSWERING_SRC: string;
 //# sourceMappingURL=supervisor-answering.generated.d.ts.map

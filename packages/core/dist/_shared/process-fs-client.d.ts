@@ -313,6 +313,8 @@ export interface ProcessFsClient {
     noteFailure(failure: ProcessFsFailure): void;
     /** Bytes logged and not yet answered. */
     readonly pendingBytes: number;
+    /** The process has ended (its session refused it, or its invocation ran out of subrequests): what is logged now is refused. */
+    readonly ended: boolean;
     /**
      * The grant a mutation at `key` is decided under now (held, not shared),
      * or undefined: the session decides it. Counts the mutation toward taking

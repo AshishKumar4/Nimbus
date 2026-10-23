@@ -30,6 +30,8 @@ export declare function textChunkEnds(text: string): number[];
  * above them), a row per chunk and head, and a page of slack.
  */
 export declare function residentCellCost(cell: unknown): number;
+/** What one chunk row of `size` bytes costs as a fill writes it (cells putChunk), as residentCellCost counts a chunk. */
+export declare function residentChunkCost(size: number): number;
 /**
  * At most what holding a file of `size` bytes costs, read as bytes or as
  * text (residentCellCost, with text's smaller chunks): what a fill whose

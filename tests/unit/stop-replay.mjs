@@ -617,4 +617,44 @@ assert.match(guest(`
   console.log(JSON.stringify({ thrown }));
 `).thrown, /before it listened it appended to home\/user\/log, which a second run would append again/);
 
-console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it; a promotable run stops at its first listen and its run again makes its own changes');
+// ── A promotable one-shot stops at a synchronous read it does not hold, to run on as a resident ──
+const missed = guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
+  sr.arm(false, 'is not reading stdin');
+  sr.mutation(${WRITE});
+  sr.write('stdout', enc('before\\n'));
+  aborts(() => sr.miss('home/user/data/x.txt'));
+  console.log(JSON.stringify({ stopped }));
+`);
+assert.deepEqual([missed.stopped.kind, missed.stopped.path], ['miss', 'home/user/data/x.txt'], 'the read stops it, naming the file');
+assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify(missed.stopped)), NONCE, 1), null, 'a miss stop is a record the session believes');
+assert.equal(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify({ ...missed.stopped, path: undefined })), NONCE, 1), null, 'and one naming no file is not');
+// A run that cannot run again (something outside itself first, or no promotion) goes on to the read's failure.
+for (const [why, setup] of [['an effect', "sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true }); sr.arm(false); sr.effect('cpSpawn node');"],
+  ['a resident', 'sr.begin({ replay: null, abort, captured: false, nonce: NONCE }); sr.arm(false);']]) {
+  assert.equal(guest(`${setup} sr.miss('home/user/data/x.txt'); console.log(JSON.stringify({ stopped }));`).stopped, null, `${why}: no stop`);
+}
+// Its run again: the read of that file is its boundary, past which its output is its own.
+const missReplay = guest(`
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(missed.stopped.tape)}, read: 'home/user/data/x.txt', prefix: { stdout: ${JSON.stringify(b64('before\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.arm(false);
+  let echoed = null, early = null, after = null;
+  aborts(() => {
+    sr.mutation(${WRITE});
+    echoed = sr.write('stdout', enc('before\\n'));
+    early = sr.booted();
+    sr.read('home/user/other.txt');
+    sr.read('home/user/data/x.txt');
+    const chunk = sr.write('stdout', enc('after\\n'));
+    after = chunk && chunk.at;
+  });
+  console.log(JSON.stringify({ stopped, echoed, early, after, ended: sr.finish() }));
+`);
+assert.deepEqual(missReplay, { stopped: null, echoed: null, early: '', after: 7, ended: '' }, 'it retraces to the read, which passes its boundary');
+assert.match(guest(`
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(missed.stopped.tape)}, read: 'home/user/data/x.txt', prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.arm(false);
+  console.log(JSON.stringify({ ended: sr.finish() }));
+`).ended, /read \/home\/user\/data\/x\.txt synchronously, which its process did not hold, so Nimbus ran it again as a resident process, and it ended before that read/);
+
+console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it; a promotable run stops at its first listen, or at a synchronous read it does not hold, and its run again makes its own changes');

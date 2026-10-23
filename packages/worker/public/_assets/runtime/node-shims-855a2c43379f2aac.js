@@ -1555,7 +1555,9 @@ function __nimbusStartProcessFilesystem(root) {
     now: __nimbusOwnNow,
     umask: () => __processUmask,
     // A run replaying a stopped one asks no lease: when it asks, and what it is answered, are the run before's.
-    readLeases: () => !__nimbusReplay || __nimbusReplay.final,
+    // Nor does a runner, which runs only while a call holds it: it could not answer a lease's recall, nor a grant's.
+    readLeases: () => typeof __nimbusAnswersNoRecall === "undefined" && (!__nimbusReplay || __nimbusReplay.final),
+    ...(typeof __nimbusAnswersNoRecall === "undefined" ? {} : { holdsGrants: false }),
     // A mount without a change feed as its launch walked it, and changes on mounts its own (as node's fs answers them).
     walkedMounts: true,
     residency: {
@@ -4367,6 +4369,8 @@ const __nimbusErrnoDescription = {"E2BIG":"argument list too long","EPERM":"oper
 const { utf8Length: __nimbusUtf8Length } = (()=>{var c=new TextEncoder,f;function d(n){if(n.length>=256)return s(n);let e=n.length;for(let t=0;t<n.length;t++){let r=n.charCodeAt(t);if(!(r<128))if(r<2048)e+=1;else if(r>=55296&&r<=56319&&t+1<n.length){let o=n.charCodeAt(t+1);o>=56320&&o<=57343?(e+=2,t++):e+=2}else e+=2}return e}function s(n){f??=new Uint8Array(262144);let e=0;for(let t=0;t<n.length;){let r=c.encodeInto(t===0?n:n.slice(t),f);t+=r.read,e+=r.written}return e}
 
 return {"utf8Length":d};})();
+// fd 0 reading its `< file` (__nimbusTakeStdin): the program's read of stdin, not of a file.
+let __nimbusTakingStdinFile = false;
 const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
@@ -4638,13 +4642,29 @@ const __fsMod = (() => {
    * `syscall` of `p` (and `dest`). A synchronous call it could not answer
    * now names its async remedy (`asyncForm`): the program's way to the bytes.
    */
+  /**
+   * A synchronous access to a file's content where its miss would be raised
+   * (_rfError): a run again of a run that stopped at that miss has reached
+   * where it stopped (stop-replay.ts read). Not a speculation's, nor fd 0's
+   * read of a `< file` (__nimbusTakeStdin).
+   */
+  function _contentRead(absPath) {
+    if (__nimbusReplay && !globalThis.__nimbusVfsSpeculation && !__nimbusTakingStdinFile) __nimbusReplay.read(_strip(absPath));
+  }
   function _rfError(error, syscall, p, dest, asyncForm) {
     // What this fs judged itself (an fs error it made, a Node error such as ERR_FS_EISDIR) is already Node's.
     if (_madeHere.has(error) || (error !== null && typeof error === "object" && typeof error.code === "string" && __pathStartsWith(error.code, "ERR_"))) return error;
     const mapped = _mapSupervisorError(error, syscall, p, dest);
     if (mapped.code !== "EAGAIN") return mapped;
+    const named = typeof p === "string" || p instanceof URL;
     // On a mount, in a directory its launch did not list: the namespace cannot say what is there.
-    const mount = typeof __resident !== "undefined" && (typeof p === "string" || p instanceof URL) ? __resident.namespace.unknown(_strip(_resolve(p)), true, true) : null;
+    const mount = typeof __resident !== "undefined" && named ? __resident.namespace.unknown(_strip(_resolve(p)), true, true) : null;
+    // A content read this process does not hold: a one-shot that can be run again stops here, to run again
+    // as a resident, which holds the file (stop-replay.ts miss). Not a speculation's (its fetch repairs it),
+    // nor fd 0's read of a `< file`, which stops for stdin (__nimbusTakeStdin).
+    if (mount === null && named && (syscall === "open" || syscall === "read") && __nimbusReplay && !globalThis.__nimbusVfsSpeculation && !__nimbusTakingStdinFile) {
+      __nimbusReplay.miss(_strip(_resolve(p)));
+    }
     mapped.message = mount !== null
       ? "EAGAIN: " + syscall + " '" + String(p) + "'" + (dest === undefined ? "" : " -> '" + dest + "'") + ": " + mount
         + " is an asynchronous mount; this caller cannot wait for it" + (asyncForm ? "; " + asyncForm + " reads it" : "")
@@ -4660,22 +4680,22 @@ const __fsMod = (() => {
     try { return run(fs); }
     catch (error) { throw _rfError(error, syscall, p, dest, asyncForm); }
   }
-  /** `run` over the filesystem, awaited, its refusal Node's `syscall` of `p`. */
-  async function _async(syscall, p, run, dest) {
-    try { return await run(_rf()); }
-    catch (error) { throw _rfError(error, syscall, p, dest); }
-  }
   /**
-   * An awaited read: what the session holds now, as Node's read of a file
-   * another process just wrote finds it. The filesystem owes its barrier
-   * before it answers from what this process holds (inbound).
+   * `run` over the filesystem, awaited, its refusal Node's `syscall` of
+   * `p`: over the session as it is now, as Node's call finds what another
+   * process just did (the barrier first, which a trusted read lease answers
+   * without asking), and an operation in flight from its start to its
+   * answer, as Node's libuv request is, so the program is not taken for
+   * finished between the session calls it makes.
    */
-  async function _asyncRead(syscall, p, run) {
-    try {
-      const fs = _rf();
-      fs.inbound();
-      return await run(fs);
-    } catch (error) { throw _rfError(error, syscall, p); }
+  function _async(syscall, p, run, dest) {
+    return __nimbusTrackOp((async () => {
+      try {
+        const fs = _rf();
+        await fs.catchUp({ viaIo: true });
+        return await run(fs);
+      } catch (error) { throw _rfError(error, syscall, p, dest); }
+    })());
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -4777,6 +4797,7 @@ const __fsMod = (() => {
       return encoding ? bytes.toString(encoding) : bytes;
     }
     const absPath = _at(p);
+    _contentRead(absPath);
     const content = _readingDirectory(p, () => _sync("open", p, "fs.promises.readFile", (fs) => fs.readFile(absPath)));
     if (content === null) throw _fsErr("ENOENT", "open", p);
     return _readAnswer(absPath, content, opts);
@@ -4982,7 +5003,7 @@ const __fsMod = (() => {
     if (p === 0 || __NIMBUS_STDIN_PATHS.has(p)) return readFileSync(p, opts);
     if (p instanceof __FileHandle) return p.readFile(opts);
     const absPath = _at(p);
-    const content = await _readingDirectory(p, () => _asyncRead("open", p, (fs) => fs.readFile(absPath)));
+    const content = await _readingDirectory(p, () => _async("open", p, (fs) => fs.readFile(absPath)));
     if (content === null) throw _fsErr("ENOENT", "open", p);
     return _readAnswer(absPath, content, opts);
   }
@@ -5023,19 +5044,19 @@ const __fsMod = (() => {
   }
   async function _statAsync(p) {
     const absPath = _at(p);
-    const stat = await _asyncRead("stat", p, (fs) => fs.stat(absPath));
+    const stat = await _async("stat", p, (fs) => fs.stat(absPath));
     if (stat === null) throw _fsErr("ENOENT", "stat", p);
     return _stats(stat, false);
   }
   async function _lstatAsync(p) {
     const absPath = _at(p);
-    const stat = await _asyncRead("lstat", p, (fs) => fs.stat(absPath, { followSymlinks: false }));
+    const stat = await _async("lstat", p, (fs) => fs.stat(absPath, { followSymlinks: false }));
     if (stat === null) throw _fsErr("ENOENT", "lstat", p);
     return _stats(stat, false);
   }
   async function _readdirAsync(p, opts) {
     const absPath = _at(p);
-    const entries = await _asyncRead("scandir", p, (fs) => fs.readdir(absPath));
+    const entries = await _async("scandir", p, (fs) => fs.readdir(absPath));
     if (!opts?.withFileTypes || !entries.some((entry) => entry.type === "unknown")) return _listed(entries, absPath, opts);
     // An entry the listing could not type is lstat'ed, as Node's readdir does.
     const typed = [];
@@ -5052,16 +5073,16 @@ const __fsMod = (() => {
   async function _accessAsync(p, mode) {
     const absPath = _at(p);
     const requested = _accessMode(p, mode);
-    await _asyncRead("access", p, (fs) => fs.access(absPath, requested));
+    await _async("access", p, (fs) => fs.access(absPath, requested));
   }
   async function _realpathAsync(p, opts) {
     const absPath = _at(String(p));
-    const real = await _asyncRead("realpath", p, (fs) => fs.realpath(absPath));
+    const real = await _async("realpath", p, (fs) => fs.realpath(absPath));
     return _encodingOf(opts) === "buffer" ? __BufferMod.from(real) : real;
   }
   async function _readlinkAsync(p, opts) {
     const absPath = _at(p);
-    const target = await _asyncRead("readlink", p, async (fs) => (await fs.readlink(absPath)) ?? ((await fs.stat(absPath, { followSymlinks: false })) === null ? _absent : null));
+    const target = await _async("readlink", p, async (fs) => (await fs.readlink(absPath)) ?? ((await fs.stat(absPath, { followSymlinks: false })) === null ? _absent : null));
     if (target === _absent) throw _fsErr("ENOENT", "readlink", p);
     if (target === null) throw _fsErr("EINVAL", "readlink", p);
     return _encodingOf(opts) === "buffer" ? __BufferMod.from(target) : target;
@@ -5209,13 +5230,14 @@ const __fsMod = (() => {
     async read(buffer, offset, length, position) {
       this._assertOpen("read");
       const args = this._readArgs(buffer, offset, length, position);
-      const slice = await _asyncRead("read", this._path, (fs) => fs.read(this._id, args.pos, args.want));
+      const slice = await _async("read", this._path, (fs) => fs.read(this._id, args.pos, args.want));
       args.buffer.set(slice, args.off);
       return { bytesRead: slice.byteLength, buffer: args.buffer };
     }
     _readSync(buffer, offset, length, position) {
       this._assertOpen("read");
       const args = this._readArgs(buffer, offset, length, position);
+      _contentRead(_resolve(this._path));
       const slice = _sync("read", this._path, "fs.promises.FileHandle.read", (fs) => fs.read(this._id, args.pos, args.want));
       args.buffer.set(slice, args.off);
       return slice.byteLength;
@@ -5250,7 +5272,7 @@ const __fsMod = (() => {
       const parts = [];
       let total = 0;
       for (;;) {
-        const chunk = await _asyncRead("read", this._path, (fs) => fs.read(this._id, null, READ_STREAM_CHUNK_BYTES));
+        const chunk = await _async("read", this._path, (fs) => fs.read(this._id, null, READ_STREAM_CHUNK_BYTES));
         if (chunk.byteLength === 0) break;
         parts.push(chunk);
         total += chunk.byteLength;
@@ -5266,7 +5288,7 @@ const __fsMod = (() => {
     async appendFile(data, opts) { return this.writeFile(data, opts); }
     async stat(opts) {
       this._assertOpen("fstat");
-      return _stats(await _asyncRead("fstat", this._path, (fs) => fs.fstat(this._id)), Boolean(opts?.bigint));
+      return _stats(await _async("fstat", this._path, (fs) => fs.fstat(this._id)), Boolean(opts?.bigint));
     }
     _statSync(opts) {
       this._assertOpen("fstat");
@@ -5352,13 +5374,19 @@ const __fsMod = (() => {
   function openSync(path, flags, mode) {
     const absPath = _at(path);
     const fl = _openFlags(flags, mode);
-    const opened = _sync("open", path, "fs.promises.open", (fs) => fs.open(absPath, fl));
+    const opened = _sync("open", path, "fs.promises.open", (fs) => {
+      // A directory has no descriptor a synchronous caller reads here: EISDIR, as this fs has always answered it.
+      let found = null;
+      try { found = fs.stat(absPath); } catch {}
+      if (!fl.directory && found?.type === "directory") throw _fsErr("EISDIR", "open", path);
+      return fs.open(absPath, fl);
+    });
     return new __FileHandle(path, opened, fl).fd;
   }
 
   /** A ranged read of `absPath` (a read stream's window): clamped at its end, null when nothing is there. */
   function _readRangeAt(absPath, displayPath, pos, want) {
-    return _asyncRead("read", displayPath, (fs) => fs.readRange(absPath, pos, want));
+    return _async("read", displayPath, (fs) => fs.readRange(absPath, pos, want));
   }
 
   /**
@@ -6677,6 +6705,8 @@ const __fsMod = (() => {
         if (this._readableState.destroyed) return;
         const want = Math.min(this._readableState.highWaterMark, READ_BATCH_REQUEST_BYTES, this._last - this._pos + 1);
         const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
+        // Nothing there to open: Node's stream fails its open (ENOENT); one gone after it opened ends.
+        if (chunk === null && this.bytesRead === 0) throw _fsErr("ENOENT", "open", this.path);
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
         this.bytesRead += chunk.byteLength;
@@ -11316,11 +11346,14 @@ function __nimbusTakeStdin() {
     // synchronous read of it. One the launch did not stage stops the run, and
     // the next run reads it ahead (FacetManager.exec); a run that cannot stop
     // answers as any unstaged read does.
+    __nimbusTakingStdinFile = true;
     try {
       return { source: { bytes: __fsMod.readFileSync(file.path).subarray(file.offset) }, ended };
     } catch (err) {
       if (err && err.code === "EAGAIN") __nimbusStopForStdin("end", "read");
       throw err;
+    } finally {
+      __nimbusTakingStdinFile = false;
     }
   }
   if (__nimbusLiveInputChannel()) {
@@ -15747,10 +15780,17 @@ function __nimbusExplainCommonJSGlobalLike(e, url, hasTopLevelAwait) {
  */
 const __nimbusLoaderDecoder = new TextDecoder();
 function __readFileOr(path, fallback) {
+  const key = __vfsKey(path);
+  // The read a miss of it stops a run at, and its miss: a one-shot's, run again as a resident (stop-replay.ts).
+  const replayed = __nimbusReplay && !globalThis.__nimbusVfsSpeculation ? __nimbusReplay : null;
+  replayed?.read(key);
   try {
-    const bytes = __nimbusResidentFs().synchronous.readFile("/" + __vfsKey(path));
+    const bytes = __nimbusResidentFs().synchronous.readFile("/" + key);
     return bytes === null ? fallback : __nimbusLoaderDecoder.decode(bytes);
-  } catch { return fallback; }
+  } catch (error) {
+    if (error && error.code === "EAGAIN") replayed?.miss(key);
+    return fallback;
+  }
 }
 // A name's stat as resolution asks it: undefined where there is none, and
 // the filesystem's refusal (EAGAIN: a mount it cannot answer for) thrown,
@@ -16563,6 +16603,8 @@ const __nimbusCommonJsPending = new __NimbusSafeMap();
 // its cell compiled, nothing of it run.
 function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, esModule) {
   if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(__vfsKey(String(resolvedPath)));
+  // A module's load reads its file, held in the map or not: where a miss of it stopped the run before (__readFileOr).
+  __nimbusReplay?.read(__vfsKey(String(resolvedPath)));
   const filename = "/" + __vfsKey(resolvedPath);
   const normalizedPath = __pathSlice(filename, 1);
   // A query's or fragment's import is a job of its own, kept by its URL.
@@ -18679,6 +18721,27 @@ async function __nimbusStageImport(specifier, parentUrl) {
     if (unheld.length > 0) await __nimbusReadAhead(unheld, quota);
   }
   return resolution;
+}
+// What a runner call's code requires and imports statically (FacetManager
+// runnerRun), with what each of those modules requests in turn, read ahead
+// before the code runs, as an import() reads ahead (__nimbusStageImport): its
+// synchronous require then finds the files held. An import() in the code
+// reads ahead when it runs. Nothing rests on this: a request that does not
+// resolve, or a closure past the bound, is left to the code's own require,
+// which reports it as any refused read.
+async function __nimbusStageRequests(text, importer) {
+  const requests = __nimbusModuleRequests(importer, text, true).requests;
+  for (let i = 0; i < requests.length; i++) {
+    const request = requests[i];
+    if (request.kind === "dynamic") continue;
+    const quota = __nimbusPrefetchQuota(request.specifier);
+    const stager = __nimbusImportStager(quota);
+    if (stager === null) return;
+    try {
+      const target = await __nimbusHydrated(() => __nimbusRequestTarget(request.kind, request.specifier, importer), quota);
+      if (target !== null) await stager.closure(target);
+    } catch {}
+  }
 }
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
   return Promise.resolve().then(async () => {

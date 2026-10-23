@@ -124,9 +124,9 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
   assert.equal(cacheBytes(), 0, 'an entry larger than the byte bound must not be retained');
 }
 
-// An entry built at an older revision can never be served again — the lookup
-// demands an exact revision match — so it is retained garbage from the first
-// write after it was admitted. It goes before the build that replaces it
+// An entry is served again after writes to nothing its build read
+// (launch-reads.ts), so it is kept across them. A write to a file it read
+// makes it unservable: it goes before the build that replaces it
 // allocates, so the two filesystem graphs never co-reside.
 {
   const stale = new FacetManager(
@@ -160,9 +160,17 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
     cwd: '/home/user/small',
     captureOutput: true,
   });
+  assert.ok(cacheBytes() > retained, `a write to nothing the large build read keeps its entry; cache holds ${cacheBytes()} bytes`);
+
+  staleFs.writeFile('home/user/large/data.js', 'module.exports = 2;\n', { mode: 0o644 });
+  await stale.exec("require('./data.js');", {
+    filename: '/home/user/small/run.js',
+    cwd: '/home/user/small',
+    captureOutput: true,
+  });
   assert.ok(
     cacheBytes() < retained / 2,
-    `the unservable ${retained}-byte entry survived a revision change; cache holds ${cacheBytes()} bytes`,
+    `the unservable ${retained}-byte entry survived a write to a file it read; cache holds ${cacheBytes()} bytes`,
   );
 }
 

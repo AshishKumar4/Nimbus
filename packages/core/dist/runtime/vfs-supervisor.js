@@ -64,8 +64,13 @@ export async function supervisorAnswer(call) {
         return { refusal };
     }
 }
-/** What answeringSupervisor's own carries: a supervisor already answering, which a second pass hands back as it is. */
-const ANSWERING = Symbol('answering supervisor');
+/**
+ * What answeringSupervisor's own carries: a supervisor already answering,
+ * which a second pass hands back as it is. Registered, not made: the
+ * launch's copy of this module and the store bundle's (vfs/resident) agree
+ * on it, or the second would answer through the first's `answer` again.
+ */
+const ANSWERING = Symbol.for('nimbus.answering-supervisor');
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor) {
     return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, 'answer') === 'function';
@@ -153,19 +158,21 @@ function toldLive(call, live) {
  * (supervisorFilesystem over the same stub). Each wave call is told to `live`
  * as it is made, as the authority tells its own.
  */
-export function supervisorSession(stub, authority, live) {
+export function supervisorSession(stub, authority, live, holdsGrants = true) {
     const waves = stub;
+    const grants = {
+        acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+        release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+        awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+        recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+    };
     return {
         // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
         openWriter: (first) => toldLive(waves.openWaveWriter(first), live),
         writeBatchStream: (stream, fence, owner) => toldLive(owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner), live),
         retireWriter: async (writer) => { await toldLive(waves.retireWaveWriter(writer), live); },
         published: async (escape) => { await toldLive(escape ? waves.fsPublished({ escape: true }) : waves.fsPublished(), live); },
-        grants: {
-            acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-            release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-            awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-            recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-        },
+        // A process that cannot answer a recall (holdsGrants false) holds none: the session decides each of its changes.
+        ...(holdsGrants ? { grants } : {}),
     };
 }

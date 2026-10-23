@@ -12,68 +12,40 @@
 // and partial reads depend on.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
+import { createAuthority } from './lib/resident-body.mjs';
+import { recording, sessionShims } from './lib/session-shims.mjs';
+const checks = recording();
 
 /** Largest single range read the shim is allowed to request from the supervisor. */
 let maxRangeLength = 0;
 let rangeCalls = 0;
+/** Told of each range read the session is asked for, before it is asked. */
+let observe = null;
 
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? new TextDecoder().decode(b) : null; },
-  readFileBytes: (p) => bridge.readFile(p),
-  stat: (p) => bridge.stat(p),
-  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  exists: async (p) => (await bridge.stat(p)) !== null,
-  readdir: (p) => bridge.readdir(p),
-  fsReadRange: (p, o, l) => {
-    rangeCalls++;
-    if (l > maxRangeLength) maxRangeLength = l;
-    return bridge.readRange(p, o, l);
-  },
-  fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
-  fsTruncate: (p, s) => bridge.truncate(p, s),
-  writeFile: (p, c) => bridge.writeFile(p, c),
-};
+const authority = createAuthority();
+const { fs, stream } = sessionShims(authority, {
+  cwd: '/home/user',
+  overrides: (call) => ({
+    fsReadRange: (...args) => {
+      rangeCalls++;
+      if (args[2] > maxRangeLength) maxRangeLength = args[2];
+      observe?.();
+      return call('fsReadRange', args);
+    },
+  }),
+  tail: ';return { fs: __fsMod, stream: __streamMod };',
+});
 
-const code = generateShimsCode();
-const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + code + '\n;return { fs: __fsMod, stream: __streamMod };',
-);
-const sandbox = factory(
-  {},
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user',
-  [],
-  {},
-  '/home/user/main.mjs',
-  '/home/user',
-);
-const fs = sandbox.fs;
-
-// ── fixtures: live-only files, never placed in __vfsBundle ───────────────
-vfs.mkdir('home/user', { recursive: true });
+// ── fixtures: live-only files, written after the namespace listed the session ──
 const SMALL = new TextEncoder().encode('hello-from-the-vfs');
-vfs.writeFile('home/user/small.txt', SMALL);
+authority.kfs.writeFile('home/user/small.txt', SMALL);
 
 // 5 MiB + a tail, so the stream must issue many bounded reads and the final
 // partial chunk is exercised.
 const BIG_LEN = 5 * 1024 * 1024 + 1234;
 const BIG = new Uint8Array(BIG_LEN);
 for (let i = 0; i < BIG_LEN; i++) BIG[i] = (i * 7 + 13) & 0xff;
-vfs.writeFile('home/user/big.bin', BIG);
+authority.kfs.writeFile('home/user/big.bin', BIG);
 
 const collect = (stream) => new Promise((resolve, reject) => {
   const chunks = [];
@@ -82,15 +54,15 @@ const collect = (stream) => new Promise((resolve, reject) => {
   stream.on('error', reject);
 });
 
-const drain = (stream) => new Promise((resolve, reject) => {
+const drain = (source) => new Promise((resolve, reject) => {
   const chunks = [];
-  const sink = new sandbox.stream.Writable({
+  const sink = new stream.Writable({
     write(chunk, encoding, cb) { chunks.push(chunk); cb(); },
   });
   sink.on('finish', () => resolve(concat(chunks)));
   sink.on('error', reject);
-  stream.on('error', reject);
-  stream.pipe(sink);
+  source.on('error', reject);
+  source.pipe(sink);
 });
 
 function concat(chunks) {
@@ -159,14 +131,12 @@ assert.equal(maxRangeLength,1048576,'ReadStream honours the requested bounded wi
 assert.ok(rangeCalls<=7,`5MiB needs at most seven range replies, not ${rangeCalls}`);
 {
   let requests=0,otherTurn=false,overtook=0;
-  const readRange=supervisor.fsReadRange;
-  supervisor.fsReadRange=(...args)=>{
+  observe=()=>{
     if(++requests===1)setTimeout(()=>{otherTurn=true;},0);
     else if(!otherTurn)overtook++;
-    return readRange(...args);
   };
   await collect(fs.createReadStream('/home/user/big.bin',{highWaterMark:1048576}));
-  supervisor.fsReadRange=readRange;
+  observe=null;
   assert.equal(overtook,0,'a stream yields its turn between complete-file windows, before issuing another read');
 }
 
@@ -195,10 +165,10 @@ assert.ok(rangeCalls<=7,`5MiB needs at most seven range replies, not ${rangeCall
 
 // 7. A missing file emits 'error' — it must not hang and must not throw
 //    synchronously out of createReadStream.
-await assert.rejects(
+await checks.check('a missing file emits ENOENT', () => assert.rejects(
   withTimeout(collect(fs.createReadStream('/home/user/nope.bin')), 5000, 'missing file'),
   /ENOENT/,
-);
+));
 
 // 8. fs.ReadStream (the exported class graceful-fs re-parents) behaves the same.
 assertBytesEqual(
@@ -213,7 +183,7 @@ assertBytesEqual(
 {
   const events = [];
   const chunks = [];
-  const res = new sandbox.stream.Writable({ write(chunk, encoding, cb) { chunks.push(chunk); cb(); } });
+  const res = new stream.Writable({ write(chunk, encoding, cb) { chunks.push(chunk); cb(); } });
   const served = new Promise((resolve) => res.on('finish', resolve));
   fs.createReadStream('/home/user/small.txt', { flags: 'r', mode: 0o666, start: 0, end: SMALL.length - 1 })
     .on('data', (c) => events.push(`data:${c.length}`))
@@ -224,7 +194,7 @@ assertBytesEqual(
   assertBytesEqual(concat(chunks), SMALL, "node-static's pipe");
   assert.deepEqual(events, [`data:${SMALL.length}`, 'end', 'close']);
 
-  const kept = new sandbox.stream.Readable({ autoDestroy: false, read() { this.push(null); } });
+  const kept = new stream.Readable({ autoDestroy: false, read() { this.push(null); } });
   let closed = false;
   kept.on('close', () => { closed = true; });
   await withTimeout(collect(kept), 5000, 'autoDestroy: false');
@@ -232,4 +202,5 @@ assertBytesEqual(
   assert.equal(closed, false, 'a stream that opts out of autoDestroy stays open after end');
 }
 
+checks.finish();
 console.log('node-shims-read-stream: OK');

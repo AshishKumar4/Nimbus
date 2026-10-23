@@ -78,7 +78,8 @@ assert.equal(
       name: 'app',
       dependencies: { subpathed: '1', mainly: '1', unreached: '1', 'native-shard': '1' },
     }),
-    'home/user/app/entry.js': "require('subpathed/sub');\nrequire('mainly');",
+    // The last line loads by a computed name, so the greedy guess is made (opaque-loads.ts).
+    'home/user/app/entry.js': "require('subpathed/sub');\nrequire('mainly');\nif (process.env.PLUGIN) require(process.env.PLUGIN);",
     // Reached ONLY through a subpath: its main graph must stay out.
     [`${nm}/subpathed/package.json`]: JSON.stringify({
       name: 'subpathed', main: 'dist/main.js', module: 'dist/es/main.js',

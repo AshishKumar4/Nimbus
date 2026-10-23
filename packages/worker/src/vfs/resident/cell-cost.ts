@@ -82,6 +82,9 @@ export function textChunkEnds(text: string): number[] {
   return arrayCopy(ends);
 }
 
+/** SQLite's page size, the storage's (its default, which Durable Object storage keeps): a row written may open one. */
+const SQLITE_PAGE_BYTES = 4096;
+
 /**
  * What holding a cell costs the database: its bytes (a text cell's UTF-8
  * length) on overflow pages (1% over, for page headers and the b-tree pages
@@ -91,7 +94,12 @@ export function residentCellCost(cell: unknown): number {
   const isText = typeof cell === 'string';
   const size = isText ? utf8Length(cell) : typedArrayByteLength(residentBytes(cell));
   const chunks = isText ? textChunkEnds(cell).length : mathMax(1, mathCeil(size / RESIDENT_CHUNK_BYTES));
-  return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+  return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + SQLITE_PAGE_BYTES;
+}
+
+/** What one chunk row of `size` bytes costs as a fill writes it (cells putChunk), as residentCellCost counts a chunk. */
+export function residentChunkCost(size: number): number {
+  return mathCeil(size * 1.01) + RESIDENT_ROW_BYTES + SQLITE_PAGE_BYTES;
 }
 
 /**

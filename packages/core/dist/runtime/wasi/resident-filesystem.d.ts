@@ -116,6 +116,12 @@ export interface ResidentNamespace {
     /** Return what `reserve` charged. */
     release(bytes: number): void;
     /**
+     * Keep `bytes` as `key`'s content at `revision`, where its row is still at
+     * it and there is room, as a fill of it would: the bytes this process made
+     * of the file, which the session answered it holds at that revision.
+     */
+    keep?(key: string, revision: number, bytes: Uint8Array): void;
+    /**
      * `listener` is told of each row the view takes in (a barrier's or an
      * answer's delta, a listing, a lookup), by its key and its file's number
      * (`dev`, `ino`, as `entry` has them), synchronously within the admission:
@@ -328,12 +334,14 @@ export interface ResidentDelegation {
     /** Told of each change the process's client logs (HolderOptions.logged). */
     readonly logged?: HolderOptions['logged'];
     /**
-     * A mount that states no change model is answered as the store's walk of
-     * it left it (its launch named it), and what this process changes on a
-     * mount (but the kernel's /dev and /proc) is decided here, staying its own
-     * where the view never hears of it: node's, as its fs always answered.
-     * Without it such a mount is the session's to answer, and every mount's
-     * changes the session's to decide.
+     * A mount's rows are answered as the store's walk of it left it (its launch
+     * named it, and a fed mount's deltas since), a feedless mount's whatever
+     * its feed would say, and what this process changes on a mount (but the
+     * kernel's /dev and /proc) is decided here, staying its own where the view
+     * never hears of it: node's, as its fs always answered. Without it a
+     * feedless mount, or a moving feed's rows under a trusted read lease, are
+     * the session's to answer, and every mount's changes the session's to
+     * decide.
      */
     readonly walkedMounts?: boolean;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];

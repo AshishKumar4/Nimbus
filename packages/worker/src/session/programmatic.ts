@@ -23,7 +23,9 @@ import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import { SessionProcessLogsOptionsSchema, type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult, type SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { RunnerSpec } from '../facets/runners.js';
+import { facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { parseRunnerId, SessionProcessLogsOptionsSchema, type SessionRunnerOptions, type SessionRunnerResult, type SessionRunnerRunOptions, type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult, type SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
@@ -51,6 +53,8 @@ export interface ProgrammaticShell {
 type ProgrammaticContext = DurableObjectState;
 
 interface ProgrammaticFacetManager {
+  runnerRun(owner: string, id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+  runnerClose(owner: string, id: string): boolean;
   kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
   closeLaunches(): Promise<void>;
   hasResidentProcess(pid: number): boolean;
@@ -625,6 +629,60 @@ export async function rpcRunCode(
   if (language === 'python') return rpcExec(self, `python -c ${singleQuote(code)}`, options);
   if (language === 'ruby') return rpcExec(self, `ruby -e ${singleQuote(code)}`, options);
   return rpcExec(self, `node -e ${singleQuote(code)}`, options);
+}
+
+/** What running and closing a session's runners asks of it. */
+export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager'>;
+
+/**
+ * Run `code` in runner `id` of `owner` (FacetManager.runnerRun): a hosted
+ * session's scope has runners of its own; every other caller, the
+ * workspace's (''). A runner made at this call takes the session shell's
+ * cwd and exported environment for what `runner` leaves out, as a named
+ * shell starts from them, and runs as the session's user unless the caller
+ * names another.
+ */
+export async function rpcRunnerRun(
+  self: RunnersHost,
+  owner: string,
+  id: string,
+  code: string,
+  runner: SessionRunnerOptions = {},
+  options: SessionRunnerRunOptions = {},
+): Promise<SessionRunnerResult> {
+  const name = parseRunnerId(id);
+  if (typeof code !== 'string') throw new TypeError('runner: code must be a string');
+  if (runner.cwd !== undefined && (typeof runner.cwd !== 'string' || !runner.cwd.startsWith('/'))) {
+    throw new TypeError(`runner: cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(runner.cwd)}`);
+  }
+  if (runner.env !== undefined && !Object.values(runner.env).every((value) => typeof value === 'string')) {
+    throw new TypeError('runner: env must map names to strings');
+  }
+  if (runner.execId !== undefined) parseExecId(runner.execId);
+  const cred = runner.cred === undefined ? CRED_SESSION_USER : requireVfsCred(runner.cred, 'runner');
+  // The most a process facet may use, and the longest a timer can wait (a longer delay fires at once).
+  for (const [limit, value, most] of [['timeoutMs', options.timeoutMs, 2 ** 31 - 1], ['cpuMs', options.cpuMs, facetLimits('process').cpuMs]] as const) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > most)) {
+      throw new TypeError(`runner: ${limit} must be a whole number of ms from 1 to ${most}, got ${value}`);
+    }
+  }
+  await self.ensureRuntimeReady();
+  const facets = self.facetManager;
+  if (!facets) throw new Error('runner: the session has no process manager');
+  return facets.runnerRun(owner, name, runner, () => {
+    const shell = self.runtimeWorkspace?.shell;
+    const cwd = runner.cwd ?? shell?.getCwd();
+    const env = runner.env ?? shell?.getExportedEnv();
+    if (cwd === undefined || env === undefined) throw new Error('runner: the session has no shell to take a default cwd and environment from; name them');
+    return { cwd, env: { ...env }, cred, ...(runner.execId === undefined ? {} : { execId: runner.execId }) };
+  }, code, options);
+}
+
+/** End runner `id` of `owner` (FacetManager.runnerClose): whether there was one. */
+export async function rpcRunnerClose(self: RunnersHost, owner: string, id: string): Promise<{ closed: boolean }> {
+  const name = parseRunnerId(id);
+  await self.ensureRuntimeReady();
+  return { closed: self.facetManager?.runnerClose(owner, name) === true };
 }
 
 export async function rpcInstallRuntime(

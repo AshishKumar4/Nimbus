@@ -19,10 +19,11 @@
 // killed, nothing under node_modules may be bundled into the config, and the
 // config loads on the first run or the run fails naming what it was refused,
 // which the next run then has. (This config then stops at Tailwind v4's
-// oxide, which has no Workers-compatible build, and says so.) And a program
-// that swallows a refused synchronous read, then finds the path with
-// existsSync, must still fail, naming the file: the run built on a read that
-// did not happen.
+// oxide, which has no Workers-compatible build, and says so.) A program that
+// swallows a synchronous read of a file its launch did not hold gets the
+// bytes, run again as a resident process (D2.1); one that cannot be run again
+// (it appended to a file first) is refused the read, and must still fail,
+// naming the file: the run built on a read that did not happen.
 //
 // The serve itself is frameworks/remix-real's (the relaunched CLI is a child
 // process, which does not run resident yet, and whose output does not reach
@@ -86,10 +87,13 @@ try {
       && first.externals.some((e) => e.includes('@react-router/dev')) && first.externals.some((e) => e.includes('@tailwindcss/vite')),
     JSON.stringify(first ?? loadOut.slice(-600)));
   // What the program then loads of the config's imports is its own first run:
-  // it loads, or it fails naming the reads it was refused, and the next run has them.
+  // it loads, or it fails naming what its launch did not carry (the reads it
+  // was refused; or, its reads served by a run again as a resident, a
+  // binding no module it staged names), and the next run has them.
   const refused = (out) => /Failing rather than reporting a result built on them:/.test(out);
-  a.check('the config loads on its first run, or the run fails naming what it was refused',
-    (load.exitCode === 0 && first?.loaded === true) || (load.exitCode !== 0 && refused(loadOut)),
+  const notCarried = (out) => refused(out) || /ERR_NIMBUS_BINDING_NOT_CARRIED/.test(out);
+  a.check('the config loads on its first run, or the run fails naming what its launch did not carry',
+    (load.exitCode === 0 && first?.loaded === true) || (load.exitCode !== 0 && notCarried(loadOut)),
     JSON.stringify({ exit: load.exitCode, out: loadOut.slice(-1500) }));
   if (load.exitCode !== 0) {
     const again = await t.run(`cd ${APP} && node --conditions=development config-load.mjs 2>&1`, 240_000);
@@ -103,22 +107,29 @@ try {
       JSON.stringify(againOut.slice(-1500)));
   }
 
-  // A refused read the program swallows, then finds with existsSync.
-  await t.run('mkdir -p /home/user/elsewhere && echo kept > /home/user/elsewhere/data.txt', 10_000);
+  // A read the program swallows, then finds with existsSync: once as a run
+  // that can run again, once as one that appended to a file first.
+  await t.run('mkdir -p /home/user/elsewhere && echo kept > /home/user/elsewhere/data.txt && echo kept > /home/user/elsewhere/other.txt', 10_000);
   await t.run(heredocCommand('/home/user/rx/swallow.js', [
     "const fs = require('fs');",
-    "const target = ['', 'home', 'user', 'elsewhere', 'data' + '.txt'].join('/');",
+    "if (process.argv[3] === 'append') fs.appendFileSync('/home/user/rx/swallow.log', 'x');",
+    "const target = ['', 'home', 'user', 'elsewhere', process.argv[2] + '.txt'].join('/');",
     "let body = 'FALLBACK';",
     "try { body = fs.readFileSync(target, 'utf8'); } catch {}",
     "console.log('SWALLOW=' + JSON.stringify({ body, there: fs.existsSync(target) }));",
   ].join('\n')), 10_000);
-  const swallow = await t.run('cd /home/user/rx && node swallow.js 2>&1', 60_000);
+  const swallow = await t.run('cd /home/user/rx && node swallow.js data 2>&1', 60_000);
   const swallowOut = stripAnsi(swallow.output);
+  a.check('a swallowed read of a file its launch did not hold gets the bytes',
+    swallowOut.includes('SWALLOW={"body":"kept\\n","there":true}') && swallow.exitCode === 0,
+    JSON.stringify({ exit: swallow.exitCode, out: swallowOut.slice(-800) }));
+  const refusedRun = await t.run('cd /home/user/rx && node swallow.js other append 2>&1', 60_000);
+  const refusedOut = stripAnsi(refusedRun.output);
   // The premise is part of the claim: the read was refused and the path is there.
   a.check('a swallowed refused read fails the run, naming the file',
-    swallowOut.includes('SWALLOW={"body":"FALLBACK","there":true}') && swallow.exitCode !== 0
-      && swallowOut.includes('/home/user/elsewhere/data.txt'),
-    JSON.stringify({ exit: swallow.exitCode, out: swallowOut.slice(-800) }));
+    refusedOut.includes('SWALLOW={"body":"FALLBACK","there":true}') && refusedRun.exitCode !== 0
+      && refusedOut.includes('/home/user/elsewhere/other.txt'),
+    JSON.stringify({ exit: refusedRun.exitCode, out: refusedOut.slice(-800) }));
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);

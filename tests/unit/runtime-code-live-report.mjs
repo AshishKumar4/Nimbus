@@ -11,6 +11,8 @@ import {
 } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 
 const { flush } = await importModuleSet({
   'main.js': `${COMMONJS_CELL_IMPORTS}
@@ -22,14 +24,20 @@ export const flush = __nimbusFlushRuntimeCode;`,
   [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: { cjs: nodeFacetSources('').interpreterPrimordials },
 }, 'main.js');
 
-// The shims' residency ledger and its settle, as node-shims.ts publishes them:
-// the repair of `absent` is in flight and proves it absent when it lands.
-globalThis.__nimbusVfsResidencyMisses = new Set(['home/user/present.txt', 'home/user/absent.txt']);
+// The process's filesystem, started over a session: a read it is refused is
+// its miss until a fault-in lands or the session says the name is gone.
+const authority = createAuthority();
+authority.kfs.writeFile('home/user/present.txt', 'present');
+authority.kfs.writeFile('home/user/absent.txt', 'absent');
+const { fs, rf } = sessionShims(authority, { cwd: '/home/user', tail: ';return { fs: __fsMod };' });
 globalThis.__nimbusModuleMisses = new Set(['home/user/node_modules/late/index.js']);
-globalThis.__nimbusVfsResidencySettle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  globalThis.__nimbusVfsResidencyMisses.delete('home/user/absent.txt');
-};
+
+// Both reads are refused, and both fault-ins are out when the session deletes one of them.
+assert.throws(() => fs.readFileSync('/home/user/present.txt'), { code: 'EAGAIN' });
+assert.throws(() => fs.readFileSync('/home/user/absent.txt'), { code: 'EAGAIN' });
+authority.kfs.unlink('home/user/absent.txt');
+await rf.catchUp();
+
 const reports = [];
 await flush({ async reportRuntimeCode(entries, executedModules, dataReads) { reports.push({ entries, executedModules, dataReads }); } });
 assert.deepEqual(reports, [{
@@ -37,7 +45,5 @@ assert.deepEqual(reports, [{
   executedModules: ['home/user/node_modules/late/index.js'],
   dataReads: ['home/user/present.txt'],
 }], 'settled first; executed modules and data reads reported apart');
-delete globalThis.__nimbusVfsResidencyMisses;
 delete globalThis.__nimbusModuleMisses;
-delete globalThis.__nimbusVfsResidencySettle;
 console.log('runtime-code-live-report: ok');

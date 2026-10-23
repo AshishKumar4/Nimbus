@@ -19,7 +19,7 @@ import {
 import type { FsReadBatchRequest } from '../../session/rpc.js';
 import type { Admission } from './admission.js';
 import type { Cells, ResidentFill } from './cells.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
+import { namespaceRowBytes, residentBytes, residentCellCost, residentChunkCost } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, nsKey, type Learning, type Namespace } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
@@ -302,11 +302,21 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         batch[batch.length] = range;
         at++;
       }
-      // N18: room for the batch first; what the ledger will not admit is read
-      // through the session instead of held.
-      if (!(await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES))) {
-        for (let i = 0; i < batch.length; i++) failedPaths.add(batch[i].path);
-        continue;
+      // N18: room for the batch first, as each chunk it writes is admitted
+      // (residentChunkCost); what the ledger will not admit is read through
+      // the session instead of held.
+      let room = 0;
+      for (let i = 0; i < batch.length; i++) room += residentChunkCost(batch[i].length);
+      if (!(await admission.ensureRoom(room))) {
+        // What was granted admits the batch's front, in order, as a fill of each would be; the rest is not held.
+        let admitted = 0;
+        for (let fits = 0; admitted < batch.length; admitted++) {
+          fits += residentChunkCost(batch[admitted].length);
+          if (!admission.fits(fits, false)) break;
+        }
+        for (let i = admitted; i < batch.length; i++) failedPaths.add(batch[i].path);
+        if (admitted === 0) continue;
+        batch.length = admitted;
       }
       let results;
       try {

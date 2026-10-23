@@ -67,6 +67,8 @@ export interface HolderStore {
   /** As ProvisionalHost.mounted and unreported: a name on a mount, and one the view never hears a change of. */
   mounted?(key: string): boolean;
   unreported?(key: string): boolean;
+  /** As ProvisionalHost.keep: bytes the session holds of `key` at `revision`, the view's to keep. */
+  keep?(key: string, revision: number, bytes: Uint8Array): void;
 }
 
 export interface HolderOptions {
@@ -495,6 +497,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     settled: (key, generation) => names.settled(key, generation),
     ...(store.mounted === undefined ? {} : { mounted: (key: string) => store.mounted!(key) }),
     ...(store.unreported === undefined ? {} : { unreported: (key: string) => store.unreported!(key) }),
+    ...(store.keep === undefined ? {} : { keep: (key: string, row: ResidentEntry, bytes: Uint8Array) => store.keep!(key, row.revision, bytes) }),
     absorb: (key, file) => {
       const decision = decided.get(key);
       if (!decision || decision.dev !== file.dev || decision.ino !== file.ino) return undefined;

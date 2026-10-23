@@ -13,13 +13,14 @@ const supervisor = {
   },
 };
 const factory = new Function(
-  '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   generateShimsCode() + '\nreturn { http: builtins.http };',
 );
-const { http } = factory({}, {}, {}, supervisor,
+const { http } = factory({}, {}, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
 let acquires = 0, releases = 0;
-globalThis.__nimbusVfsAcquireBarrier = async () => { acquires++; };
+// A timer's resumption barrier takes no arguments; the barrier a fetch or a body takes is given what it was delivered and whether I/O arrived. Only the latter is the request's.
+globalThis.__nimbusVfsAcquireBarrier = async (...barrier) => { if (barrier.length > 0) acquires++; };
 globalThis.__nimbusVfsReleaseBarrier = async () => { releases++; };
 const server = http.createServer((request, response) => {
   assert.ok(request instanceof http.IncomingMessage);

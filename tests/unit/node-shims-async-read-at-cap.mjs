@@ -17,62 +17,33 @@
 // holds text a fault-in filled and the async read returns bytes.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+import { createAuthority } from './lib/resident-body.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 
 const dir = '/home/user/reread';
 const FILES = { 'App.tsx': 'export const App = () => <div className="text-red-500" />;\n'.repeat(40), 'main.tsx': 'import { App } from "./App";\n'.repeat(60) };
-vfs.mkdir(dir, { recursive: true });
-for (const [name, body] of Object.entries(FILES)) vfs.writeFile(`${dir}/${name}`, enc.encode(body));
+const authority = createAuthority();
+authority.kfs.mkdir(dir.slice(1), { recursive: true, mode: 0o755 });
+for (const [name, body] of Object.entries(FILES)) authority.kfs.writeFile(`${dir.slice(1)}/${name}`, body);
 
 // The session's ledger grants what is asked until the store holds the sources; then it has none left,
 // and the store's allowance is what it holds.
 let granting = true;
-const supervisor = {
-  readFile: async (path) => {
-    const bytes = await bridge.readFile(path);
-    return bytes ? dec.decode(bytes) : null;
+const { fs, room, full, rf } = sessionShims(authority, {
+  cwd: dir,
+  overrides: {
+    fsStorageGrant: async (_facet, want) => ({ granted: granting ? want : 0 }),
   },
-  stat: (path) => bridge.stat(path),
-  lstat: (path) => bridge.stat(path, { followSymlinks: false }),
-  readdir: (path) => bridge.readdir(path),
-  exists: async (path) => (await bridge.stat(path)) !== null,
-  fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
-  fsStorageGrant: async (_facet, want) => ({ granted: granting ? want : 0 }),
-};
-
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
-    + '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
+  tail: '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
     + '\n;const allow = (grant) => __resident.admission.setStorage({ facet: "proc-slot-0", grant }, __supervisor);'
-    + '\n;return { fs: __fsMod, held: (path) => __resident.cells.has(path), room: () => allow(1 << 20), full: () => allow(0),'
-    + ' synced: (path, text) => __resident.cells.fill(path, text, __nimbusResidentModule.rootOf(__resident.coherence.cursor()).cursor) };',
-);
-const statOf = (size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gid: 1000 });
-const metadata = { 'home/user/reread': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
-for (const [name, body] of Object.entries(FILES)) metadata[`home/user/reread/${name}`] = statOf(body.length);
-const { fs, held, room, full, synced } = (declareNamespace({ metadata, manifest: { 'home/user': ['reread'], 'home/user/reread': Object.keys(FILES) } }), factory(
-  {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, `${dir}/entry.js`, dir,
-));
+    + '\n;return { fs: __fsMod, room: () => allow(1 << 20), full: () => allow(0) };',
+});
 
-// App.tsx is held as text, as the boot's synchronize fills a planned source;
-// main.tsx faults in, as bytes.
+// App.tsx and main.tsx are faulted in by their first synchronous reads.
 room();
-assert.ok(synced('home/user/reread/App.tsx', FILES['App.tsx']), 'App.tsx is filled as text');
+assert.throws(() => fs.readFileSync(`${dir}/App.tsx`, 'utf8'), { code: 'EAGAIN' }, 'App.tsx is not held yet');
 assert.throws(() => fs.readFileSync(`${dir}/main.tsx`, 'utf8'), { code: 'EAGAIN' });
-await globalThis.__nimbusVfsResidencySettle();
+await rf.misses();
 for (const [name, body] of Object.entries(FILES)) assert.equal(fs.readFileSync(`${dir}/${name}`, 'utf8'), body, `${name} is held`);
 
 // Now the store is at its cap, and the ledger has nothing more.
@@ -80,12 +51,13 @@ granting = false;
 full();
 for (const [name, body] of Object.entries(FILES)) {
   assert.equal(await fs.promises.readFile(`${dir}/${name}`, 'utf8'), body, `${name} reads asynchronously`);
-  assert.ok(held(`home/user/reread/${name}`), `${name} is still held after an async read of the same bytes, at the cap`);
-  assert.equal(fs.readFileSync(`${dir}/${name}`, 'utf8'), body, `${name} still reads synchronously`);
+  assert.equal(fs.readFileSync(`${dir}/${name}`, 'utf8'), body, `${name} still reads synchronously, held at the cap`);
 }
 
 // A changed file's async read still replaces what the store held.
-vfs.writeFile(`${dir}/main.tsx`, enc.encode('changed'));
+await authority.peer.writeFile(`${dir.slice(1)}/main.tsx`, 'changed');
 assert.equal(await fs.promises.readFile(`${dir}/main.tsx`, 'utf8'), 'changed');
-assert.notEqual(held('home/user/reread/main.tsx') ? fs.readFileSync(`${dir}/main.tsx`, 'utf8') : 'changed', FILES['main.tsx'], 'no sync read serves the old bytes');
+let served = 'changed';
+try { served = fs.readFileSync(`${dir}/main.tsx`, 'utf8'); } catch (error) { assert.equal(error.code, 'EAGAIN', 'a row it could not keep is refused, not stale'); }
+assert.notEqual(served, FILES['main.tsx'], 'no sync read serves the old bytes');
 console.log('node-shims-async-read-at-cap: ok');

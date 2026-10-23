@@ -14,6 +14,8 @@ import { residentFilesystem, type ResidentDelegation, type ResidentFilesystem, t
 export type ProcessFilesystemOptions = Omit<ResidentDelegation, 'session' | 'journal' | 'readDirectories' | 'isHomeRoot'> & {
   /** The process's own store, where it has one (a resident's facet): its write log (process-fs-journal.ts). */
   readonly journalSql?: JournalSql;
+  /** False for a process that cannot answer a recall (a runner, between its calls): it holds no subtree. */
+  readonly holdsGrants?: boolean;
 };
 
 /** Whether `key` is a home directory itself (`home/<name>`, root's `root`): never held, so the editor and shell there recall nothing. */
@@ -27,12 +29,12 @@ export function isHomeDirectory(key: string): boolean {
  */
 export function processFilesystem(supervisor: WasiSupervisorStub, view: ResidentNamespace, options: ProcessFilesystemOptions = {}): ResidentFilesystem {
   const authority = supervisorFilesystem(supervisor);
-  const { journalSql, ...delegation } = options;
+  const { journalSql, holdsGrants, ...delegation } = options;
   // Its refusals rethrown as the errors they are, as the authority's are.
   const directories = answeringSupervisor(supervisor) as WasiSupervisorStub & { fsReadDirectories?: ResidentDelegation['readDirectories'] };
   return residentFilesystem(authority, view, {
     ...delegation,
-    session: supervisorSession(supervisor, authority),
+    session: supervisorSession(supervisor, authority, undefined, holdsGrants !== false),
     isHomeRoot: isHomeDirectory,
     ...(typeof directories.fsReadDirectories === 'function' ? { readDirectories: (request) => directories.fsReadDirectories!(request) } : {}),
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),

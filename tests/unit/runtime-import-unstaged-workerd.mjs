@@ -162,13 +162,13 @@ try {
       assert.equal(run.status, 0, `${entry}: ${run.stdout}`);
     }
 
-    // The program missed late-kept's module itself, and carried on; the
-    // prefetch's own later read of it does not answer that miss, so the exit
-    // report still names it, as it names any read the program was refused.
+    // The program's own synchronous read of late-kept's module, which its
+    // launch did not hold, runs it again as a resident process, which holds
+    // it (D2.1): the read gets the bytes on the first run, and the import loads.
     const kept = await terminal.run(`cd ${W} && node kept.mjs`);
-    assert.match(kept.stdout, /^KEPT EAGAIN kept$/m, kept.stdout);
-    assert.match(kept.stdout, /read synchronously but their content was never staged[\s\S]*late-kept\/index\.js/, `the program's own miss stays in its exit report:\n${kept.stdout}`);
-    assert.notEqual(kept.status, 0, kept.stdout);
+    assert.match(kept.stdout, /^KEPT read kept$/m, kept.stdout);
+    assert.doesNotMatch(kept.stdout, /never staged/, kept.stdout);
+    assert.equal(kept.status, 0, kept.stdout);
   } finally {
     await terminal.close();
   }

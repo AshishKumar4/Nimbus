@@ -579,6 +579,47 @@ export interface OneShotParams {
      */
     outbound?: boolean;
 }
+/**
+ * One call on a runner: a keyed dynamic worker its owner calls again and
+ * again, which holds no request between calls. Its module scope lives as
+ * long as the platform keeps its isolate, so what one call leaves there the
+ * next call finds.
+ */
+export interface RunnerCallParams<I extends object> {
+    /** The runner's process: the identity its SUPERVISOR binding acts as. */
+    pid: number;
+    /** Its generation's writer (OneShotParams.writerId), activated by its owner for as long as the generation lives. */
+    writerId: string;
+    /**
+     * The worker's Loader key: its owner's session, the runner and its
+     * generation. Nothing else names it, so no other runner and no other
+     * session reaches its state.
+     */
+    key: string;
+    /**
+     * Its module map, asked for on the loader's miss only. It must not wait
+     * for credit: the call holds a worker when the loader asks (lock order).
+     */
+    code(): Promise<OneShotCodeSpec>;
+    /** What the call hands the worker's `run`. */
+    input: I;
+    /** The call's CPU limit, on its entrypoint: the platform ends the call past it. */
+    cpuMs: number;
+    /** Ends the call where it waits (a timeout, a kill): the worker aborts itself, as a one-shot's run does. */
+    signal: AbortSignal;
+    /**
+     * Called as the call is sent to the worker, holding its Dynamic Worker. A
+     * call that fails before it was sent ran nothing; one sent may be running
+     * in the worker however it fails.
+     */
+    onSent(): void;
+    /**
+     * Called once the worker has begun the call (its first call back, the
+     * run's `ended`). A call sent and refused before this was refused by the
+     * platform, and ran nothing.
+     */
+    onEntered(): void;
+}
 export interface ProcessHost {
     /** Release persistent host placements, including a previous coordinator incarnation's. */
     close?(): Promise<void>;
@@ -595,6 +636,12 @@ export interface ProcessHost {
      * resources are still held; they are released as it returns.
      */
     runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+    /**
+     * One call on a runner (RunnerCallParams), its answer handed to `consume`.
+     * The call holds its process's Dynamic Worker while it runs, and none
+     * after it. Like runOnce, it runs in the coordinator on either substrate.
+     */
+    callRunner<I extends object, T>(params: RunnerCallParams<I>, consume: (answer: object) => T): Promise<T>;
     /** Refuse unsupported retained application storage before publishing a pid. */
     assertDurableStorage(): void;
     open(params: ProcessHostParams): Promise<HostedProcess>;

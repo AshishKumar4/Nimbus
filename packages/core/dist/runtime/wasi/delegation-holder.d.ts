@@ -60,6 +60,8 @@ export interface HolderStore {
     /** As ProvisionalHost.mounted and unreported: a name on a mount, and one the view never hears a change of. */
     mounted?(key: string): boolean;
     unreported?(key: string): boolean;
+    /** As ProvisionalHost.keep: bytes the session holds of `key` at `revision`, the view's to keep. */
+    keep?(key: string, revision: number, bytes: Uint8Array): void;
 }
 export interface HolderOptions {
     /** The session the process's filesystem client sends to and takes its grants from. */

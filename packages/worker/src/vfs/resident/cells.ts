@@ -22,7 +22,7 @@
 
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { Admission } from './admission.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds, type ResidentCell } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, residentChunkCost, textChunkEnds, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, prefixEnd, type Namespace } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
@@ -83,6 +83,12 @@ export interface Cells {
   get(path: string): ResidentCell | undefined;
   /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
   put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
+  /**
+   * The process's own bytes of `path`, which the session holds at `rev`:
+   * stored as a fill of them would be, else held in the heap within the
+   * process's own-write bound (FACET_OWN_WRITE_MEMORY_BYTES), dated at `rev`.
+   */
+  keep(t: ResidentTables, path: string, bytes: Uint8Array, rev: number): void;
   /**
    * A fill about to ask for `paths`: each one's chunk rows are its own, over
    * the head as it stands, until another fill begins for it or anything
@@ -217,7 +223,7 @@ export function createCells(
     unheld.delete(path);
   };
 
-  const hold = (path: string, cell: ResidentCell): void => {
+  const hold = (path: string, cell: ResidentCell, rev = RK_OWN_WRITE): void => {
     forgetHeld(path);
     const size = cellSize(cell);
     const limit = admission.heldLimit(FACET_OWN_WRITE_MEMORY_BYTES);
@@ -230,7 +236,7 @@ export function createCells(
         unheld.add(oldest);
       });
     }
-    held.set(path, { cell, rev: RK_OWN_WRITE });
+    held.set(path, { cell, rev });
     admission.addHeld(size);
   };
 
@@ -306,7 +312,7 @@ export function createCells(
   const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean => {
     if (filling.get(path) !== fill) return false;
     if (part === 0) admission.release(path);
-    if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
+    if (!admission.fits(residentChunkCost(typedArrayByteLength(bytes)))) return false;
     t.chunkSetBin(path, part, bytes);
     return true;
   };
@@ -605,6 +611,9 @@ export function createCells(
     },
     get,
     put,
+    keep(t, path, bytes, rev) {
+      if (!put(t, path, bytes, rev)) hold(path, bytes, rev);
+    },
     putChunk,
     publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
       if (filling.get(path) !== fill) return false;
@@ -661,7 +670,7 @@ export function createCells(
      * What a row is dated at: its revision, RK_OWN_WRITE for this facet's own
      * unacknowledged bytes, or undefined when the path is not held.
      */
-    provenance: (path) => coherence.require().fileRev(path),
+    provenance: (path) => coherence.require().fileRev(path) ?? held.get(path)?.rev,
     /**
      * Date this facet's own bytes with the revision the authority acknowledged
      * them at: the revision a flushed write produced, or the one an own mutation's
