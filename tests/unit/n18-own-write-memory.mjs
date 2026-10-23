@@ -48,7 +48,8 @@ assert.ok(authority.kfs.exists('home/user/app/a'), 'the session holds it');
 assert.equal(probe.read('/home/user/app/a'), first, 'still readable after the write-back');
 
 // Past the budget: a write the process can no longer keep is refused as no space, and says so.
-const big = FACET_OWN_WRITE_MEMORY_BYTES - MB;
+// Its records' own cost (the decisions' accounting) is within the budget too: a page short of the room a and it leave.
+const big = FACET_OWN_WRITE_MEMORY_BYTES - MB - 64 * 1024;
 probe.write('/home/user/app/c', big);
 assert.equal(probe.read('/home/user/app/a'), first, 'the write within the budget stays readable');
 assert.equal(probe.read('/home/user/app/b'), 'ENOSPC');
