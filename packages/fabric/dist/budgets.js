@@ -33,6 +33,7 @@ import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { RUN_ENTERED } from './task-body-error.js';
 import { withResolvers } from './turn-budget.js';
 export { DO_DYNAMIC_WORKER_LIMIT };
 /**
@@ -151,7 +152,7 @@ function hold(entry, workerKey, claim, holder) {
                 entry.news.delete(holder);
             }
         }
-        if (classifyError(failure) === 'dynamic_worker_cap')
+        if (refusedStart(failure))
             refused(entry, epoch);
         else if (epoch === entry.epoch && entry.pauseMs === 0)
             entry.refusals = 0;
@@ -834,13 +835,21 @@ function claimedWidth(entry) {
     return width;
 }
 /**
+ * Whether `error` is the platform refusing a Dynamic Worker's start at its
+ * limit: worded so (classifyError), and not thrown by a task its call had
+ * entered (RUN_ENTERED), which may say anything and must not run again.
+ */
+export function refusedStart(error) {
+    return classifyError(error) === 'dynamic_worker_cap' && Reflect.get(Object(error), RUN_ENTERED) !== true;
+}
+/**
  * Name the per-DO accounting on a refusal at the Dynamic Worker limit; hand
  * every other error back untouched. The platform's message
  * says only that the limit was hit — which workers were in flight, and what
  * fan-outs had claimed, is what the operator needs to know to shrink anything.
  */
 export function withDynamicWorkerCapNamed(ctx, error) {
-    if (classifyError(error) !== 'dynamic_worker_cap')
+    if (!refusedStart(error))
         return error;
     const entry = ledger(ctx);
     const platform = error instanceof Error ? error.message : String(error);

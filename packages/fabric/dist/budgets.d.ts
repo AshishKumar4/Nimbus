@@ -31,9 +31,9 @@ import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
 export { DO_DYNAMIC_WORKER_LIMIT };
 /**
  * Ends one hold, idempotently. Pass the error the call failed with, if it
- * did: the platform's refusal at the Dynamic Worker limit (classifyError's
- * 'dynamic_worker_cap') pauses the ledger's admissions (see {@link beginLoaderFetchWhenFree}); anything else,
- * or nothing, just ends the hold.
+ * did: the platform's refusal at the Dynamic Worker limit (refusedStart)
+ * pauses the ledger's admissions (see {@link beginLoaderFetchWhenFree});
+ * anything else, or nothing, just ends the hold.
  */
 export type EndLoaderFetch = (failure?: unknown) => void;
 /**
@@ -351,6 +351,12 @@ export declare function loaderLedgerStats(ctx: object, probeTurn?: boolean): {
         blockedAt: number | null;
     }>;
 };
+/**
+ * Whether `error` is the platform refusing a Dynamic Worker's start at its
+ * limit: worded so (classifyError), and not thrown by a task its call had
+ * entered (RUN_ENTERED), which may say anything and must not run again.
+ */
+export declare function refusedStart(error: unknown): boolean;
 /**
  * Name the per-DO accounting on a refusal at the Dynamic Worker limit; hand
  * every other error back untouched. The platform's message
