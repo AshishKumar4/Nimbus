@@ -1556,6 +1556,8 @@ function __nimbusStartProcessFilesystem(root) {
     umask: () => __processUmask,
     // A run replaying a stopped one asks no lease: when it asks, and what it is answered, are the run before's.
     readLeases: () => !__nimbusReplay || __nimbusReplay.final,
+    // A mount without a change feed as its launch walked it, and changes on mounts its own (as node's fs answers them).
+    walkedMounts: true,
     residency: {
       // An import()'s prefetch (__nimbusHydrated): its misses are its own, charged to its quota.
       speculation: () => globalThis.__nimbusVfsSpeculation || null,
@@ -4640,10 +4642,14 @@ const __fsMod = (() => {
     // What this fs judged itself (an fs error it made, a Node error such as ERR_FS_EISDIR) is already Node's.
     if (_madeHere.has(error) || (error !== null && typeof error === "object" && typeof error.code === "string" && __pathStartsWith(error.code, "ERR_"))) return error;
     const mapped = _mapSupervisorError(error, syscall, p, dest);
-    if (mapped.code === "EAGAIN") {
-      mapped.message = _fsErr("EAGAIN", syscall, p, dest).message + " — '" + String(p) + "' exists but its content is not " +
+    if (mapped.code !== "EAGAIN") return mapped;
+    // On a mount, in a directory its launch did not list: the namespace cannot say what is there.
+    const mount = typeof __resident !== "undefined" && (typeof p === "string" || p instanceof URL) ? __resident.namespace.unknown(_strip(_resolve(p)), true, true) : null;
+    mapped.message = mount !== null
+      ? "EAGAIN: " + syscall + " '" + String(p) + "'" + (dest === undefined ? "" : " -> '" + dest + "'") + ": " + mount
+        + " is an asynchronous mount; this caller cannot wait for it" + (asyncForm ? "; " + asyncForm + " reads it" : "")
+      : _fsErr("EAGAIN", syscall, p, dest).message + " — '" + String(p) + "' exists but its content is not " +
         "resident in this facet, and synchronous I/O cannot block to fetch it" + (asyncForm ? "; " + asyncForm + " reads it from the live filesystem" : "");
-    }
     return mapped;
   }
   /** `run` over the synchronous face, its refusal Node's `syscall` of `p`. */
@@ -4658,6 +4664,18 @@ const __fsMod = (() => {
   async function _async(syscall, p, run, dest) {
     try { return await run(_rf()); }
     catch (error) { throw _rfError(error, syscall, p, dest); }
+  }
+  /**
+   * An awaited read: what the session holds now, as Node's read of a file
+   * another process just wrote finds it. The filesystem owes its barrier
+   * before it answers from what this process holds (inbound).
+   */
+  async function _asyncRead(syscall, p, run) {
+    try {
+      const fs = _rf();
+      fs.inbound();
+      return await run(fs);
+    } catch (error) { throw _rfError(error, syscall, p); }
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -4759,9 +4777,16 @@ const __fsMod = (() => {
       return encoding ? bytes.toString(encoding) : bytes;
     }
     const absPath = _at(p);
-    const content = _sync("open", p, "fs.promises.readFile", (fs) => fs.readFile(absPath));
+    const content = _readingDirectory(p, () => _sync("open", p, "fs.promises.readFile", (fs) => fs.readFile(absPath)));
     if (content === null) throw _fsErr("ENOENT", "open", p);
     return _readAnswer(absPath, content, opts);
+  }
+  /** A directory opens for reading and refuses the read: Node's EISDIR of a whole-file read is its read's. */
+  function _readingDirectory(p, read) {
+    const isDirectory = (error) => error !== null && typeof error === "object" && error.code === "EISDIR";
+    let answer;
+    try { answer = read(); } catch (error) { throw isDirectory(error) ? _fsErr("EISDIR", "read", p) : error; }
+    return answer instanceof Promise ? answer.catch((error) => { throw isDirectory(error) ? _fsErr("EISDIR", "read", p) : error; }) : answer;
   }
   /** A whole-file read's answer: a string where an encoding is asked, else a Buffer, tagged where the launch compiled the image. */
   function _readAnswer(absPath, content, opts) {
@@ -4957,7 +4982,7 @@ const __fsMod = (() => {
     if (p === 0 || __NIMBUS_STDIN_PATHS.has(p)) return readFileSync(p, opts);
     if (p instanceof __FileHandle) return p.readFile(opts);
     const absPath = _at(p);
-    const content = await _async("open", p, (fs) => fs.readFile(absPath));
+    const content = await _readingDirectory(p, () => _asyncRead("open", p, (fs) => fs.readFile(absPath)));
     if (content === null) throw _fsErr("ENOENT", "open", p);
     return _readAnswer(absPath, content, opts);
   }
@@ -4991,23 +5016,26 @@ const __fsMod = (() => {
     if (p instanceof __FileHandle) return p.appendFile(data, opts);
     const absPath = _at(p);
     const bytes = _writeBytes(data, _encodingOf(opts));
-    await _async("open", p, (fs) => _writeThroughAsync(fs, absPath, bytes, _writeFlags(opts, "a")));
+    // A directory refuses the append's write, as Node's says it.
+    await _async("open", p, (fs) => _writeThroughAsync(fs, absPath, bytes, _writeFlags(opts, "a"))).catch((error) => {
+      throw error && error.code === "EISDIR" ? _fsErr("EISDIR", "write", p) : error;
+    });
   }
   async function _statAsync(p) {
     const absPath = _at(p);
-    const stat = await _async("stat", p, (fs) => fs.stat(absPath));
+    const stat = await _asyncRead("stat", p, (fs) => fs.stat(absPath));
     if (stat === null) throw _fsErr("ENOENT", "stat", p);
     return _stats(stat, false);
   }
   async function _lstatAsync(p) {
     const absPath = _at(p);
-    const stat = await _async("lstat", p, (fs) => fs.stat(absPath, { followSymlinks: false }));
+    const stat = await _asyncRead("lstat", p, (fs) => fs.stat(absPath, { followSymlinks: false }));
     if (stat === null) throw _fsErr("ENOENT", "lstat", p);
     return _stats(stat, false);
   }
   async function _readdirAsync(p, opts) {
     const absPath = _at(p);
-    const entries = await _async("scandir", p, (fs) => fs.readdir(absPath));
+    const entries = await _asyncRead("scandir", p, (fs) => fs.readdir(absPath));
     if (!opts?.withFileTypes || !entries.some((entry) => entry.type === "unknown")) return _listed(entries, absPath, opts);
     // An entry the listing could not type is lstat'ed, as Node's readdir does.
     const typed = [];
@@ -5024,16 +5052,16 @@ const __fsMod = (() => {
   async function _accessAsync(p, mode) {
     const absPath = _at(p);
     const requested = _accessMode(p, mode);
-    await _async("access", p, (fs) => fs.access(absPath, requested));
+    await _asyncRead("access", p, (fs) => fs.access(absPath, requested));
   }
   async function _realpathAsync(p, opts) {
     const absPath = _at(String(p));
-    const real = await _async("realpath", p, (fs) => fs.realpath(absPath));
+    const real = await _asyncRead("realpath", p, (fs) => fs.realpath(absPath));
     return _encodingOf(opts) === "buffer" ? __BufferMod.from(real) : real;
   }
   async function _readlinkAsync(p, opts) {
     const absPath = _at(p);
-    const target = await _async("readlink", p, async (fs) => (await fs.readlink(absPath)) ?? ((await fs.stat(absPath, { followSymlinks: false })) === null ? _absent : null));
+    const target = await _asyncRead("readlink", p, async (fs) => (await fs.readlink(absPath)) ?? ((await fs.stat(absPath, { followSymlinks: false })) === null ? _absent : null));
     if (target === _absent) throw _fsErr("ENOENT", "readlink", p);
     if (target === null) throw _fsErr("EINVAL", "readlink", p);
     return _encodingOf(opts) === "buffer" ? __BufferMod.from(target) : target;
@@ -5080,7 +5108,7 @@ const __fsMod = (() => {
     if (p instanceof __FileHandle) return p.truncate(len);
     const absPath = _at(p);
     const size = Math.max(0, Math.trunc(Number(len) || 0));
-    await _async("open", p, (fs) => fs.truncate(absPath, size));
+    await _async("truncate", p, (fs) => fs.truncate(absPath, size));
   }
   async function _copyFileAsync(src, dest, mode) {
     const from = _at(src);
@@ -5181,7 +5209,7 @@ const __fsMod = (() => {
     async read(buffer, offset, length, position) {
       this._assertOpen("read");
       const args = this._readArgs(buffer, offset, length, position);
-      const slice = await _async("read", this._path, (fs) => fs.read(this._id, args.pos, args.want));
+      const slice = await _asyncRead("read", this._path, (fs) => fs.read(this._id, args.pos, args.want));
       args.buffer.set(slice, args.off);
       return { bytesRead: slice.byteLength, buffer: args.buffer };
     }
@@ -5222,7 +5250,7 @@ const __fsMod = (() => {
       const parts = [];
       let total = 0;
       for (;;) {
-        const chunk = await _async("read", this._path, (fs) => fs.read(this._id, null, READ_STREAM_CHUNK_BYTES));
+        const chunk = await _asyncRead("read", this._path, (fs) => fs.read(this._id, null, READ_STREAM_CHUNK_BYTES));
         if (chunk.byteLength === 0) break;
         parts.push(chunk);
         total += chunk.byteLength;
@@ -5238,7 +5266,7 @@ const __fsMod = (() => {
     async appendFile(data, opts) { return this.writeFile(data, opts); }
     async stat(opts) {
       this._assertOpen("fstat");
-      return _stats(await _async("fstat", this._path, (fs) => fs.fstat(this._id)), Boolean(opts?.bigint));
+      return _stats(await _asyncRead("fstat", this._path, (fs) => fs.fstat(this._id)), Boolean(opts?.bigint));
     }
     _statSync(opts) {
       this._assertOpen("fstat");
@@ -5330,7 +5358,7 @@ const __fsMod = (() => {
 
   /** A ranged read of `absPath` (a read stream's window): clamped at its end, null when nothing is there. */
   function _readRangeAt(absPath, displayPath, pos, want) {
-    return _async("read", displayPath, (fs) => fs.readRange(absPath, pos, want));
+    return _asyncRead("read", displayPath, (fs) => fs.readRange(absPath, pos, want));
   }
 
   /**

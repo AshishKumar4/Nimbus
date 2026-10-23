@@ -287,6 +287,8 @@ export function residentFilesystem(session, resident, delegation) {
                 content: (key, revision) => resident.content(key, revision),
                 reserve: (bytes) => resident.reserve(bytes),
                 release: (bytes) => resident.release(bytes),
+                mounted: (key) => mountedName(key),
+                unreported: (key) => walkedMounts && unreportedName(key),
             },
             isHomeRoot: delegation.isHomeRoot,
             ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
@@ -656,6 +658,17 @@ export function residentFilesystem(session, resident, delegation) {
      * feed's (not fixed) not while a read lease is trusted.
      */
     const answerable = (key, entry) => {
+        const fed = fedRow(key, entry);
+        return fed === true || (fed === undefined && walkedMounts);
+    };
+    const walkedMounts = delegation?.walkedMounts === true;
+    /**
+     * Whether `entry` at `key`, a row off the session's own device, is a fed
+     * mount's (true), one a feed answers for but not now (false: a moving feed
+     * while a read lease is trusted, or no cursor), or a mount's without a feed
+     * (undefined: its changes are never reported).
+     */
+    const fedRow = (key, entry) => {
         const cursor = store.cursor();
         if (cursor === null)
             return false;
@@ -665,14 +678,43 @@ export function residentFilesystem(session, resident, delegation) {
             return true;
         const at = feedPointOf(cursor, key);
         if (at === ROOT_FEED)
-            return false;
-        // A read lease vouches for the engine alone, whose writes recall it (a table change too): while one is
-        // trusted, the view has not asked since it was granted, so a row of a feed that moves is the session's.
-        if (feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true)
-            return false;
+            return undefined;
         const point = at.slice(1);
         const root = point === key ? entry : store.entry(point);
-        return root !== undefined && root !== null && root.dev === entry.dev;
+        if (root === undefined || root === null || root.dev !== entry.dev)
+            return undefined;
+        // A read lease vouches for the engine alone, whose writes recall it (a table change too): while one is
+        // trusted, the view has not asked since it was granted, so a row of a feed that moves is the session's.
+        return !(feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true);
+    };
+    /** The row nearest `key` the view has: its own, else its directory's. */
+    const nearestRow = (key) => {
+        const own = store.entry(key);
+        if (own)
+            return { key, row: own };
+        const parent = parentKey(key);
+        const above = key === '' ? undefined : store.entry(parent);
+        return above ? { key: parent, row: above } : undefined;
+    };
+    /** Whether `key` is on a mount: a fed mount's point is at or above it, or its row (or its directory's) is a mount's. */
+    const mountedName = (key) => {
+        if (onMount(key))
+            return true;
+        const near = nearestRow(key);
+        return near !== undefined && near.row.dev !== store.device && near.row.dev !== NAMESPACE_DEV;
+    };
+    /** Whether `key` is on a mount with no change feed: the view never hears of a change there. */
+    const unreportedName = (key) => {
+        const near = nearestRow(key);
+        return near !== undefined && near.row.dev !== store.device && near.row.dev !== NAMESPACE_DEV && fedRow(near.key, near.row) === undefined;
+    };
+    /** Whether `key` is on the kernel's /dev or /proc (a fixed feed): only the session changes them. */
+    const onKernelMount = (key) => {
+        const cursor = store.cursor();
+        if (cursor === null)
+            return false;
+        const at = feedPointOf(cursor, key);
+        return at !== ROOT_FEED && feedOf(cursor, at)?.fixed === true;
     };
     /** Whether `key` is on a mount (its deepest fed mount point is not the root): the session's to change, never this process's to decide. */
     const onMount = (key) => {
@@ -689,6 +731,8 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = entryAt(key);
         if (entry === undefined)
             return undefined;
+        if (walkedMounts)
+            return onKernelMount(key) ? undefined : entry;
         return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
     };
     /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
@@ -1216,7 +1260,15 @@ export function residentFilesystem(session, resident, delegation) {
             return undefined;
         }
         if (placed !== undefined && keys.every((key) => !holder.holds(key) || holder.provisional.touches(key))) {
-            const answer = decided(placed, true);
+            // What the view refuses (a name it says is not there, a mode it says forbids it) the session says, which
+            // may hold what the view has not seen yet: a caller that may wait is answered by it, as one decided here is.
+            let answer;
+            try {
+                answer = decided(placed, true);
+            }
+            catch {
+                return session();
+            }
             if (answer !== false) {
                 counts.local++;
                 return after(answer, () => undefined);

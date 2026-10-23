@@ -57,6 +57,9 @@ export interface HolderStore {
     /** As ResidentNamespace.reserve and release: what a provisional decision keeps takes of the process's budget (no grant reserved it). */
     reserve?(bytes: number): boolean;
     release?(bytes: number): void;
+    /** As ProvisionalHost.mounted and unreported: a name on a mount, and one the view never hears a change of. */
+    mounted?(key: string): boolean;
+    unreported?(key: string): boolean;
 }
 export interface HolderOptions {
     /** The session the process's filesystem client sends to and takes its grants from. */
