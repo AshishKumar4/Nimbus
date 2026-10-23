@@ -255,10 +255,8 @@ function __nimbusStartProcessFilesystem(root) {
     // Nor does a runner, which runs only while a call holds it: it could not answer a lease's recall, nor a grant's.
     readLeases: () => typeof __nimbusAnswersNoRecall === "undefined" && (!__nimbusReplay || __nimbusReplay.final),
     ...(typeof __nimbusAnswersNoRecall === "undefined" ? {} : { holdsGrants: false }),
-    // A mount without a change feed as its launch walked it, and changes on mounts its own (as node's fs answers them).
-    walkedMounts: true,
-    // An awaited write answered once the session has it (as node's fs answers it).
-    answeredWrites: true,
+    // Node's fs, as it always answered (ResidentDelegation.nodeFs).
+    nodeFs: true,
     residency: {
       // An import()'s prefetch (__nimbusHydrated): its misses are its own, charged to its quota.
       speculation: () => globalThis.__nimbusVfsSpeculation || null,
@@ -1457,7 +1455,7 @@ const __fsMod = (() => {
    * \`p\`: an operation in flight from its start to its answer, as Node's
    * libuv request is, so the program is not taken for finished between the
    * session calls it makes. A change outside a held subtree is answered once
-   * the session has it, its refusal the call's (answeredWrites).
+   * the session has it, its refusal the call's (ResidentDelegation.nodeFs).
    */
   function _async(syscall, p, run, dest) {
     return __nimbusTrackOp(_inCallOrder(p, () => _awaited(syscall, p, run, dest)));
