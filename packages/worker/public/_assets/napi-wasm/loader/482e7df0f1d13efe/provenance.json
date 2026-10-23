@@ -49,7 +49,7 @@
       "package.json": "21c78f85c27342445ee62474498e32c2221731cf0e0bed20667a96cb0fb89449",
       "packages/core/package.json": "a567ed1c4781dd14ca8131f5b1a9f04f243492249555d1ba969b0aff8cfe9e44",
       "packages/platform/package.json": "af468dc05934ef6373d71020dcbc8703ce293aa97f3b1d7ef6ee4a1b94a089b5",
-      "packages/worker/package.json": "d4ffe137b1aca821cbb2fddb376a9a98ddc3c5a4b4eadc6d4ff4144ca7b9d41d"
+      "packages/worker/package.json": "8bffacb6399ec92df50fafa5745201c67e463bd1bad7cd29a9c020aa951f37da"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",
