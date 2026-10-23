@@ -12,8 +12,7 @@ import {
 import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import {
   BUNDLE_MAX_ENCODED_BYTES,
-  LAUNCH_GUESS_MAX_BYTES,
-  LAUNCH_GUESS_MAX_ENTRIES,
+  CWD_SNAPSHOT_MAX_FILE_BYTES,
   VFS_BUNDLE_MAX_BYTES,
 } from '../../packages/core/src/constants.ts';
 import {
@@ -175,6 +174,33 @@ assert.equal(
 }
 
 
+// What the map spends naming a file counts against its bytes: 3,000 packages
+// of two tiny files each under a 6,000-character directory would name 36 MB
+// of paths for a few KB of content, and the map holds only as many as its
+// bytes allow.
+{
+  const cwd = 'home/user/' + Array.from({ length: 30 }, () => 'd'.repeat(199)).join('/');
+  const PACKAGES = 3000;
+  const files = {};
+  for (let index = 0; index < PACKAGES; index++) {
+    const packageRoot = `${cwd}/node_modules/optional-${index}`;
+    files[`${packageRoot}/package.json`] = JSON.stringify({ name: `optional-${index}`, main: 'index.js' });
+    files[`${packageRoot}/index.js`] = 'module.exports = true;';
+  }
+  files[`${cwd}/package.json`] = JSON.stringify({
+    name: 'app',
+    dependencies: Object.fromEntries(Array.from({ length: PACKAGES }, (_, index) => [`optional-${index}`, '*'])),
+  });
+  const bundle = { [`${globalModules}/required/index.js`]: 'module.exports = 1;' };
+  const budget = { totalBytes: 0 };
+  await greedyAddMainEntries(launchFs(files).fs, cwd, bundle, budget);
+  const named = Object.keys(bundle).filter((path) => path.startsWith(cwd)).reduce((sum, path) => sum + path.length, 0);
+  assert.ok(named > 0, 'some optional files are admitted');
+  assert.ok(named <= VFS_BUNDLE_MAX_BYTES, `the paths the map names stay within its bytes: ${named}`);
+  assert.ok(budget.totalBytes <= VFS_BUNDLE_MAX_BYTES, 'and so does what it counted');
+}
+
+
 // The staged path serializes the snapshot into ONE RPC payload and has no
 // side-module relief, so a snapshot that cannot fit must fail loud.
 {
@@ -195,37 +221,29 @@ assert.equal(
   assert.doesNotThrow(() => assertStagedBundleFitsRpcPayload(JSON.stringify(fits), fits));
 }
 
-// The working-tree sweep guesses at what a program might read, so what it
-// stages may cost a rebuild no more than one miss does (LAUNCH_GUESS_MAX_BYTES,
-// LAUNCH_GUESS_MAX_ENTRIES): one file past the bound is left out, and two that
-// fit alone are not both taken. Small files ride along past the 512 entries
-// the sweep once stopped at.
+// The working-tree sweep guesses at what a program might read. One guessed
+// file must not take the whole budget: that is what every later invocation
+// then carries while the supervisor still holds the cached copy.
 {
   const cwd = 'home/user';
-  const half = Math.floor(LAUNCH_GUESS_MAX_BYTES * 0.6);
   const files = {
     [`${cwd}/index.js`]: 'module.exports = 1;',
     [`${cwd}/small.json`]: '{"a":1}',
-    [`${cwd}/data.bin`]: 'D'.repeat(LAUNCH_GUESS_MAX_BYTES + 1),
-    [`${cwd}/halves/a.bin`]: 'A'.repeat(half),
-    [`${cwd}/halves/b.bin`]: 'B'.repeat(half),
+    [`${cwd}/data.bin`]: 'D'.repeat(CWD_SNAPSHOT_MAX_FILE_BYTES + 1),
   };
-  for (let index = 0; index < 1000; index++) files[`${cwd}/tree/d${index % 20}/f${index}.txt`] = `${index}`;
   const snapshot = await buildPrefetchBundle(
     launchFs(files).fs, { cwd, entryCode: '', esbuild: identityEsbuild },
   );
 
-  assert.equal(snapshot.bundle[`${cwd}/data.bin`], undefined, 'the working-tree sweep skips a file past the guess bound');
   assert.equal(
-    [`${cwd}/halves/a.bin`, `${cwd}/halves/b.bin`].filter((path) => snapshot.bundle[path] !== undefined).length,
-    1,
-    'the sweep\'s guesses together stay within the guess bound',
+    snapshot.bundle[`${cwd}/data.bin`],
+    undefined,
+    'the working-tree sweep skips a file past the per-file ceiling',
   );
-  assert.equal(snapshot.bundle[`${cwd}/small.json`], files[`${cwd}/small.json`], 'ordinary project files still ride along');
   assert.equal(
-    Object.keys(snapshot.bundle).filter((path) => path.startsWith(`${cwd}/tree/`)).length,
-    1000,
-    `a tree of 1,000 small files rides along whole, within the sweep's ${LAUNCH_GUESS_MAX_ENTRIES} entries`,
+    snapshot.bundle[`${cwd}/small.json`],
+    files[`${cwd}/small.json`],
+    'ordinary project files still ride along',
   );
 }
 
