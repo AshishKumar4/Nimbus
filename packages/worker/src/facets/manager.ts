@@ -43,7 +43,7 @@ import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from
 import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
-import { type LaunchReads, readsUnderMounts, recordLaunchReads, staleReason } from './launch-reads.js';
+import { launchReadsBytes, type LaunchReads, readsUnderMounts, recordLaunchReads, staleReason } from './launch-reads.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
@@ -4730,12 +4730,13 @@ async function _buildPrefetchBundle(
   //    whole, and a builtins-only `node -e` in a Next app spent 13 s here
   //    (verify/handoffs/ticket-launch-greedy-oversample-cost.md).
   const independentBeforeGroups = new Set(Object.keys(bundle));
-  // Only code loads: a manifest or other data file the walk read is not run
-  // (an express checkout's package.json scripts say "mocha --require"). A
+  // Every file the walk staged runs if required, whatever its extension
+  // (CommonJS's fallback), but a manifest does not (an express checkout's
+  // package.json scripts say "mocha --require"), nor a native binary. A
   // build with no program of its own (opencode's data-only staging, which
   // runs its own code over the project's modules) has nothing to prove.
   const opaque = dataOnly || (scriptPath === undefined && entryCode === '') || hasOpaqueLoads(entryCode)
-    || [...closurePaths].some((path) => (isBundleModuleCandidate(path) || path.endsWith('.cjs')) && hasOpaqueLoads(prefetch.bundle[path]));
+    || [...closurePaths].some((path) => !path.endsWith('.json') && !isNativeBinPath(path) && hasOpaqueLoads(prefetch.bundle[path]));
   const greedy = opaque
     ? await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions })
     : { added: 0, groups: [] };
@@ -6947,9 +6948,12 @@ export class FacetManager {
       return;
     }
     const lease = filesystem.openHost(cred);
+    const pacer = new TurnBudget(this.launchPump, turnChunkMaxBytes(this.env));
     try {
-      await Promise.all([sources, this._manifestCopiesFor(cred, () => lease.fs, new TurnBudget(this.launchPump, turnChunkMaxBytes(this.env)))]);
+      await Promise.all([sources, this._manifestCopiesFor(cred, () => lease.fs, pacer)]);
     } finally {
+      // A pump waits for a pacer's last chunk to end: this one's ends here.
+      pacer.settle();
       await lease.dispose();
     }
   }
@@ -7602,7 +7606,8 @@ export class FacetManager {
   ): boolean {
     const previous = this.prefetchBundleCache.get(key);
     if (previous) this.prefetchCacheBytes -= previous.bytes;
-    const bytes = retainedVfsStateBytes(vfsState);
+    // The entry keeps what its build asked the filesystem too, and its bound prices that as well.
+    const bytes = retainedVfsStateBytes(vfsState) + launchReadsBytes(dated.reads);
     this.prefetchBundleCache.delete(key);
     // A bundle larger than the WHOLE bound is not retained. It used to be
     // admitted anyway, on the reasoning that refusing it means never caching

@@ -181,6 +181,22 @@ export function readsUnderMounts(reads: LaunchReads, mountPoints: readonly strin
   return [...reads.paths, ...reads.listed.keys()].some((name) => points.some((point) => name === point || name.startsWith(point + '/')));
 }
 
+/**
+ * What `reads` costs held, in UTF-16 bytes with a flat allowance for each
+ * entry: the prefetch cache's bound prices an entry with it.
+ */
+export function launchReadsBytes(reads: LaunchReads): number {
+  const each = (name: string): number => name.length * 2 + 48;
+  let bytes = 0;
+  for (const name of reads.paths) bytes += each(name);
+  for (const name of reads.absent) bytes += each(name);
+  for (const [name, listing] of reads.listed) {
+    bytes += each(name);
+    if (listing !== null) for (const entry of listing.keys()) bytes += each(entry);
+  }
+  return bytes;
+}
+
 /** Each directory above `name`, nearest first. */
 function ancestorsOf(name: string): string[] {
   const out: string[] = [];
@@ -220,6 +236,9 @@ export async function staleReason(reads: LaunchReads, changes: readonly VfsInval
       if (reads.paths.has(name) || reads.listed.has(name) || above.has(name)) return `${name} was moved, removed or changed under, above or at what the build read`;
       continue;
     }
+    // A name above what the build read, changed by itself rather than as the parent of a change in it: a symlink on the
+    // way there retargeted (only a directory's change is structural).
+    if (above.has(name) && !parents.has(name)) return `${name}, on the way to what the build read, changed`;
     // A path the build asked about, unless it found a directory there and the record is only the parent of another change.
     if (reads.paths.has(name) && (reads.absent.has(name) || !parents.has(name))) return `${name}, which the build ${reads.absent.has(name) ? 'did not find' : 'read'}, changed`;
     // A name in a directory the build listed: made, removed, or of another kind than the listing said.

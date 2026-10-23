@@ -24,6 +24,7 @@ const pkg = (name, deps = {}) => ({
 });
 const files = {
   // Data, not code: a manifest's scripts may say "--require" (express's do).
+  // A file the program requires runs whatever its extension, so it is read too (section 5).
   [`${APP}/package.json`]: JSON.stringify({ name: 'app', scripts: { test: 'mocha --require test/support/env' }, dependencies: { express: '*', lodash: '*' } }),
   ...pkg('express', { 'body-parser': '*' }),
   ...pkg('body-parser'),
@@ -57,20 +58,37 @@ const build = (entryCode) => buildPrefetchBundle(launchFs(files).fs, { cwd: `/${
 // ── 4. What counts as opaque ──────────────────────────────────────────────
 {
   const literal = [
-    `require('x'); require("y"); require(\`z\`); require.resolve('w'); module.require('v');`,
-    `import('./a.js').then(() => {}); import("b", { with: { type: 'json' } });`,
+    `require('x'); require("y"); require(\`z\`); require.resolve('w');`,
+    `import('./a.js').then(() => {});`,
+    `import a from 'a'; export { b } from "b"; export * from './c.js';`,
     `// require(name) in a comment\nconst n = 1; /* import(x) */`,
-    `const s = 'no loads here';`,
+    `const s = 'no loads here, not even require(name)'; console.log(\`\${s} \${1 + 1}\`);`,
   ];
   for (const code of literal) assert.equal(hasOpaqueLoads(code), false, `literal only: ${code}`);
   const opaque = [
     `require(name)`, `require(\`./\${x}\`)`, `const r = require; r('x')`, `require.cache`, `require.main`,
     `import(path)`, `createRequire(import.meta.url)`, `process.getBuiltinModule('module')`, `eval('1')`,
-    `new Function('return 1')`, `Module._load('x')`, `require('bindings')('addon')`, `require('vm').runInThisContext(code)`,
-    `requ\\u0069re(x)`, `globalThis.__nimbusDynamicImport('/', 'x')`,
+    `new Function('return 1')`, `Module._load('x')`, `const bindings = require('bindings'); bindings('addon')`,
+    `const vm = require('vm'); vm.runInThisContext(code)`, `requ\\u0069re(x)`, `globalThis.__nimbusDynamicImport('/', 'x')`,
+    // The walk reads a specifier as it is written: an escape, a quote in it, or a second argument is not followed.
+    `require("\\x66oo")`, `require("it's")`, `require("foo", {})`, `import("b", { with: { type: 'json' } })`,
+    // A template's substitution holds a computed load.
+    `const name = 'foo'; const s = \`\${\`http://a\`}\${require(name)}\`;`,
+    // require on another module resolves from that module.
+    `module.require('v')`, `process.mainModule.require('foo')`,
+    // What does not parse as JavaScript.
+    `const x: number = require('x');`, `<div>{require('x')}</div>`,
   ];
   for (const code of opaque) assert.equal(hasOpaqueLoads(code), true, `opaque: ${code}`);
   console.log('  opaque forms recognised, literal forms not');
+}
+
+// ── 5. A required file of any extension is code ───────────────────────────
+{
+  const withLoader = { ...files, [`${APP}/loader.txt`]: 'module.exports = require(process.env.PKG || "express");\n' };
+  const state = await buildPrefetchBundle(launchFs(withLoader).fs, { cwd: `/${APP}`, entryCode: `require('./loader.txt');` });
+  assert.ok(mains(state).length > 0, 'a computed load in a required .txt file still gets the guess');
+  console.log('  a required file of any extension is checked');
 }
 
 console.log('facet-greedy-literal-closure: ok');

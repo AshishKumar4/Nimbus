@@ -49,6 +49,8 @@ assert.equal(await affected(reads, [change('/home/user/app/lib.js')]), true, 'a 
 assert.equal(await affected(reads, [change('home/user/app/lib/extra.js')], { 'home/user/app/lib/extra.js': 'file' }), true, 'a new name in a directory it listed');
 assert.equal(await affected(reads, [change('home/user/app', { structural: true })]), true, 'a directory above what it read, renamed or removed');
 assert.equal(await affected(reads, [change('home/user', { subtree: true })]), true, 'a change it may not see, above what it read');
+// A symlink on the way to what it read, retargeted: its own record, and its directory's.
+assert.equal(await affected(reads, [change('home/user/app'), change('home/user')]), true, 'a name above what it read, changed by itself');
 // A write reports its file and the directory the file is in (SqliteVFS's publication).
 assert.equal(await affected(reads, [change('home/user/app/other.js'), change('home/user/app')]), false,
   'a new name in a directory it did not list, with that directory\'s record of it');
