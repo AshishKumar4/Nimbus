@@ -8,9 +8,12 @@
 // is read from /api/_diag/exec telemetry). With the flag off the ring is
 // empty and the probe SKIPS.
 //
-// Correctness claim under test: the cache is keyed on the GLOBAL SqliteVFS
-// revision, so it (a) hits on exact repeats with no intervening write and
-// (b) invalidates on ANY write — proving it can never serve a stale bundle.
+// Correctness claim under test: an entry serves again unless a change since
+// its build names something the build read (facets/launch-reads.ts), so it
+// (a) hits on exact repeats, (b) hits after a write to a file the program
+// never reads (a shell history line, an agent's file tool), and (c) misses
+// after a write to a file the program requires — it never serves a stale
+// bundle.
 //
 // Note: cacheHit is the source of truth here, NOT wall-time. Wall-time on a
 // warm isolate is noisy (cold-start, registry, GC); the boolean cacheHit is
@@ -41,8 +44,10 @@ try {
   await t.connect();
   await t.waitForPrompt(60_000);
 
-  // A stable command whose bundle/manifest is identical across runs.
-  const CMD = 'node -e "console.log(\'cache-probe\')"';
+  // A stable command whose bundle/manifest is identical across runs: it
+  // requires a module of its own, and a file it never reads sits beside it.
+  await t.run('mkdir -p ~/cache-probe ~/notes && echo "module.exports = \'cache-probe\'" > ~/cache-probe/m.js && echo a > ~/notes/a.txt', 10_000);
+  const CMD = 'node -e "console.log(require(\'/home/user/cache-probe/m.js\'))"';
 
   await reset();
   const r1 = await t.run(CMD, 30_000);
@@ -67,15 +72,25 @@ try {
     rec2 && rec2.cacheHit === true,
     `rec2=${JSON.stringify(rec2)}`);
 
-  // Now mutate the VFS — ANY write bumps the global revision watermark.
-  await t.run('echo invalidate > /home/user/cache-bust.txt', 10_000);
-
+  // A write to a file the program never reads: the entry still serves.
+  await t.run('echo b > ~/notes/a.txt', 10_000);
   await reset();
   await t.run(CMD, 30_000);
+  const recOther = await lastRecord();
+  a.check('run after a write to a file the program never reads is a cache HIT',
+    recOther && recOther.cacheHit === true,
+    `recOther=${JSON.stringify(recOther)}`);
+
+  // A write to the module it requires: the entry is stale and is rebuilt.
+  await t.run('echo "module.exports = \'cache-probe-2\'" > ~/cache-probe/m.js', 10_000);
+  await reset();
+  const r3 = await t.run(CMD, 30_000);
   const rec3 = await lastRecord();
-  a.check('run after a VFS write is a cache MISS (invalidated)',
+  a.check('run after a write to the module it requires is a cache MISS (invalidated)',
     rec3 && rec3.cacheHit === false,
     `rec3=${JSON.stringify(rec3)}`);
+  a.check('and it runs the module as written now', hasOutputLine(r3.output, 'cache-probe-2'),
+    `tail=${JSON.stringify(stripAnsi(r3.output).slice(-200))}`);
 
   console.log(`[exec-bundle-cache] rec1.bundleMs=${rec1.bundleMs} rec2.bundleMs=${rec2 && rec2.bundleMs} (hit) rec3.bundleMs=${rec3 && rec3.bundleMs} (miss)`);
   await t.close();

@@ -23,7 +23,8 @@ const pkg = (name, deps = {}) => ({
   [`${NM}/${name}/index.js`]: `module.exports = ${JSON.stringify(name)};\n`,
 });
 const files = {
-  [`${APP}/package.json`]: JSON.stringify({ name: 'app', dependencies: { express: '*', lodash: '*' } }),
+  // Data, not code: a manifest's scripts may say "--require" (express's do).
+  [`${APP}/package.json`]: JSON.stringify({ name: 'app', scripts: { test: 'mocha --require test/support/env' }, dependencies: { express: '*', lodash: '*' } }),
   ...pkg('express', { 'body-parser': '*' }),
   ...pkg('body-parser'),
   ...pkg('lodash'),
