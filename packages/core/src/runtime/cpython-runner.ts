@@ -431,6 +431,8 @@ export function makeCPythonRunnerFactory(deps: {
         }
         const command = [binName, ...argv].map((part) =>
           (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
+        // Its program decides what the terminal's keys do while it boots: its status is its own.
+        if (takesSignals) ctx.takesSignals?.();
         const output = runtimeOutput(ctx);
         let spawnResult: CPythonFacetResult;
         try {

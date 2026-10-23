@@ -11148,7 +11148,12 @@ export class FacetManager {
       throw e;
     } finally {
       foreground?.release();
+      // It runs on in the background, which the terminal's keys no longer
+      // reach: one sent while it booted that its program never took takes its
+      // default action now, as it would have then.
+      const untaken = releaseSignals === null ? null : this.processes.untakenSignal(entry.pid);
       releaseSignals?.();
+      if (untaken !== null) this.kill(entry.pid, untaken.replace(/^SIG/, ''));
     }
   }
 

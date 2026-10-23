@@ -10,7 +10,7 @@ import type { HostSignalResult } from '../commands/system/kill.js';
  * counted and held there.
  */
 export type ShellProcesses = Pick<SessionProcessSupervisor,
-  'spawn' | 'exit' | 'kill' | 'killAs' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
+  'spawn' | 'exit' | 'kill' | 'killAs' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask' | 'signalForeground'>;
 
 /**
  * A background job: its `%N` number, its command line and its process in
