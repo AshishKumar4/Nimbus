@@ -158,7 +158,7 @@ export function toVfsError(error: unknown, syscall: string, path: string, dest?:
  * leaves the call's outcome unknown, which is a durability failure whatever
  * the caller does with it.
  */
-export const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode> = new SafeSet<VfsErrorCode>([
+export const SYSCALL_VERDICTS: SafeSet<VfsErrorCode> = new SafeSet<VfsErrorCode>([
   'ENOENT', 'EEXIST', 'EISDIR', 'ENOTDIR', 'ENOTEMPTY', 'EBADF', 'EINVAL', 'EPERM', 'EACCES', 'ELOOP',
   'ENAMETOOLONG', 'ENOSPC', 'EROFS', 'EBUSY', 'ENOTSUP', 'EXDEV', 'ENXIO', 'E2BIG',
 ]);
@@ -169,7 +169,7 @@ export const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode> = new SafeSet<VfsErrorC
  * one of these means both names are as they were. EXDEV is among them, and
  * says only that this filesystem cannot make this rename in place.
  */
-export const RENAME_REFUSALS: ReadonlySet<VfsErrorCode> = new SafeSet<VfsErrorCode>([
+export const RENAME_REFUSALS: SafeSet<VfsErrorCode> = new SafeSet<VfsErrorCode>([
   'EACCES', 'EPERM', 'EBUSY', 'EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EINVAL', 'EXDEV', 'EROFS', 'ENOSPC',
 ]);
 
