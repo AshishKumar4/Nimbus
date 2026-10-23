@@ -16,6 +16,7 @@ import { residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 
 export interface Admission {
   /** Whether the store is a one-shot's heap rather than a facet's storage. */
@@ -34,6 +35,12 @@ export interface Admission {
   storageCap(): number | null;
   /** What the session's ledger said a user may still write, at its last answer; null before one. */
   readonly available: number | null;
+  /**
+   * `bytes` held in the isolate's heap beside the store, whatever backs its
+   * tables (a process's decided bytes, a descriptor's pinned content): a
+   * one-shot's share the store's one budget; a facet's have their own bound
+   * (FACET_OWN_WRITE_MEMORY_BYTES). False where they do not fit.
+   */
   pin(bytes: number): boolean;
   unpin(bytes: number): void;
   /** Room a one-shot's held own writes may take beside everything else. */
@@ -230,7 +237,7 @@ export function createAdmission(coherence: Coherence): Admission {
     storageCap() { return cap; },
     get available() { return available; },
     pin(bytes) {
-      if (!inHeap || !fits(bytes, false)) return false;
+      if (inHeap ? !fits(bytes, false) : pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
       pinnedBytes += bytes;
       return true;
     },

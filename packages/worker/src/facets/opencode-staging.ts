@@ -204,6 +204,7 @@ async function assemble(assets: OpencodeAssetsEnv, spec: OpencodeStageSpec): Pro
     sources,
     vfsBundle: spec.vfsBundle,
     vfsCursor: spec.vfsCursor,
+    vfsRoot: spec.vfsRoot,
     mode: spec.mode,
   });
 
