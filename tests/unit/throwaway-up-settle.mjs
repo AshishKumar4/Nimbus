@@ -43,6 +43,12 @@ const ok = (result) => ({ success: true, result, errors: [] });
  * until the upload lands).
  */
 let mode = 'stale';
+/**
+ * How long the API takes to answer a read of the latest deployment: longer
+ * than the stand-in `wrangler preview` (a shell script, done in milliseconds)
+ * takes to upload, as a read across the Internet can be.
+ */
+const READ_MS = 300;
 let parentMade = false;
 const NO_WORKER = { success: false, result: null, errors: [{ code: 10007, message: 'This Worker does not exist on your account.' }] };
 let latestReads = 0;
@@ -69,10 +75,12 @@ const server = createServer((request, response) => {
     latestReads++;
     // The first read is the one before the upload; it always answers.
     if (mode === 'silent' && latestReads > 1) return;
-    if (mode === 'latest-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
-    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return json(404, ABSENT);
-    if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return json(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
-    return json(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
+    // Each answer takes READ_MS, longer than the stand-in's upload takes.
+    const answer = (status, body) => setTimeout(() => json(status, body), READ_MS);
+    if (mode === 'latest-500') return answer(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
+    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return answer(404, ABSENT);
+    if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
+    return answer(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
   }
   unexpected.push(`${request.method} ${request.url}`);
   return json(404, { success: false, result: null, errors: [{ code: 10000, message: 'not in the fixture' }] });
