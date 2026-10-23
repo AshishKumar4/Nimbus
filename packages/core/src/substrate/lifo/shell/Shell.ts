@@ -141,7 +141,7 @@ export class Shell {
   /** The line it is running, while it runs one: a terminal list's foreground. */
   foreground: string | null = null;
   private abortController: AbortController | null = null;
-  /** The process the running line runs as: its foreground job is what is below it. */
+  /** The process the running line runs as: its foreground job is what it started that is not a background job. */
   private linePid: number | null = null;
   private terminalStdin: TerminalStdin | null = null;
   private stdinLineBuffer: string = '';
@@ -753,7 +753,10 @@ export class Shell {
         this.stdinCursorPos = 0;
         // The first is the line's abort; each after it goes to the job that
         // runs on (a program that took the first), as a terminal sends each.
-        if (this.abortController.signal.aborted && this.linePid !== null) this.processes.signalForeground(this.linePid, signalAbortReason(signal));
+        if (this.abortController.signal.aborted && this.linePid !== null) {
+          const background = new Set(this.state.jobTable.list().filter((job) => job.status === 'running').map((job) => job.pid));
+          this.processes.signalForeground(this.linePid, signalAbortReason(signal), background);
+        }
         else this.abortController.abort(signalAbortReason(signal));
       } else if (signal === 'INT') {
         this.terminal.write('^C\r\n');

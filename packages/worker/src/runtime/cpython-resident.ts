@@ -126,6 +126,10 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
       return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };
     }
     const data = boot.data;
+    // Ended as its boot settled (a signal it never took, given its default
+    // action as it went to the background): that is its status, whatever the boot said.
+    const ended = facetMgr.processExitCode(spawned.pid);
+    if (ended !== null) return { exitCode: ended, stdout: data.stdout || '', stderr: data.stderr || '' };
 
     // A start that failed, a refused write included, is a failed process
     // whether or not it left a server listening: it is ended and reported,
