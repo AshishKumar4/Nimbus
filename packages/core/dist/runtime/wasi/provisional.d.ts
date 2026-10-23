@@ -305,7 +305,7 @@ export interface Provisional {
      * folded over them when they are held). `awaited`: its caller waits for
      * the session's answer (its refusal the call's), as a change by name's.
      */
-    write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean): number | Promise<number>;
+    write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean, sync?: boolean): number | Promise<number> | undefined;
     ftruncate(handleId: number, size: number, awaited?: boolean): void | Promise<void>;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (unknown: as a stat by name there). */

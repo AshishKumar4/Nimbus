@@ -655,10 +655,10 @@ export function delegationHolder(options) {
                 handle.position = start + chunk.byteLength;
             return chunk;
         },
-        write: (handleId, offset, bytes, awaited) => {
+        write: (handleId, offset, bytes, awaited, sync) => {
             const handle = heldDesc(handleId);
             if (handle === undefined)
-                return prov.write(handleId, offset, bytes, awaited);
+                return prov.write(handleId, offset, bytes, awaited, sync);
             if (!handle.write)
                 throw fsError('EBADF', 'write', handle.path);
             const inode = handle.inode;

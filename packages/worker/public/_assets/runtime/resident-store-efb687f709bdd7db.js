@@ -6294,12 +6294,14 @@ var __nimbusResidentModule = (() => {
           desc.position = start + chunk.byteLength;
         return chunk;
       },
-      write: (handleId, offset, bytes, awaited = false) => {
+      write: (handleId, offset, bytes, awaited = false, sync = false) => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EBADF", "write", desc.path);
         if (bytes.byteLength === 0)
           return 0;
+        if (sync && bytesOf(desc.inode, "write", desc.path) === void 0 && entryOf(desc.inode).size > 0)
+          return void 0;
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
         if (!awaited && continued(desc, start, bytes, at)) {
@@ -9326,10 +9328,10 @@ var __nimbusResidentModule = (() => {
           handle.position = start + chunk.byteLength;
         return chunk;
       },
-      write: (handleId, offset, bytes, awaited) => {
+      write: (handleId, offset, bytes, awaited, sync) => {
         const handle = heldDesc(handleId);
         if (handle === void 0)
-          return prov.write(handleId, offset, bytes, awaited);
+          return prov.write(handleId, offset, bytes, awaited, sync);
         if (!handle.write)
           throw fsError2("EBADF", "write", handle.path);
         const inode = handle.inode;
@@ -10149,6 +10151,7 @@ var __nimbusResidentModule = (() => {
     }
     const readers = /* @__PURE__ */ new Set();
     const readerKeys = /* @__PURE__ */ new Map();
+    const readerFiles = /* @__PURE__ */ new Map();
     const unwritten = /* @__PURE__ */ new Set();
     const directories = /* @__PURE__ */ new Map();
     const paged = /* @__PURE__ */ new Map();
@@ -10631,7 +10634,14 @@ var __nimbusResidentModule = (() => {
       directoryPool?.cancelPending();
     };
     fs.holding = () => holder?.pending() ?? false;
-    fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
+    fs.decidedAt = (path) => {
+      if (holder === null)
+        return false;
+      if (holder.provisional.touches(keyOf(path)))
+        return true;
+      const followed = resolve(path, true);
+      return typeof followed === "string" && followed !== "" && holder.provisional.touches(followed);
+    };
     Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
@@ -10851,6 +10861,12 @@ var __nimbusResidentModule = (() => {
         const local = decide(() => after2(walkFor(path, openFollows(openFlags(flags))), (walk) => walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE : after2(holder.open(walk.key, typeof path === "string" ? path : path.path, flags), (handle) => handle === void 0 ? DELEGATE : heldOpen(handle))));
         return after2(local, (handle) => handle === DELEGATE ? openOnSession(path, flags) : handle);
       }
+      if (readOnly && flags.directory === true)
+        return after2(resolve(path, flags.followSymlinks !== false), (key) => {
+          if (typeof key === "string" && key !== "" && entryAt(key)?.type === "file")
+            throw fsError2("ENOTDIR", "open", pathOf(path));
+          return openOnSession(path, flags);
+        });
       return openOnSession(path, flags);
     };
     const provisionally = (path, follow, decided) => {
@@ -11009,6 +11025,8 @@ var __nimbusResidentModule = (() => {
         const { type, dev, ino, size } = handle.stat;
         if (dev === store.device) {
           const key = keyOf(handle.path);
+          if (type === "file")
+            readerFiles.set(handle.id, { key, dev, ino });
           if (type === "directory")
             directories.set(handle.id, { key, dev, ino });
           else if (type === "file" && size > WASI_RESIDENT_FILE_CAP_BYTES)
@@ -11031,6 +11049,12 @@ var __nimbusResidentModule = (() => {
           counts.local++;
           return statOf(entry);
         });
+      const file = readerFiles.get(handleId);
+      if (file !== void 0)
+        return answer("fstat", () => {
+          const entry = entryAt(file.key);
+          return entry !== void 0 && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
+        }, () => authority.fstat(handleId));
       delegated("fstat");
       return authority.fstat(handleId);
     };
@@ -11085,7 +11109,13 @@ var __nimbusResidentModule = (() => {
     fs.write = (handleId, offset, bytes) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        return holder.write(handleId, offset, bytes, !now && answeredWrites);
+        const done = holder.write(handleId, offset, bytes, !now && answeredWrites, now && answeredWrites);
+        if (done !== void 0)
+          return done;
+        const of = holder.provisional.inodeOf(handleId);
+        if (of !== void 0 && !holder.provisional.pending(of.entry.dev, of.entry.ino))
+          refusedFetch = faultIn(of.key, of.entry);
+        throw NOT_NOW;
       }
       if (now)
         throw NOT_NOW;
@@ -11118,6 +11148,7 @@ var __nimbusResidentModule = (() => {
         directories.delete(handleId);
         paged.delete(handleId);
         readerKeys.delete(handleId);
+        readerFiles.delete(handleId);
         delegated("close");
         return authority.close(handleId);
       }
