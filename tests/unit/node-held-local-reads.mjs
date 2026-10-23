@@ -45,12 +45,16 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   authority.kfs.writeFile('home/user/app/out/seeded.txt', 'seeded');
   const root = authority.rawVfs.as(CRED_KERNEL);
   root.mkdir('home/user/app/locked', { mode: 0o700 });
-  const counted = { asked: 0, relistGate: null, lose: 0 };
+  const counted = { asked: 0, barriers: 0, relistGate: null, lose: 0 };
   let forward;
   const handle = facetSupervisor(authority, {
     fsReadBatch: async (...args) => {
       if (args[0].some((request) => request.lstat === true)) counted.asked++;
       return forward('fsReadBatch', args);
+    },
+    fsAcquire: async (...args) => {
+      counted.barriers++;
+      return forward('fsAcquire', args);
     },
     fsList: async (...args) => {
       if (counted.relistGate !== null) await counted.relistGate.promise;
@@ -82,7 +86,7 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   });
   const { fs } = globalThis.__probe;
   if (take) await takeOut(fs);
-  return { authority, fs, root, counted, asked: () => counted.asked };
+  return { authority, fs, root, counted, asked: () => counted.asked, barriers: () => counted.barriers };
 }
 
 /** Take `out`: write there until the process holds it, then let what it wrote be answered. */
@@ -263,6 +267,17 @@ await runScenarios(import.meta.path, {
     const before = asked();
     await fs.promises.stat(`${OUT}/seeded.txt`);
     assert.equal(asked() - before, 1, 'a grant without a certificate answered');
+  },
+
+  async 'a cursor from another incarnation asks the session (T15)'() {
+    const { authority, fs, asked, barriers } = await boot();
+    await fs.promises.stat(`${OUT}/seeded.txt`);
+    authority.rawVfs.rotateIncarnation();
+    const before = asked() + barriers();
+    const stat = await fs.promises.stat(`${OUT}/seeded.txt`);
+    assert.ok(asked() + barriers() > before, 'a cursor held against the last incarnation asked the session');
+    assert.equal(stat.size, 'seeded'.length, 'the stat is the session\'s');
+    assert.equal(await fs.promises.readFile(`${OUT}/seeded.txt`, 'utf8'), 'seeded', 'and so is the read');
   },
 
   async 'a route across two held roots asks until the view has reached both certificates (T14)'() {
