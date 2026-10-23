@@ -500,6 +500,14 @@ export interface ResidentDelegation {
    * decide.
    */
   readonly walkedMounts?: boolean;
+  /**
+   * A descriptor's write or truncate outside a held subtree, by a caller
+   * that may wait, is answered once the session has it, its refusal the
+   * call's: node's fs, as it always answered an awaited write. Without it
+   * such a write is answered once logged (a WASI guest's write(2)), the
+   * session's refusal its next close's, sync's or settle's.
+   */
+  readonly answeredWrites?: boolean;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
   /**
    * The directories the last process in this facet opened, in order (its
@@ -1026,6 +1034,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const answerable = (key: string, entry: ResidentEntry): boolean => walkedMounts || fedRow(key, entry) === true;
   const walkedMounts = delegation?.walkedMounts === true;
+  const answeredWrites = delegation?.answeredWrites === true;
 
   /**
    * Whether `entry` at `key`, a row off the session's own device, is a fed
@@ -1782,14 +1791,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes); }
+    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes, !now && answeredWrites); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
   };
 
   fs.ftruncate = (handleId, size) => {
-    if (holder?.owns(handleId)) { counts.local++; holder.ftruncate(handleId, size); return; }
+    if (holder?.owns(handleId)) { counts.local++; return holder.ftruncate(handleId, size, !now && answeredWrites); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('ftruncate', () => authority.ftruncate(handleId, size));
