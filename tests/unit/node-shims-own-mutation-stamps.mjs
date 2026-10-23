@@ -274,6 +274,7 @@ const scenarios = {
     const fh = await f.fs.promises.open(p, 'r+');
     const landed = held.arm();
     const write = fh.write('JELLO', 0);
+    await sleep(0);
     const sent = globalThis.__nimbusProcessFs.flush();
     await within(landed, 'the held wave');
     await barrierInGap(f.fs, held);
@@ -293,6 +294,7 @@ const scenarios = {
     await f.fs.promises.writeFile(p, 'FIRST');
     const landed = held.arm();
     const write = f.fs.promises.writeFile(p, 'SECOND');
+    await sleep(0);
     const sent = globalThis.__nimbusProcessFs.flush();
     await within(landed, 'the held wave');
     await barrierInGap(f.fs, held);
@@ -311,6 +313,7 @@ const scenarios = {
     await f.fs.promises.writeFile(p, 'FIRST');
     const landed = held.arm();
     const write = f.fs.promises.writeFile(p, 'SECOND');
+    await sleep(0);
     const sent = globalThis.__nimbusProcessFs.flush();
     await within(landed, 'the held wave');
     const peerWrite = f.authority.peer.writeFile(p, 'PEER');
@@ -329,6 +332,7 @@ const scenarios = {
     const fh = await f.fs.promises.open(p, 'r+');
     const landed = held.arm();
     const write = fh.write('X', 0);
+    await sleep(0);
     const sent = globalThis.__nimbusProcessFs.flush();
     await within(landed, 'the held wave');
     const peerWrite = f.authority.peer.writeFile(p, 'PEERPEERPEER');
@@ -339,6 +343,21 @@ const scenarios = {
     await within(peerWrite, 'the peer write behind the held response');
     assert.equal(await timerRead(f, p), 'PEERPEERPEER', 'race/peer: the sync read serves the peer bytes');
     assert.equal(await f.authority.peer.readFileString(p), 'PEERPEERPEER', 'race/peer: and the session agrees');
+  },
+  // Where the bytes an awaited write left are: the sync view before any barrier, and after one.
+  async 'a sync read serves an awaited write before any barrier'() {
+    const f = facet();
+    const p = `${dir}/pre-barrier.txt`;
+    await f.fs.promises.writeFile(p, 'MINE');
+    assert.equal(syncRead(f.fs, p), 'MINE', 'the sync view serves the bytes the awaited write left');
+  },
+
+  async 'a sync read serves an awaited write after one barrier'() {
+    const f = facet();
+    const p = `${dir}/post-barrier.txt`;
+    await f.fs.promises.writeFile(p, 'MINE');
+    await barrier(f.fs);
+    assert.equal(syncRead(f.fs, p), 'MINE', 'the sync view serves the bytes the awaited write left, after a barrier');
   },
 
   // ── An RPC that rejects: its outcome is unknown, the caller is told ───────

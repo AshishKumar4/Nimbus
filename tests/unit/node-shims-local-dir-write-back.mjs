@@ -80,6 +80,16 @@ const scenarios = {
       'the append reached the session through a mkdirSync-only parent',
     );
   },
+  // Whether the bytes an awaited append left are at the session once the process flushes: unsent, or lost.
+  async 'an awaited append reaches the session at the process\'s next flush'() {
+    const authority = createAuthority();
+    const { fs } = shimsOnSession({ authority });
+    fs.mkdirSync('/home/user/logdir', { recursive: true });
+    fs.appendFileSync('/home/user/logdir/a.log', 'hello');
+    await fs.promises.appendFile('/home/user/logdir/a.log', ' world');
+    await globalThis.__nimbusProcessFs.flush();
+    assert.equal(await authority.peer.readFileString('/home/user/logdir/a.log'), 'hello world', 'the flush sends what the append decided');
+  },
 
   // ── truncate reaches an append-ledger file under a local-only directory ────
   async 'a truncate reaches an appended file under a local-only directory'() {
