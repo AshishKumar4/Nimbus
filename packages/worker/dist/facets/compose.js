@@ -67,6 +67,10 @@ export function composeFacetManager(deps) {
     const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });
     manager.setVfs(vfs, deps.filesystem);
     manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_SESSION_USER)));
+    // What the session's first `node` needs is read now, not by that launch (FacetManager.prewarm).
+    ctx.waitUntil(manager.prewarm(CRED_SESSION_USER).catch((error) => {
+        console.warn('[facet-manager] the prewarm failed; the first launch reads what it needs itself:', error);
+    }));
     const { portRegistry } = deps;
     const capabilityHost = { ctx, portRegistry };
     return {

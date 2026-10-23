@@ -1251,17 +1251,23 @@ export declare class FacetManager {
      * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
-     * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
-     * reads from paths that can lie anywhere in the VFS (STATIC_ABSOLUTE_LITERALS
-     * pulls absolute-path literals like /tmp/x),
-     * so a cwd-scoped subtree revision cannot guarantee invalidation. The
-     * global revision bumps on ANY write, so the cache invalidates on every
-     * mutation that could change any file the bundle reads — provably
-     * conservative. Bounded to a small LRU; the working set per session is a
-     * handful of bins (tsc/vite/eslint) plus repeated `node -e` shapes.
+     * Correctness watermark: what the build asked the filesystem
+     * (launch-reads.ts). buildPrefetchBundle reads from paths that can lie
+     * anywhere in the VFS (STATIC_ABSOLUTE_LITERALS pulls absolute-path
+     * literals like /tmp/x), so a cwd-scoped subtree revision cannot guarantee
+     * invalidation; each path it asked about, found or not, and each directory
+     * it listed, can. An entry at an older revision is checked against the
+     * barrier's report of what changed since its build (_takePrefetchEntry):
+     * it serves again unless a change names one of those. It used to be the
+     * global revision, which every write moves, so a write anywhere (a shell
+     * history line, an agent's file tool) rebuilt the next launch's map.
+     * Bounded to a small LRU; the working set per session is a handful of bins
+     * (tsc/vite/eslint) plus repeated `node -e` shapes.
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
+    /** With exec telemetry on: why each key's entry was last dropped as stale (its record's cacheDrop), until a record takes it. */
+    private readonly prefetchCacheDrops;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
     /**
@@ -1670,6 +1676,25 @@ export declare class FacetManager {
      * MANIFEST_COPIES_MAX_BYTES, is fetched as well.
      */
     private _installedManifests;
+    /** Reads of the manifest copies in flight, by credential and install revision: a launch joins the read a prewarm began. */
+    private readonly manifestReads;
+    /** `cred`'s manifest copies at the install revision now (_installedManifests), read through the view `view` makes. */
+    private _manifestCopiesFor;
+    private _readManifestCopies;
+    /**
+     * What a session's first `node` waits for, made as soon as the session has
+     * a filesystem rather than by that launch: the node runtime's sources
+     * (2.3 MB from the deployment's assets, by way of the colo cache, on an
+     * isolate that has not read them) and `cred`'s manifest copies (a listing
+     * of the whole namespace and a read of each package.json, which a new
+     * session object has not kept). Measured 2026-10-23 on a throwaway: the
+     * first `node -e 1` after a reset of an express project's session took
+     * 3.1 s, against 0.6 s warm. A launch that comes while this runs joins its
+     * reads (manifestReads, the sources' memo). It holds no process and no
+     * Dynamic Worker, and runs on the session's own turns, paced as a launch
+     * is, so a request that arrives meanwhile is answered between them.
+     */
+    prewarm(cred: Readonly<VfsCred>): Promise<void>;
     /**
      * Paths earlier launches of the same build missed in this session. Other
      * sessions' misses (the shared read profile) join the module map instead,
@@ -1705,12 +1730,14 @@ export declare class FacetManager {
      */
     private _staticRefsOf;
     /**
-     * The cache's entry for `key` at `revision`, if one is held. An entry built
-     * at an older revision can never be SERVED again — the lookup requires an
-     * exact match — so from the first write after it was admitted it is
-     * retained garbage, held in the isolate that is measurably
-     * memory-constrained. Dropped here, before the build that replaces it
-     * allocates, so the stale filesystem graph and the new one never co-reside.
+     * The entry for `key`, if what its build read is as it was. An entry at an
+     * older revision is checked against what changed since its build, as
+     * `vfs` names the changes (launch-reads.ts staleReason): unaffected, it
+     * is dated at `revision` and served; affected, or past the retained change
+     * log (poison), it is dropped before the build that replaces it allocates,
+     * so the stale graph and the new one never co-reside. The other entries of
+     * the same credential are checked the same way and dropped when stale, as
+     * they were when any write dropped them all.
      */
     private _takePrefetchEntry;
     private _buildProcessBundle;
@@ -1788,6 +1815,8 @@ export declare class FacetManager {
      * launch interprets it (core native-esm.ts).
      */
     private _stagedRuntimeCode;
+    /** Why `key`'s entry was last dropped as stale, for its launch's exec record, once. */
+    private _takeCacheDrop;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
     private _admitPrefetchCacheEntry;
     /**

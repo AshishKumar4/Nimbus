@@ -41,7 +41,8 @@ const SIBLING_BYTES = 900 * 1024;
 
 const files = {
   [`${PROJ}/package.json`]: JSON.stringify({ name: 'proj', dependencies: { chunky: '1.0.0' } }),
-  [`${PROJ}/app.js`]: 'require("./big.js");\nmodule.exports = 1;\n',
+  // It also loads by a computed name, so the greedy guess is made (opaque-loads.ts).
+  [`${PROJ}/app.js`]: 'require("./big.js");\nif (process.env.PLUGIN) require(process.env.PLUGIN);\nmodule.exports = 1;\n',
   [`${PROJ}/big.js`]: filler(REQUIRED_BYTES, 'required-closure'),
   // A declaration file: real enough to want, and impossible to `require`.
   [`${PROJ}/types.d.ts`]: filler(DECL_BYTES, 'declarations'),
