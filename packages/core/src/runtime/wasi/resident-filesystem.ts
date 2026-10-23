@@ -37,7 +37,7 @@
 
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenedFile, RuntimeFsPath, RuntimeMutationOwner, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
-import { fsError, walkBeneath } from '../beneath-walk.js';
+import { fsError, walkBeneath, type BeneathLookup } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import { flagsRefusal, openFollows, refusesDirectory } from '../../vfs/open-rules.js';
 import { openFlags } from '../descriptors.js';
@@ -694,7 +694,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return promiseThen(store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }), (result) => {
       if (!result.landed) counts.barrierFailures++;
       if (!result.landed || !store.ready()) return false;
-      if (ask !== null && ownValue(result, 'readLease') && !ownValue(result, 'fromDelivery')) client!.readLeased(ownValue(result, 'readLease'), ask);
+      const readLease = ownValue(result, 'readLease');
+      if (ask !== null && readLease && !ownValue(result, 'fromDelivery')) client!.readLeased(readLease, ask);
       caught.input = mathMax(caught.input, at.input);
       caught.own = mathMax(caught.own, ownValue(result, 'fromDelivery') && typeof own === 'number' ? own : at.own);
       return true;
@@ -772,7 +773,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (crossed !== undefined) crossed.length = 0;
     for (let step = generatorNext(walk); ;) {
       if (step.done) return step.value === null ? null : step.value.reached;
-      const lookup = step.value;
+      const lookup = step.value as BeneathLookup;
       if (objectHasOwn(lookup, 'readlink')) {
         const entry = store.entry(keyOf((lookup as { readonly readlink: string }).readlink));
         if (!entry || entry.type !== 'symlink' || entry.target === null) return DELEGATE;
@@ -995,7 +996,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       root = keyOf((path as { readonly root: string }).root);
       name = path.path;
     } else {
-      const key = directoryKey(path.directory);
+      const key = directoryKey((path as { readonly directory: number }).directory);
       if (key === undefined) return DELEGATE;
       root = key;
       name = path.path;
