@@ -396,6 +396,10 @@ export function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T 
 export function ownValue<T extends object, K extends keyof T>(record: T, key: K): T[K] | undefined {
   return objectHasOwn(record, key) ? record[key] : undefined;
 }
+/** `record[key] = value` as an own data property, whatever Object.prototype has at `key` (a setter there is not called). */
+export function setOwnValue<T extends object, K extends keyof T>(record: T, key: K, value: T[K]): void {
+  reflectDefineProperty(record, key, dataDescriptor(value, true, true, true));
+}
 /** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
 export const promiseThen: <T, R1 = T, R2 = never>(
   promise: Promise<T>, onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,

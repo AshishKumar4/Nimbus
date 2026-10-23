@@ -65,13 +65,13 @@ const CLIENT = join(CORE, 'src/_shared/process-fs-client.ts');
 const GUEST_LOADING_FUNCTIONS = new Map([
   [HOLDER, [
     'row', 'children', 'content', 'entry', 'barrierBegun', 'retire', 'pending', 'entryOf', 'composedRow', 'composedChildren', 'heldContent',
-    'composedContent', 'composedEntry', 'unreported', 'settled', 'release', 'absorb', 'keep', 'generation', 'reserve', 'active',
+    'composedContent', 'composedEntry', 'unreported', 'settled', 'release', 'absorb', 'keep', 'generation', 'reserve', 'active', 'now',
   ]],
   [PROVISIONAL, [
     'pending', 'touches', 'barrierBegun', 'retire', 'inodeAtNumber', 'parentKey', 'within', 'children', 'content', 'kept', 'replay', 'fit', 'release',
     'viewed', 'payloadOf', 'dropRecords', 'unshared', 'entryOf', 'baseline', 'refold', 'activity', 'viewNameBeneathMoved', 'made', 'everyInode',
     'cost', 'renamed', 'named', 'removeInode', 'recordCost', 'pinned', 'ownership', 'addInode', 'stringCost', 'pendingGrowth', 'retained', 'rowAt',
-    'provisionalEntry', 'nameOf',
+    'provisionalEntry', 'nameOf', 'inode', 'entry', 'placed', 'opsOf',
   ]],
   [CLIENT, [
     'readTrusted', 'held', 'certifies', 'vouch', 'readLeaseAsk', 'readLeaseAnswered', 'readLeased', 'pending', 'heldGrant', 'standingOf',

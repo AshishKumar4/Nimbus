@@ -47,6 +47,7 @@ import { owned } from './inode-fold.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
+import { bytesCopy, dateNow, ownValue, SafeSet } from '../../_shared/primordials.js';
 
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
@@ -257,7 +258,7 @@ function within(key: string, root: string): boolean {
 
 export function delegationHolder(options: HolderOptions): DelegationHolder {
   const { store } = options;
-  const now = options.now ?? Date.now;
+  const now = options.now ?? dateNow;
   /** What it decided by name, until the view has it. */
   const names = ownNames({
     entry: (key) => store.entry(key),
@@ -272,7 +273,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const { decided } = names;
   let nextHandle = FIRST_LOCAL_HANDLE;
   /** Files written since their bytes were last logged, in the order last written. */
-  const dirty = new Set<Inode>();
+  const dirty = new SafeSet<Inode>();
 
   // Changes logged, numbered; and the last a completed send covered: a send covers only what was logged when it began.
   let changes = 0;
@@ -464,8 +465,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /** A file's bytes a grant decides here (its cell). */
   const heldContent = (entry: ResidentEntry): Uint8Array | undefined => {
-    const cell = prov.inode(entry.dev, entry.ino)?.cell;
-    return cell === undefined ? undefined : cell.bytes.slice(0, cell.length);
+    const inode = prov.inode(entry.dev, entry.ino);
+    const cell = inode === undefined ? undefined : ownValue(inode, 'cell');
+    return cell === undefined ? undefined : bytesCopy(cell.bytes, 0, cell.length);
   };
 
   const prov: Provisional = provisionalDecisions({
@@ -476,10 +478,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     children: (key) => names.children(key, store.children(key)),
     content: (key, revision) => {
       const entry = decided.get(key);
-      return (entry ? heldContent(entry) : undefined) ?? store.content?.(key, revision);
+      return (entry ? heldContent(entry) : undefined) ?? ownValue(store, 'content')?.(key, revision);
     },
-    reserve: (bytes) => store.reserve?.(bytes) ?? true,
-    release: (bytes) => store.release?.(bytes),
+    reserve: (bytes) => ownValue(store, 'reserve')?.(bytes) ?? true,
+    release: (bytes) => ownValue(store, 'release')?.(bytes),
     client,
     drain,
     sent: () => options.sent?.(),
@@ -497,8 +499,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     generation: (key) => names.generation(key),
     settled: (key, generation) => names.settled(key, generation),
     ...(store.mounted === undefined ? {} : { mounted: (key: string) => store.mounted!(key) }),
-    ...(store.unreported === undefined ? {} : { unreported: (key: string) => store.unreported!(key) }),
-    ...(store.keep === undefined ? {} : { keep: (key: string, row: ResidentEntry, bytes: Uint8Array) => store.keep!(key, row.revision, bytes) }),
+    ...(store.unreported === undefined ? {} : { unreported: (key: string) => ownValue(store, 'unreported')!(key) }),
+    ...(store.keep === undefined ? {} : { keep: (key: string, row: ResidentEntry, bytes: Uint8Array) => ownValue(store, 'keep')!(key, row.revision, bytes) }),
     absorb: (key, file) => {
       const decision = decided.get(key);
       if (!decision || decision.dev !== file.dev || decision.ino !== file.ino) return undefined;

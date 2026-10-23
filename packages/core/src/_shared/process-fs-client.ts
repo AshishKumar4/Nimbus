@@ -50,6 +50,7 @@ import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempt
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { ownValue, promiseResolve, promiseThen, reflectGet, SafeSet, setFind } from './primordials.js';
 import { SYSCALL_VERDICTS, type VfsErrorCode } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from '../runtime/delegations.js';
@@ -1300,11 +1301,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * session confirmed it, then a writer recalled it), and trusting it then
    * would read past a change published since.
    */
-  const endedReadLeases = new Set<string>();
+  const endedReadLeases = new SafeSet<string>();
   const endReadLease = (owner: string): void => {
     endedReadLeases.add(owner);
     // Owners are never reused; the oldest are forgotten past a bound.
-    if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value!);
+    if (endedReadLeases.size > 64) endedReadLeases.delete(setFind(endedReadLeases, () => true)!);
     if (readLease?.owner === owner) readLease = null;
   };
 
@@ -1312,7 +1313,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const giveBackReadLease = async (owner: string): Promise<void> => {
     endReadLease(owner);
     counters.readReleased++;
-    await session.grants?.release(owner).catch(() => {});
+    const port = reflectGet(session, 'grants') as ProcessFsGrantSession | undefined;
+    await (port === undefined ? undefined : promiseThen(promiseResolve(port.release(owner)), undefined, () => {}));
   };
   /** The run ended (settle): it takes no read lease again. */
   let runEnded = false;
@@ -1323,7 +1325,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * idle, and holds a poll open for nothing).
    */
   const answerReadRecalls = async (owner: string): Promise<void> => {
-    const port = session.grants!;
+    const port = reflectGet(session, 'grants') as ProcessFsGrantSession;
     for (;;) {
       const polled = now();
       let kind: RecallKind | null;
@@ -1442,8 +1444,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
 
   // A process with a raw socket decides nothing here: what it awaits is the
   // session's answer, which comes once it is published.
-  const heldGrant = (key: string): Grant | undefined => (escaped !== null ? undefined
-    : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
+  const heldGrant = (key: string): Grant | undefined => {
+    if (escaped !== null) return undefined;
+    for (let i = 0; i < grants.length; i++) {
+      const grant = grants[i]!;
+      if (!grant.ended && !grant.closing && !grant.shared && within(key, grant.root)) return grant;
+    }
+    return undefined;
+  };
 
   /** What refuses `bytes` more of synchronous writes past the cap the client holds unanswered. */
   const syncCapRefusal = (bytes: number, path: string): Error => fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
@@ -1503,8 +1511,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     certifies(key, root) {
       if (escaped !== null) return undefined;
       let found: 'held' | 'above' | undefined;
-      for (const grant of grants) {
-        const certificate = grant.certificate;
+      for (let i = 0; i < grants.length; i++) {
+        const grant = grants[i]!;
+        const certificate = ownValue(grant, 'certificate');
         if (certificate === undefined || certificate.epoch !== root.epoch || root.cursor < certificate.revision) continue;
         const standing = standingOf(grant, key);
         if (standing === 'held') return standing;
@@ -1629,11 +1638,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return !runEnded && readLease?.owner === owner && readLease.logged === logged;
     },
     readLeaseAsk() {
-      if (session.grants === undefined || runEnded) return null;
+      if (reflectGet(session, 'grants') === undefined || runEnded) return null;
       return { at: now(), logged: answered === logged ? logged : -1 };
     },
     readLeaseAnswered(lease) {
-      if (session.grants === undefined || endedReadLeases.has(lease.owner)) return;
+      if (reflectGet(session, 'grants') === undefined || endedReadLeases.has(lease.owner)) return;
       if (readLease?.owner === lease.owner) {
         readLease.confirmedAt = now();
         return;
