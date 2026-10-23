@@ -2,10 +2,11 @@
 // Each CPython build names the contract its host must keep: -2 imports
 // nimbus_fs and nimbus_proc, which a runner older than it does not give
 // (cpython-runner@2); -3's libc asks again a wait its host gave up on, which
-// a host may answer only to it (cpython-runner@3). This tree's runner
-// implements all three, so it is registered under each key, and the catalog
-// keeps its default (--keep-default) until a later release flips it. What
-// has to hold, with -3's entrypoints as runtime-specs publishes them:
+// a host may answer only to it (cpython-runner@3); -4 takes the signals sent
+// to its process, which a host sends only to it (cpython-runner@4). This
+// tree's runner implements all four, so it is registered under each key, and
+// the catalog keeps its default (--keep-default) until a later release flips
+// it. What has to hold, with -4's entrypoints as runtime-specs publishes them:
 //
 //   - an older deployment refuses a build newer than its runner by that
 //     runner's key, and keeps its default;
@@ -53,10 +54,11 @@ const cpython = (version, entrypoints) => {
     readBlob: () => bytes,
   };
 };
-// -1 and -2 as the catalog published them; -3 as runtime-specs publishes it.
+// -1 to -3 as the catalog published them; -4 as runtime-specs publishes it.
 const v1 = cpython('3.13.14-1', ['python', 'python3'].map((binName) => ({ binName, runner: 'cpython-runner', args: [] })));
 const v2 = cpython('3.13.14-2', ['python', 'python3'].map((binName) => ({ binName, runner: 'cpython-runner@2', args: [] })));
-const v3 = cpython('3.13.14-3', SPECS['cpython/3.13.14-3'].files.filter((file) => file.runner !== undefined)
+const v3 = cpython('3.13.14-3', ['python', 'python3'].map((binName) => ({ binName, runner: 'cpython-runner@3', args: [] })));
+const v4 = cpython('3.13.14-4', SPECS['cpython/3.13.14-4'].files.filter((file) => file.runner !== undefined)
   .map(({ binName, runner }) => ({ binName, runner, args: [] })));
 /** A shared catalog offering `builds`, its default the first. */
 const catalog = (...builds) => ({
@@ -77,6 +79,15 @@ const registry = () => {
   const commands = new Map();
   return { register: (name, command) => commands.set(name, command), unregister: (name) => commands.delete(name), has: (name) => commands.has(name), resolve: async (name) => commands.get(name) };
 };
+
+// A deployment whose runner predates -4 (core 0.26.0): it registers -1's to -3's keys.
+{
+  const older = new RuntimeManager({ vfs: new ProcessView(new ProcessFiles(openVfs().vfs).openHost(CRED_KERNEL).fs), registry: registry(), source: catalog(v3, v4, v2, v1) });
+  for (const key of ['cpython-runner', 'cpython-runner@2', 'cpython-runner@3']) older.registerRunner(key, () => async () => 0);
+  assert.equal((await older.install('cpython')).version, '3.13.14-3', 'an older deployment keeps the -3 default');
+  await assert.rejects(older.install('cpython@3.13.14-4'), /cpython@3\.13\.14-4: runner .* not registered/, 'and refuses -4 by its runner');
+  console.log('  ✓ a deployment that binds only -1 to -3 keeps -3 and refuses -4 by its runner');
+}
 
 // A deployment whose runner predates -3 (core 0.22.0): it registers -1's and -2's keys.
 {
@@ -125,6 +136,9 @@ for (const [what, open] of [
     [[v2, v3], 'cpython', '3.13.14-2'],
     [[v2, v3], 'cpython@3.13.14-3', '3.13.14-3'],
     [[v3, v2], 'cpython', '3.13.14-3'],
+    [[v3, v4], 'cpython', '3.13.14-3'],
+    [[v3, v4], 'cpython@3.13.14-4', '3.13.14-4'],
+    [[v4, v3], 'cpython', '3.13.14-4'],
   ]) {
     const workspace = await open(catalog(...offered));
     try {
