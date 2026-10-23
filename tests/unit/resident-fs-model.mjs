@@ -263,7 +263,10 @@ async function runSteps(steps, met, grants) {
    * nor where it empties a name the view (not this process) says is free:
    * open(O_CREAT|O_TRUNC) truncates whatever a peer made there since.
    */
-  const creating = (name, reference, made, flags) => (made && (flags.exclusive || (flags.truncate && !admitted.names.has(name))) ? [] : expecting([[name, reference]]));
+  const creating = (name, reference, made, flags) => (made && (flags.exclusive || (flags.truncate && !ownName(name))) ? [] : expecting([[name, reference]]));
+  /** Whether the process's own effects since its view's last catch-up named `name` (made, removed or moved it): its decisions' name, not the view's. */
+  const ownName = (name) => pending.some((record) => !record.refused && (
+    (record.effect.kind === 'name' && record.effect.name === name) || (record.effect.kind === 'rename' && (record.effect.from === name || record.effect.to === name))));
 
   /** The process's operation `step`, made synchronously: its local refusal, which the model predicts, or its effects. */
   const processStep = async (step, label) => {
