@@ -7249,7 +7249,7 @@ export class FacetManager {
             const ended = new AbortController();
             this.processes.setTerminator(generation.pid, () => ended.abort(new RunnerCallEnded('killed')));
             const timeoutMs = options.timeoutMs;
-            const timer = timeoutMs === undefined ? undefined : setTimeout(() => ended.abort(new RunnerCallEnded('timeout', timeoutMs)), timeoutMs);
+            const timer = timeoutMs === undefined ? null : setTimeout(() => ended.abort(new RunnerCallEnded('timeout', timeoutMs)), timeoutMs);
             let sent = false;
             try {
                 const answer = await this._runnerEnter(generation, code, cpuMs, ended.signal, () => { sent = true; });

@@ -2368,6 +2368,8 @@ async function __nimbusRunnerStarted(workerEnv) {
   const __nimbusStdinWhole = false;
   const __nimbusStdinAtLeast = 0;
   const __nimbusStdinFile = null;
+  // It runs only while a call holds it: it takes no delegation or read lease it could not answer a recall of (vfs-write-ledger.ts).
+  const __nimbusAnswersNoRecall = true;
 ${VFS_CURSOR_SEED_SOURCE}
   __nimbusStopReplay.begin({ captured: true });
   const __supervisor = workerEnv?.SUPERVISOR
