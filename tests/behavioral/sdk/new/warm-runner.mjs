@@ -3,15 +3,17 @@
 // each call is a line of the node REPL in one warm process, so what one call
 // declares the next call finds. The checks, end to end over the remote SDK:
 //   - state persists across calls (globals, top-level `let`, top-level await),
-//     and stdout, stderr, the value and a thrown error come back per call;
+//     and stdout, stderr, the value and a thrown error (a SyntaxError too)
+//     come back per call, the runner keeping its state;
 //   - files are coherent both ways: a call reads what the session wrote after
 //     the runner started, and the session reads what a call wrote as soon as
-//     the call answers;
+//     the call answers, without waiting where a call wrote often;
 //   - more than ten idle runners in one session stay warm and callable: an
 //     idle runner holds none of the Durable Object's ten Dynamic Workers;
 //   - a runaway call (a loop that never yields) ends with a defined error at
 //     its CPU limit, the session still answers, and the next call is fresh;
-//     so does a call past its wall limit, and a closed runner starts fresh.
+//     so does a call past its wall limit or one that calls process.exit, and
+//     close ends a call the runner is running; a closed runner starts fresh.
 // It also records what a warm call costs beside a warm `node -e` one-shot.
 
 import { BASE, AUTH_TOKEN, makeAsserter } from '../../_driver.mjs';
@@ -95,6 +97,10 @@ try {
       && thrown.value === undefined && thrown.fresh === false, show(thrown));
   const survived = await runner.run('x');
   a.check('the runner keeps its state after a thrown error', survived.value === '40' && survived.fresh === false, show(survived));
+  const typo = await runner.run('foo(');
+  const afterTypo = await runner.run('x');
+  a.check('code that does not parse answers a SyntaxError, and the runner keeps its state',
+    typo.error?.name === 'SyntaxError' && typo.fresh === false && afterTypo.value === '40' && afterTypo.fresh === false, show({ typo, afterTypo }));
 
   // The session to the runner: files written after the runner started.
   await box.files.write('/home/user/runner/later.js', 'module.exports = { v: 9 };\n');
@@ -112,6 +118,18 @@ try {
   const read = await box.files.read('/home/user/runner/out.txt');
   a.check('the session reads what a call wrote as soon as the call answers',
     wrote.value === "'ok'" && read === 'from-runner', show({ wrote, read }));
+
+  // A call that writes one directory often enough that a process would
+  // hold it (a delegation) must leave nothing the idle runner would have to
+  // give back: the session writes there at once, and the runner lives on.
+  await runner.run([
+    'require("fs").mkdirSync("/home/user/runner/many", { recursive: true });',
+    'for (let i = 0; i < 20; i++) require("fs").writeFileSync("/home/user/runner/many/" + i + ".txt", String(i));',
+  ].join('\n'));
+  const busyWrite = await timed(() => box.files.write('/home/user/runner/many/session.txt', 'session'));
+  const afterBusy = await runner.run('require("fs").readFileSync("/home/user/runner/many/session.txt", "utf8") + ":" + x');
+  a.check('the session writes where a call wrote often without waiting, and the runner lives on',
+    busyWrite.wallMs < 2_000 && afterBusy.value === "'session:40'" && afterBusy.fresh === false, show({ busyWrite, afterBusy }));
 
   // Warm calls beside warm one-shots, measured the same way from here.
   await box.exec('node -e 1');
@@ -169,6 +187,19 @@ try {
 
   const exited = await runner.run('process.exit(3)');
   a.check('process.exit ends the runner with ERR_NIMBUS_RUNNER_EXITED', exited.error?.code === 'ERR_NIMBUS_RUNNER_EXITED', show(exited));
+  await runner.run('globalThis.kept = 1');
+  const exitedLater = await runner.run('setTimeout(() => process.exit(4), 0); await new Promise((resolve) => setTimeout(resolve, 50))');
+  const afterExit = await runner.run('typeof kept');
+  a.check('process.exit from a callback ends the runner too',
+    exitedLater.error?.code === 'ERR_NIMBUS_RUNNER_EXITED' && afterExit.fresh === true && afterExit.value === "'undefined'", show({ exitedLater, afterExit }));
+
+  const waiting = idle[1];
+  const pending = timed(() => waiting.run('await new Promise(() => {})'));
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const closedWhileRunning = await waiting.close();
+  const abandoned = await pending;
+  a.check('close ends a call the runner is running, with ERR_NIMBUS_RUNNER_CLOSED',
+    closedWhileRunning === true && abandoned.result !== 'hung' && abandoned.result.error?.code === 'ERR_NIMBUS_RUNNER_CLOSED', show({ closedWhileRunning, abandoned }));
 
   await runner.run('globalThis.kept = 1');
   const closed = await runner.close();

@@ -1428,6 +1428,33 @@ ${RESIDENCY_MISS_REPORT}
 }
 
 /**
+ * A heap store's boot, for a process with no SQLite of its own: a one-shot,
+ * which boots once for its run, and a runner, which boots once for its
+ * calls. It binds `__resident` (made by the caller) in memory, adopts the
+ * module bundle at its cursor, and lists the namespace, `__namespaceFailure`
+ * naming why it does not answer, else null. It reads cred, dataPlan,
+ * manifests, _cwd, __supervisor, __MODULE_VFS_BUNDLE and __MODULE_VFS_CURSOR.
+ */
+function heapStoreBoot(storageBytes: number): string {
+  return `
+    __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    __resident.admission.setStorage(undefined, __supervisor);
+    __resident.namespace.setCred(cred);
+    __resident.sync.setPlan(dataPlan);
+    __resident.sync.setManifests(manifests);
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
+    // The module bundle stays at module scope: a reused isolate adopts it
+    // again on its next run, and its text cells are shared, not copied.
+    const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${storageBytes});
+    if (__residentBooted.cursor) {
+      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+    }
+    // No user code runs before the namespace answers: it is the view every
+    // synchronous stat, exists and readdir reads (CUTOVER #13).
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);`;
+}
+
+/**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
@@ -1523,21 +1550,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // so a loader that reuses this isolate for another run starts it from an
     // empty store.
     const __resident = __nimbusResidentModule.createResidentStore();
-    __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-    __resident.admission.setStorage(undefined, __supervisor);
-    __resident.namespace.setCred(cred);
-    __resident.sync.setPlan(dataPlan);
-    __resident.sync.setManifests(manifests);
-    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
-    // The module bundle stays at module scope: a reused isolate adopts it
-    // again on its next run, and its text cells are shared, not copied.
-    const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
-    if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
-    }
-    // No user code runs before the namespace answers: it is the view every
-    // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
+${heapStoreBoot(bundleSource.storageBytes)}
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
@@ -1806,8 +1819,8 @@ let __nimbusRuntime = null;
 // own bookkeeping; that is not a resumption of the program, and through the
 // wrapped timer it paid a hidden ACQUIRE per yield — the one an inbound
 // request relied on without saying so, and a second one after the response
-// on every request. The request's barrier is taken explicitly, in the shared
-// dispatch (__nimbusServeHttp), exactly once.
+// on every request. A request's barrier is taken explicitly, exactly once: in
+// a resident's shared dispatch (__nimbusServeHttp), and in a runner's call.
 const __nimbusPlatformSetTimeout = setTimeout;
 
 // A failed report of generated code or misses costs the next launch what this
@@ -2264,25 +2277,37 @@ export class NimbusProcess extends DurableObject {
   };
 }
 
-/**
- * The member of a runner's map that holds what its process boots with
- * (RunnerBoot, and the manifests), apart from the runtime's code.
- */
-const RUNNER_BOOT_MODULE = 'nimbus-runner-boot.js';
-
-/** What a runner's process boots with, beside the manifests. */
-interface RunnerBoot {
+/** What a runner's process starts with: its generation's first call carries it (RunnerInput.start). */
+interface RunnerStart {
   pid: number;
-  argv: string[];
   cwd: string;
   env: Readonly<Record<string, string>>;
   cred: ProcessEntry['cred'];
   vfsCursor: FacetVfsState['cursor'] | null;
   dataPlan: string[];
+  /** _installedManifests' JSON, parsed by the worker as JSON parses it. */
+  manifests: string;
 }
+
+/** One call's input to a runner worker: its code, and on its generation's first call, its process's start. */
+interface RunnerInput {
+  code: string;
+  start?: RunnerStart;
+}
+
+/** Why a runner's process ended while it was idle: the platform let its isolate go, with what it held. */
+const RUNNER_DROPPED = "the platform dropped the runner's idle worker";
 
 /** The entry code a runner's bundle is built for: none of its own, under a key of its own (_buildProcessBundle). */
 const RUNNER_ENTRY = '// a Nimbus runner: each call runs its code as a REPL line\n';
+
+/**
+ * The text a runner's answer may carry in each of value, stdout and stderr:
+ * a sixth of what one RPC answer may hold, at two bytes a character. Past it
+ * the text is cut, and says so; an answer over the RPC limit would lose the
+ * runner.
+ */
+const RUNNER_ANSWER_TEXT_CHARS = Math.floor(MAX_RPC_SAFE_PAYLOAD_BYTES / 6);
 
 /** One runner of the session (FacetManager.runnerRun). */
 interface RunnerRecord {
@@ -2299,40 +2324,46 @@ interface RunnerRecord {
 }
 
 /**
- * One generation of a runner: its process, its worker's Loader key, and the
- * boot id its worker last answered with (null before its first answer). A
- * generation ends with the call that lost its worker, and the next call
- * makes another, under a new key.
+ * One generation of a runner: one process, in one isolate, under one Loader
+ * key. It ends with the call that lost its isolate, and the next call makes
+ * another, under a new key.
  */
 interface RunnerGeneration {
   readonly pid: number;
   readonly writerId: string;
   readonly key: string;
-  boot: string | null;
-  /** Its map, until the loader takes it for the first load; null after. */
+  /** The call it runs now, which a kill or a close ends. */
+  call: AbortController | null;
+  /** What its first load and start take, until a call has started its process; null after. */
+  launch: RunnerLaunch | null;
+  /** The loader asked for its map after its first load: the platform dropped its worker. */
+  dropped: boolean;
+}
+
+/** What a generation's first load and start take: held only until its process has started. */
+interface RunnerLaunch {
+  /** Its map, until the loader takes it. */
   map: PreparedOneShotCode | null;
   /** Its map made again, after running work reclaimed the parked one. */
   readonly prepareAgain: () => Promise<PreparedOneShotCode>;
-  /** RUNNER_BOOT_MODULE's text. */
-  readonly bootModule: string;
-  /** Its launch's pacer, settled as the loader takes its map. */
+  readonly start: RunnerStart;
+  /** Settled as the loader takes its map. */
   readonly pacer: TurnBudget;
-  /** The loader asked for its map after the first load: the platform dropped its worker. */
-  dropped: boolean;
 }
 
 /**
  * Generate a runner's main module (FacetManager.runnerRun): a node process
- * that runs no entry. Its first call boots it as a one-shot boots (its
- * store in its heap, its output captured), and every call runs its code as
- * a line typed at the node REPL (runtime/js-repl.ts): compiled by the
- * runtime-code service's compileReplLine, with top-level `await`, its
- * declarations kept on the global object, `require` from the working
+ * that runs no entry. Its generation's first call starts it as a one-shot
+ * starts (its store in its heap, its output captured), and every call runs
+ * its code as a line typed at the node REPL (runtime/js-repl.ts): compiled
+ * by the runtime-code service's compileReplLine, with top-level `await`,
+ * its declarations kept on the global object, `require` from the working
  * directory. A call takes an ACQUIRE first, so its code reads what the
  * session holds now, and makes its writes durable before it answers, as a
  * resident's request does (RUNNING_FLUSH_SOURCE). Nothing it leaves pending
- * (a timer) runs after it answers: the platform runs a worker's code only
- * within a request. Each answer carries the isolate's boot id.
+ * (a timer, a fetch) runs after it answers: the platform runs a worker's
+ * code only within a request. An isolate the platform starts again has no
+ * process; given no start, it answers `unstarted` and runs nothing.
  */
 export async function generateRunnerCode(
   vfsState: FacetVfsState,
@@ -2345,20 +2376,18 @@ export async function generateRunnerCode(
   const source = moduleSource`
 import { WorkerEntrypoint } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
-import __NIMBUS_RUNNER from ${JSON.stringify(`./${RUNNER_BOOT_MODULE}`)};
 
-let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
-// This isolate's, made at its first call (a Worker makes no random value at
-// its module's top level): the runner's owner tells by it that an isolate was lost.
-let __nimbusRunnerBoot = null;
+const __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 // The process's store, in this isolate's heap, for as long as the isolate lives.
 const __resident = __nimbusResidentModule.createResidentStore();
 ${RUNNING_FLUSH_SOURCE}
 let __nimbusRunnerStart = null;
 
-// Boot the process, and answer the function that runs one call's code.
-async function __nimbusRunnerStarted(workerEnv) {
-  const { argv, env, cwd: _cwd, cred, pid, vfsCursor: __MODULE_VFS_CURSOR, dataPlan, manifests } = __NIMBUS_RUNNER;
+// Start the process, and answer the function that runs one call's code.
+async function __nimbusRunnerStarted(workerEnv, start) {
+  const { pid, cwd: _cwd, env, cred, vfsCursor: __MODULE_VFS_CURSOR, dataPlan } = start;
+  const manifests = JSON.parse(start.manifests);
+  const argv = [];
   const nodeCommandLine = null;
   const filename = "<eval>";
   const dirname = _cwd;
@@ -2378,22 +2407,7 @@ ${VFS_CURSOR_SEED_SOURCE}
   // Sent as the code is made; each call's flush waits for what is still on its way.
   __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor).catch(() => {});
   globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
-  __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-  __resident.admission.setStorage(undefined, __supervisor);
-  __resident.namespace.setCred(cred);
-  __resident.sync.setPlan(dataPlan);
-  __resident.sync.setManifests(manifests);
-  __resident.sync.setPushRoots([_cwd, "/tmp"]);
-  const __residentBooted = await __resident.sync.boot(
-    () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
-    __MODULE_VFS_CURSOR,
-    __supervisor,
-    ${bundleSource.storageBytes},
-  );
-  if (__residentBooted.cursor) {
-    globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
-  }
-  const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
+${heapStoreBoot(bundleSource.storageBytes)}
   if (__namespaceFailure) throw new Error(__namespaceFailure);
 ${nodeProgramRuntime(sources, false)}
   __nimbusStopReplay.arm(false, "is a runner's, which Nimbus does not run again");
@@ -2421,14 +2435,16 @@ ${nodeProgramRuntime(sources, false)}
       return { message: "the code threw a value that cannot be described" };
     }
   };
+  const __runnerShown = (error) => error.stack ?? (error.name === undefined ? error.message : error.name + ": " + error.message);
   // What nothing awaits throws while a call runs: on that call's stderr, and
-  // the runner goes on, as Node's REPL does.
-  const __runnerUncaught = (thrown) => {
-    const error = __runnerError(thrown);
-    stderr += "Uncaught " + (error.stack ?? (error.name === undefined ? error.message : error.name + ": " + error.message)) + "\\n";
-  };
+  // the runner goes on, as Node's REPL does. process.exit from there is the
+  // call's exit (__nimbusProcessExitCode).
+  const __runnerUncaught = (thrown) => { stderr += "Uncaught " + __runnerShown(__runnerError(thrown)) + "\\n"; };
   __processMod.on("uncaughtException", __runnerUncaught);
   __processMod.on("unhandledRejection", __runnerUncaught);
+  // The text an answer carries: past RUNNER_ANSWER_TEXT_CHARS, cut, saying so.
+  const __runnerFit = (text) => text.length <= ${RUNNER_ANSWER_TEXT_CHARS} ? text
+    : text.slice(0, ${RUNNER_ANSWER_TEXT_CHARS}) + "\\n[nimbus: " + (text.length - ${RUNNER_ANSWER_TEXT_CHARS}) + " more characters were not answered]\\n";
   __nimbusRuntime = {
     supervisor: __supervisor,
     pendingIO: __pendingIO,
@@ -2459,21 +2475,27 @@ ${nodeProgramRuntime(sources, false)}
     try {
       await __nimbusFlushRuntime();
     } catch (failure) {
-      // A change the code was told succeeded did not reach the session: the call failed.
+      // A change the code was told succeeded did not reach the session: that
+      // is the call's error, ahead of what the code threw.
+      if (error !== undefined) stderr += "Uncaught " + __runnerShown(error) + "\\n";
       value = undefined;
-      error ??= __runnerError(failure);
+      error = __runnerError(failure);
     }
-    return { value, stdout, stderr, error, exited };
+    // I/O the code started and left: it cannot complete once this request
+    // ends, and no later call waits for it.
+    __pendingIO.length = 0;
+    if (exited === undefined && __nimbusProcessExitCode !== null) exited = __nimbusProcessExitCode;
+    return { value: value === undefined ? undefined : __runnerFit(value), stdout: __runnerFit(stdout), stderr: __runnerFit(stderr), error, exited };
   };
 }
 
 export default class extends WorkerEntrypoint {
   async run(input, ended) {
-    // A call its owner ends (a timeout, a kill) aborts this isolate where it stands, as a one-shot's run does.
+    // A call its owner ends (a timeout, a kill, a close) aborts this isolate where it stands, as a one-shot's run does.
     ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
-    __nimbusRunnerBoot ??= crypto.randomUUID();
-    const turn = await (__nimbusRunnerStart ??= __nimbusRunnerStarted(this.env));
-    return { boot: __nimbusRunnerBoot, ...(await turn(String(input.code))) };
+    if (__nimbusRunnerStart === null && input.start === undefined) return { unstarted: true };
+    const turn = await (__nimbusRunnerStart ??= __nimbusRunnerStarted(this.env, input.start));
+    return turn(String(input.code));
   }
 }
 `;
@@ -8058,10 +8080,12 @@ export class FacetManager {
       // takes it again for its run.
       let brokered = suspendLaunchAdmission(this.ctx, entry.pid);
       let vfsState: FacetVfsState;
-      const prepare = (): Promise<PreparedOneShotCode> => this._prepareUnderCredit(entry, bundleSpec, pacer, {
-        get: () => vfsState,
-        set: (state) => { vfsState = state; },
-      }, (state) => this._prepareOneShotCode(code, launch, entry, state, pacer, diagSink));
+      const prepare = async (): Promise<PreparedOneShotCode> => {
+        const { prepared: made, state } = await this._prepareUnderCredit(entry, bundleSpec, pacer, vfsState,
+          (current) => this._prepareOneShotCode(code, launch, entry, current, pacer, diagSink));
+        vfsState = state;
+        return made;
+      };
       const prepareAgain = async (): Promise<PreparedOneShotCode> => {
         this._launchStage(entry, 'prepare', abortController.signal);
         if (vfsState.generatedSourcesReleased) vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
@@ -8351,26 +8375,27 @@ export class FacetManager {
   // ── Runners ───────────────────────────────────────────────────────────
 
   /**
-   * Run `code` in runner `id`: a warm node process the session keeps under
-   * a Loader key of its own (session, runner, generation), which runs each
-   * call's code as a REPL line (generateRunnerCode) and holds no Dynamic
-   * Worker between calls. One runner runs its calls one at a time, in order,
-   * and keeps what each leaves for the next; nothing isolates them. It is
-   * made at its first call, from what `resolve` makes of the options it was
-   * asked for (`asked`); a later call that asks for other options is
-   * refused. A call that loses the runner's worker (past its CPU or wall
-   * limit, a kill, process.exit, any failure of its worker) ends that
-   * generation, and the next call makes a new one. An answer is `fresh`
-   * when its code ran in an isolate no earlier call of the runner ran in:
-   * the first call, the one after a loss, and the one after the platform
-   * dropped an idle worker.
+   * Run `code` in runner `id` of `owner` (a hosted session's scope, or the
+   * workspace's, ''): a warm node process the session keeps under a Loader
+   * key of its own (session, runner, generation), which runs each call's
+   * code as a REPL line (generateRunnerCode) and holds no Dynamic Worker
+   * between calls. One runner runs its calls one at a time, in order, and
+   * keeps what each leaves for the next; nothing isolates them. It is made
+   * at its first call, from what `resolve` makes of the options it was asked
+   * for (`asked`); a later call that asks for other options is refused. A
+   * call that loses the runner's process or isolate (past its CPU or wall
+   * limit, a kill, a close, process.exit, any failure of its worker) ends
+   * that generation, and the next call makes a new one. An answer is `fresh`
+   * when it is its generation's first: nothing an earlier call left is there.
    */
-  runnerRun(id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult> {
+  runnerRun(owner: string, id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult> {
+    if (this.launchesClosed) return Promise.reject(new Error('Nimbus: the session is closing; it runs no runner'));
+    const name = `${owner}\0${id}`;
     const key = runnerOptionsKey(asked);
-    let runner = this.runners.get(id);
+    let runner = this.runners.get(name);
     if (runner === undefined) {
       runner = { asked: key, spec: resolve(), queue: Promise.resolve(), generations: 0, live: null, closed: false };
-      this.runners.set(id, runner);
+      this.runners.set(name, runner);
     } else if (runner.asked !== key) {
       return Promise.reject(new TypeError(`runner '${id}' was made with other options; close it, or use another id`));
     }
@@ -8381,40 +8406,53 @@ export class FacetManager {
   }
 
   /**
-   * End runner `id`: whether there was one. A call it is running is ended as
-   * a kill ends one, and the calls still in its line are refused.
+   * End runner `id` of `owner`: whether there was one. A call it is running
+   * is ended as a kill ends one, and the calls still in its line are refused.
    */
-  runnerClose(id: string): boolean {
-    const runner = this.runners.get(id);
+  runnerClose(owner: string, id: string): boolean {
+    const name = `${owner}\0${id}`;
+    const runner = this.runners.get(name);
     if (runner === undefined) return false;
-    this.runners.delete(id);
-    runner.closed = true;
-    this._runnerRetire(runner, { code: 0, killed: true });
+    this._runnerDiscard(name, runner);
     return true;
+  }
+
+  /** `runner`, under `name`, is gone: no call runs on it again, and the one it runs is ended. */
+  private _runnerDiscard(name: string, runner: RunnerRecord): void {
+    this.runners.delete(name);
+    runner.closed = true;
+    runner.live?.call?.abort(new RunnerCallEnded('closed'));
+    this._runnerRetire(runner, { code: exitCodeForSignal('TERM'), killed: true });
   }
 
   private async _runnerCall(id: string, runner: RunnerRecord, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult> {
     const began = Date.now();
     const cpuMs = options.cpuMs ?? RUNNER_CPU_MS;
     for (;;) {
-      if (runner.closed) throw new Error(`runner '${id}' was closed`);
+      if (runner.closed || this.launchesClosed) throw new Error(`runner '${id}' was closed`);
       // Its process ended between calls (a kill, the session's teardown): that generation is over.
       if (runner.live !== null && this.processes.get(runner.live.pid)?.state !== 'running') this._runnerRetire(runner, { code: 0 });
       const generation = runner.live ?? await this._runnerGeneration(id, runner);
       runner.live = generation;
-      if (runner.closed) {
-        this._runnerRetire(runner, { code: 0 });
+      if (runner.closed || this.launchesClosed) {
+        this._runnerRetire(runner, { code: exitCodeForSignal('TERM'), killed: true });
         throw new Error(`runner '${id}' was closed`);
       }
       const ended = new AbortController();
-      this.processes.setTerminator(generation.pid, () => ended.abort(new RunnerCallEnded('killed')));
+      generation.call = ended;
       const timeoutMs = options.timeoutMs;
       const timer = timeoutMs === undefined ? null : setTimeout(() => ended.abort(new RunnerCallEnded('timeout', timeoutMs)), timeoutMs);
-      let sent = false;
+      const fresh = generation.launch !== null;
+      let entered = false;
       try {
-        const answer = await this._runnerEnter(generation, code, cpuMs, ended.signal, () => { sent = true; });
-        const fresh = answer.boot !== generation.boot;
-        generation.boot = answer.boot;
+        const answer = await this._runnerEnter(generation, code, cpuMs, ended.signal, () => { entered = true; });
+        // An isolate the platform started again, with none of what the
+        // generation held: a new one runs the call.
+        if ('unstarted' in answer) {
+          this._runnerRetire(runner, { code: 1, cause: RUNNER_DROPPED });
+          continue;
+        }
+        generation.launch = null;
         const ms = Date.now() - began;
         if (answer.exited !== undefined) {
           this._runnerRetire(runner, { code: answer.exited });
@@ -8423,20 +8461,25 @@ export class FacetManager {
         return { value: answer.value, stdout: answer.stdout, stderr: answer.stderr, error: answer.error, fresh, ms };
       } catch (thrown) {
         const error = thrown instanceof Error ? thrown : new Error(String(thrown));
-        // The loader asked again for a worker it had loaded: it dropped it while idle, with what it held. A new one runs the call.
-        if (generation.dropped) {
-          this._runnerRetire(runner, { code: 0 });
+        // The loader asked again for a worker that had answered: it dropped
+        // it while idle, with what it held. A new one runs the call.
+        if (generation.dropped && !fresh) {
+          this._runnerRetire(runner, { code: 1, cause: RUNNER_DROPPED });
           continue;
         }
-        // Refused before it was sent (the ledger's deadlock): no answer of the runner's, as a launch refused there.
-        if (!sent && !(error instanceof RunnerCallEnded)) throw error;
-        const failure = runnerFailure(error, cpuMs, sent);
-        if (sent || (ended.signal.reason instanceof RunnerCallEnded && ended.signal.reason.why === 'killed')) {
-          this._runnerRetire(runner, { code: 1, cause: failure.message });
-        }
-        return { stdout: '', stderr: '', error: failure, fresh: generation.boot === null, ms: Date.now() - began };
+        // Refused before its worker began it (the ledger's deadlock, the
+        // platform's limit): the runner keeps its state, and the refusal is
+        // the call's, as a launch's is.
+        if (!entered && (isDynamicWorkerDeadlock(error) || classifyError(error) === 'dynamic_worker_cap')) throw error;
+        const failure = runnerFailure(error, cpuMs, entered);
+        // A wall limit that came while it waited for a worker loses nothing,
+        // unless the generation never started (its launch's hold goes too).
+        const kept = !entered && error instanceof RunnerCallEnded && error.why === 'timeout' && !fresh;
+        if (!kept) this._runnerRetire(runner, { code: 1, cause: failure.message });
+        return { stdout: '', stderr: '', error: failure, fresh, ms: Date.now() - began };
       } finally {
         clearTimeout(timer);
+        generation.call = null;
       }
     }
   }
@@ -8451,13 +8494,10 @@ export class FacetManager {
     const entry = this.processes.spawn(`node (runner ${id})`, [], spec.cwd, { cred: spec.cred, ...(spec.execId === undefined ? {} : { execId: spec.execId }) });
     const pacer = this._launchPacer(entry.pid);
     const bundleSpec: ProcessBundleSpec = { scriptPath: undefined, cwd: spec.cwd, entryCode: RUNNER_ENTRY };
+    const prepare = (state: FacetVfsState) => this._prepareUnderCredit(entry, bundleSpec, pacer, state,
+      (current) => this._prepareOneShotCode(RUNNER_ENTRY, { cwd: spec.cwd }, entry, current, pacer, undefined, generateRunnerCode));
     try {
-      let vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-      const prepare = () => this._prepareUnderCredit(entry, bundleSpec, pacer, {
-        get: () => vfsState,
-        set: (state) => { vfsState = state; },
-      }, (state) => this._prepareOneShotCode(RUNNER_ENTRY, { cwd: spec.cwd }, entry, state, pacer, undefined, generateRunnerCode));
-      const map = await prepare();
+      let { prepared: map, state: vfsState } = await prepare(await this._buildProcessBundle(entry, bundleSpec, pacer));
       const dataPlan = await this._staticReadPlan(entry, vfsState, spec.cwd, spec.env.HOME, pacer);
       const manifests = await this._installedManifests(entry, pacer);
       const bundlePaths = vfsState.bundlePaths ?? [];
@@ -8466,24 +8506,30 @@ export class FacetManager {
       if (vfsState.bundleKey) this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
       const writerId = crypto.randomUUID();
       this._activateProcessVfsWriter(entry.pid, writerId);
-      const boot: RunnerBoot = { pid: entry.pid, argv: [], cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: vfsState.cursor ?? null, dataPlan };
-      return {
+      const generation: RunnerGeneration = {
         pid: entry.pid,
         writerId,
         key: `runner:${this.ctx.id.toString()}:${this.runnerIncarnation}:${id}:${number}`,
-        boot: null,
-        map,
-        prepareAgain: async () => {
-          if (vfsState.generatedSourcesReleased) vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-          else await this._holdMapShare(entry, vfsState);
-          return prepare();
-        },
-        bootModule: `export default { ...${jsonDataLiteral(boot)}, manifests: JSON.parse(${JSON.stringify(manifests)}) };\n`,
-        pacer,
+        call: null,
         dropped: false,
+        launch: {
+          map,
+          prepareAgain: async () => {
+            if (vfsState.generatedSourcesReleased) vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+            else await this._holdMapShare(entry, vfsState);
+            ({ prepared: map, state: vfsState } = await prepare(vfsState));
+            return map;
+          },
+          start: { pid: entry.pid, cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: vfsState.cursor ?? null, dataPlan, manifests },
+          pacer,
+        },
       };
+      // A kill ends the call it runs; between calls, the next call finds its process ended.
+      this.processes.setTerminator(entry.pid, () => generation.call?.abort(new RunnerCallEnded('killed')));
+      return generation;
     } catch (error) {
       pacer.settle();
+      this.launchBundles.delete(entry.pid);
       this._releaseBuildAdmission(entry.pid);
       this._end(entry.pid, { code: 1, cause: `runner '${id}' could not start: ${errorMessage(error)}` });
       throw error;
@@ -8491,35 +8537,37 @@ export class FacetManager {
   }
 
   /**
-   * One call on `generation`'s worker. Its first load is a launch's: its map
-   * parked, under its share of the credit, until the launch is let in on the
-   * ledger, and made again if running work reclaims it meanwhile. A warm
-   * call holds only its worker.
+   * One call on `generation`'s worker. Until its process has started, a call
+   * carries its start, and its first load is a launch's: its map parked,
+   * under its share of the credit, until the launch is let in on the
+   * ledger, and made again if running work reclaims it meanwhile. A call
+   * after that holds only its worker.
    */
-  private async _runnerEnter(generation: RunnerGeneration, code: string, cpuMs: number, signal: AbortSignal, onSent: () => void): Promise<RunnerAnswer> {
+  private async _runnerEnter(generation: RunnerGeneration, code: string, cpuMs: number, signal: AbortSignal, onEntered: () => void): Promise<RunnerAnswer> {
+    const launch = generation.launch;
+    const input: RunnerInput = launch === null ? { code } : { code, start: launch.start };
     const call = () => this.processHost.callRunner({
       pid: generation.pid,
       writerId: generation.writerId,
       key: generation.key,
       code: async () => {
-        const map = generation.map;
-        generation.map = null;
-        if (map === null) {
+        const map = launch?.map ?? null;
+        if (launch === null || map === null) {
           generation.dropped = true;
           throw new Error(`Nimbus: the loader dropped runner worker ${generation.key}`);
         }
-        generation.pacer.settle();
-        const loaded = await map.code();
-        return { ...loaded, modules: { ...loaded.modules, [RUNNER_BOOT_MODULE]: generation.bootModule } };
+        launch.map = null;
+        launch.pacer.settle();
+        return map.code();
       },
-      input: { code },
+      input,
       cpuMs,
       signal,
-      onSent,
+      onEntered,
     }, (answer) => RunnerAnswerSchema.parse(answer));
     for (;;) {
-      const map = generation.map;
-      if (map === null) return call();
+      const map = launch?.map ?? null;
+      if (launch === null || map === null) return call();
       const parked = this._parkOneShotMap(generation.pid, map, signal);
       try {
         return await withLaunchAdmission(this.ctx, { pid: generation.pid }, parked.signal, () => {
@@ -8529,7 +8577,7 @@ export class FacetManager {
         }, parked.reclaimable);
       } catch (error) {
         if (!parked.reclaimed || signal.aborted) throw error;
-        generation.map = await generation.prepareAgain();
+        launch.map = await launch.prepareAgain();
       } finally {
         parked.unregister();
       }
@@ -8541,11 +8589,16 @@ export class FacetManager {
     const generation = runner.live;
     if (generation === null) return;
     runner.live = null;
-    generation.pacer.settle();
+    generation.launch?.pacer.settle();
     this.launchBundles.delete(generation.pid);
     this._releaseBuildAdmission(generation.pid);
     this.revokeProcessVfsWriters(generation.pid, generation.writerId);
     this._end(generation.pid, ending);
+  }
+
+  /** End every runner, and each call it runs: the session is closing (closeLaunches). */
+  private _closeRunners(): void {
+    for (const [name, runner] of [...this.runners]) this._runnerDiscard(name, runner);
   }
 
   /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
@@ -8979,39 +9032,41 @@ export class FacetManager {
   }
 
   /**
-   * `entry`'s map from the bundle `bundle` holds, by `prepare`, under its
-   * launch's share of the credit, taken before it holds a worker. A map that
-   * needs more credit than its build took is made again from a bundle built
-   * under that much (OneShotAllocationNeeded), and one over the ceiling from
-   * a bundle built under it (ModuleMapOverCeilingError), each once.
+   * `entry`'s map, by `prepare`, from bundle `state`, under its launch's
+   * share of the credit, taken before it holds a worker; with the bundle it
+   * was made from. A map that needs more credit than its build took is made
+   * again from a bundle built under that much (OneShotAllocationNeeded), and
+   * one over the ceiling from a bundle built under it
+   * (ModuleMapOverCeilingError), each once.
    */
   private _prepareUnderCredit(
     entry: ProcessEntry,
     bundleSpec: ProcessBundleSpec,
     pacer: TurnBudget,
-    bundle: { get(): FacetVfsState; set(state: FacetVfsState): void },
+    state: FacetVfsState,
     prepare: (state: FacetVfsState) => Promise<PreparedOneShotCode>,
-  ): Promise<PreparedOneShotCode> {
+  ): Promise<{ prepared: PreparedOneShotCode; state: FacetVfsState }> {
     return withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
+      let current = state;
       let resized = false;
       let rebuilt = false;
       for (;;) {
         try {
-          return await prepare(bundle.get());
+          return { prepared: await prepare(current), state: current };
         } catch (error) {
           if (error instanceof OneShotAllocationNeeded) {
             if (resized) throw new Error('Nimbus: a regenerated one-shot map exceeded its measured supervisor credit');
             resized = true;
-            if (!bundle.get().cacheRetained) releaseGeneratedSources(bundle.get());
+            if (!current.cacheRetained) releaseGeneratedSources(current);
             this._releaseBuildAdmission(entry.pid);
             const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true, this._allocationOwner(entry.pid));
             this.buildAdmissions.set(entry.pid, admission);
-            bundle.set(await this._buildProcessBundle(entry, bundleSpec, pacer));
+            current = await this._buildProcessBundle(entry, bundleSpec, pacer);
             continue;
           }
           if (!(error instanceof ModuleMapOverCeilingError) || rebuilt) throw error;
           rebuilt = true;
-          bundle.set(await this._rebuildUnderCeiling(entry, bundleSpec, bundle.get(), error, pacer));
+          current = await this._rebuildUnderCeiling(entry, bundleSpec, current, error, pacer);
         }
       }
     });
@@ -9718,6 +9773,7 @@ export class FacetManager {
 
   async closeLaunches(): Promise<void> {
     this.launchesClosed = true;
+    this._closeRunners();
     this.launchPump.close();
     while (this.launchTasks.size > 0) await Promise.allSettled([...this.launchTasks]);
     await Promise.all(this.rowAmendments.values());

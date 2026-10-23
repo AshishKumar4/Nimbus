@@ -31,7 +31,7 @@ import {
   type SessionJsonOperation, type SessionOperation, type SessionResult,
   type SessionRpc as NimbusSessionSurface,
   type SessionExecOptions, type SessionRunCodeOptions,
-  RunnerIdSchema,
+  parseRunnerId,
   type SessionRunnerOptions, type SessionRunnerRunOptions, type SessionRunnerResult, type SessionRunnerError,
   type SessionRestartPolicy as NimbusRestartPolicy,
   type SessionAppVisibility as NimbusAppVisibility,
@@ -641,16 +641,15 @@ export class NimbusSandbox {
    */
   runner(options: NimbusRunnerOptions = {}): NimbusRunner {
     const { id = crypto.randomUUID(), ...asked } = options;
-    const parsed = RunnerIdSchema.safeParse(id);
-    if (!parsed.success) throw new TypeError(`runner: an id is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(id)}`);
+    const named = parseRunnerId(id);
     const runner: SessionRunnerOptions = { ...asked, cwd: resolveSandboxCwd(this.root, asked.cwd ?? this.root) };
     return {
-      id: parsed.data,
+      id: named,
       run: async (code, call = {}) => {
         await this.ready();
-        return this.rpc(this.stub()._rpcRunnerRun(parsed.data, code, runner, call));
+        return this.rpc(this.stub()._rpcRunnerRun(named, code, runner, call));
       },
-      close: async () => (await this.rpc(this.stub()._rpcRunnerClose(parsed.data))).closed,
+      close: async () => (await this.rpc(this.stub()._rpcRunnerClose(named))).closed,
     };
   }
 

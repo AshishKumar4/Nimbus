@@ -1088,9 +1088,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return _programmatic.rpcRunCode(this as any, code, options);
   }
   async _rpcRunnerRun(id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions) {
-    return _programmatic.rpcRunnerRun(this, id, code, runner, options);
+    return _programmatic.rpcRunnerRun(this, '', id, code, runner, options);
   }
-  async _rpcRunnerClose(id: string) { return _programmatic.rpcRunnerClose(this, id); }
+  async _rpcRunnerClose(id: string) { return _programmatic.rpcRunnerClose(this, '', id); }
   async _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions) { return _programmatic.rpcInstallRuntime(this as any, spec, options); }
   async _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions) { return _programmatic.rpcEnsureRuntimes(this as any, specs, options); }
   async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this as any)); }

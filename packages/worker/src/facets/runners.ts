@@ -6,7 +6,7 @@
 import { z } from 'zod/v4';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { SessionRunnerErrorSchema, type SessionRunnerError, type SessionRunnerOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { SessionRunnerResultSchema, type SessionRunnerError, type SessionRunnerOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
@@ -14,6 +14,9 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
  * on its session's thread, so a call that does not yield holds the session
  * for as long as it computes: this bounds how long a runaway one does,
  * against the 300 s a process facet may use (FACET_LIMITS.process).
+ * Measured on a throwaway (2026-10-23), the platform ends a loop that never
+ * yields about 3 s past its limit: 3.7 s after it began with 1,000 ms, 8.1 s
+ * with this one.
  */
 export const RUNNER_CPU_MS = 5_000;
 
@@ -35,25 +38,27 @@ export function runnerOptionsKey(options: SessionRunnerOptions): string {
   return JSON.stringify([options.cwd ?? null, env, options.cred ?? null, options.execId ?? null]);
 }
 
-/** A runner worker's answer to one call (generateRunnerCode), read at the RPC boundary. */
-export const RunnerAnswerSchema = z.object({
-  /** The isolate's boot id: another than the last call's means an isolate no earlier call ran in. */
-  boot: z.string(),
-  value: z.string().optional(),
-  stdout: z.string(),
-  stderr: z.string(),
-  error: SessionRunnerErrorSchema.optional(),
-  /** The code called process.exit with this code. */
-  exited: z.number().optional(),
-});
+/**
+ * A runner worker's answer to one call (generateRunnerCode), read at the RPC
+ * boundary: what the code did, with the code process.exit was called with;
+ * or `unstarted`, from an isolate the platform started again, which has no
+ * process and was not given a start, so it ran nothing.
+ */
+export const RunnerAnswerSchema = z.union([
+  SessionRunnerResultSchema.pick({ value: true, stdout: true, stderr: true, error: true }).extend({ exited: z.number().optional() }),
+  z.object({ unstarted: z.literal(true) }),
+]);
 export type RunnerAnswer = z.infer<typeof RunnerAnswerSchema>;
 
 /** Why a runner call's owner ended it: the reason its signal aborts with. */
 export class RunnerCallEnded extends Error {
-  constructor(readonly why: 'timeout' | 'killed', readonly timeoutMs?: number) {
-    super(why === 'timeout' ? `the call took longer than ${timeoutMs} ms` : "the runner's process was killed during the call");
+  constructor(readonly why: 'timeout' | 'killed' | 'closed', readonly timeoutMs?: number) {
+    super(why === 'timeout' ? `the call took longer than ${timeoutMs} ms`
+      : why === 'killed' ? "the runner's process was killed during the call" : 'the runner was closed during the call');
   }
 }
+
+const ENDED_CODES = { timeout: 'ERR_NIMBUS_RUNNER_TIMEOUT', killed: 'ERR_NIMBUS_RUNNER_KILLED', closed: 'ERR_NIMBUS_RUNNER_CLOSED' } as const;
 
 const RUNNER_ERROR = 'NimbusRunnerError';
 const NEXT_IS_FRESH = 'the next call runs in a fresh runner';
@@ -65,17 +70,17 @@ export function runnerExited(code: number): SessionRunnerError {
 
 /**
  * The error a call answers when its runner was lost while it ran: by the
- * call's own CPU limit (`cpuMs`), its wall limit or a kill (RunnerCallEnded),
- * the platform's memory limit, or any other failure of its worker. A call
- * whose wall limit came while it waited for a Dynamic Worker (`sent` false)
- * ran nothing, and its runner keeps its state.
+ * call's own CPU limit (`cpuMs`), its wall limit, a kill or a close
+ * (RunnerCallEnded), the platform's memory limit, or any other failure of its
+ * worker. A call whose wall limit came before its worker began it
+ * (`entered` false) ran nothing, and its runner keeps its state.
  */
-export function runnerFailure(error: Error, cpuMs: number, sent: boolean): SessionRunnerError {
-  if (error instanceof RunnerCallEnded && error.why === 'timeout' && !sent) {
-    return { name: RUNNER_ERROR, code: 'ERR_NIMBUS_RUNNER_TIMEOUT', message: `${error.message} waiting for a Dynamic Worker, so its code did not run; its runner keeps its state` };
+export function runnerFailure(error: Error, cpuMs: number, entered: boolean): SessionRunnerError {
+  if (error instanceof RunnerCallEnded && error.why === 'timeout' && !entered) {
+    return { name: RUNNER_ERROR, code: ENDED_CODES.timeout, message: `${error.message} waiting for a Dynamic Worker, so its code did not run; its runner keeps its state` };
   }
   if (error instanceof RunnerCallEnded) {
-    return { name: RUNNER_ERROR, code: error.why === 'timeout' ? 'ERR_NIMBUS_RUNNER_TIMEOUT' : 'ERR_NIMBUS_RUNNER_KILLED', message: `${error.message}, so its runner was ended; ${NEXT_IS_FRESH}` };
+    return { name: RUNNER_ERROR, code: ENDED_CODES[error.why], message: error.why === 'closed' ? error.message : `${error.message}, so its runner was ended; ${NEXT_IS_FRESH}` };
   }
   switch (classifyError(error)) {
     case 'cpu_exceeded':

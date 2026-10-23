@@ -92,6 +92,7 @@ export default createNimbusHandler({
 - `ready()`
 - `exec(command, options?)`
 - `runCode(code, options)`
+- `runner(options?)` — a warm node process for many short programs; see [Runners](#runners)
 - `startProcess(command, options?)` — backgrounds the command and returns `{ pid, process, ports, startedAt }` immediately
 - `files.read/readBytes/write/list/mkdir/delete/exists/stat/lstat/rename/chmod/readRange`
 - `runtimes.install/ensure/list`
@@ -99,6 +100,84 @@ export default createNimbusHandler({
 - `ports.expose/unexpose/list`
 - `capabilities()`
 - `tools(options?)`
+
+## Runners
+
+`exec` and `runCode` start a new process for each command, which costs a
+node program its launch. A runner is for many short programs in a row, such
+as an agent's `eval` tool. It is one warm node process that runs each call's
+code as a line typed at the node REPL:
+
+```ts
+const runner = sandbox.runner({ cwd: '/home/user/app' });
+const first = await runner.run('const rows = require("./rows.json"); rows.length');
+// { value: '3', stdout: '', stderr: '', fresh: true, ms: … }
+const next = await runner.run('rows.map((r) => r.id)', { timeoutMs: 10_000 });
+// { value: '[ 1, 2, 3 ]', …, fresh: false }
+await runner.close();
+```
+
+- **One call is one REPL line.** Top-level `await` works. What a call
+  declares (`const`, `let`, `function`, `class`) or sets on `globalThis`
+  stays for the next call. `require` reads the session's files from the
+  runner's `cwd`, and `import()` resolves from there too.
+- **No isolation between calls.** Calls of one runner share one process and
+  its memory. Use a runner for one caller's work, and another runner (or
+  `exec`) for work that must not see it.
+- **The answer.** `value` is the last expression's value as `util.inspect`
+  shows it (`'undefined'` for a statement), absent when the call threw.
+  `stdout` and `stderr` hold what this call wrote. `error` holds what it
+  threw: an Error's `name`, `message`, `stack` and `code`, or another value
+  as `util.inspect` shows it, in `message`. `ms` is the call's time in the
+  session. The session's clock does not move while code computes, so time
+  a call that computes from your side.
+- **Files.** A call reads the session's files as they are when it starts,
+  and its writes reach the session before it answers. The runner's `cwd`
+  and `/tmp` are kept current. A synchronous read elsewhere of a file that
+  changed after the runner started can answer `EAGAIN` once; `fs.promises`
+  reads it.
+- **What a call leaves pending.** The call answers once its code's value
+  settles. A timer or callback still pending then does not run. Await what
+  you need.
+- **Limits.** `cpuMs` is the CPU time one call may use: 5,000 ms by
+  default, at most 300,000. `timeoutMs` is the wall time it may take: none
+  by default. Both count from when the runner gets the call, so a first
+  call's start in the runner counts too. A call runs on its session's
+  thread, so a call that does not yield holds the session until it ends or
+  reaches `cpuMs`. The platform ends such a call about 3 s past its
+  `cpuMs`: measured 3.7 s after it began with `cpuMs: 1000`, and 8.1 s with
+  the default. A call that waits for something that never comes holds one
+  of the session's Dynamic Workers until `timeoutMs`, or until `close()`.
+- **What a call keeps.** Sockets, streams and requests do not outlive the
+  call that opened them, even when a global holds them.
+- **Losing a runner.** A call past `cpuMs` (`ERR_NIMBUS_RUNNER_CPU_LIMIT`),
+  past `timeoutMs` (`ERR_NIMBUS_RUNNER_TIMEOUT`), past the memory limit
+  (`ERR_NIMBUS_RUNNER_MEMORY_LIMIT`), killed (`ERR_NIMBUS_RUNNER_KILLED`),
+  closed (`ERR_NIMBUS_RUNNER_CLOSED`), or calling `process.exit`
+  (`ERR_NIMBUS_RUNNER_EXITED`) ends its runner. So does any other failure of
+  its worker (`ERR_NIMBUS_RUNNER_LOST`). The call answers that `error` at
+  once, with `name: 'NimbusRunnerError'`. The next call starts a new
+  runner. A call whose `timeoutMs` came while it still waited for a
+  Dynamic Worker ran nothing, and its runner keeps its state.
+- **Output.** `value`, `stdout` and `stderr` each carry up to about 4.9
+  million characters; past that the text is cut, and says so.
+- **`fresh`.** A `fresh: true` answer ran in a new runner, where nothing an
+  earlier call left is there: the first call, the call after one that lost
+  the runner, the call after the platform dropped an idle runner, and the
+  call after the session restarted.
+- **Cost.** A warm call took 9 ms in the session at the median, against
+  about 200 ms for a warm `node -e` one-shot; a runner's first call took
+  about 700 ms (measured 2026-10-23). An idle runner holds none of the
+  session's ten Dynamic Workers in flight; a call holds one while it runs.
+  A session can keep more than ten idle runners warm.
+- **Options.** `runner({ id, cwd, env, execId })`. Calls with the same `id`
+  share one runner; the default `id` is a new UUID. A scoped hosted session
+  has runners of its own. Close a runner you no longer need: it keeps a
+  process until then. `cwd` resolves against
+  the sandbox root, its default, as `exec`'s does. `env` defaults to the
+  session's exported environment. A runner takes the options its first call
+  sent, and a call that sends other options for the same `id` is refused.
+  `close()` ends the runner, and a call it is running.
 
 ## Users and Permissions
 
