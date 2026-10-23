@@ -8964,7 +8964,8 @@ export class FacetManager {
         switch (recipe.kind) {
             case 'node': {
                 const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
-                return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
+                const resume = recipe.opts.resume === undefined ? {} : { resume: journaledResume(recipe.opts.resume) };
+                return this._spawnResident(recipe.code, { ...recipe.opts, ...resume, env: withRestartPolicy(env, record.restart) }, attempt, identity);
             }
             case 'worker': {
                 // Which resolver a worker recipe re-drives through is decided by
@@ -10338,6 +10339,24 @@ export class FacetManager {
         return this.portRegistry.has(port);
     }
     get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
+}
+/**
+ * A resident's \`resume\` as its journal row holds it, in today's shape. A
+ * row outlives the release that wrote it (a server runs on across deploys),
+ * and one an earlier release wrote names its replay's boundary by the field
+ * it has.
+ */
+function journaledResume(resume) {
+    const { replay } = resume;
+    if ('boundary' in replay)
+        return { ...resume, replay };
+    const { listen, read, stopAt, ...launch } = replay;
+    const boundary = read !== undefined ? { kind: 'read', path: read }
+        : listen === true ? { kind: 'listen' }
+            : stopAt !== undefined ? { kind: 'stdin', stopAt } : null;
+    if (boundary === null)
+        throw new Error('its journaled replay names no boundary to retrace its run to');
+    return { ...resume, replay: { ...launch, boundary } };
 }
 /**
  * The signals a stopped run's program had said it catches (its stop
