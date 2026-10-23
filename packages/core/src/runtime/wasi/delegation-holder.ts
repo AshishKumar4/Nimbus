@@ -48,7 +48,7 @@ import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import {
-  arrayJoin, bytesCopy, bytesView, dateNow, mathMax, mathMin, ownValue, promiseThen, SafeSet, stringLastIndexOf, stringOf, stringSlice,
+  arrayJoin, bytesCopy, bytesView, dateNow, mathMax, mathMin, ownValue, promiseThen, SafeList, SafeSet, setList, stringLastIndexOf, stringOf, stringSlice,
   stringStartsWith, typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
@@ -113,7 +113,12 @@ export interface HolderOptions {
 /** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
 
 /** A new open description's id: unguessable, so no other process's call names it. */
-const descriptionId = (): string => crypto.randomUUID().replaceAll('-', '');
+const descriptionId = (): string => {
+  const id = crypto.randomUUID();
+  let out = '';
+  for (let i = 0; i < id.length; i++) if (id[i] !== '-') out += id[i];
+  return out;
+};
 
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
@@ -325,8 +330,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       mode: 0o100000 | mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
     };
     // Each that may write: one opened only to read reads the content here, and needs none.
-    const opened = prov.descriptorsOf(inode).filter((desc) => desc.description === undefined && desc.write);
-    opened.forEach((desc, at) => {
+    const descs = prov.descriptorsOf(inode);
+    const opened = new SafeList<Desc>();
+    for (let i = 0; i < descs.length; i++) if (descs[i].description === undefined && descs[i].write) opened[opened.length] = descs[i];
+    for (let at = 0; at < opened.length; at++) {
+      const desc = opened[at];
       const description = desc.description = descriptionId();
       // The first makes the file when it is not made yet: the creating open, and the bytes written through it.
       const creating = made !== undefined && at === 0;
@@ -336,7 +344,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (creating && cell.length > 0) {
         acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
       }
-    });
+    }
     prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | mode });
   };
 
@@ -362,8 +370,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const refusedByMode = (inode: Inode): boolean => {
     const entry = decided.get(inode.key);
     if (entry === undefined || entry === null || entry.ino !== inode.ino) return false;
-    for (const desc of prov.descriptorsOf(inode)) {
-      if (!modeAllows(entry, (desc.read ? 4 : 0) | (desc.write ? 2 : 0), store.cred)) return true;
+    const descs = prov.descriptorsOf(inode);
+    for (let i = 0; i < descs.length; i++) {
+      if (!modeAllows(entry, (descs[i].read ? 4 : 0) | (descs[i].write ? 2 : 0), store.cred)) return true;
     }
     return false;
   };
@@ -377,8 +386,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    * the state the local open saw, never re-authorized against a later one.
    */
   const throughAt = (keys?: readonly string[]): void => {
-    const open = prov.cells().filter((inode) => inode.cell!.detached === undefined && inode.descs > 0
-      && (keys === undefined || keys.some((key) => within(inode.key, key))));
+    const cells = prov.cells();
+    const open = new SafeList<Inode>();
+    for (let i = 0; i < cells.length; i++) {
+      const inode = cells[i];
+      if (inode.cell!.detached !== undefined || inode.descs === 0) continue;
+      let under = keys === undefined;
+      for (let j = 0; !under && j < keys!.length; j++) under = within(inode.key, keys![j]);
+      if (under) open[open.length] = inode;
+    }
     if (open.length === 0) return;
     drain();
     for (let i = 0; i < open.length; i++) { const inode = open[i]; unhold(inode); }
@@ -395,7 +411,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const drain = (except?: Inode): void => {
     if (dirty.size === 0) return;
     changes++;
-    for (const inode of [...dirty]) {
+    const files = setList(dirty);
+    for (let i = 0; i < files.length; i++) {
+      const inode = files[i];
       if (inode === except) continue;
       const file = inode.cell!;
       const from = mathMin(file.changedFrom ?? 0, file.logged ?? 0);
@@ -437,7 +455,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    */
   const dropDecisions = (root: string): void => {
     drain();
-    for (const inode of prov.cells()) if (within(inode.key, root)) unhold(inode);
+    const cells = prov.cells();
+    for (let i = 0; i < cells.length; i++) if (within(cells[i].key, root)) unhold(cells[i]);
     names.released(root);
     prov.answeredHeld(root);
     ownValue(options, 'sent')?.();
@@ -459,7 +478,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     // on, so the flush that follows covers everything accepted before.
     freezing: (root) => {
       drain();
-      for (const inode of prov.cells()) if (within(inode.key, root)) unhold(inode);
+      const cells = prov.cells();
+      for (let i = 0; i < cells.length; i++) if (within(cells[i].key, root)) unhold(cells[i]);
     },
     drain,
   });
@@ -628,9 +648,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const failed = (): void => {
     const failures = client.takeFailures();
     if (failures.length > 0) {
+      const said = new SafeList<string>();
+      for (let i = 0; i < failures.length; i++) said[i] = `${failures[i].op} ${failures[i].path}: ${failures[i].message}`;
       // Its first refusal's errno is the call's (EACCES, ENOSPC, …), as the session said it.
       throw fsError(failures[0]!.errno, 'fsync', failures[0]!.path, undefined, {
-        detail: `the session refused what this process decided: ${arrayJoin(failures.map((failure) => `${failure.op} ${failure.path}: ${failure.message}`), '; ')}`,
+        detail: `the session refused what this process decided: ${arrayJoin(said, '; ')}`,
       });
     }
   };
@@ -874,23 +896,28 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (handle === undefined) return prov.reopen(handleId, flags);
       const inode = handle.inode;
       const file = inode.cell;
-      if (flags.append) return undefined;
+      const read = ownValue(flags, 'read');
+      const write = ownValue(flags, 'write');
+      const create = ownValue(flags, 'create');
+      const exclusive = ownValue(flags, 'exclusive');
+      const truncate = ownValue(flags, 'truncate');
+      if (ownValue(flags, 'append')) return undefined;
       const entry = file.detached ?? atName(inode);
       if (!entry) throw fsError('EBADF', 'open', handle.path);
-      if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', handle.path);
-      if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
+      if (create && exclusive) throw fsError('EEXIST', 'open', handle.path);
+      if (!modeAllows(entry, (read ? 4 : 0) | (write || truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
       // Its truncate is made before the descriptor exists: one whose room is not there is the session's.
-      if (flags.truncate && !room(file, inode.key, 0)) return undefined;
-      const opened = prov.heldDescriptor(inode, handle.path, !!flags.read, false);
-      prov.descriptor(opened.id)!.write = !!flags.write;
-      if (flags.truncate) {
+      if (truncate && !room(file, inode.key, 0)) return undefined;
+      const opened = prov.heldDescriptor(inode, handle.path, !!read, false);
+      prov.descriptor(opened.id)!.write = !!write;
+      if (truncate) {
         file.length = 0;
         resized(inode, 0);
         written(inode, 0);
       }
       return {
         id: opened.id, path: handle.path, position: 0, closed: false,
-        flags: { read: !!flags.read, write: !!flags.write, append: false, create: !!flags.create, exclusive: !!flags.exclusive, directory: false, truncate: !!flags.truncate, followSymlinks: true },
+        flags: { read: !!read, write: !!write, append: false, create: !!create, exclusive: !!exclusive, directory: false, truncate: !!truncate, followSymlinks: true },
       };
     },
 
