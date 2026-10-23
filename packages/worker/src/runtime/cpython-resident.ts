@@ -108,6 +108,8 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
     const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
       resident: { argv: args.argv, runtime: 'python' },
       foreground: { signal: args.signal, write: args.write },
+      // Its image takes the signals it is sent while it boots (cpython-runner's start args).
+      takesSignals: args.startArgs.takesSignals === true,
       invokerPid: args.invokerPid,
       restart: z.object({ NIMBUS_RESTART: z.literal('on-failure') }).safeParse(args.startArgs.userEnv).success ? 'on-failure' : 'never',
       // By path, not by value: the interpreter is 10.6 MiB, more than a single

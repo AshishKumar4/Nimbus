@@ -84,6 +84,9 @@ export interface ProcessTerminalDescriptor {
 }
 
 const ONCE = { once: true };
+/** The longest one wait for a signal lasts (nextSignal): a guest's long poll asks again after it. */
+const SIGNAL_WAIT_MAX_MS = 5000;
+const signalWaitMs = (waitMs: number): number => Math.max(0, Math.min(waitMs, SIGNAL_WAIT_MAX_MS));
 const NOTHING_REAPED: Promise<number> = Promise.resolve(0);
 
 /** A process whose program takes its own signals: those it catches, those sent and not taken, and its one wait for the next. */
@@ -875,7 +878,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     const writing = this.input.writeBytesWait(pid, data, withdraw.signal);
     // Its waits for a signal end at their bound, or when its program lets go of its signals: the write is then waited for alone.
     while (this.signalBoxes.get(writer) === box) {
-      const wait = this.waitSignal(box, 5000);
+      const wait = this.waitSignal(box, SIGNAL_WAIT_MAX_MS);
       const first = await Promise.race([writing.then((result) => ({ result })), wait.signal.then((signal) => ({ signal }))]);
       if ('result' in first) {
         // A signal it took as the write was made is the next wait's.
@@ -1037,11 +1040,12 @@ export class SessionProcessSupervisor implements ProcessOutput {
   /**
    * The next signal sent to `pid`'s program (takeSignals), waiting up to
    * `waitMs` for one: null if none came, the process ended, or a later wait
-   * took its place (one waits at a time).
+   * took its place (one waits at a time). A program that takes none waits
+   * as long, for none: a guest that asks again at once does not spin.
    */
   nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null> {
     const box = this.signalBoxes.get(pid);
-    if (box === undefined) return Promise.resolve(null);
+    if (box === undefined) return new Promise((resolve) => setTimeout(() => resolve(null), signalWaitMs(waitMs)));
     // It asks again: what it was given it has.
     box.handed = null;
     return this.waitSignal(box, waitMs).signal;
@@ -1059,7 +1063,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     let take: (signal: ProcessSignalName | null) => void = () => {};
     let handed: { readonly signal: ProcessSignalName } | null = null;
     const signal = new Promise<ProcessSignalName | null>((resolve) => {
-      const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
+      const timer = setTimeout(() => take(null), signalWaitMs(waitMs));
       take = (sent) => {
         clearTimeout(timer);
         if (box.taker === take) box.taker = null;

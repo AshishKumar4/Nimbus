@@ -230,6 +230,12 @@ export interface ProcessHost {
   readiness(fd: number, want: 'read' | 'write'): PipeReadiness | { ready: Promise<PipeReadiness | null>; cancel(): void };
   /** The guest exited: its children's output and ends are no longer followed. */
   dispose(): void;
+  /**
+   * The guest returned to its host (an entry into it ended): a check it made
+   * while it ran no longer has its signals watched, so an idle guest asks
+   * the session nothing; its next check watches them again.
+   */
+  left(): void;
 }
 
 function newPipe(): Pipe {
@@ -852,5 +858,6 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       return { ready, cancel };
     },
     dispose: () => { disposed = true; },
+    left: () => { checking = false; },
   };
 }
