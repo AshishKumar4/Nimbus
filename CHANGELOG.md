@@ -9,7 +9,7 @@ published independently in the `@nimbus-sh` npm scope.
   - A warm call took 9 ms in the session at the median (p90 22 ms). Measured from the same client, it took 35 ms at the median, against 198 ms for a warm `node -e 1` one-shot. A runner's first call took 716 ms.
   - An idle runner holds none of the session's ten Dynamic Workers. With 12 runners in one session, each kept its state, and a call took 16 ms at the median.
   - A call has a CPU limit (`cpuMs`, 5,000 ms by default) and an optional wall limit (`timeoutMs`). A loop that never yields ended with `ERR_NIMBUS_RUNNER_CPU_LIMIT` 3.7 s after it started with `cpuMs: 1000`, and 8.1 s after it started with the default. A node one-shot runs under the process limit, 300,000 ms of CPU. The session answers nothing while a call computes on its thread.
-  - A call that loses its runner (a limit, a kill, `process.exit`, any failure of its worker) answers an `ERR_NIMBUS_RUNNER_*` error at once. The next call runs in a new runner and answers `fresh: true`, as does a call after the platform dropped an idle runner.
+  - A call that loses its runner (a limit, a kill, `close()`, `process.exit`, any failure of its worker) answers an `ERR_NIMBUS_RUNNER_*` error at once. The next call runs in a new runner and answers `fresh: true`, as does a call after the platform dropped an idle runner.
 
 - Added: each write event says which exec made it. `VfsWriteEvent.execId` (from `observeWrites`) is the `execId` the process table held for the writing process when the write committed. Every process an exec starts inherits it, so a command's children, pipelines and background jobs count. It has three possible values:
   - a string: the exec that made the write;
