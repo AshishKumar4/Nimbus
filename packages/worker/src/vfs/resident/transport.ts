@@ -64,7 +64,15 @@ export interface WantedFile { path: string; size: number; rev: number; epoch: st
 export interface FillReport { requested: number; filled: number; failed: number; bytes?: number; ranges?: number; copied?: number }
 
 /** What one fetch did: files asked for, held (copies included), refused; bytes fetched, in how many ranges. */
-export interface Fetched { requested: number; filled: number; failed: number; bytes: number; ranges: number; copied: number }
+export interface Fetched {
+  requested: number; filled: number; failed: number; bytes: number; ranges: number; copied: number;
+  /**
+   * Whole files the session served at the revision asked, outdated by a delta
+   * that landed while they were in flight: not installed, but what the read
+   * that asked them was answered (a read before the change, as Linux's).
+   */
+  outdated?: SafeMap<string, Uint8Array>;
+}
 
 /** A whole enumeration: its files, every name, what the names cost a one-shot, its cursor, and whether it finished. */
 export interface Listing {
@@ -239,6 +247,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     const t = coherence.tables('fetchFiles');
     const requested = wantedFiles.length;
     let copied = 0;
+    const served = new SafeMap<string, Uint8Array>();
     const files = new SafeList<WantedFile>();
     const later = new SafeList<WantedFile>();
     const fetching = new SafeSet<string>();
@@ -356,8 +365,12 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         const chunk = residentBytes(bytes);
         const chunkBytes = typedArrayByteLength(chunk);
         if (chunkBytes !== range.length) { failedPaths.add(range.path); continue; }
-        // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
-        if (outdated(t, learning, range.path, range.rev)) { failedPaths.add(range.path); continue; }
+        // Not a byte of it beneath a newer revision of the file (another fill's head and chunks); kept for the read that asked it.
+        if (outdated(t, learning, range.path, range.rev)) {
+          failedPaths.add(range.path);
+          if (range.parts === 1) served.set(range.path, chunk);
+          continue;
+        }
         fetchedBytes += chunkBytes;
         if (!cells.putChunk(t, range.path, range.part, chunk, fill)) { failedPaths.add(range.path); continue; }
         const seen = (landed.get(range.path) || 0) + 1;
@@ -387,6 +400,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     return {
       requested, filled: filled + copied, failed,
       bytes: fetchedBytes, ranges: ranges.length, copied,
+      ...(served.size === 0 ? {} : { outdated: served }),
     };
   };
 
