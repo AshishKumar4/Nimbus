@@ -270,7 +270,9 @@ for (let ticks = 0; ticks < 16; ticks++) {
   for (const { pid } of [job, child, background]) processes.setForeground(pid, true);
   processes.signalForeground(shell.pid, signalAbortReason('INT'), new Set([backgroundJob.pid]));
   assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'the foreground job\'s program is sent it, and it waits there untaken');
-  assert.equal(await processes.nextSignal(job.pid, 100), 'SIGINT', 'until its program takes it');
+  assert.equal(await processes.nextSignal(job.pid, 100), 'SIGINT', 'its program is handed it');
+  assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'and has not taken it until it says so');
+  assert.equal(await processes.nextSignal(job.pid, 0), null, 'it says so by asking again');
   assert.equal(processes.untakenSignal(job.pid), null);
   assert.equal(processes.get(child.pid).state, 'killed', 'a process below it that takes none is ended by it');
   assert.equal(processes.get(shell.pid).state, 'running', 'the shell is not');
