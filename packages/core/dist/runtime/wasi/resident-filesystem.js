@@ -354,6 +354,8 @@ export function residentFilesystem(session, resident, delegation) {
         const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
         if (crossed !== undefined)
             crossed.length = 0;
+        // Beneath a directory on a mount the walk passed (walkedMounts).
+        let passing = false;
         for (let step = walk.next();;) {
             if (step.done)
                 return step.value === null ? null : step.value.reached;
@@ -373,11 +375,12 @@ export function residentFilesystem(session, resident, delegation) {
             }
             const entry = store.entry(key);
             if (entry === undefined) {
-                // Node's walk passes a directory the launch's listing could not name (a device that resolves
-                // its own paths shows only what its user consented to, as the session hands it the whole
-                // name): a name beneath it is answered where the listing named it, else missing.
-                if (!walkedMounts)
+                // Node's walk passes a directory on a mount the launch's listing could not name (a device that
+                // resolves its own paths shows only what its user consented to, as the session hands it the
+                // whole name), and what is beneath it: a name there is answered where the listing named it.
+                if (!walkedMounts || !(passing || mountedName(key)))
                     return { missing: key };
+                passing = true;
                 step = walk.next(PASSED_THROUGH);
                 continue;
             }
