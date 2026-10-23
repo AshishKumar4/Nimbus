@@ -67,5 +67,5 @@ export declare function supervisorFilesystem(remote: WasiSupervisorStub, local?:
  * (supervisorFilesystem over the same stub). Each wave call is told to `live`
  * as it is made, as the authority tells its own.
  */
-export declare function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown): ProcessFsSession;
+export declare function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown, holdsGrants?: boolean): ProcessFsSession;
 //# sourceMappingURL=vfs-supervisor.d.ts.map
