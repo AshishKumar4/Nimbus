@@ -956,7 +956,8 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** The parent of `key`, when the process may make a name in it: a known, writable, searchable directory of the session's filesystem. */
   const writableParent = (key: string, path: string, syscall: string): ResidentEntry | undefined => {
     const parent = rowAt(parentKey(key));
-    if (parent === undefined || parent === null || parent.dev !== host.device) return undefined;
+    // On this filesystem, or on a mount the host decides on (ProvisionalHost.mounted).
+    if (parent === undefined || parent === null || (parent.dev !== host.device && host.mounted?.(key) !== true)) return undefined;
     if (parent.type !== 'directory') throw fsError('ENOTDIR', syscall, path);
     if (!modeAllows(parent, 3, host.cred)) throw fsError('EACCES', syscall, path);
     return parent;

@@ -1527,6 +1527,22 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
+   * A change an awaited caller makes that the session would otherwise make by
+   * name (a whole-file write, mkdir -p, a copy): decided here as a caller
+   * that cannot wait decides it (`decided`), then answered once the session
+   * has everything this process logged (its refusal thrown), so it travels
+   * in the process's waves (a stopped run's are put back: SqliteVFS
+   * restoreRun) as the program's own change. The session's (`session`)
+   * where this view cannot decide it.
+   */
+  const decidedThenSent = <T>(decided: () => T, session: () => T | Promise<T>): T | Promise<T> => {
+    if (now || holder === null) return session();
+    let value: T;
+    try { value = decided(); } catch { return session(); }
+    return holder.flush().then(() => value);
+  };
+
+  /**
    * A change by name no held subtree decided, at `keys` (where each name's
    * walk led; undefined where it led nowhere the view places): the
    * provisional decisions' (`decided`, given the row the view has at each
@@ -1940,16 +1956,21 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (walk === DELEGATE || !decidable(walk.key, walk)) return DELEGATE;
       return holder!.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
     }));
+    const decided = (): number => provisionally(path, true, (key, row) => holder!.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder!.entry(key)?.revision ?? 0));
     return after(local, (done) => (done !== DELEGATE ? done
-      : now && options?.createParents !== true ? provisionally(path, true, (key, row) => holder!.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder!.entry(key)?.revision ?? 0))
-      : bySessionWriteFile(path, bytes, options)));
+      : options?.createParents === true ? bySessionWriteFile(path, bytes, options)
+      : now ? decided()
+      : decidedThenSent(decided, () => bySessionWriteFile(path, bytes, options))));
   };
   const bySessionMkdir = fs.mkdir;
   fs.mkdir = (path, options) => {
     if (holder === null) return bySessionMkdir(path, options);
     // A caller that cannot wait makes each missing directory on the way, as
     // mkdir -p does; any other asks the session to.
-    if (options?.recursive) return now && typeof path === 'string' ? mkdirParents(path, options) : bySessionMkdir(path, options);
+    if (options?.recursive) {
+      if (typeof path !== 'string') return bySessionMkdir(path, options);
+      return now ? mkdirParents(path, options) : decidedThenSent(() => mkdirParents(path, options), () => bySessionMkdir(path, options));
+    }
     const mode = options?.mode ?? 0o777;
     let named: string | undefined;
     const local = decide<void>(() => after(walkFor(path, false), (walk) => {
@@ -2048,12 +2069,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         return holder!.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? undefined : DELEGATE;
       }))));
     // A caller that cannot wait copies what this view holds of the source, as it reads it.
+    const decided = (): undefined => void provisionally(from, true, (source, row) => {
+      if (row === null) throw fsError('ENOENT', 'copyfile', pathOf(from));
+      return provisionally(to, true, (target, there) => holder!.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
+    });
     return after(local, (done) => (done !== DELEGATE ? undefined
-      : now ? void provisionally(from, true, (source, row) => {
-        if (row === null) throw fsError('ENOENT', 'copyfile', pathOf(from));
-        return provisionally(to, true, (target, there) => holder!.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
-      })
-      : bySessionCopy(from, to, options)));
+      : now ? decided()
+      : decidedThenSent(decided, () => bySessionCopy(from, to, options))));
   };
   const bySessionRename = fs.rename;
   fs.rename = (from, to) => {
