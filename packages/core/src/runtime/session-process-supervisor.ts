@@ -65,6 +65,8 @@ export interface ProcessSpawnOptions {
   execId?: string;
   /** The controlling terminal of a process that does not take its parent's (`ProcessEntry.terminal`): a terminal's shell. */
   terminal?: string;
+  /** A shell's background job (`ProcessEntry.backgroundJob`). */
+  backgroundJob?: boolean;
   /** The process this one restarts (`ProcessEntry.restartedFrom`). */
   restartedFrom?: ProcessRestart;
 }
@@ -1032,14 +1034,9 @@ export class SessionProcessSupervisor implements ProcessOutput {
     box.taker?.(null);
   }
 
-  /**
-   * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
-   * null: one handed to it that it has not said it has (it asks again once it
-   * takes one, nextSignal), else the first that waits in its box.
-   */
+  /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
   untakenSignal(pid: number): ProcessSignalName | null {
-    const box = this.signalBoxes.get(pid);
-    return box?.handed?.signal ?? box?.queued[0] ?? null;
+    return this.signalBoxes.get(pid)?.queued[0] ?? null;
   }
 
   /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
@@ -1118,21 +1115,20 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * `reason`'s signal to the foreground job of the shell `pid`, as a
    * terminal's key after the first (which the job's command took as its
    * abort): each running process below the shell whose output is the
-   * terminal's (setForeground) and that is not inside one of its
-   * `background` jobs, the topmost of each such chain with its group
-   * ({@link signalGroup}). A server an earlier command left running has
-   * given the terminal back, and is not sent it.
+   * terminal's (setForeground), the topmost of each such chain, with its
+   * group ({@link signalGroup}). Nothing inside a background job (`cmd &`,
+   * from any subshell) is the foreground's, nor is a server an earlier
+   * command left running: it gave the terminal back.
    */
-  signalForeground(pid: number, reason: SignalAbortReason, background: ReadonlySet<number>): void {
-    const ownsTerminal = (entry: { state: string; foreground?: boolean }) => entry.state === 'running' && entry.foreground === true;
+  signalForeground(pid: number, reason: SignalAbortReason): void {
+    const ownsTerminal = (entry: ProcessEntry | undefined) => entry !== undefined && entry.state === 'running' && entry.foreground === true;
     const leaders = this.getAll().filter((entry) => {
-      if (!ownsTerminal(entry)) return false;
+      if (!ownsTerminal(entry) || entry.backgroundJob === true) return false;
       const above = this.lineage(entry.pid).slice(1);
       const shell = above.indexOf(pid);
-      if (shell < 0) return false;
-      return above.slice(0, shell).every((ancestor) => {
-        const entry = this.table.get(ancestor);
-        return !background.has(ancestor) && (entry === undefined || !ownsTerminal(entry));
+      return shell >= 0 && above.slice(0, shell).every((ancestor) => {
+        const between = this.table.get(ancestor);
+        return between?.backgroundJob !== true && !ownsTerminal(between);
       });
     });
     for (const leader of leaders) this.signalGroup(leader.pid, reason);
