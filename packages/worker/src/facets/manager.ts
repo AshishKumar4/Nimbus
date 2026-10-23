@@ -4695,9 +4695,10 @@ export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: st
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
- * The static walker supplies the complete known require closure. Separate
- * file and byte budgets bound optional enrichment for dynamic require and
- * synchronous filesystem patterns without removing required files.
+ * The static walker supplies the complete known require closure. A byte
+ * budget, charging each file's naming bytes with its content, bounds
+ * optional enrichment for dynamic require and synchronous filesystem
+ * patterns without removing required files.
  *
  * Optional files are evicted against the exact JSON-encoded payload size.
  * If required content still exceeds the per-module encoded ceiling, Worker

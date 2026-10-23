@@ -62,10 +62,7 @@ export declare const BUNDLE_MAX_ENCODED_BYTES: number;
 export declare const PREFETCH_CACHE_MAX_BYTES: number;
 export declare const TRANSFORM_STORE_MAX_BYTES: number;
 export declare const TRANSFORM_STORE_MAX_ENTRY_BYTES: number;
-/** The most one guess, or the sweep's guesses together, may weigh: 416 ms / 452 ms per MiB, about 0.92 MiB. */
-export declare const LAUNCH_GUESS_MAX_BYTES: number;
-/** The most entries the working-tree sweep visits: 416 ms / (86 ms / 420), about 2,000. */
-export declare const LAUNCH_GUESS_MAX_ENTRIES: number;
+export declare const CWD_SNAPSHOT_MAX_FILE_BYTES: number;
 /**
  * Largest regular file a WASI guest holds resident: a read-only open at or
  * under this size is answered from the facet's own copy of the content (one

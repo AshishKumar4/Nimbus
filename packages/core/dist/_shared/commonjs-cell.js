@@ -134,6 +134,7 @@ import { applySourceEdits, COMMONJS_WRAPPER_NAMES, forEachNode } from '../runtim
 import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 import { ESM_MODULE_HELPERS } from '../runtime/esm-interop.js';
 import { runtimeCodeKeySource, runtimeCodeSourceCharge } from './runtime-code-identity.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { COMMONJS_CELL_HELPERS_SOURCE } from '../runtime/compiled-bodies.generated.js';
 /** This module's own built-ins, for the checks it shares with the interpreter. */
 const REALM = {
@@ -236,6 +237,20 @@ export function wrapCommonJsCell(cell, scope = 'function') {
         : opening + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
     const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
     return { text: head + body + tail, esModule, head: head.length, tail: tail.length, hashbang };
+}
+/** wrapCommonJsCell's longest head and tail: block-scoped and strict. */
+const WRAPPER_HEAD_MAX = Math.max(COMMONJS_HEAD.length, ES_MODULE_HEAD.length) + '"use strict";{'.length;
+const WRAPPER_TAIL_MAX = '\n}}; });'.length;
+/**
+ * What a module map spends to carry the file at `key` beside its content,
+ * each part at its largest: the cell's row (CommonJsCellRow), its module's
+ * name and wrapper, and its key where it rides as data. Charged with the
+ * content, the map's byte bound bounds how many files it can name.
+ */
+export function moduleMapEntryBytes(key) {
+    const name = commonJsCellModuleName(key);
+    const row = JSON.stringify([key, name, WRAPPER_HEAD_MAX, WRAPPER_TAIL_MAX, 1, 1, 1, 1]);
+    return utf8Length(row) + 1 + utf8Length(name) + WRAPPER_HEAD_MAX + WRAPPER_TAIL_MAX + utf8Length(JSON.stringify(key)) + 1;
 }
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
 export function columnMapModuleName(name) {
