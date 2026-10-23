@@ -347,8 +347,11 @@ export interface Provisional {
     /** The bytes of the file `entry` names, where this process's are its content. */
     content(entry: ResidentEntry): Uint8Array | undefined;
     barrierBegun(): number;
-    /** A barrier that began as `begun` landed: what was answered before it, outside a held subtree, is the view's now. */
-    retire(begun: number): void;
+    /**
+     * A barrier that began as `begun` landed: what was answered before it, outside a held subtree, is the view's now. The names
+     * whose bytes the process made and the view has no content for are returned: the caller fetches them before it lands.
+     */
+    retire(begun: number): [string, ResidentEntry][];
 }
 export declare function provisional(host: ProvisionalHost): Provisional;
 export {};

@@ -14,6 +14,8 @@ import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export interface InodeState {
     /** Its bytes, the first `size` of them; null where the baseline's bytes are not held (its size is still known). */
     bytes: Uint8Array | null;
+    /** Set where `bytes` is an operation's payload, aliased rather than copied: a change to them copies them first (ownedBytes). */
+    shared?: boolean;
     size: number;
     /** st_mode, the type bits included. */
     mode: number;

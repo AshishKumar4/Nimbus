@@ -930,7 +930,7 @@ export function delegationHolder(options) {
         },
         retire: (begun) => {
             names.retire(begun);
-            prov.retire(begun);
+            return prov.retire(begun);
         },
         pending: () => dirty.size > 0 || client.pending(),
         flush: async () => {

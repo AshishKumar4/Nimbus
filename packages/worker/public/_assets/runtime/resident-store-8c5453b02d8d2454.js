@@ -469,8 +469,11 @@ var __nimbusResidentModule = (() => {
         return available;
       },
       pin(bytes) {
-        if (!inHeap && pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) shedHeld?.(pinnedBytes + heldBytes + bytes - FACET_OWN_WRITE_MEMORY_BYTES);
-        if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
+        if (!inHeap) {
+          if (pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
+          if (pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) shedHeld?.(pinnedBytes + heldBytes + bytes - FACET_OWN_WRITE_MEMORY_BYTES);
+          if (pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
+        } else if (!fits(bytes, false)) return false;
         pinnedBytes += bytes;
         return true;
       },
@@ -5142,7 +5145,15 @@ var __nimbusResidentModule = (() => {
     return copy;
   }
   function copyState(state) {
-    return { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
+    const copy = { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
+    delete copy.shared;
+    return copy;
+  }
+  function ownedBytes(state) {
+    if (state.shared !== true)
+      return;
+    state.bytes = owned(state.bytes, state.size);
+    delete state.shared;
   }
   function grown(state, size) {
     const bytes = state.bytes;
@@ -5161,20 +5172,28 @@ var __nimbusResidentModule = (() => {
         const offset = op.kind === "append" ? state.size : op.offset;
         const end = offset + op.data.byteLength;
         if (state.bytes !== null) {
-          const bytes = grown(state, end);
-          if (offset > state.size)
-            bytes.fill(0, state.size, offset);
-          bytes.set(op.data, offset);
-          state.bytes = bytes;
+          if (offset === 0 && state.size === 0 && state.bytes.byteLength === 0) {
+            state.bytes = op.data;
+            state.shared = true;
+          } else {
+            ownedBytes(state);
+            const bytes = grown(state, end);
+            if (offset > state.size)
+              bytes.fill(0, state.size, offset);
+            bytes.set(op.data, offset);
+            state.bytes = bytes;
+          }
         }
         state.size = Math.max(state.size, end);
         state.mtime = state.ctime = op.at;
         return state;
       }
       case "truncate": {
-        if (op.size === 0)
+        if (op.size === 0) {
           state.bytes = new Uint8Array(0);
-        else if (state.bytes !== null && op.size > state.size) {
+          delete state.shared;
+        } else if (state.bytes !== null && op.size > state.size) {
+          ownedBytes(state);
           const bytes = grown(state, op.size);
           bytes.fill(0, state.size, op.size);
           state.bytes = bytes;
@@ -5416,7 +5435,7 @@ var __nimbusResidentModule = (() => {
       return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
     };
     const cost = (inode) => {
-      let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (pendingMoves.size === 0 || inode.cell?.detached !== void 0 ? 0 : pendingGrowth(inode.key, inode.origin)) + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base ? 0 : retained(inode.state?.bytes)) + retained(inode.pin?.bytes) + inode.recordsCost;
+      let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (pendingMoves.size === 0 || inode.cell?.detached !== void 0 ? 0 : pendingGrowth(inode.key, inode.origin)) + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base || inode.state?.shared === true ? 0 : retained(inode.state?.bytes)) + retained(inode.pin?.bytes) + inode.recordsCost;
       return total;
     };
     const recordCost = (record) => RECORD_COST + (record.room?.byteLength ?? payloadOf(record.op));
@@ -5438,6 +5457,7 @@ var __nimbusResidentModule = (() => {
       let capacity = inode.state?.bytes?.byteLength ?? 0;
       let known = inode.state !== null && inode.state.bytes !== null;
       let size = inode.state?.size ?? inode.row.size;
+      let shared = inode.state?.shared === true;
       if (inode.base === null) {
         const seen = inode.local || inode.cell !== void 0 ? void 0 : viewed(inode);
         const held2 = inode.cell !== void 0 ? inode.cell.bytes.subarray(0, inode.cell.length) : seen?.bytes ?? pinned(inode, seen, seen?.row.revision ?? inode.row.revision);
@@ -5446,20 +5466,33 @@ var __nimbusResidentModule = (() => {
         capacity = baseBytes;
         size = held2?.byteLength ?? inode.row.size;
       }
-      let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
+      let total = cost(inode) - retained(inode.base?.bytes) - (inode.state?.shared === true ? 0 : retained(inode.state?.bytes)) + baseBytes;
       for (const op of ops) {
-        if (op.kind === "truncate" && op.size === 0)
+        if (op.kind === "truncate" && op.size === 0) {
           known = true;
+          capacity = 0;
+          shared = false;
+        }
         const end = op.kind === "write" ? op.offset + op.data.byteLength : op.kind === "append" ? size + op.data.byteLength : op.kind === "truncate" ? op.size : size;
-        if (known && end > capacity)
-          capacity = Math.max(end, capacity * 2, 4096);
+        const changes = known && (op.kind === "write" || op.kind === "append" ? op.data.byteLength > 0 : op.kind === "truncate" && op.size > size);
+        if (changes && (op.kind === "write" || op.kind === "append") && (op.kind === "append" ? size : op.offset) === 0 && size === 0 && capacity === 0 && !shared) {
+          shared = true;
+          capacity = op.data.byteLength;
+        } else if (changes) {
+          if (shared) {
+            shared = false;
+            capacity = size;
+          }
+          if (end > capacity)
+            capacity = Math.max(end, capacity * 2, 4096);
+        }
         if (op.kind === "truncate")
           size = op.size;
         else if (op.kind === "write" || op.kind === "append")
           size = Math.max(size, end);
         total += RECORD_COST + payloadOf(op);
       }
-      return total + (known ? capacity : 0);
+      return total + (known && !shared ? capacity : 0);
     };
     const fit = (inode) => {
       let need = cost(inode) - inode.reserved;
@@ -5962,7 +5995,8 @@ var __nimbusResidentModule = (() => {
       const recordRoom = last.room !== void 0 && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
       const capacity = state.bytes?.byteLength ?? 0;
       const end = start === void 0 ? state.size + bytes.byteLength : start + bytes.byteLength;
-      const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0);
+      const stateGrows = state.bytes === null ? 0 : state.shared === true ? end > capacity ? Math.max(end, capacity * 2, 4096) : state.size : end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0;
+      const growth = recordRoom - (last.room?.byteLength ?? before) + stateGrows;
       host2.drain();
       host2.client.fitsSync(bytes.byteLength, desc.path);
       if (growth > 0) {
@@ -6644,6 +6678,7 @@ var __nimbusResidentModule = (() => {
           replay();
         }
         const keeping = [];
+        const owed = [];
         for (const inode of [...loose]) {
           if (host2.unreported?.(inode.key) === true)
             continue;
@@ -6656,6 +6691,9 @@ var __nimbusResidentModule = (() => {
           if (retired.length === 0 && inode.records.length > 0)
             continue;
           if (inode.records.length === 0 && inode.descs === 0 && inode.answers === 0) {
+            const named2 = inode.state?.bytes ? viewed(inode) : void 0;
+            if (named2 !== void 0 && named2.row.type === "file" && named2.bytes === void 0)
+              owed.push([named2.name, named2.row]);
             inode.base = null;
             inode.state = null;
             touched.delete(inode);
@@ -6687,6 +6725,8 @@ var __nimbusResidentModule = (() => {
             const last = retired[retired.length - 1];
             if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision <= last.after && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
               keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
+            } else if (rewritten && inode.state?.bytes && seen.row.type === "file" && seen.bytes === void 0) {
+              owed.push([seen.name, seen.row]);
             }
             dropRecords(inode, new Set(retired));
             inode.row = (retired.length > 0 ? host2.absorb(seen.name, entryOf(inode)) : void 0) ?? seen.row;
@@ -6720,6 +6760,7 @@ var __nimbusResidentModule = (() => {
         for (const [key, row, bytes] of keeping)
           host2.keep?.(key, row, bytes);
         activity();
+        return owed;
       }
     };
     return provisional2;
@@ -9597,7 +9638,7 @@ var __nimbusResidentModule = (() => {
       },
       retire: (begun) => {
         names.retire(begun);
-        prov.retire(begun);
+        return prov.retire(begun);
       },
       pending: () => dirty.size > 0 || client.pending(),
       flush: async () => {
@@ -10048,10 +10089,12 @@ var __nimbusResidentModule = (() => {
       // a delivered answer's, when its arguments were built (acquireArgs); one this process did not build vouches for nothing.
       barrier: (options) => {
         const begun = holder?.barrierBegun();
-        return begin(() => resident.barrier(options)).then((result) => {
+        return begin(() => resident.barrier(options)).then(async (result) => {
           const from = options?.answer ? void 0 : result.fromDelivery ? options?.delivered?.args.begin : begun;
-          if (result.landed && typeof from === "number")
-            holder?.retire(from);
+          if (result.landed && typeof from === "number") {
+            const owed2 = holder?.retire(from) ?? [];
+            await Promise.all(owed2.map(([key, row]) => store.fill(key, row).catch(() => null)));
+          }
           return result;
         });
       },

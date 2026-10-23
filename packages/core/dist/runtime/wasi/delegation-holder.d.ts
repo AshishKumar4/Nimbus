@@ -224,9 +224,9 @@ export interface DelegationHolder {
      * Barrier `begun` landed: what this process changed by name and the
      * session answered before it began is the view's now. Its own record of
      * each such name retires, outside a held subtree (a held one keeps its
-     * decisions while it holds it).
+     * decisions while it holds it). The names whose bytes the process made and the view has no content for are returned.
      */
-    retire(begun: number): void;
+    retire(begun: number): [string, ResidentEntry][];
     /** Whether anything decided here is not sent yet. */
     pending(): boolean;
     /** Send everything decided, in order. A refusal is thrown (the run fails, naming it). */

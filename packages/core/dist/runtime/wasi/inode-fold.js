@@ -21,7 +21,16 @@ export function owned(bytes, length = bytes.byteLength) {
 }
 /** A copy of `state` that folding into does not change `state`. */
 export function copyState(state) {
-    return { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
+    const copy = { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
+    delete copy.shared;
+    return copy;
+}
+/** `state`'s bytes made its own where they alias an operation's payload: a change to them copies them first (copy-on-write). */
+function ownedBytes(state) {
+    if (state.shared !== true)
+        return;
+    state.bytes = owned(state.bytes, state.size);
+    delete state.shared;
 }
 /** Room for `size` bytes in `state`'s buffer, its first `state.size` kept, the rest zero. */
 function grown(state, size) {
@@ -49,20 +58,31 @@ export function applyOp(state, op) {
             const offset = op.kind === 'append' ? state.size : op.offset;
             const end = offset + op.data.byteLength;
             if (state.bytes !== null) {
-                const bytes = grown(state, end);
-                if (offset > state.size)
-                    bytes.fill(0, state.size, offset);
-                bytes.set(op.data, offset);
-                state.bytes = bytes;
+                // A whole write into nothing is the payload itself: aliased, and copied before any change to it.
+                if (offset === 0 && state.size === 0 && state.bytes.byteLength === 0) {
+                    state.bytes = op.data;
+                    state.shared = true;
+                }
+                else {
+                    ownedBytes(state);
+                    const bytes = grown(state, end);
+                    if (offset > state.size)
+                        bytes.fill(0, state.size, offset);
+                    bytes.set(op.data, offset);
+                    state.bytes = bytes;
+                }
             }
             state.size = Math.max(state.size, end);
             state.mtime = state.ctime = op.at;
             return state;
         }
         case 'truncate': {
-            if (op.size === 0)
+            if (op.size === 0) {
                 state.bytes = new Uint8Array(0);
+                delete state.shared;
+            }
             else if (state.bytes !== null && op.size > state.size) {
+                ownedBytes(state);
                 const bytes = grown(state, op.size);
                 bytes.fill(0, state.size, op.size);
                 state.bytes = bytes;

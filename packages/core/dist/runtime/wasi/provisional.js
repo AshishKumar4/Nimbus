@@ -302,7 +302,7 @@ export function provisional(host) {
     /** What `inode` keeps of the budget now: itself and its names, its baseline's and fold's buffers, its records and their bytes, its anchors. */
     const cost = (inode) => {
         let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (pendingMoves.size === 0 || inode.cell?.detached !== undefined ? 0 : pendingGrowth(inode.key, inode.origin))
-            + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base ? 0 : retained(inode.state?.bytes))
+            + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base || inode.state?.shared === true ? 0 : retained(inode.state?.bytes))
             + retained(inode.pin?.bytes) + inode.recordsCost;
         return total;
     };
@@ -333,6 +333,8 @@ export function provisional(host) {
         let capacity = inode.state?.bytes?.byteLength ?? 0;
         let known = inode.state !== null && inode.state.bytes !== null;
         let size = inode.state?.size ?? inode.row.size;
+        // Bytes that alias an operation's payload are charged by its record alone (applyOp); a change to them copies them, charged then.
+        let shared = inode.state?.shared === true;
         if (inode.base === null) {
             // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
             const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
@@ -343,20 +345,37 @@ export function provisional(host) {
             capacity = baseBytes;
             size = held?.byteLength ?? inode.row.size;
         }
-        let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
+        let total = cost(inode) - retained(inode.base?.bytes) - (inode.state?.shared === true ? 0 : retained(inode.state?.bytes)) + baseBytes;
         for (const op of ops) {
-            if (op.kind === 'truncate' && op.size === 0)
+            if (op.kind === 'truncate' && op.size === 0) {
                 known = true;
+                capacity = 0;
+                shared = false;
+            }
             const end = op.kind === 'write' ? op.offset + op.data.byteLength : op.kind === 'append' ? size + op.data.byteLength : op.kind === 'truncate' ? op.size : size;
-            if (known && end > capacity)
-                capacity = Math.max(end, capacity * 2, 4096);
+            // The ops that change the bytes (applyOp): a write or append of some, a truncate that grows.
+            const changes = known && (op.kind === 'write' || op.kind === 'append' ? op.data.byteLength > 0 : op.kind === 'truncate' && op.size > size);
+            if (changes && (op.kind === 'write' || op.kind === 'append') && (op.kind === 'append' ? size : op.offset) === 0 && size === 0 && capacity === 0 && !shared) {
+                // Whole into nothing: the payload is the content, charged by its record alone.
+                shared = true;
+                capacity = op.data.byteLength;
+            }
+            else if (changes) {
+                // A change to shared bytes copies them first: the copy is what is charged from here.
+                if (shared) {
+                    shared = false;
+                    capacity = size;
+                }
+                if (end > capacity)
+                    capacity = Math.max(end, capacity * 2, 4096);
+            }
             if (op.kind === 'truncate')
                 size = op.size;
             else if (op.kind === 'write' || op.kind === 'append')
                 size = Math.max(size, end);
             total += RECORD_COST + payloadOf(op);
         }
-        return total + (known ? capacity : 0);
+        return total + (known && !shared ? capacity : 0);
     };
     /**
      * `inode`'s charge brought to what it keeps (cost): what it no longer keeps
@@ -973,7 +992,9 @@ export function provisional(host) {
         const recordRoom = last.room !== undefined && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
         const capacity = state.bytes?.byteLength ?? 0;
         const end = start === undefined ? state.size + bytes.byteLength : start + bytes.byteLength;
-        const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0);
+        // A state sharing its payload is copied by this change (applyOp): the copy grows, uncharged until now.
+        const stateGrows = state.bytes === null ? 0 : state.shared === true ? (end > capacity ? Math.max(end, capacity * 2, 4096) : state.size) : end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0;
+        const growth = recordRoom - (last.room?.byteLength ?? before) + stateGrows;
         host.drain();
         host.client.fitsSync(bytes.byteLength, desc.path);
         if (growth > 0) {
@@ -1725,6 +1746,7 @@ export function provisional(host) {
             }
             // The bytes the view may keep of what retires (keep), once what they held is given back.
             const keeping = [];
+            const owed = [];
             // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
             for (const inode of [...loose]) {
                 if (host.unreported?.(inode.key) === true)
@@ -1741,6 +1763,10 @@ export function provisional(host) {
                     continue;
                 // Nothing of it pending and nothing open on it (a file given back, say): it goes, and the view is not asked what it is.
                 if (inode.records.length === 0 && inode.descs === 0 && inode.answers === 0) {
+                    // What it held goes, and the view names it: the session's bytes of it are owed the view, unless the store holds them.
+                    const named = inode.state?.bytes ? viewed(inode) : undefined;
+                    if (named !== undefined && named.row.type === 'file' && named.bytes === undefined)
+                        owed.push([named.name, named.row]);
                     inode.base = null;
                     inode.state = null;
                     touched.delete(inode);
@@ -1782,6 +1808,10 @@ export function provisional(host) {
                         && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
                         keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
                     }
+                    else if (rewritten && inode.state?.bytes && seen.row.type === 'file' && seen.bytes === undefined) {
+                        // What the process made of the file is not the view's to keep here (a change since, or a move): the session's bytes are owed.
+                        owed.push([seen.name, seen.row]);
+                    }
                     dropRecords(inode, new Set(retired));
                     // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
                     inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
@@ -1819,6 +1849,7 @@ export function provisional(host) {
             for (const [key, row, bytes] of keeping)
                 host.keep?.(key, row, bytes);
             activity();
+            return owed;
         },
     };
     return provisional;
