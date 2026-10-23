@@ -5,8 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: each write event says which exec made it. `VfsWriteEvent.execId` (from `observeWrites`) is the `execId` the process table held for the writing process when the write committed. Every process an exec starts inherits it, so a command's children, pipelines and background jobs count. It has three possible values:
+  - a string: the exec that made the write;
+  - `null`: no process made it, a host operation (a client's `files.*`, the kernel, seeding, a launch's images);
+  - `undefined`: a process made it, but no exec name is known. Either its exec named none, or the write is one a mount's backend reports from its own machine. Such a write comes from a program on a delegating mount; its attribution waits for a token Kinu's transports must carry (KINU-HANDOFF section 51).
+  - It covers the shell and its redirections, durable coreutils, node programs' fs calls and write waves, write batches and streams, npm (including its background prebundle), git (including a background clone), `wrangler dev`'s files and its Worker's KV and R2, writes to mounts that do not report their own, and write logs drained after a process ended or after a reset.
+  - The attribution never depends on timing. The table entry of a process with a write in flight, or with background work writing for it, is kept until that write commits.
+  - `NimbusWorkspace.exec(command, { execId })` names an exec in a core-only workspace.
+
+- Changed: appends by two processes to one file no longer share one buffered run, so each process's appends are its own write event.
+
 - Changed: tsrs 0.18.0 (a Rust port of TypeScript 7) compiles and type-checks Nimbus in place of tsc 5.9, so the published `dist` JavaScript and declarations are its output.
+
 - Changed: a node program's CommonJS module that is strict code of its own (its first statement `"use strict"`) runs as fast as an ES module. Before, each read of a global in it (`Math`, `JSON`, a builtin) cost about 140 ns, so a loop of 2e7 such reads took about 3 s; now it takes tens of milliseconds. Such a module is now loaded as an ES module with the same wrapper, and behaves as before: its `this`, `arguments`, `require`, top-level `return`, frames, syntax errors and fatal reports are Node's. This holds for a program's entry file and `node -e` code too. A module that is not strict stays as it was, and so does one whose text holds `await`, an HTML-like comment, or both `import` and `meta`.
+
 - Changed: while something else wants a session, a one-shot (python, ruby, clang, tsc, git.wasm, a WASI program) runs on the session's peer, another Durable Object, so the session keeps answering. A one-shot's worker used to run on the session's own thread, so while it computed the session answered nothing. Measured during a python run importing ten stdlib modules, session against peer: a second terminal's `echo` waited 3.4-4.5 s against 0.07-0.15 s, a request to a running server 3.2-5.2 s against 0.08-0.14 s, and a file save 3.2-4.1 s against 0.22-0.30 s.
   - Something else wants the session while another terminal is attached, or another process is running: a server, another one-shot, a resident starting. Otherwise the run stays in the session: there, idle, it is no faster on the peer (python 4253 ms in the session against 4197 on the peer, ruby 455 against 453, clang 619 against 680). A file save that comes during such a run still waits for it.
   - The run goes to the peer only when the peer answered a call of the same worker within 135 s, the longest idle gap after which every measured peer was still warm. A run that finds it cold stays in the session, and the peer is warmed beside it for the next one.
@@ -14,6 +26,7 @@ published independently in the `@nimbus-sh` npm scope.
   - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
   - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
   - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
+
 - Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 
 ## 2026-10-21 (second release): core 0.27.0, fabric 0.22.0, worker 0.25.0, sdk 0.21.0, react 0.4.3, cli 0.2.12, loom 0.3.5, create-nimbus-app 0.2.8 (platform 0.15.0, config 0.3.2 and the runtimes unchanged)
@@ -165,14 +178,6 @@ published independently in the `@nimbus-sh` npm scope.
   - `fork` is unavailable: there is no IPC channel.
 - Changed: lifo's node runs the same `child_process` with no start face until its realm can wait for one. `exec` and `spawn` refuse every child ENOSYS, as Node reports a spawn it cannot make. Before, its stub said "requires shell interpreter", and `spawn` threw.
 - Fixed: a Node program's signal handlers hear the signals sent to it, as on Linux. A `process.on('SIGTERM')` handler runs when the program is killed: by its Node parent (`child.kill()`), by the shell's `kill`, by the session's `signalProcess`, or by a started program's `kill`. The program then does what its handler says. A signal it has no handler for still takes its default action. A signal it catches while it waits in `fs.readFileSync(0)` reaches it once the read returns, as in Node. A program that has taken a signal cannot afterwards wait at a synchronous read of stdin that has no input yet: Nimbus cannot run it again past a signal. It fails that read with `ERR_NIMBUS_SYNC_STDIN`, naming the signal. Before, every such kill ended the program at once.
-- Added: each write event says which exec made it. `VfsWriteEvent.execId` (from `observeWrites`) is the `execId` the process table held for the writing process when the write committed. Every process an exec starts inherits it, so a command's children, pipelines and background jobs count. It has three possible values:
-  - a string: the exec that made the write;
-  - `null`: no process made it, a host operation (a client's `files.*`, the kernel, seeding, a launch's images);
-  - `undefined`: a process made it, but no exec name is known. Either its exec named none, or the write is one a mount's backend reports from its own machine. Such a write comes from a program on a delegating mount; its attribution waits for a token Kinu's transports must carry (KINU-HANDOFF section 51).
-  - It covers the shell and its redirections, durable coreutils, node programs' fs calls and write waves, write batches and streams, npm (including its background prebundle), git (including a background clone), `wrangler dev`'s files and its Worker's KV and R2, writes to mounts that do not report their own, and write logs drained after a process ended or after a reset.
-  - The attribution never depends on timing. The table entry of a process with a write in flight, or with background work writing for it, is kept until that write commits.
-  - `NimbusWorkspace.exec(command, { execId })` names an exec in a core-only workspace.
-- Changed: appends by two processes to one file no longer share one buffered run, so each process's appends are its own write event.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 
