@@ -6032,7 +6032,7 @@ var __nimbusResidentModule = (() => {
       } else {
         target = inode;
       }
-      if (close && bytes !== null && chmod === void 0) {
+      if (close && bytes !== null && chmod === void 0 && host2.mounted?.(key) === true) {
         const records = ops.map((op) => fold(target, op));
         const whole = { type: "call", call: { call: "writeFile", path: key, mode: asked, umask, data: bytes } };
         const settled = (refused, answer) => {
@@ -11266,12 +11266,11 @@ var __nimbusResidentModule = (() => {
           return DELEGATE;
         return holder.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? void 0 : DELEGATE;
       })));
-      const decided = () => void provisionally(from, true, (source, row) => {
+      return after2(local, (done) => done !== DELEGATE ? void 0 : now ? void provisionally(from, true, (source, row) => {
         if (row === null)
           throw fsError2("ENOENT", "copyfile", pathOf(from));
         return provisionally(to, true, (target, there) => holder.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
-      });
-      return after2(local, (done) => done !== DELEGATE ? void 0 : now ? decided() : decidedThenSent(decided, () => bySessionCopy(from, to, options)));
+      }) : bySessionCopy(from, to, options));
     };
     const bySessionRename = fs.rename;
     fs.rename = (from, to) => {

@@ -1081,9 +1081,8 @@ export function provisional(host) {
         else {
             target = inode;
         }
-        // A whole file written at once goes as one write of it: the session makes it whole or refuses it whole (no
-        // empty file its create left where the bytes were refused), and a mount's backend is asked once.
-        if (close && bytes !== null && chmod === undefined) {
+        // A whole file written on a mount goes as one write of it (a mount's backend is asked once, as by writeFile(2)'s callers).
+        if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
             const records = ops.map((op) => fold(target, op));
             const whole = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
             const settled = (refused, answer) => {
