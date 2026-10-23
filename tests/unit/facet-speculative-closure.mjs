@@ -17,26 +17,26 @@ const base = {
   [P + '/source/child.cjs']: 'module.exports = require("./deep.cjs");',
   [P + '/source/deep.cjs']: 'require("./child.cjs"); module.exports = 42;',
 };
-async function walk(world, root, held = {}, allowance = 10000, files = 100, progress) {
+async function walk(world, root, held = {}, allowance = 10000, progress) {
   return prefetchForRequire(requireFsOverBridge(world.fs), '', root.slice(0,root.lastIndexOf('/')), root,
-    10000, progress, {purpose:'dependency-closure',held,maxAdditionalBytes:allowance,maxAdditionalFiles:files});
+    10000, progress, {purpose:'dependency-closure',held,maxAdditionalBytes:allowance});
 }
 
 // Resolved dependency content is atomic, while unavailable specifiers remain runtime failures.
 {
   const world = launchFs(base);
   const bundle = {};
-  await greedyAddMainEntries(world.fs, '/' + APP, bundle, {totalBytes:0,fileCount:0});
+  await greedyAddMainEntries(world.fs, '/' + APP, bundle, {totalBytes:0});
   assert.equal(bundle[P + '/source/deep.cjs'], base[P + '/source/deep.cjs']);
   const total = Object.entries(base).filter(([path])=>path!==APP+'/package.json').reduce((n,[,s])=>n+bytes(s),0);
   const rejected = {};
-  const rejectedBudget = {totalBytes:0,fileCount:0};
+  const rejectedBudget = {totalBytes:0};
   await greedyAddMainEntries(world.fs, '/' + APP, rejected, rejectedBudget, new Set(), {maxBundleBytes:total-1});
   assert.equal(rejected[P + '/source/index.cjs'], undefined);
   assert.equal(rejected[P + '/source/child.cjs'], undefined);
   assert.equal(rejected[P + '/source/deep.cjs'], undefined);
   assert.deepEqual(rejected,{[P+'/package.json']:base[P+'/package.json']},'independently admitted resolution metadata survives a declined code group');
-  assert.deepEqual(rejectedBudget,{totalBytes:bytes(base[P+'/package.json']),fileCount:1},'retained metadata is charged once, not with the discarded delta');
+  assert.deepEqual(rejectedBudget,{totalBytes:bytes(base[P+'/package.json'])},'retained metadata is charged once, not with the discarded delta');
 }
 
 // Metadata alone can consume the remaining bytes, and is rejected before its read.
@@ -55,7 +55,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   const world=launchFs(base);
   let grew=false;
   const pacer=new TurnBudget({async nextTurn(){if(!grew){grew=true;await world.fs.writeFile(root,'x'.repeat(512));}}},1);
-  const result=await walk(world,root,{},64,100,work=>pacer.spend(work));
+  const result=await walk(world,root,{},64,work=>pacer.spend(work));
   pacer.settle();
   assert.equal(result.kind,'dependency-closure-declined');
   assert.equal(result.path,root);
@@ -63,15 +63,15 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   const fs=requireFsOverBridge(launchFs({[root]:'é'.repeat(64)}).fs);
   fs.stat=()=>null;
   const actual=await prefetchForRequire(fs,'',P+'/source',root,10000,undefined,
-    {purpose:'dependency-closure',held:{},maxAdditionalBytes:100,maxAdditionalFiles:100});
+    {purpose:'dependency-closure',held:{},maxAdditionalBytes:100});
   assert.deepEqual(actual,{kind:'dependency-closure-declined',path:root,reason:'bytes'},'actual UTF-8 bytes are checked when stat supplied no size');
 }
 
-// Already paid-for cells remain traversal roots: only missing bytes/files spend allowance.
+// Already paid-for cells remain traversal roots: only missing bytes spend allowance.
 {
   const world = launchFs(base);
   const held = {[P+'/source/index.cjs']:base[P+'/source/index.cjs'],[P+'/package.json']:base[P+'/package.json'],[P+'/source/child.cjs']:base[P+'/source/child.cjs']};
-  const result = await walk(world,P+'/source/index.cjs',held,bytes(base[P+'/source/deep.cjs']),1);
+  const result = await walk(world,P+'/source/index.cjs',held,bytes(base[P+'/source/deep.cjs']));
   assert.equal(result.kind,undefined);
   assert.equal(result.bundle[P+'/source/deep.cjs'],base[P+'/source/deep.cjs']);
   assert.equal(world.reads.includes(P+'/source/child.cjs'),false);
@@ -112,7 +112,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   const world=launchFs(base), bundle={};
   const failure=new Error('metadata turn cancelled');
   const pacer=new TurnBudget({async nextTurn(){throw failure;}},1);
-  await assert.rejects(greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0,fileCount:0},new Set(),{pacer}),e=>e===failure);
+  await assert.rejects(greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0},new Set(),{pacer}),e=>e===failure);
   assert.equal(bundle[P+'/source/index.cjs'],undefined);
   assert.equal(bundle[P+'/source/child.cjs'],undefined);
   pacer.settle();
@@ -124,7 +124,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   const fs=requireFsOverBridge(world.fs), read=fs.readBytes;
   fs.readBytes=path=>{if(path===P+'/source/child.cjs')throw Object.assign(new Error('denied'),{code:'EACCES'});return read(path);};
   const result=await prefetchForRequire(fs,'',P+'/source',P+'/source/index.cjs',10000,undefined,
-    {purpose:'dependency-closure',held:{},maxAdditionalBytes:10000,maxAdditionalFiles:100});
+    {purpose:'dependency-closure',held:{},maxAdditionalBytes:10000});
   assert.deepEqual(result,{kind:'dependency-closure-declined',path:P+'/source/child.cjs',reason:'unreadable'});
 }
 
@@ -204,7 +204,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   };
   const world=launchFs(files);
   const bundle={};
-  const result=await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0,fileCount:0});
+  const result=await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0});
   assert.equal(bundle[nm+'/rsc/node_modules/fu/src/index.cjs'],files[nm+'/rsc/node_modules/fu/src/index.cjs'],'the guess reaches the proxy');
   assert.equal(bundle[nm+'/rsc/node_modules/fu/src/index.js'],files[nm+'/rsc/node_modules/fu/src/index.js'],"and the proxy's one deferral of its own package");
   assert.equal(bundle[nm+'/rsc/node_modules/fu/src/walk.js'],files[nm+'/rsc/node_modules/fu/src/walk.js'],'with its static closure');
@@ -228,7 +228,7 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
   };
   const world=launchFs(files);
   const bundle={};
-  await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0,fileCount:0});
+  await greedyAddMainEntries(world.fs,'/'+APP,bundle,{totalBytes:0});
   assert.equal(bundle[nm+'/foo/index.js'],files[nm+'/foo/index.js']);
   assert.equal(bundle[nm+'/bar/index.cjs'],undefined,'a relative import() into another package is not the guess\'s own');
 }

@@ -14,7 +14,7 @@ const files={
   [root+'/unused.js']:'throw new Error("unreachable");',
 };
 const bundle={};const required=new Set();
-await addObservedReads(launchFs(files).fs,new Set([root+'/main.js']),bundle,required,{totalBytes:0,fileCount:0});
+await addObservedReads(launchFs(files).fs,new Set([root+'/main.js']),bundle,required,{totalBytes:0 });
 for(const name of ['main.js','one.js','two.js']) {
   assert.equal(bundle[root+'/'+name],files[root+'/'+name],name+' is available to the next launch');
   assert.ok(required.has(root+'/'+name),name+' cannot be evicted as speculative data');

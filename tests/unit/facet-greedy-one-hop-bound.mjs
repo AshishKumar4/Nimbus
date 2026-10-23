@@ -55,7 +55,7 @@ const name = (dir) => dir.replace(/^.*node_modules\//, '');
     ['got', 'keyv', 'p-cancelable'],
     'the project\'s runtime dependencies and one hop from them; json-buffer is a second hop, ava/typescript are dev');
   const bundle = {};
-  const budget = { totalBytes: 0, fileCount: 0 };
+  const budget = { totalBytes: 0 };
   (await greedyAddMainEntries(vfs, '/home/user/app', bundle, budget));
   assert.deepEqual(Object.keys(bundle).sort(), [
     `${NM}/got/index.js`, `${NM}/got/package.json`,
@@ -73,7 +73,7 @@ const name = (dir) => dir.replace(/^.*node_modules\//, '');
   assert.deepEqual((await speculativePackageDirs(vfs, 'home/user/app', closure)).map(name), ['got', 'keyv', 'p-cancelable'],
     'got and its direct runtime deps; json-buffer is a second hop, ava/typescript are dev, unrelated is unreachable');
   const bundle = { ...closure };
-  const budget = { totalBytes: 0, fileCount: 1 };
+  const budget = { totalBytes: 0 };
   (await greedyAddMainEntries(vfs, '/home/user/app', bundle, budget));
   assert.equal(bundle[`${NM}/keyv/index.js`] !== undefined, true);
   assert.equal(bundle[`${NM}/p-cancelable/index.js`] !== undefined, true);

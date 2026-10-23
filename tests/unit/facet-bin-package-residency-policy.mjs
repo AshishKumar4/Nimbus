@@ -45,7 +45,7 @@ const tsFiles = {
   // The bin target itself arrives via the require closure (uncapped, never
   // evicted), so it is already in the bundle before this walk runs.
   const bundle = { [`${TS_ROOT}/lib/tsc.js`]: 'x'.repeat(1024) };
-  const budgetState = { totalBytes: 1024, fileCount: 1 };
+  const budgetState = { totalBytes: 1024 };
   (await addBinTargetSiblings(
     makeVfs(tsFiles),
     `/${TS_ROOT}/lib/tsc.js`,
@@ -90,7 +90,7 @@ const tsFiles = {
     'home/user/node_modules/p/bin/cli.js': 2048,
   };
   const bundle = {};
-  const budgetState = { totalBytes: 0, fileCount: 0 };
+  const budgetState = { totalBytes: 0 };
   (await addBinTargetSiblings(
     makeVfs(files),
     '/home/user/node_modules/p/bin/cli.js',
@@ -117,7 +117,7 @@ const tsFiles = {
     'home/user/node_modules/q/README.md': 3 * 1024,
   };
   const bundle = {};
-  const budgetState = { totalBytes: 0, fileCount: 0 };
+  const budgetState = { totalBytes: 0 };
   (await addBinTargetSiblings(
     makeVfs(files),
     '/home/user/node_modules/q/index.js',
@@ -144,7 +144,7 @@ const tsFiles = {
     'home/user/node_modules/r/docs/guide.md': 1024,
   };
   const bundle = {};
-  const budgetState = { totalBytes: 0, fileCount: 0 };
+  const budgetState = { totalBytes: 0 };
   (await addBinTargetSiblings(
     makeVfs(files),
     '/home/user/node_modules/r/index.js',
@@ -178,7 +178,7 @@ const tsFiles = {
     'home/user/node_modules/left-pad/package.json': JSON.stringify({ name: 'left-pad', main: 'index.js' }),
   };
   const bundle = {};
-  const budgetState = { totalBytes: 0, fileCount: 0 };
+  const budgetState = { totalBytes: 0 };
   (await greedyAddMainEntries(makeVfs(files, contents), '/home/user', bundle, budgetState));
   assert.equal(
     bundle['home/user/node_modules/typescript/lib/typescript.js'],

@@ -236,9 +236,6 @@ export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 // workerd's per-module text size (BUNDLE_MAX_ENCODED_BYTES, JSON-encoded UTF-8,
 // which manager.ts measures with TextEncoder): a map over it is partitioned
 // into side modules, each below it.
-//
-// The raw file cap bounds optional snapshot enrichment only.
-export const VFS_BUNDLE_MAX_FILES = 4000;
 export const VFS_BUNDLE_MAX_BYTES = ONE_SHOT_MODULE_MAP_MAX_BYTES;
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-encoded UTF-8
 
@@ -283,25 +280,25 @@ export const PREFETCH_CACHE_MAX_BYTES = 10 * 1024 * 1024;
 export const TRANSFORM_STORE_MAX_BYTES = 64 * 1024 * 1024;
 export const TRANSFORM_STORE_MAX_ENTRY_BYTES = TRANSFORM_STORE_MAX_BYTES / 8;
 
-// Per-file ceiling for the blind working-tree sweep (worker facets/manager.ts
-// addCwdProjectFiles). That pass names no file the program asked for — it
-// guesses, so a relative `readFileSync` of a project file resolves — and a
-// guess has no claim on the whole budget. Without it one data file consumes
-// all 24 MiB, every later invocation carries it, and the supervisor holds
-// the cached copy while building the next one beside it.
+// What a node one-shot's launch stages by guess, before any run read it: the
+// working-tree sweep's files and a bin package's speculative entries (worker
+// facets/manager.ts). A guess is read again whenever the map is rebuilt, as
+// it is after any change in the session; a guess the program needed and did
+// not get costs one run again as a resident (D2.1), and the next launch has
+// it as a learned read, which no bound here touches. So a guess may cost a
+// rebuild no more than the miss it saves.
 //
-// Only this sweep is bounded per file. The other enrichment passes admit a
-// file because something in the source named it — an absolute literal, a
-// `path.resolve(__dirname, …)` asset, a package's own bin tree — and a named
-// file keeps its claim at any size. The sweep alone names nothing.
-//
-// 2 MiB clears real project content (sources, configs, fixtures, ordinary
-// assets) by a wide margin. Past it the file is data, and data is what async
-// fs is for: it reads live from the supervisor in 64 KiB ranges and never
-// needed to be resident. A relative sync read of a file larger than this,
-// where no scanner matched the literal, is the case that gives up ground —
-// it now raises ENOENT instead of costing the session.
-export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+// Measured on a throwaway (2026-10-23, 12 paired rounds; verdicts
+// 20261023T053444-be8bb0afe5d6 and 20261023T054014-3124fdb17fea):
+//   - a miss: 416 ms (95% CI 324-547) over the same run with the file staged;
+//   - a rebuild: 452 ms per MiB of one guessed file (370-510), and 86 ms
+//     (55-187) for a sweep over 420 entries of 1 KiB, 0.2 ms an entry.
+// A warm launch pays 88 ms per staged MiB (64-133): the rebuild bounds it.
+const GUESS_MISS_MS = 416;
+/** The most one guess, or the sweep's guesses together, may weigh: 416 ms / 452 ms per MiB, about 0.92 MiB. */
+export const LAUNCH_GUESS_MAX_BYTES = Math.floor((GUESS_MISS_MS / 452) * 1024 * 1024);
+/** The most entries the working-tree sweep visits: 416 ms / (86 ms / 420), about 2,000. */
+export const LAUNCH_GUESS_MAX_ENTRIES = Math.floor(GUESS_MISS_MS / (86 / 420));
 
 /**
  * Largest regular file a WASI guest holds resident: a read-only open at or

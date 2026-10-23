@@ -43,7 +43,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 import {
-  CWD_SNAPSHOT_MAX_FILE_BYTES,
+  LAUNCH_GUESS_MAX_BYTES,
 } from '../../packages/core/src/constants.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
@@ -67,7 +67,7 @@ import { stagedAssets } from './lib/staged-assets.mjs';
   )).fs;
   const bundle = {};
   const requiredPaths = new Set();
-  const budgetState = { totalBytes: 0, fileCount: 0 };
+  const budgetState = { totalBytes: 0 };
   const observed = new Set([
     'home/user/pkg/huge.bin',
     'home/user/pkg/CHANGELOG.md',
@@ -84,7 +84,7 @@ import { stagedAssets } from './lib/staged-assets.mjs';
   assert.ok('home/user/pkg/CHANGELOG.md' in bundle, 'nor the suffix that broke pi');
   assert.ok(
     'home/user/pkg/huge.bin' in bundle,
-    `an observed read is admitted above the ${CWD_SNAPSHOT_MAX_FILE_BYTES}-byte guess `
+    `an observed read is admitted above the ${LAUNCH_GUESS_MAX_BYTES}-byte guess `
       + 'that dropped it, because it is evidence rather than a guess',
   );
 
@@ -105,7 +105,6 @@ import { stagedAssets } from './lib/staged-assets.mjs';
     ],
     'observed paths are admitted smallest-first',
   );
-  assert.equal(budgetState.fileCount, 3);
 }
 
 // A miss on a path the build already staged as speculative, then evicted:
@@ -124,7 +123,7 @@ import { stagedAssets } from './lib/staged-assets.mjs';
   const path = `${dir}/index.js`;
   const bundle = { [path]: vfs.readFileString(path) };
   const requiredPaths = new Set();
-  await addObservedReads(processBridge(raw, vfs), new Set([path]), bundle, requiredPaths, { totalBytes: 0, fileCount: 0 });
+  await addObservedReads(processBridge(raw, vfs), new Set([path]), bundle, requiredPaths, { totalBytes: 0 });
   assert.ok(requiredPaths.has(path), 'an observed path already staged is promoted to required');
   for (const dep of [`${dir}/constants.js`, `${dir}/smart-clone.js`]) {
     assert.ok(dep in bundle && requiredPaths.has(dep), `${dep} comes with it, as required`);
@@ -223,13 +222,13 @@ const manager = new FacetManager(
 );
 manager.setVfs(rawVfs, processFiles(rawVfs));
 
-// A data file too large for the cwd snapshot's per-file bound, reached through
+// A data file too large to be guessed (LAUNCH_GUESS_MAX_BYTES), reached through
 // a path the program computes — so no static scan of the entry can find it
 // either. That is the residue: a runtime-computed data path.
 // Outside what a launch fills at boot (its cwd and /tmp), so only an
 // observation can stage it.
 const DATA = 'opt/example-data/dataset.bin';
-const DATA_BYTES = CWD_SNAPSHOT_MAX_FILE_BYTES + 4096;
+const DATA_BYTES = LAUNCH_GUESS_MAX_BYTES + 4096;
 kernel.mkdir('home/user/example-app', { recursive: true, mode: 0o755 });
 kernel.mkdir('opt/example-data', { recursive: true, mode: 0o755 });
 kernel.writeFile(DATA, 'D'.repeat(DATA_BYTES), { mode: 0o644 });

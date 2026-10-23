@@ -93,7 +93,7 @@ async function compare(free, expectBounce, observedOnly = false) {
         unrelated = true;
         try {
           const before = unrelatedStats;
-          const result = await addObservedReads(bridge, new Set(['opt/observed.txt']), {}, new Set(), { totalBytes: 0, fileCount: 0 });
+          const result = await addObservedReads(bridge, new Set(['opt/observed.txt']), {}, new Set(), { totalBytes: 0 });
           assert.equal(result.added, 1, 'an unrelated reader of the same bridge is not charged to the suspended gather');
           assert.equal(unrelatedStats - before, 1, 'without a gate the adapter adds no stat beyond the pass own lstat');
         } finally { unrelated = false; }
