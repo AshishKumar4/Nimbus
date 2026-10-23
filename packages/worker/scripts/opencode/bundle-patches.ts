@@ -6,32 +6,39 @@
 // Each patch uses `replaceOnce`, which THROWS if its anchor is missing or
 // matches more than once, so an upstream change can never silently no-op.
 
-import ts from 'typescript';
+import { isBinaryExpression, isConditionalExpression, isIdentifier, isStringLiteral, isTypeOfExpression, type Node, SyntaxKind } from 'tsrs/unstable/ast';
+import { API } from 'tsrs/unstable/async';
 
 /** The define is always supplied. Fold its undefined guard before substitution
- * so Bun 1.4 cannot emit the multi-MiB models catalog twice in one chunk. */
-export function nimbusFoldModelsCatalogGuard(source: string, file: string): string {
-  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  let folded = 0;
-  const isCatalog = (node: ts.Node) => ts.isIdentifier(node) && node.text === 'OPENCODE_MODELS_DEV';
-  const transformed = ts.transform(parsed, [(context) => {
-    const visit: ts.Visitor = (node) => {
-      if (ts.isConditionalExpression(node) && ts.isBinaryExpression(node.condition)
-        && node.condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
-        && ts.isTypeOfExpression(node.condition.left) && isCatalog(node.condition.left.expression)
-        && ts.isStringLiteral(node.condition.right) && node.condition.right.text === 'undefined'
-        && ts.isIdentifier(node.whenTrue) && node.whenTrue.text === 'undefined' && isCatalog(node.whenFalse)) {
-        folded++;
-        return node.whenFalse;
-      }
-      return ts.visitEachChild(node, visit, context);
-    };
-    return (root) => ts.visitNode(root, visit) as ts.SourceFile;
-  }]);
+ * so Bun 1.4 cannot emit the multi-MiB models catalog twice in one chunk.
+ * tsrs parses the source; the guard, `typeof OPENCODE_MODELS_DEV ===
+ * "undefined" ? undefined : OPENCODE_MODELS_DEV`, is replaced by its last
+ * operand where it is written, and the rest of the source is kept as it is. */
+export async function nimbusFoldModelsCatalogGuard(source: string, file: string): Promise<string> {
+  // The async API: build-node.ts runs it in Bun, where the sync API's pipes are not there.
+  const api = new API();
   try {
-    if (folded !== 1) throw new Error(`models catalog guard: expected one configured snapshot guard in ${file}, found ${folded}`);
-    return ts.createPrinter().printFile(transformed.transformed[0]);
-  } finally { transformed.dispose(); }
+    const { sourceFile } = await api.createSourceFile(file, source);
+    const isCatalog = (node: Node) => isIdentifier(node) && node.text === 'OPENCODE_MODELS_DEV';
+    const guards: [start: number, end: number, catalog: string][] = [];
+    const visit = (node: Node): void => {
+      if (isConditionalExpression(node) && isBinaryExpression(node.condition)
+        && node.condition.operatorToken.kind === SyntaxKind.EqualsEqualsEqualsToken
+        && isTypeOfExpression(node.condition.left) && isCatalog(node.condition.left.expression)
+        && isStringLiteral(node.condition.right) && node.condition.right.text === 'undefined'
+        && isIdentifier(node.whenTrue) && node.whenTrue.text === 'undefined' && isCatalog(node.whenFalse)) {
+        guards.push([node.getStart(sourceFile), node.end, node.whenFalse.getText(sourceFile)]);
+        return;
+      }
+      node.forEachChild(visit);
+    };
+    visit(sourceFile);
+    if (guards.length !== 1) throw new Error(`models catalog guard: expected one configured snapshot guard in ${file}, found ${guards.length}`);
+    const [[start, end, catalog]] = guards;
+    return source.slice(0, start) + catalog + source.slice(end);
+  } finally {
+    await api.close();
+  }
 }
 
 function replaceOnce(src: string, find: string, repl: string, label: string, file: string): string {

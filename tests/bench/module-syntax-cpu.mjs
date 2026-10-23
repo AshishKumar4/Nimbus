@@ -32,17 +32,16 @@ async function arm(name, from) {
   }, join(scratch, `${name}.mjs`));
 }
 
-// A multi-MiB CommonJS bundle (TypeScript 5's compiler, which the worker's
-// opencode recipe installs, with `import:` keys in it); a CommonJS module
-// whose objects name the import and export conditions; an ES module's head
-// of imports; eval-sized code.
-const typescript = readFileSync(join(repository, 'packages/worker/node_modules/typescript/lib/typescript.js'), 'utf8');
+// A multi-MiB CommonJS bundle (wrangler's CLI, 14 MiB, with an `import:` key
+// in it); a CommonJS module whose objects name the import and export
+// conditions; an ES module's head of imports; eval-sized code.
+const bundle = readFileSync(join(repository, 'node_modules/wrangler/wrangler-dist/cli.js'), 'utf8');
 const conditions = `'use strict';\n${Array.from({ length: 4096 }, (_, i) => `exports.m${i} = { import: './esm/${i}.mjs', require: './cjs/${i}.js', default: { export: ${i} } };\nclass C${i} { export() { return ${i}; } static import() {} }\n`).join('')}`;
 const esModule = `${Array.from({ length: 512 }, (_, i) => `import { a${i} } from './m${i}.js';\n`).join('')}export const all = [${Array.from({ length: 512 }, (_, i) => `a${i}`).join(', ')}];\n`;
 const snippets = Array.from({ length: 256 }, (_, i) => i % 2 ? `console.log(require('node:path').sep, ${i})` : `const a = ${i}; { let b = a + 1; console.log(b) }`);
 
 const work = {
-  'commonjs-bundle'({ containsModuleSyntax }) { checksum += containsModuleSyntax(typescript) ? 0 : 1; },
+  'commonjs-bundle'({ containsModuleSyntax }) { checksum += containsModuleSyntax(bundle) ? 0 : 1; },
   'commonjs-conditions'({ containsModuleSyntax }) { for (let i = 0; i < 8; i++) checksum += containsModuleSyntax(conditions) ? 0 : 1; },
   'es-module'({ containsModuleSyntax }) { for (let i = 0; i < 256; i++) checksum += containsModuleSyntax(esModule) ? 1 : 0; },
   'eval-code'({ containsModuleSyntax }) { for (let i = 0; i < 16; i++) for (const code of snippets) checksum += containsModuleSyntax(code, 'eval') ? 0 : 1; },

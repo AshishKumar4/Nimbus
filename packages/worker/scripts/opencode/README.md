@@ -123,6 +123,10 @@ git apply <this-dir>/nimbus-defer-global-io.patch
 git apply <this-dir>/nimbus-tree-sitter-exports.patch
 cp <this-dir>/build-node.ts <this-dir>/bundle-patches.ts \
    <this-dir>/stubs/*.ts packages/opencode/
+# bundle-patches.ts parses with Nimbus's tsrs: its package beside opencode's,
+# and its binary named by TSRS_BINARY (as scripts/ci/rebuild-opencode.mjs does):
+cp -RL <nimbus>/node_modules/tsrs node_modules/tsrs
+export TSRS_BINARY=$(cd <nimbus> && node -e "import(process.cwd() + '/node_modules/tsrs/lib/getExePath.js').then(m => console.log(m.default()))")
 
 # Build (→ /tmp/opencode-research/dist-nimbus). Requires bun >= 1.3.14:
 # earlier bun versions emit broken cross-chunk live bindings under

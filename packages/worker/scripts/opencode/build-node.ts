@@ -93,7 +93,7 @@ const nimbusModelsCatalog = {
   name: "nimbus-single-models-catalog",
   setup(build: any) {
     build.onLoad({ filter: /[\\/]core[\\/]src[\\/]models-dev\.ts$/ }, async (args: any) => ({
-      contents: nimbusFoldModelsCatalogGuard(await Bun.file(args.path).text(), args.path), loader: "ts",
+      contents: await nimbusFoldModelsCatalogGuard(await Bun.file(args.path).text(), args.path), loader: "ts",
     }))
   },
 }
