@@ -2,14 +2,17 @@
 // An async read whose barrier comes back with it must not fill the sync view
 // when something else moved the cursor further in the meantime.
 //
-// The read below is begun while a repair (a dropped ACQUIRE's reconciliation)
-// is in flight. Its barrier and its bytes are answered before a peer writes
-// the file; the repair then lands after that write and moves the cursor past
-// it without reporting the file, which no store row holds. Dated at its
-// barrier's answer, the read installed the old bytes behind a cursor already
-// past the change, and the sync view served them for good (review finding,
+// The read below is answered before the race: its barrier and its bytes are
+// answered (old), and held on their way back. Then a dropped ACQUIRE starts a
+// repair (a delta from the store's floor), and the repair's ACQUIRE is held in
+// flight while a peer writes the file. The repair lands after that write and
+// moves the cursor past it without the read's bytes. Dated at its barrier's
+// answer, the read installed the old bytes behind a cursor already past the
+// change, and the sync view served them for good (review finding,
 // ColouredPanda's reproduction). The file is never read synchronously before
-// the race, so no store row makes the repair report it.
+// the race, so no store row makes the repair report it. The read goes first
+// because a barrier begun while a repair is in flight joins that repair and
+// waits for it.
 
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan } from './lib/resident-body.mjs';
 
@@ -24,10 +27,10 @@ authority.kfs.writeFile('opt/unplanned.txt', 'old');
 
 let forward;
 let drop = false;
-let holdList = false;
+let holdRepair = false;
 let holdRead = false;
-const listHeld = Promise.withResolvers();
-const listGate = Promise.withResolvers();
+const repairHeld = Promise.withResolvers();
+const repairGate = Promise.withResolvers();
 const readHeld = Promise.withResolvers();
 const readGate = Promise.withResolvers();
 // Every barrier here asks: the session grants no read lease (the repair's race is what this is about).
@@ -37,18 +40,22 @@ const asked = ([position, options]) => {
   return [position, rest];
 };
 const handle = facetSupervisor(authority, {
-  fsAcquire: (...args) => (drop ? Promise.reject(new Error('Network connection lost.')) : forward('fsAcquire', asked(args))),
-  fsList: async (...args) => {
-    if (holdList) {
-      holdList = false;
-      listHeld.resolve();
-      await listGate.promise;
+  fsAcquire: (...args) => {
+    if (drop) {
+      drop = false;
+      holdRepair = true;
+      return Promise.reject(new Error('Network connection lost.'));
     }
-    return forward('fsList', args);
+    if (holdRepair) {
+      holdRepair = false;
+      repairHeld.resolve();
+      return repairGate.promise.then(() => forward('fsAcquire', asked(args)));
+    }
+    return forward('fsAcquire', asked(args));
   },
-  fsAcquired: async (...args) => {
-    const answer = await forward('fsAcquired', args);
-    if (holdRead && args[1] === 'fsReadBatch') {
+  fsReadBatch: async (...args) => {
+    const answer = await forward('fsReadBatch', args);
+    if (holdRead && args[0].some((request) => request.lstat !== true && request.path.replace(/^\/+/, '') === 'opt/unplanned.txt')) {
       holdRead = false;
       readHeld.resolve();
       await readGate.promise;
@@ -73,19 +80,17 @@ require("http").createServer((q, s) => s.end("up")).listen(3000);
 });
 const probe = globalThis.__probe;
 
-// A dropped ACQUIRE starts a repair, whose listing is held.
-drop = true;
-holdList = true;
-const repair = probe.resume('/home/user/app/f.txt');
-await listHeld.promise;
 // The read's barrier and bytes are answered (old), and held on the way back.
 holdRead = true;
 const reading = probe.fs.promises.readFile('/opt/unplanned.txt', 'utf8');
 await readHeld.promise;
+// A dropped ACQUIRE starts a repair, whose delta is held in flight.
+drop = true;
+const repair = probe.resume('/home/user/app/f.txt');
+await repairHeld.promise;
 // A peer writes; the repair lands after it, past it.
 authority.kfs.writeFile('opt/unplanned.txt', 'NEW');
-drop = false;
-listGate.resolve();
+repairGate.resolve();
 await repair;
 readGate.resolve();
 

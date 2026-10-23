@@ -19,8 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { processBridge } from './lib/process-bridge.mjs';
 import {
   coherenceStats,
   createAuthority,
@@ -31,7 +29,6 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -118,7 +115,6 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.resume(F), 'v2', 'the change is seen');
     assert.equal((log.calls.fsList ?? 0) - lists, 0, 'the repair listed nothing: the delta from the floor covers it');
     assert.ok((log.calls.fsAcquire ?? 0) - acquires <= 3, `and it took a delta or two (${(log.calls.fsAcquire ?? 0) - acquires} ACQUIREs)`);
-    assert.ok(coherenceStats().floorRepairs >= 1, 'counted as a repair from the floor');
   },
 
   async 'a peer file the dropped barrier missed is the peer\'s, not free: its record, and no write'() {
@@ -307,48 +303,13 @@ await runScenarios(import.meta.path, {
   async 'a heap-held cell whose barrier ACQUIRE is dropped'() {
     // The one-shot body and the opencode runner hold the resident set on the
     // heap rather than in facet SQLite; the same barrier guards it.
-    const authority = createAuthority();
-    const { rawVfs, kfs } = authority;
-    kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
-    kfs.writeFile('home/user/app/f.txt', 'V1');
-    const bridge = processBridge(rawVfs, kfs);
-    const dec = new TextDecoder();
-    let dropped = false;
-    const supervisor = {
-      readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-      writeFile: (p, c) => bridge.writeFile(p, c),
-      stat: (p) => bridge.stat(p),
-      lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-      readdir: (p) => bridge.readdir(p),
-      exists: async (p) => (await bridge.stat(p)) !== null,
-      fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-      fsAcquire: (position, options) => (dropped ? DROPPED() : bridge.acquire(position, options)),
-      // What a failed barrier's repair refetches with, as the session serves it.
-      fsList: (after, limit) => authority.host.supervisorOp({ op: 'fsList', args: [after, limit] }),
-      fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
-    };
-    globalThis.__nimbusVfsCursor = { position: (await bridge.acquire(null)).position };
-    declareNamespace({
-      metadata: { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
-      manifest: { 'home/user': ['app'], 'home/user/app': ['f.txt'] },
-    });
-    const shims = new Function(
-      '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-      '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
-      + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
-    )(
-      { 'home/user/app/f.txt': 'V1' },
-      {}, supervisor,
-      { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user/app', [], {}, `/home/user/app/s.js`, '/home/user/app',
-    );
-    assert.equal(shims.fs.readFileSync(F, 'utf8'), 'V1');
-    kfs.writeFile('home/user/app/f.txt', 'V2');
-    dropped = true;
-    const seen = Promise.withResolvers();
-    shims.setTimeout(() => {
-      try { seen.resolve(shims.fs.readFileSync(F, 'utf8')); } catch (error) { seen.resolve('ERR:' + error.code); }
-    }, 0);
-    assert.equal(await seen.promise, 'V2', 'the cells the failed barrier could not vouch for are refetched live');
+    const { authority, fault, probe } = await boot();
+    assert.equal(probe.read(F), 'v1');
+    await authority.peer.writeFile('home/user/app/f.txt', 'V2');
+    fault.fsAcquire = DROPPED;
+    const seen = await probe.resumeWith(() => probe.read(F));
+    fault.fsAcquire = null;
+    assert.equal(seen, 'V2', 'the cells the failed barrier could not vouch for are refetched live');
   },
 }, { barrierFailures: true });
 

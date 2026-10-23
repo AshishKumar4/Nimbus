@@ -3,8 +3,9 @@
  * (core _shared/process-fs-client.ts, carried by the write ledger) sends
  * every mutation through. A process's client opens no writer epoch here
  * (nothing between it and the session loses a call), and its waves reach:
- *   - `engine`, a SqliteVFS view, when the test has one: the session's own
- *     writeStream, so the calls are made exactly as the session makes them;
+ *   - `engine`, a session namespace (CompositeVFS), when the test has one: its
+ *     waves are the session's own writeStream over namespaceWaveRouter, as
+ *     ProcessFiles makes them, so the calls are made exactly as the session makes them;
  *   - otherwise the supervisor's own single-call methods (writeFile, mkdir,
  *     unlink, rmdir, rename, fsTruncate, fsWriteRange, chmod, chown, utimes,
  *     symlink), one per record, for a mock that keeps its files itself.
@@ -12,11 +13,12 @@
 
 import { decodeWriteBatchStream } from '../../../packages/platform/src/w7-frame.ts';
 import { WaveIngest } from '../../../packages/core/src/runtime/wave-ingest.ts';
+import { namespaceWaveRouter } from '../../../packages/core/src/runtime/wave-router.ts';
 
 /** `supervisor` with openWaveWriter and writeBatchStream (unless it has them). */
 export function waveSupervisor(supervisor, engine) {
   if (typeof supervisor.writeBatchStream === 'function') return supervisor;
-  const waves = engine === undefined ? null : new WaveIngest(null);
+  const waves = engine === undefined ? null : new WaveIngest(namespaceWaveRouter(engine, (cred) => cred));
   supervisor.openWaveWriter = async () => null;
   // A method of whichever supervisor it is called on: a test that copies
   // this one ({ ...supervisor, mkdir }) observes the calls of its copy.

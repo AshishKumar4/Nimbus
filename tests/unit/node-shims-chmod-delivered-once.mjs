@@ -1,94 +1,53 @@
 #!/usr/bin/env bun
-// A sync chmod reaches the authority on the next flush of its path, once.
-// It used to be re-sent on EVERY flush, and every async read flushes first, so
+// A sync chmod reaches the session on the next flush of its path, once. It
+// used to be re-sent on EVERY flush, and every async read flushed first, so
 // each read of the file was a chmod: a real mutation that bumped the path's
 // revision, made the next ACQUIRE evict the process's own cell, and made the
 // refetch chmod again. create-astro's readFileSync(README.md) landed in one of
 // those evictions and failed EAGAIN.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { observeWaves, shimsOnSession } from './lib/shims-on-session.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-// The supervisor acts as the process's own credential, as SupervisorRPC does,
-// and the tree the process works in is its own: what it writes back is owned
-// by it, and a stat of it says so.
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-function ownTree(path = '') {
-  for (const entry of vfs.readdir(path)) {
-    const at = path ? `${path}/${entry.name}` : entry.name;
-    vfs.chown(at, 1000, 1000);
-    if (entry.type === 'directory') ownTree(at);
-  }
-}
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+const authority = createAuthority();
 const dir = '/home/user/app';
 const file = `${dir}/README.md`;
-vfs.mkdir(dir, { recursive: true });
-vfs.writeFile(file, enc.encode('# app'));
+authority.kfs.mkdir(dir, { recursive: true });
+authority.kfs.writeFile(file, '# app');
 
-let chmods = 0;
-ownTree();
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-  writeFile: (p, c) => bridge.writeFile(p, c),
-  stat: (p, o) => bridge.stat(p, o), lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p), exists: async (p) => (await bridge.stat(p)) !== null,
-  access: (p, m) => bridge.access(p, m), mkdir: (p, o) => bridge.mkdir(p, o ?? { recursive: true }),
-  chmod: (p, m) => { chmods++; return bridge.chmod(p, m); },
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return { fs: __fsMod };',
-);
-const { fs } = (declareNamespace({ metadata: {
-    'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
-    'home/user/app/README.md': { type: 'file', size: 5, mode: 0o644, uid: 1000, gid: 1000 },
-  }, manifest: { 'home/user/app': ['README.md'] } }), factory(
-  { 'home/user/app/README.md': '# app' },
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/x.js`,
-  dir,
-));
+// The modes the session is sent: one per chmod delivered in a wave.
+const modes = [];
+const { fs } = shimsOnSession({
+  authority,
+  overrides: (forward) => ({
+    writeBatchStream: observeWaves(forward, (record) => {
+      if (record.type === 'setattr' && 'mode' in record.attrs) modes.push(record.attrs.mode & 0o777);
+    }),
+  }),
+});
+const flush = () => globalThis.__nimbusProcessFs.flush();
 
 fs.chmodSync(file, 0o600);
 assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'the mode is visible to the process at once');
 
 await fs.promises.readFile(file, 'utf8');
-assert.equal(chmods, 1, 'the first flush delivers the mode');
-assert.equal((await bridge.stat(file)).mode & 0o777, 0o600, 'and the authority has it');
-const revisionAfterDelivery = rawVfs.revision(file);
+await flush();
+assert.deepEqual(modes, [0o600], 'the next flush delivers the mode');
+assert.equal((await authority.peer.stat(file)).mode & 0o777, 0o600, 'and the session has it');
+const revisionAfterDelivery = authority.rawVfs.revision(file);
 
 for (let i = 0; i < 5; i++) assert.equal(await fs.promises.readFile(file, 'utf8'), '# app');
-assert.equal(chmods, 1, `reads must not re-send the mode (sent ${chmods})`);
-assert.equal(rawVfs.revision(file), revisionAfterDelivery, 'reads must not mutate the file');
+await flush();
+assert.deepEqual(modes, [0o600], `reads must not re-send the mode (sent ${modes.length})`);
+assert.equal(authority.rawVfs.revision(file), revisionAfterDelivery, 'reads must not mutate the file');
 assert.equal(fs.readFileSync(file, 'utf8'), '# app', 'the sync view still serves the file');
 assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'and still shows the mode');
 
 fs.chmodSync(file, 0o640);
 await fs.promises.readFile(file, 'utf8');
-assert.equal(chmods, 2, 'a later chmod is delivered too');
-assert.equal((await bridge.stat(file)).mode & 0o777, 0o640);
+await flush();
+assert.deepEqual(modes, [0o600, 0o640], 'a later chmod is delivered too');
+assert.equal((await authority.peer.stat(file)).mode & 0o777, 0o640);
 
-console.log('ok - node-shims-chmod-delivered-once');
+console.log('node-shims-chmod-delivered-once: ok');

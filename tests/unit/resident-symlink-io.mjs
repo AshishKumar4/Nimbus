@@ -178,27 +178,26 @@ await runScenarios(import.meta.path, {
 
   async 'a target a barrier reported during a read through a link is not filled with the older bytes'() {
     // Outside the process's tree, so the barrier brings no bytes with its
-    // report, and exactly one chunk long, so the read asks for the size
-    // before it ends: that ask is held while the target is rewritten and a
-    // barrier reports it.
+    // report: the read's bytes are the session's to fetch. The answer to that
+    // fetch is held while the target is rewritten and a barrier reports it.
     const held = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
     const { authority, probe } = await boot(undefined, (forward) => ({
-      stat: async (...args) => {
-        if (armed) {
+      fsReadBatch: async (...args) => {
+        const answer = await forward('fsReadBatch', args);
+        if (armed && args[0].some((request) => request.path.endsWith('/big.txt') && request.lstat !== true)) {
           armed = false;
           held.resolve();
           await release.promise;
         }
-        return forward('stat', args);
+        return answer;
       },
     }));
     const BIG = '/home/user/elsewhere/big.txt';
     await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
     await authority.peer.writeFile('home/user/elsewhere/big.txt', 'a'.repeat(65536));
     await authority.peer.symlink('../elsewhere/big.txt', 'home/user/app/big-link.txt');
-    assert.equal((await probe.fs.promises.readFile(BIG, 'utf8')).length, 65536, 'the target is resident');
     armed = true;
     const reading = probe.fs.promises.readFile(`${APP}/big-link.txt`, 'utf8');
     await held.promise;
@@ -212,6 +211,7 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a target written between a read\'s barrier and the read is what the link reads after it'() {
+    // The target lies beyond the working tree and is not held: its bytes are the session's to read.
     let write = null;
     const { authority, probe } = await boot(undefined, (forward) => ({
       fsReadBatch: async (...args) => {
@@ -220,11 +220,14 @@ await runScenarios(import.meta.path, {
         return forward('fsReadBatch', args);
       },
     }));
-    assert.equal(probe.read(TARGET), 'old', 'the boot fill holds the target');
-    write = () => authority.peer.writeFile('home/user/app/target.txt', 'new');
-    assert.equal(await probe.fs.promises.readFile(LINK, 'utf8'), 'new');
-    assert.equal(probe.read(LINK), 'new', 'the sync view does not go back to the older bytes');
-    assert.equal(probe.read(TARGET), 'new');
+    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/elsewhere/far.txt', 'old');
+    await authority.peer.symlink('../elsewhere/far.txt', 'home/user/app/far-link.txt');
+    await probe.resume();
+    write = () => authority.peer.writeFile('home/user/elsewhere/far.txt', 'new');
+    assert.equal(await probe.fs.promises.readFile(`${APP}/far-link.txt`, 'utf8'), 'new');
+    assert.equal(probe.read(`${APP}/far-link.txt`), 'new', 'the sync view does not go back to the older bytes');
+    assert.equal(probe.read('/home/user/elsewhere/far.txt'), 'new');
   },
 
   async 'a miss through a link is answered by a read of the link after the link changed'() {
@@ -243,7 +246,7 @@ await runScenarios(import.meta.path, {
     await probe.resume();
     await until(() => appliedCursor() >= made, 'the barrier reported the new link');
     assert.equal(await probe.fs.promises.readFile(`${APP}/moving.txt`, 'utf8'), 'b');
-    assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'the access that missed was answered');
+    assert.deepEqual(await globalThis.__nimbusProcessFs.misses(), [], 'the access that missed was answered');
   },
 
   async 'a pending mode through a link reaches the authority before a stat of it'() {
@@ -364,7 +367,7 @@ await runScenarios(import.meta.path, {
     assert.throws(() => probe.fs.readSync(fd, Buffer.alloc(4), 0, 4, 0), { code: 'EAGAIN' }, 'the late file is not resident');
     probe.fs.closeSync(fd);
     assert.equal(await probe.fs.promises.readFile(`${APP}/late-link.txt`, 'utf8'), 'late');
-    assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'no miss is left to fail the run');
+    assert.deepEqual(await globalThis.__nimbusProcessFs.misses(), [], 'no miss is left to fail the run');
   },
 
   async 'a write through a symlink loop is ELOOP'() {

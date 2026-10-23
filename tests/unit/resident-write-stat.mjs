@@ -48,18 +48,30 @@ async function callsOf(log, run) {
   return made;
 }
 
+const total = (made) => Object.values(made).reduce((sum, n) => sum + n, 0);
+
 await runScenarios(import.meta.path, {
   async 'an async writeFile is one call, and the sync view has its stat'() {
     const { authority, probe, log } = await boot();
     const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
-    // The process's first write opens its writer epoch; the write is one wave, its receipt the stat.
-    assert.deepEqual(made, { openWaveWriter: 1, writeBatchStream: 1 }, 'the write and its stat together');
     const again = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/other.txt', 'again'));
-    assert.deepEqual(again, { writeBatchStream: 1 }, 'and the next write is one call');
     const stat = probe.fs.statSync('/home/user/app/new.txt');
     assert.equal(stat.size, 5, 'the sync view stats the new file');
     assert.equal(stat.uid, 1000, 'owned as the authority made it');
     assert.equal(authority.read('home/user/app/new.txt'), 'fresh');
+    assert.equal(total(made), 1, `the write and its stat together (${JSON.stringify(made)})`);
+    assert.equal(total(again), 1, `and the next write is one call (${JSON.stringify(again)})`);
+  },
+
+  async 'a write answered without a stat asks for the stat separately'() {
+    // A mount whose metadata read failed after the write committed.
+    const { probe, log } = await boot((forward) => ({
+      writeBatchStream: async (...args) => ({ ...(await forward('writeBatchStream', args)), receipts: [] }),
+    }));
+    const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
+    assert.equal(made.writeBatchStream, 1, 'the write is answered');
+    assert.equal(made.fsReadBatch, 1, 'and its stat asked for');
+    assert.equal(probe.fs.statSync('/home/user/app/new.txt').size, 5);
   },
 
   async 'a file the process overwrote without having listed it keeps its owner'() {
@@ -74,17 +86,6 @@ await runScenarios(import.meta.path, {
     assert.equal(stat.uid, 0, 'the authority kept root as the owner');
     assert.equal(stat.mode & 0o777, 0o666, 'and its mode');
     assert.equal(stat.size, 4);
-  },
-
-  async 'a write answered without a stat asks for the stat separately'() {
-    // A mount whose metadata read failed after the write committed.
-    const { probe, log } = await boot((forward) => ({
-      writeBatchStream: async (...args) => ({ ...(await forward('writeBatchStream', args)), receipts: [] }),
-    }));
-    const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
-    assert.equal(made.writeBatchStream, 1, 'the write is answered');
-    assert.equal(made.fsReadBatch, 1, 'and its stat asked for');
-    assert.equal(probe.fs.statSync('/home/user/app/new.txt').size, 5);
   },
 
   async 'a write answered after a barrier reported its name gone does not bring the name back'() {

@@ -5,122 +5,74 @@
 // never wrote back at all, and a peer reading the same path saw the pre-write
 // bytes for the entire life of the process. Measured, not theorised.
 //
-// This drives the REAL shim against the REAL SqliteVFS and asserts three
+// This drives the REAL shim against the REAL session and asserts three
 // things the fix has to hold together:
-//   1. writeFileSync / appendFileSync reach the authority while the process
-//      is still running.
+//   1. writeFileSync / appendFileSync reach the session while the process
+//      is still running (what the session receives, and when).
 //   2. The batching survives: a burst of sync writes to one path costs one
 //      round trip, not one per write.
-//   3. The parked-write ledger is drained, so the exit drain has nothing left.
+//   3. The process's log is drained, so the exit drain has nothing left.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority, sleep } from './lib/resident-body.mjs';
+import { observeWaves, shimsOnSession } from './lib/shims-on-session.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+const authority = createAuthority();
 const dir = '/home/user/t';
-vfs.mkdir(dir, { recursive: true });
+authority.kfs.mkdir(dir, { recursive: true });
 
-let writeRpcs = 0;
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-  writeFile: (p, c) => { writeRpcs++; return bridge.writeFile(p, c); },
-  stat: (p) => bridge.stat(p),
-  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p),
-  exists: async (p) => (await bridge.stat(p)) !== null,
-  access: (p, m) => bridge.access(p, m),
-  mkdir: (p) => bridge.mkdir(p, { recursive: true }),
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
-    '\n;return { fs: __fsMod, parked: () => Object.keys(__vfsWrites) };',
-);
-// The process's working tree is its own, as a session's home is: every name
-// the kernel made above is handed to the process's user.
-function ownTree(path = 'home') {
-  vfs.chown(path, 1000, 1000);
-  if (vfs.lstat(path).type !== 'directory') return;
-  for (const entry of vfs.readdir(path)) ownTree(`${path}/${entry.name}`);
-}
-ownTree();
-listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const out = (declareNamespace({ metadata: { 'home/user/t': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { 'home/user': ['t'], 'home/user/t': [] } }), factory(
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/s.mjs`,
-  dir,
-));
-const { fs, parked } = out;
-
-const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const authority = async (p) => {
-  const bytes = await bridge.readFile(p);
-  return bytes === null ? null : dec.decode(bytes);
-};
+// The paths the session has received writes for, in the order it received them.
+const received = [];
+const { fs, handle } = shimsOnSession({
+  authority,
+  overrides: (forward) => ({
+    writeBatchStream: observeWaves(forward, (record) => {
+      if (record.type === 'file-end') received.push(record.path);
+      else if (record.type === 'call' && 'path' in record.call) received.push(record.call.path);
+    }),
+  }),
+});
+const waves = () => handle.log.calls.writeBatchStream ?? 0;
+const key = (path) => path.replace(/^\/+/, '');
 
 // Warm the coherence cursor first. A facet's very first ACQUIRE reports a
 // poison — it holds no epoch yet — which evicts the whole resident set and
-// refetches it, and a refetch of a path that has a parked write flushes that
+// refetches it, and a refetch of a path that has a held write flushes that
 // write on the way past. Incidental, and not the write-back under test, so
 // spend it before measuring anything.
 await fs.promises.readFile(`${dir}/.warm`, 'utf8').catch(() => {});
 
-// ── 1. a plain sync write reaches the authority while the process runs ──
+// ── 1. a plain sync write reaches the session while the process runs ──
 fs.writeFileSync(`${dir}/w.txt`, 'SYNC_WRITTEN');
-assert.equal(await authority(`${dir}/w.txt`), null, 'not written through synchronously');
-await settle(60);
-assert.equal(
-  await authority(`${dir}/w.txt`),
-  'SYNC_WRITTEN',
-  'writeFileSync reached the authority without waiting for process exit',
+assert.equal(received.includes(key(`${dir}/w.txt`)), false, 'not written through synchronously');
+await sleep(60);
+assert.ok(
+  received.includes(key(`${dir}/w.txt`)),
+  'writeFileSync reached the session without waiting for process exit',
 );
-assert.deepEqual(parked(), [], 'the ledger drained the parked cell');
+assert.equal(await authority.peer.readFileString(`${dir}/w.txt`), 'SYNC_WRITTEN', 'and the session holds its bytes');
+assert.equal(globalThis.__nimbusProcessFs.client.pendingBytes, 0, 'the log drained what it wrote');
 
 // ── 2. appendFileSync too ──
 fs.appendFileSync(`${dir}/a.txt`, 'A1');
 fs.appendFileSync(`${dir}/a.txt`, 'A2');
-await settle(60);
-assert.equal(
-  await authority(`${dir}/a.txt`),
-  'A1A2',
-  'appendFileSync reached the authority without waiting for process exit',
+await sleep(60);
+assert.ok(
+  received.includes(key(`${dir}/a.txt`)),
+  'appendFileSync reached the session without waiting for process exit',
 );
+assert.equal(await authority.peer.readFileString(`${dir}/a.txt`), 'A1A2');
 
 // ── 3. the batching survives: a burst is one round trip, not N ──
-const before = writeRpcs;
+const before = waves();
 for (let i = 0; i < 500; i++) fs.writeFileSync(`${dir}/burst.txt`, `v${i}`);
-await settle(80);
-assert.equal(await authority(`${dir}/burst.txt`), 'v499', 'the last value won');
-const spent = writeRpcs - before;
+await sleep(80);
+assert.equal(await authority.peer.readFileString(`${dir}/burst.txt`), 'v499', 'the last value won');
+const spent = waves() - before;
 assert.ok(
   spent > 0 && spent <= 3,
   `500 sync writes to one path cost ${spent} write RPCs — the batch must not become one RPC per write`,
 );
-assert.deepEqual(parked(), [], 'nothing left parked after the burst');
+assert.equal(globalThis.__nimbusProcessFs.client.pendingBytes, 0, 'nothing left in the log after the burst');
 
 console.log(`node-shims-sync-write-back: all assertions passed (burst cost ${spent} write RPC(s))`);

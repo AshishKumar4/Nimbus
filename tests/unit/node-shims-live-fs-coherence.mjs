@@ -3,93 +3,37 @@
 // never as authority for async I/O after another process mutates SQLite VFS.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-// The supervisor acts as the process's own credential, as SupervisorRPC does,
-// and the tree the process works in is its own: what it writes back is owned
-// by it, and a stat of it says so.
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-function ownTree(path = '') {
-  for (const entry of vfs.readdir(path)) {
-    const at = path ? `${path}/${entry.name}` : entry.name;
-    vfs.chown(at, 1000, 1000);
-    if (entry.type === 'directory') ownTree(at);
-  }
-}
-const enc = new TextEncoder();
-const dec = new TextDecoder();
 const dir = '/home/user/coherence';
 const resident = `${dir}/resident.txt`;
 const late = `${dir}/late.txt`;
+const current = 'v2-longer-content';
 
-vfs.mkdir(dir, { recursive: true });
-vfs.writeFile(resident, enc.encode('v1'));
+// The barrier of a read is held by the test until released, to observe that
+// the read counts as an operation in flight while it waits.
+const barrierGate = { held: false, gate: null };
 
-ownTree();
-const supervisor = {
-  readFile: async (path) => {
-    const bytes = await bridge.readFile(path);
-    return bytes ? dec.decode(bytes) : null;
-  },
-  writeFile: (path, content) => bridge.writeFile(path, content),
-  stat: (path) => bridge.stat(path),
-  lstat: (path) => bridge.stat(path, { followSymlinks: false }),
-  readdir: (path) => bridge.readdir(path),
-  exists: async (path) => (await bridge.stat(path)) !== null,
-  access: (path, mode) => bridge.access(path, mode),
-  mkdir: (path) => bridge.mkdir(path, { recursive: true }),
-  fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
-  fsWriteRange: (path, offset, bytes) => bridge.writeRange(path, offset, bytes),
-  fsTruncate: (path, size) => bridge.truncate(path, size),
-  // The barrier's delta, as every session serves it: how a peer's new name
-  // reaches the process's namespace.
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-
-// The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
-    '\n;return { fs: __fsMod };',
-);
-listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const { fs } = (declareNamespace({ metadata: {
-    'home/user/coherence': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
-    'home/user/coherence/resident.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 },
-  }, manifest: {
-    'home/user': ['coherence'],
-    'home/user/coherence': ['resident.txt'],
-  } }), factory(
-  { 'home/user/coherence/resident.txt': 'v1' },
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user/coherence',
-  [],
-  {},
-  '/home/user/coherence/server.mjs',
-  '/home/user/coherence',
-));
+const authority = createAuthority();
+authority.kfs.mkdir(dir, { recursive: true });
+authority.kfs.writeFile(resident, 'v1');
+const { fs } = shimsOnSession({
+  authority,
+  cwd: dir,
+  bundle: { 'home/user/coherence/resident.txt': 'v1' },
+  overrides: (forward) => ({
+    fsAcquire: async (position, options) => {
+      if (barrierGate.held) await barrierGate.gate.promise;
+      return forward('fsAcquire', [position, options]);
+    },
+  }),
+});
 const fsp = fs.promises;
 
 // A sibling process mutates the authoritative VFS after this facet spawned.
-const current = 'v2-longer-content';
-vfs.writeFile(resident, enc.encode(current));
-vfs.writeFile(late, enc.encode('created-after-spawn'));
+await authority.peer.writeFile(resident, current);
+await authority.peer.writeFile(late, 'created-after-spawn');
 
 const observed = {
   readFile: await fsp.readFile(resident, 'utf8'),
@@ -101,26 +45,24 @@ const observed = {
   ranged: null,
   stream: '',
 };
-let syncLateError = null;
 try {
   observed.syncLateAfterAsync = fs.readFileSync(late, 'utf8');
 } catch (error) {
   observed.syncLateAfterAsync = error.code;
-  syncLateError = error;
 }
 
 {
-  const handle = await fsp.open(resident, 'r');
-  observed.handle = await handle.readFile('utf8');
-  await handle.close();
+  const opened = await fsp.open(resident, 'r');
+  observed.handle = await opened.readFile('utf8');
+  await opened.close();
 }
 
 {
-  const handle = await fsp.open(resident, 'r');
+  const opened = await fsp.open(resident, 'r');
   const buffer = new Uint8Array(current.length);
-  const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-  observed.ranged = dec.decode(buffer.subarray(0, bytesRead));
-  await handle.close();
+  const { bytesRead } = await opened.read(buffer, 0, buffer.length, 0);
+  observed.ranged = new TextDecoder().decode(buffer.subarray(0, bytesRead));
+  await opened.close();
 }
 
 {
@@ -134,17 +76,9 @@ assert.deepEqual(observed, {
   statSize: current.length,
   names: ['late.txt', 'resident.txt'],
   late: 'created-after-spawn',
-  // FLIPPED from 'EAGAIN' when async reads began writing through into the
-  // resident set. This assertion used to encode the defect: the async read
-  // on line 81 had ALREADY fetched these bytes and paid the round trip for
-  // them, and the shims then threw them away, so the very next synchronous
-  // read of the same path refused. Refusing to serve bytes you are holding
-  // is not honesty about a limit — a facet genuinely cannot block to FETCH
-  // content, which is why a never-touched path still raises EAGAIN below,
-  // but that has never been a reason to discard content already in hand.
-  //
-  // Do not revert this to EAGAIN. If it starts failing, the write-through
-  // in _installResident regressed; the fix is there, not here.
+  // The async read has ALREADY fetched these bytes, so the sync read of the
+  // same path serves them: refusing bytes the process holds is not honesty
+  // about a limit.
   syncLateAfterAsync: 'created-after-spawn',
   handle: current,
   ranged: current,
@@ -155,8 +89,8 @@ assert.deepEqual(observed, {
 // that refusal has to be actionable on its own: name the file, say why it
 // could not be served, and name the call that will serve it.
 const neverTouched = `${dir}/never-touched.txt`;
-vfs.writeFile(neverTouched, enc.encode('only-in-the-authority'));
-// The manifest learned the name from the async readdir above, so the sync
+await authority.peer.writeFile(neverTouched, 'only-in-the-authority');
+// The namespace learned the name from the async readdir above, so the sync
 // existence view knows the path while the content view does not — which is
 // exactly the case EAGAIN exists to distinguish from a genuine ENOENT.
 await fsp.readdir(dir);
@@ -193,27 +127,27 @@ assert.throws(() => fs.readFileSync(absent, 'utf8'), (error) => {
   return true;
 });
 
-// Pending sync mutations are newer than the supervisor until flushed. An
-// async observation must preserve them by making them authoritative first.
+// Pending sync mutations are newer than the session until flushed. An async
+// observation must preserve them by making them authoritative first.
 fs.writeFileSync(resident, 'same-facet-open-pending');
 {
-  const handle = await fsp.open(resident, 'r');
+  const opened = await fsp.open(resident, 'r');
   assert.equal(
-    dec.decode(vfs.readFile(resident)),
+    await authority.peer.readFileString(resident),
     'same-facet-open-pending',
     'async open flushes pending sync content before observing authority metadata',
   );
-  await handle.close();
+  await opened.close();
 }
 
 fs.writeFileSync(resident, 'same-facet-pending');
 assert.equal(await fsp.readFile(resident, 'utf8'), 'same-facet-pending');
-assert.equal(dec.decode(vfs.readFile(resident)), 'same-facet-pending');
+assert.equal(await authority.peer.readFileString(resident), 'same-facet-pending');
 
 const accessCreated = `${dir}/access-created.txt`;
 fs.writeFileSync(accessCreated, 'created-before-access');
 await fsp.access(accessCreated);
-assert.equal(dec.decode(vfs.readFile(accessCreated)), 'created-before-access');
+assert.equal(await authority.peer.readFileString(accessCreated), 'created-before-access');
 
 fs.mkdirSync(`${dir}/same-facet-dir`);
 assert.deepEqual(
@@ -225,7 +159,7 @@ assert.deepEqual(
   await fsp.readdir(dir),
   ['access-created.txt', 'late.txt', 'never-touched.txt', 'resident.txt', 'same-facet-dir'],
 );
-assert.equal(vfs.stat(`${dir}/same-facet-dir`)?.type, 'directory');
+assert.equal((await authority.peer.stat(`${dir}/same-facet-dir`)).type, 'directory');
 
 // Removal has to retract the path from the sync existence view too. The
 // spawn-time metadata snapshot outlives the file it describes, so without
@@ -250,32 +184,25 @@ assert.throws(() => fs.readFileSync(dir, 'utf8'), (error) => {
 //
 // A one-shot facet's event loop exits when no handle is live, and an in-flight
 // supervisor RPC is one of the three kinds of handle it counts. The ACQUIRE
-// barrier is the first thing an async read issues and it bypassed the RPC
-// helper that does the counting, so __nimbusPendingOps read zero for a whole
-// round trip at the very start of every read. The loop ended the program
-// there: measured live, an fs.promises.readFile whose .then never ran — no
-// error, no output, intermittently, and never when a pending timer happened
-// to hold the program open. create-next-app copied its template that way and
+// barrier is the first thing an async read issues, so it must count as an
+// operation in flight from the start of the read. Otherwise the loop ends
+// there: an fs.promises.readFile whose .then never runs — no error, no
+// output, intermittently. create-next-app copied its template that way and
 // wrote the directories but none of the files.
 {
-  vfs.writeFile(`${dir}/held.txt`, enc.encode('held'));
-  let release;
-  const gate = new Promise((resolve) => { release = resolve; });
-  const realAcquire = supervisor.fsAcquire;
-  supervisor.fsAcquire = async (position) => { await gate; return realAcquire(position); };
-
-  const read = fs.promises.readFile(`${dir}/held.txt`, 'utf8');
-  // Let the read reach its barrier and park there. Microtask yields, not
-  // timers: the shim wraps setTimeout in a resumption ACQUIRE, which the gate
-  // above is holding.
+  await authority.peer.writeFile(`${dir}/held.txt`, 'held');
+  barrierGate.gate = Promise.withResolvers();
+  barrierGate.held = true;
+  const read = fsp.readFile(`${dir}/held.txt`, 'utf8');
+  // Let the read reach its barrier and park there.
   for (let i = 0; i < 8; i++) await Promise.resolve();
   assert.ok(
     globalThis.__nimbusPendingOps > 0,
     'the barrier a read is waiting on must count as an operation in flight',
   );
-  release();
+  barrierGate.held = false;
+  barrierGate.gate.resolve();
   assert.equal(await read, 'held');
-  supervisor.fsAcquire = realAcquire;
 }
 
 console.log('node-shims-live-fs-coherence: all assertions passed');

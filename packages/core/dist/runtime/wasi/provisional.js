@@ -26,7 +26,7 @@
  * nothing. What is admitted is given back by the object that holds it.
  */
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, stickyRefusal, utimesRefusal } from '../../vfs/posix-access.js';
 import { refusesDirectory } from '../../vfs/open-rules.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { applyOp, copyState, foldOps, owned } from './inode-fold.js';
@@ -677,6 +677,15 @@ export function provisional(host) {
             throw fsError('EACCES', syscall, path);
         return parent;
     };
+    /** Whether `row` at `key` may be removed or replaced here: its directory writable, and its sticky bit honoured (EPERM). */
+    const removable = (key, row, path, syscall) => {
+        const parent = writableParent(key, path, syscall);
+        if (parent === undefined)
+            return false;
+        if (stickyRefusal(parent, row, host.cred) !== null)
+            throw fsError('EPERM', syscall, path);
+        return true;
+    };
     const ownership = (parent) => {
         const setgid = (parent.mode & 0o2000) !== 0;
         return { uid: host.cred.uid, gid: setgid ? parent.gid : host.cred.gid, setgid };
@@ -1081,9 +1090,8 @@ export function provisional(host) {
         else {
             target = inode;
         }
-        // A whole file written at once goes as one write of it: the session makes it whole or refuses it whole (no
-        // empty file its create left where the bytes were refused), and a mount's backend is asked once.
-        if (close && bytes !== null && chmod === undefined) {
+        // A whole file written on a mount goes as one write of it (a mount's backend is asked once, as by writeFile(2)'s callers).
+        if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
             const records = ops.map((op) => fold(target, op));
             const whole = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
             const settled = (refused, answer) => {
@@ -1505,7 +1513,7 @@ export function provisional(host) {
                 throw fsError('ENOENT', 'unlink', path);
             if (row.type === 'directory')
                 return false;
-            if (writableParent(key, path, 'unlink') === undefined)
+            if (!removable(key, row, path, 'unlink'))
                 return false;
             // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
             host.drain();
@@ -1524,7 +1532,7 @@ export function provisional(host) {
                 return false;
             if (listed.length > 0)
                 throw fsError('ENOTEMPTY', 'rmdir', path);
-            if (writableParent(key, path, 'rmdir') === undefined)
+            if (!removable(key, row, path, 'rmdir'))
                 return false;
             host.drain();
             admit(nameCost([key]), 'rmdir', path);
@@ -1558,7 +1566,7 @@ export function provisional(host) {
                 return false;
             if (from === to)
                 return true;
-            if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
+            if (!removable(from, source, path, 'rename') || (target === null ? writableParent(to, path, 'rename') === undefined : !removable(to, target, path, 'rename')))
                 return false;
             // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves,
             // and what the names beneath the source grow by: their names here now, and the view's once it has the rename (retire).

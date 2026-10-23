@@ -159,12 +159,13 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
  * counted and sent to the session's handler as SupervisorRPC sends it — for a
  * process of the session's own, carrying its pid — and `overrides` replaces
  * any one of them (an `undefined` override removes the method). Process
- * output, exit and ports are captured here instead.
+ * output, exit and ports are captured here instead. `cred` is the process's credential.
+ * @param {{ readonly uid: number, readonly gid: number, readonly groups: readonly number[], readonly umask: number }} [cred]
  */
-export function facetSupervisor(authority, overrides = {}) {
+export function facetSupervisor(authority, overrides = {}, cred = CRED) {
   const { host } = authority;
   // The process the facet is: an entry in the session's table.
-  const { pid } = host.processes.spawn('node', ['main.js'], '/home/user/app', { longRunning: true, cred: CRED });
+  const { pid } = host.processes.spawn('node', ['main.js'], '/home/user/app', { longRunning: true, cred });
   const log = { pid, stdout: '', stderr: '', calls: {}, exit: null, ports: new Set() };
   /** @type {Record<string, any>} */
   const own = {
@@ -240,7 +241,7 @@ export function facetSql(db = new Database(':memory:')) {
  * @param {{
  *   program: string, env: any, processEnv?: any, sql?: any, cwd?: string, bundle?: any,
  *   manifest?: any, metadata?: any, cursor: any, authority?: any, dataPlan?: any,
- *   startArgs?: any, argv?: string[], node?: any,
+ *   startArgs?: any, argv?: string[], node?: any, cred?: any,
  *   wasmImports?: readonly import('../../../packages/worker/src/facets/manager.js').FacetWasmImport[],
  *   wasmModules?: Record<string, import('../../../packages/platform/src/worker-code.js').WasmModule>,
  *   onImported?: () => void,
@@ -262,6 +263,7 @@ export async function launchResident({
   startArgs = {},
   argv,
   node,
+  cred = CRED,
   wasmImports = [],
   wasmModules = {},
   onImported = () => {},
@@ -278,7 +280,7 @@ export async function launchResident({
   const generated = await generateLongRunningNodeCode(
     program,
     vfsState,
-    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, wasmImports, ...(argv ? { argv } : {}), ...(node ? { node } : {}) },
+    { cred, cwd, filename: `${cwd}/main.js`, dirname: cwd, wasmImports, ...(argv ? { argv } : {}), ...(node ? { node } : {}) },
     false,
     nodeFacetSources(generateShimsCode()),
   );
@@ -291,7 +293,7 @@ export async function launchResident({
   const proc = new mod.NimbusProcess(ctx, env);
   // The plan a resident launch is handed: data-plan.ts over the authority,
   // as the manager computes it, unless the test names one.
-  const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle)) : undefined);
+  const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle), cred) : undefined);
   // The env in the start payload, as the manager hands it over: never in the generated source.
   // The session's root, as the manager reads it beside the cursor (FacetVfsState.root).
   const vfsRoot = authority ? authority.root() : null;
@@ -300,8 +302,8 @@ export async function launchResident({
 }
 
 /** data-plan.ts over `authority` as the process's credential sees it. */
-export async function residentDataPlan(authority, cwd, closure = []) {
-  const view = authority.rawVfs.as(CRED);
+export async function residentDataPlan(authority, cwd, closure = [], cred = CRED) {
+  const view = authority.rawVfs.as(cred);
   const plan = await planFacetData(/** @type {any} */ ({
     list: async (after) => { const page = view.list(after); return { entries: page.entries, next: page.next }; },
     readText: async (path) => { try { return view.readFileString(path); } catch { return null; } },
@@ -341,7 +343,8 @@ const SCENARIO_TIMEOUT_MS = 60_000;
  * would then pass without having exercised it, which is how a harness that
  * could not serve fsAcquire read as stale bytes rather than as the missing
  * route it was. Unless `barrierFailures` says the file fails barriers on
- * purpose, a scenario in which any barrier failed fails, naming the reason.
+ * purpose (`true`), or names the scenarios that do (a list), a scenario in
+ * which any barrier failed fails, naming the reason.
  */
 export async function runScenarios(file, scenarios, { barrierFailures = false, gaps = {} } = {}) {
   const selected = realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO;
@@ -349,7 +352,8 @@ export async function runScenarios(file, scenarios, { barrierFailures = false, g
     try {
       await scenarios[selected]();
       const stats = coherenceStats();
-      if (!barrierFailures && stats.barrierFailures > 0) {
+      const allowed = barrierFailures === true || (Array.isArray(barrierFailures) && barrierFailures.includes(selected));
+      if (!allowed && stats.barrierFailures > 0) {
         throw new Error(
           `${stats.barrierFailures} barrier(s) did not land; `
           + 'the scenario ran on the failure path, not the delta',

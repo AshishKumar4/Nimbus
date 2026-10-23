@@ -30,7 +30,7 @@ import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '..
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, stickyRefusal, utimesRefusal } from '../../vfs/posix-access.js';
 import { refusesDirectory } from '../../vfs/open-rules.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import type { W7Attrs, W7Expected } from '@nimbus-sh/platform/w7-frame.js';
@@ -1037,6 +1037,14 @@ export function provisional(host: ProvisionalHost): Provisional {
     return parent;
   };
 
+  /** Whether `row` at `key` may be removed or replaced here: its directory writable, and its sticky bit honoured (EPERM). */
+  const removable = (key: string, row: ResidentEntry, path: string, syscall: string): boolean => {
+    const parent = writableParent(key, path, syscall);
+    if (parent === undefined) return false;
+    if (stickyRefusal(parent, row, host.cred) !== null) throw fsError('EPERM', syscall, path);
+    return true;
+  };
+
   const ownership = (parent: ResidentEntry): { uid: number; gid: number; setgid: boolean } => {
     const setgid = (parent.mode & 0o2000) !== 0;
     return { uid: host.cred.uid, gid: setgid ? parent.gid : host.cred.gid, setgid };
@@ -1858,7 +1866,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (row === undefined) return false;
       if (row === null) throw fsError('ENOENT', 'unlink', path);
       if (row.type === 'directory') return false;
-      if (writableParent(key, path, 'unlink') === undefined) return false;
+      if (!removable(key, row, path, 'unlink')) return false;
       // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
       host.drain();
       keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
@@ -1872,7 +1880,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const listed = provisional.children(key, host.children(key));
       if (listed === undefined) return false;
       if (listed.length > 0) throw fsError('ENOTEMPTY', 'rmdir', path);
-      if (writableParent(key, path, 'rmdir') === undefined) return false;
+      if (!removable(key, row, path, 'rmdir')) return false;
       host.drain();
       admit(nameCost([key]), 'rmdir', path);
       return loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row, key) } }, [key], nameCost([key]), () => {
@@ -1899,7 +1907,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (source.type === 'directory' && (target !== null || within(to, from))) return false;
       if (target !== null && (target.type === 'directory' || source.type === 'directory')) return false;
       if (from === to) return true;
-      if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined) return false;
+      if (!removable(from, source, path, 'rename') || (target === null ? writableParent(to, path, 'rename') === undefined : !removable(to, target, path, 'rename'))) return false;
       // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves,
       // and what the names beneath the source grow by: their names here now, and the view's once it has the rename (retire).
       host.drain();

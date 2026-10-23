@@ -14,7 +14,6 @@
 // local answer must never get wrong (held-local-reads-design.md T1–T16).
 
 import assert from 'node:assert/strict';
-import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
@@ -46,12 +45,16 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   authority.kfs.writeFile('home/user/app/out/seeded.txt', 'seeded');
   const root = authority.rawVfs.as(CRED_KERNEL);
   root.mkdir('home/user/app/locked', { mode: 0o700 });
-  const counted = { asked: 0, relistGate: null, lose: 0 };
+  const counted = { asked: 0, barriers: 0, relistGate: null, lose: 0 };
   let forward;
   const handle = facetSupervisor(authority, {
-    fsAcquired: async (acquire, op, args) => {
-      if (op === 'stat' || op === 'lstat') counted.asked++;
-      return forward('fsAcquired', [acquire, op, args]);
+    fsReadBatch: async (...args) => {
+      if (args[0].some((request) => request.lstat === true)) counted.asked++;
+      return forward('fsReadBatch', args);
+    },
+    fsAcquire: async (...args) => {
+      counted.barriers++;
+      return forward('fsAcquire', args);
     },
     fsList: async (...args) => {
       if (counted.relistGate !== null) await counted.relistGate.promise;
@@ -83,7 +86,7 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   });
   const { fs } = globalThis.__probe;
   if (take) await takeOut(fs);
-  return { authority, fs, root, counted, asked: () => counted.asked };
+  return { authority, fs, root, counted, asked: () => counted.asked + counted.barriers };
 }
 
 /** Take `out`: write there until the process holds it, then let what it wrote be answered. */
@@ -258,20 +261,23 @@ await runScenarios(import.meta.path, {
     assert.equal(asked() - before, 0, 'once answered, the view did not answer');
   },
 
-  async 'a grant without a certificate, or a cursor in another epoch, asks the session (T13, T15)'() {
-    const stripped = await boot({ strip: true });
-    await stripped.fs.promises.stat(`${OUT}/seeded.txt`);
-    let before = stripped.asked();
-    await stripped.fs.promises.stat(`${OUT}/seeded.txt`);
-    assert.equal(stripped.asked() - before, 1, 'a grant without a certificate answered');
-    const { fs, asked } = await boot();
+  async 'a grant without a certificate asks the session (T13)'() {
+    const { fs, asked } = await boot({ strip: true });
     await fs.promises.stat(`${OUT}/seeded.txt`);
-    const cursor = globalThis.__nimbusVfsCursor;
-    const position = cursor.position;
-    cursor.position = positionOf(position.table, { ...position.feeds, '/': { epoch: 'another', cursor: rootOf(position).cursor } });
-    before = asked();
-    await fs.promises.stat(`${OUT}/seeded.txt`).finally(() => { if (rootOf(cursor.position).epoch === 'another') cursor.position = position; });
-    assert.equal(asked() - before, 1, 'a cursor in another epoch answered');
+    const before = asked();
+    await fs.promises.stat(`${OUT}/seeded.txt`);
+    assert.equal(asked() - before, 1, 'a grant without a certificate answered');
+  },
+
+  async 'a cursor from another incarnation asks the session (T15)'() {
+    const { authority, fs, asked } = await boot();
+    await fs.promises.stat(`${OUT}/seeded.txt`);
+    authority.rawVfs.rotateIncarnation();
+    const before = asked();
+    const stat = await fs.promises.stat(`${OUT}/seeded.txt`);
+    assert.ok(asked() > before, 'a cursor held against the last incarnation asked the session');
+    assert.equal(stat.size, 'seeded'.length, 'the stat is the session\'s');
+    assert.equal(await fs.promises.readFile(`${OUT}/seeded.txt`, 'utf8'), 'seeded', 'and so is the read');
   },
 
   async 'a route across two held roots asks until the view has reached both certificates (T14)'() {

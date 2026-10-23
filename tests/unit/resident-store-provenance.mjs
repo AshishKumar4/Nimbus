@@ -257,7 +257,7 @@ await runScenarios(import.meta.path, {
     const resumed = probe.resume(`${APP}/race.txt`);
     assert.equal(await Promise.race([resumed, sleep(100).then(() => 'still waiting')]), 'still waiting');
     const stats = coherenceStats();
-    assert.ok(stats.poisons >= 1 && stats.reconciles >= 1, 'the scenario is vacuous unless the barrier was poisoned and repaired');
+    assert.ok(stats.barrierFailures >= 1, 'the scenario is vacuous unless a barrier failed and was repaired');
 
     held.release();
     assert.equal(
@@ -330,7 +330,7 @@ await runScenarios(import.meta.path, {
     const first = probe.resumeAll(paths);
     await hold.served.promise;
     // Each later barrier asks, or the read lease the first one took answers it.
-    const barriers = () => (log.calls.fsAcquire ?? 0) + (globalThis.__nimbusVfsCoherence?.leasedBarriers ?? 0);
+    const barriers = () => (log.calls.fsAcquire ?? 0) + coherenceStats().leasedBarriers;
     const acquired = barriers();
     const later = [];
     for (let i = 0; i < 9; i++) later.push(probe.resumeAll(paths));
