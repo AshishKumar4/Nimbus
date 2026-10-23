@@ -2046,8 +2046,7 @@ export function provisional(host: ProvisionalHost): Provisional {
           // What it made of the bytes, whole, is the session's at the revision its last change was answered at:
           // the view's still where its row is at that revision.
           const last = retired[retired.length - 1]!;
-          const after = ownValue(last, 'after');
-          if (rewritten && inode.state?.bytes && after !== undefined && seen.row.type === 'file' && seen.row.revision === after
+          if (rewritten && inode.state?.bytes && ownValue(last, 'after') !== undefined && seen.row.type === 'file' && seen.row.revision === ownValue(last, 'after')
             && seen.row.size === inode.state.size && inode.state.bytes.length >= inode.state.size) {
             keeping[keeping.length] = { key: seen.name, row: seen.row, bytes: bytesView(inode.state.bytes, 0, inode.state.size) };
           }
