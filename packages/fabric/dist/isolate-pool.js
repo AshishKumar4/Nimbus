@@ -38,7 +38,7 @@ import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { beginLoaderFetch, readmitRefused, claimAdmission, refusedStart, suspendHeldAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
-import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { classifyError, isCloneVersionRefusal } from '@nimbus-sh/platform/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
 import { FACET_ERROR_KEY } from '@nimbus-sh/core/runtime/facet-host.js';
 import { SupervisorLoadWaitError, acquireSupervisorLoad, reclaimableSupervisorAllocation, tryAcquireSupervisorLoad, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -732,8 +732,10 @@ export class IsolatePool {
                     this.slotGenerations.set(slotIndex, generation);
                     throw lastError;
                 }
-                // A task that threw those words itself ran: only a refusal to clone its call into the worker is retried.
-                if (cause === 'clone_refused' && !retriedCloneRefusal && !enteredFailure(lastError)) {
+                // Only a worker that could not read its call's version is tried afresh: a
+                // value that cannot be cloned fails again (and may come after the task
+                // ran, unmarked), and a task that threw those words itself ran.
+                if (isCloneVersionRefusal(lastError) && !retriedCloneRefusal && !enteredFailure(lastError)) {
                     retriedCloneRefusal = true;
                     const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
                     this.slotGenerations.set(slotIndex, generation);
