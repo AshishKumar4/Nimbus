@@ -42,7 +42,7 @@ import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@
 import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { exitCodeForSignal, signalAbortReasonOf, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -8302,7 +8302,8 @@ export class FacetManager {
     // Run again after a read, it is still the command's run: the terminal is
     // its until it ends, or until it listens and runs on as a server does.
     if (read !== undefined) {
-      const exit = await this._endOrListen(pid, opts.signal);
+      // A command held in the foreground is ended by its interrupt there (_holdForeground); else by its run's abort here.
+      const exit = await this._endOrListen(pid, opts.foreground === undefined ? run.signal : undefined);
       if (exit !== null) return { exitCode: exit, stdout: '', stderr: '' };
     }
     // Said as any resident's start is: it runs on, and serves.
@@ -8314,12 +8315,12 @@ export class FacetManager {
 
   /**
    * `pid`'s exit status once it ends, or null once it has a routeable port
-   * first (it listened, and runs on as a server). The command's interrupt
-   * (`signal`) sends it the signal the terminal sent, as a foreground job's.
+   * first (it listened, and runs on as a server). `signal`'s abort kills it,
+   * as the foreground's interrupt kills a one-shot.
    */
   private async _endOrListen(pid: number, signal: AbortSignal | undefined): Promise<number | null> {
     const settled = new AbortController();
-    const interrupt = (): void => { this.kill(pid, signal === undefined ? undefined : signalAbortReasonOf(signal)?.signal); };
+    const interrupt = (): void => { this.kill(pid); };
     if (signal?.aborted) interrupt();
     signal?.addEventListener('abort', interrupt, { once: true });
     try {

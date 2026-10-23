@@ -4,6 +4,8 @@
 // holds it: the command gets the bytes on its first run, prints what it
 // printed before that read once, and ends with its own status after its
 // asynchronous work. Its next launch stages the file and runs as a one-shot.
+// The read is readFileSync after an accessSync of the file, a require() of a
+// JSON file, or a readSync of a descriptor.
 //
 // Each file lies outside the working tree and is named only on the command
 // line, so no launch rule stages it before a run has read it.
@@ -15,14 +17,33 @@ import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, str
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('node/new/sync-miss-reruns');
 
-const PAYLOAD = { x: `x-${crypto.randomUUID()}`, y: `y-${crypto.randomUUID()}` };
-// Its status is its second argument, set after its asynchronous work.
-const PROGRAM = `
+const PAYLOAD = Object.fromEntries(['x', 'y', 'w'].map((name) => [name, `${name}-${crypto.randomUUID()}`]));
+const JSON_VALUE = `z-${crypto.randomUUID()}`;
+// Each prints BEFORE, reads its file synchronously, and after its asynchronous
+// work prints what it read and ends with its second argument as its status.
+const PROGRAMS = {
+  'read.js': `
 const fs = require('fs');
+fs.accessSync(process.argv[2]);
 console.log('BEFORE');
 const text = fs.readFileSync(process.argv[2], 'utf8').trim();
 setTimeout(() => { console.log('READ=' + text); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
-`;
+`,
+  'require.js': `
+console.log('BEFORE');
+const value = require(process.argv[2]).value;
+setTimeout(() => { console.log('READ=' + value); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
+`,
+  'descriptor.js': `
+const fs = require('fs');
+console.log('BEFORE');
+const fd = fs.openSync(process.argv[2], 'r');
+const bytes = Buffer.alloc(256);
+const text = bytes.subarray(0, fs.readSync(fd, bytes, 0, 256, 0)).toString().trim();
+fs.closeSync(fd);
+setTimeout(() => { console.log('READ=' + text); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
+`,
+};
 const lines = (text) => stripAnsi(text).split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('[nimbus-debug]'));
 
 const sid = await mintSession();
@@ -31,19 +52,27 @@ const t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  for (const line of ['mkdir -p /home/user/d21/app /home/user/d21-data', heredocCommand('/home/user/d21-data/x.txt', PAYLOAD.x),
-    heredocCommand('/home/user/d21-data/y.txt', PAYLOAD.y), heredocCommand('/home/user/d21/app/main.js', PROGRAM), 'cd /home/user/d21/app']) {
+  for (const line of ['mkdir -p /home/user/d21/app /home/user/d21-data',
+    ...Object.entries(PAYLOAD).map(([name, text]) => heredocCommand(`/home/user/d21-data/${name}.txt`, text)),
+    heredocCommand('/home/user/d21-data/z.json', JSON.stringify({ value: JSON_VALUE })),
+    ...Object.entries(PROGRAMS).map(([name, code]) => heredocCommand(`/home/user/d21/app/${name}`, code)), 'cd /home/user/d21/app']) {
     const r = await t.run(line, 30_000);
     if (r.exitCode !== 0) throw new Error(`setup failed: ${line.slice(0, 60)}: ${r.output.slice(-300)}`);
   }
   // A status of 0 shows the output as it was printed; another status shows the process's log again under it.
-  for (const [run, file, status] of [['first', 'x', 0], ['second', 'x', 0], ['another file', 'y', 3]]) {
-    const r = await t.run(`node main.js /home/user/d21-data/${file}.txt ${status}`, 120_000);
+  for (const [run, program, file, expected, status] of [
+    ['first', 'read.js', 'x.txt', PAYLOAD.x, 0],
+    ['second', 'read.js', 'x.txt', PAYLOAD.x, 0],
+    ['another file, status 3', 'read.js', 'y.txt', PAYLOAD.y, 3],
+    ['a require', 'require.js', 'z.json', JSON_VALUE, 0],
+    ['a descriptor', 'descriptor.js', 'w.txt', PAYLOAD.w, 0],
+  ]) {
+    const r = await t.run(`node ${program} /home/user/d21-data/${file} ${status}`, 120_000);
     const said = lines(r.output);
     console.log(JSON.stringify({ run, exit: r.exitCode, said }));
     a.check(`${run} run: it read the file, after its asynchronous work, and ended with its own status (${status})`,
-      said.includes(`READ=${PAYLOAD[file]}`) && r.exitCode === status, JSON.stringify({ exit: r.exitCode, said }));
-    a.check(`${run} run: no read failed`, !said.some((line) => /EAGAIN|never staged/.test(line)), JSON.stringify(said));
+      said.includes(`READ=${expected}`) && r.exitCode === status, JSON.stringify({ exit: r.exitCode, said }));
+    a.check(`${run} run: no read failed`, !said.some((line) => /EAGAIN|never staged|did not retrace/.test(line)), JSON.stringify(said));
     if (status === 0) {
       a.check(`${run} run: what it printed is shown once`,
         said.filter((line) => line === 'BEFORE').length === 1 && said.filter((line) => line.startsWith('READ=')).length === 1, JSON.stringify(said));
