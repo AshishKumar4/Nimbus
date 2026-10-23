@@ -127,6 +127,9 @@ class FacetProcessHost {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
     }
+    callRunner(params, consume) {
+        return processes(this.ctx, this.env).callRunner(() => supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
+    }
     async open(params) {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
@@ -304,6 +307,14 @@ class PeerProcessHost {
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
             return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
+        });
+    }
+    /** In the coordinator, as runOnce: a runner has no residency to place. */
+    callRunner(params, consume) {
+        return this.reconcile().then(() => {
+            if (this.closed)
+                throw new Error('Nimbus: the process host is closed');
+            return processes(this.ctx, this.env).callRunner(() => supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
         });
     }
     async open(params) {

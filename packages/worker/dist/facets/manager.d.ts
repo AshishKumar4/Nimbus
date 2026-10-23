@@ -49,6 +49,8 @@ import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '
 import { ProcessJournals } from '../session/process-journals.js';
 import { type ProcessEnvKeeping, type ResolveProcessEnv } from './process-env.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { SessionRunnerOptions, SessionRunnerResult, SessionRunnerRunOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type RunnerSpec } from './runners.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
 /**
  * The filesystem a launch's module map is built from: the process's bound
@@ -288,6 +290,20 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     /** Wasm images the generated main module imports and parks in the seam. */
     wasmImports?: readonly FacetWasmImport[];
 }, usesSqlite: boolean, sources: NodeFacetSources, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
+/**
+ * Generate a runner's main module (FacetManager.runnerRun): a node process
+ * that runs no entry. Its first call boots it as a one-shot boots (its
+ * store in its heap, its output captured), and every call runs its code as
+ * a line typed at the node REPL (runtime/js-repl.ts): compiled by the
+ * runtime-code service's compileReplLine, with top-level `await`, its
+ * declarations kept on the global object, `require` from the working
+ * directory. A call takes an ACQUIRE first, so its code reads what the
+ * session holds now, and makes its writes durable before it answers, as a
+ * resident's request does (RUNNING_FLUSH_SOURCE). Nothing it leaves pending
+ * (a timer) runs after it answers: the platform runs a worker's code only
+ * within a request. Each answer carries the isolate's boot id.
+ */
+export declare function generateRunnerCode(vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports: readonly FacetWasmImport[]): Promise<GeneratedNodeFacetCode>;
 /**
  * Result of preparing facet VFS state.
  *   - bundle:   path → content for the complete static require closure
@@ -1231,6 +1247,10 @@ export declare class FacetManager {
     private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
+    /** The session's runners, by id (runnerRun). */
+    private readonly runners;
+    /** Names this incarnation's runner workers: a later one never enters them, whose SUPERVISOR names this one. */
+    private readonly runnerIncarnation;
     private _pairedServeFacet;
     private readonly launchBundles;
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
@@ -1883,6 +1903,42 @@ export declare class FacetManager {
     private _launchStage;
     /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
     private _launchEnded;
+    /**
+     * Run `code` in runner `id`: a warm node process the session keeps under
+     * a Loader key of its own (session, runner, generation), which runs each
+     * call's code as a REPL line (generateRunnerCode) and holds no Dynamic
+     * Worker between calls. One runner runs its calls one at a time, in order,
+     * and keeps what each leaves for the next; nothing isolates them. It is
+     * made at its first call, from what `resolve` makes of the options it was
+     * asked for (`asked`); a later call that asks for other options is
+     * refused. A call that loses the runner's worker (past its CPU or wall
+     * limit, a kill, process.exit, any failure of its worker) ends that
+     * generation, and the next call makes a new one. An answer is `fresh`
+     * when its code ran in an isolate no earlier call of the runner ran in:
+     * the first call, the one after a loss, and the one after the platform
+     * dropped an idle worker.
+     */
+    runnerRun(id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+    /**
+     * End runner `id`: whether there was one. A call it is running is ended as
+     * a kill ends one, and the calls still in its line are refused.
+     */
+    runnerClose(id: string): boolean;
+    private _runnerCall;
+    /**
+     * A new generation of `runner`: its process, its bundle and map, prepared
+     * under its share of the credit before it holds a worker, and its writer.
+     */
+    private _runnerGeneration;
+    /**
+     * One call on `generation`'s worker. Its first load is a launch's: its map
+     * parked, under its share of the credit, until the launch is let in on the
+     * ledger, and made again if running work reclaims it meanwhile. A warm
+     * call holds only its worker.
+     */
+    private _runnerEnter;
+    /** `runner`'s generation is over: its process ends with `ending`, and what it held goes. */
+    private _runnerRetire;
     /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
@@ -1973,7 +2029,19 @@ export declare class FacetManager {
      * for that load as it waits for any running work's credit.
      */
     private _parkOneShotMap;
-    /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
+    /**
+     * `entry`'s map from the bundle `bundle` holds, by `prepare`, under its
+     * launch's share of the credit, taken before it holds a worker. A map that
+     * needs more credit than its build took is made again from a bundle built
+     * under that much (OneShotAllocationNeeded), and one over the ceiling from
+     * a bundle built under it (ModuleMapOverCeilingError), each once.
+     */
+    private _prepareUnderCredit;
+    /**
+     * Generate before waiting for a worker, keeping only the map's retained
+     * share until the load takes it. `generate` makes its main module: by
+     * default a one-shot's run of `code`.
+     */
     private _prepareOneShotCode;
     private _execViaLoader;
     /**

@@ -10,7 +10,7 @@ import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
  */
 export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
-import { SessionResults, SessionSuccessSchema, SessionFailureSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { SessionResults, SessionSuccessSchema, SessionFailureSchema, RunnerIdSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { decodeProgramStream, PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
 import { feedProgramInput } from '@nimbus-sh/core/runtime/program-start.js';
 import { z } from 'zod/v4';
@@ -184,6 +184,8 @@ export class NimbusSandbox {
             _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
             _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
             _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
+            _rpcRunnerRun: (id, code, runner, options) => this.remoteRpc('runnerRun', [id, code, runner, options]),
+            _rpcRunnerClose: (id) => this.remoteRpc('runnerClose', [id]),
             // A credential rides the wire as a trailing `{ cred }` options object
             // so the payload names it explicitly; the remote dispatcher decides
             // what to do with it (today: refuse, as it refuses `cred` on exec).
@@ -386,6 +388,27 @@ export class NimbusSandbox {
             language,
             install: options.install ?? 'never',
         }));
+    }
+    /**
+     * A runner: a warm node process that runs each call's code as a line of
+     * the node REPL, in about 10 ms when warm (docs/sandbox-sdk.md,
+     * "Runners"). It is made at its first call, and made again, fresh, after a
+     * call loses it. Calls that hold the same id share one runner.
+     */
+    runner(options = {}) {
+        const { id = crypto.randomUUID(), ...asked } = options;
+        const parsed = RunnerIdSchema.safeParse(id);
+        if (!parsed.success)
+            throw new TypeError(`runner: an id is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(id)}`);
+        const runner = { ...asked, cwd: resolveSandboxCwd(this.root, asked.cwd ?? this.root) };
+        return {
+            id: parsed.data,
+            run: async (code, call = {}) => {
+                await this.ready();
+                return this.rpc(this.stub()._rpcRunnerRun(parsed.data, code, runner, call));
+            },
+            close: async () => (await this.rpc(this.stub()._rpcRunnerClose(parsed.data))).closed,
+        };
     }
     async destroy(options = {}) {
         this.readyPromise = null;

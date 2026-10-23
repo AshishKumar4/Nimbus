@@ -10,7 +10,7 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 export type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ExecChunk, type ExecExit, type ExecStream, type ExecOutput } from '@nimbus-sh/core/runtime/exec-stream.js';
-import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionMkdirOptions as NimbusMkdirOptions, type SessionFollowOptions as NimbusFollowOptions, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRunnerOptions, type SessionRunnerRunOptions, type SessionRunnerResult, type SessionRunnerError, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionMkdirOptions as NimbusMkdirOptions, type SessionFollowOptions as NimbusFollowOptions, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
 export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusMkdirOptions, NimbusFollowOptions, NimbusRuntimeSummary, NimbusAvailableRuntime, };
 import { type NimbusConfig, type NimbusCodeLanguage, type RuntimeSpec } from '@nimbus-sh/config/sandbox';
@@ -101,6 +101,36 @@ export type NimbusExecExit = ExecExit;
  */
 export type NimbusExecStream = ExecStream;
 export type NimbusExecResult = ExecOutput;
+/**
+ * A runner's options (`sandbox.runner`): its id (a new UUID by default), and
+ * where its process runs, fixed for its life. `cwd` resolves against the
+ * sandbox root, as exec's does.
+ */
+export interface NimbusRunnerOptions extends SessionRunnerOptions {
+    id?: string;
+}
+/** One runner call's limits: `timeoutMs` (none by default) and `cpuMs` (5,000 by default). */
+export type NimbusRunnerRunOptions = SessionRunnerRunOptions;
+/** One runner call's answer; see `NimbusRunner.run`. */
+export type NimbusRunnerResult = SessionRunnerResult;
+export type NimbusRunnerError = SessionRunnerError;
+/**
+ * A warm node process in the sandbox that runs each call's code as a line
+ * of the node REPL (docs/sandbox-sdk.md, "Runners").
+ */
+export interface NimbusRunner {
+    readonly id: string;
+    /**
+     * Run `code`: its last expression's value, as `util.inspect` shows it, and
+     * what it wrote and threw. What a call declares or sets on `globalThis`
+     * stays for the next call; nothing isolates one call from another. A
+     * `fresh` answer ran in a new runner, where nothing an earlier call left
+     * is there.
+     */
+    run(code: string, options?: NimbusRunnerRunOptions): Promise<NimbusRunnerResult>;
+    /** End the runner: whether there was one. A call it is running is ended. */
+    close(): Promise<boolean>;
+}
 /** A session's terminal (`sandbox.terminals.list()`): its own is `name: null`. */
 export type NimbusTerminal = SessionTerminal;
 export interface NimbusProcessAttachOptions {
@@ -223,6 +253,13 @@ export declare class NimbusSandbox {
     runCode(code: string, options?: Omit<SessionRunCodeOptions, 'preinstall' | 'shellRoot' | 'language'> & {
         language?: NimbusCodeLanguage;
     }): Promise<NimbusExecResult>;
+    /**
+     * A runner: a warm node process that runs each call's code as a line of
+     * the node REPL, in about 10 ms when warm (docs/sandbox-sdk.md,
+     * "Runners"). It is made at its first call, and made again, fresh, after a
+     * call loses it. Calls that hold the same id share one runner.
+     */
+    runner(options?: NimbusRunnerOptions): NimbusRunner;
     destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
     /**
      * The session file plane. Every method acts as the session's user:

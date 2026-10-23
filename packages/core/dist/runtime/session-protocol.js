@@ -170,6 +170,33 @@ export const ExitStatusSchema = z.union([
     z.object({ code: z.null(), signal: z.string() }),
 ]);
 const RemovedAppSchema = z.object({ owner: z.string(), removed: z.boolean(), port: z.number().nullable() });
+/** A runner's id: 1 to 64 of A-Z a-z 0-9 . _ - (a UUID fits). */
+export const RunnerIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
+/**
+ * What a runner call threw, or why it failed: an Error's name, message,
+ * stack and code; another thrown value as `util.inspect` shows it, in
+ * `message` alone. A runner's own failure has a code ERR_NIMBUS_RUNNER_*.
+ */
+export const SessionRunnerErrorSchema = z.object({
+    message: z.string(),
+    name: z.string().optional(),
+    stack: z.string().optional(),
+    code: z.string().optional(),
+});
+/**
+ * One runner call's answer: its value as `util.inspect` shows it (absent
+ * when it threw), what it wrote, what it threw, whether it ran in a new
+ * runner (`fresh`: nothing an earlier call left is there), and how long the
+ * call took in the session, in ms.
+ */
+export const SessionRunnerResultSchema = z.object({
+    value: z.string().optional(),
+    stdout: z.string(),
+    stderr: z.string(),
+    error: SessionRunnerErrorSchema.optional(),
+    fresh: z.boolean(),
+    ms: z.number(),
+});
 const FileBytesSchema = z.instanceof(Uint8Array);
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
 const SessionResultSchemas = {
@@ -179,6 +206,8 @@ const SessionResultSchemas = {
     startProcess: SessionStartResultSchema,
     detachExec: z.object({ detached: z.boolean() }),
     runCode: ExecOutputSchema,
+    runnerRun: SessionRunnerResultSchema,
+    runnerClose: z.object({ closed: z.boolean() }),
     readFile: z.string().nullable(),
     readFileBytes: FileBytesSchema.nullable(),
     writeFile: z.number(), // The committed filesystem revision, not a byte count.

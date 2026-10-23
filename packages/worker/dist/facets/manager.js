@@ -104,6 +104,8 @@ import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-pr
 import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
+import { REPL_IMPORT } from '@nimbus-sh/core/runtime/js-repl-names.js';
+import { RUNNER_CPU_MS, RunnerAnswerSchema, RunnerCallEnded, runnerExited, runnerFailure, runnerOptionsKey } from './runners.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, ProcessNotAdmitted, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -1397,46 +1399,14 @@ export function facetWasmImportsSource(wasmImports) {
         + `\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
-export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
-    const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-    const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble, opts.node?.check === true);
-    // No env: a process's environment is its own (ask 62), and this source is
-    // content-addressed into an image every process can read. It travels in
-    // the start payload (startArgs.env), in memory.
-    const args = {
-        argv: opts.argv || [],
-        nodeCommandLine: opts.node ?? null,
-        cwd: opts.cwd || '/home/user',
-        filename: opts.filename || '<script>',
-        dirname: opts.dirname || opts.cwd || '/home/user',
-        stdin: opts.stdin || '',
-        attachedTty: opts.attachedTty === true,
-        cred: opts.cred,
-    };
-    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
-    const source = moduleSource `
-import { DurableObject } from "cloudflare:workers";
-${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
-const __NIMBUS_ARGS = ${jsonDataLiteral(args)};
-
-// \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
-// adopted it. Holding both is the double materialisation: the module map's text
-// and this object are the same bytes twice. The code cells the store adopts
-// are getters over the map's own module text.
-let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
-
-// The shared read profile's files this launch staged; each is struck off
-// when read, and what is left at exit is reported unread (read-profile.ts).
-let __nimbusProfileStaged = null;
-// This facet's store: one process, one store, for the life of the isolate.
-const __resident = __nimbusResidentModule.createResidentStore({
-  observeRead: (path) => { if (__nimbusProfileStaged !== null) __nimbusProfileStaged.delete(path); },
-});
-
-let __nimbusStarted = false;
-let __nimbusStarting = null;
+/**
+ * How a node process that outlives its requests (a resident, a runner) makes
+ * what a request did durable before answering it: the program's writes and
+ * output, then what it learned for its next launch. `__nimbusRuntime` is set
+ * once the process has started.
+ */
+const RUNNING_FLUSH_SOURCE = `
 let __nimbusRuntime = null;
-let __nimbusAttachedLifecycle = null;
 
 // The platform's timer, captured at module evaluation, before the shims wrap
 // setTimeout in the resumption barrier. The flush below yields turns for its
@@ -1494,6 +1464,48 @@ async function __nimbusFlushRuntime() {
   rt.pendingDrainChain = __pendingDrain.catch(() => {});
   await __pendingDrain;
 }
+`;
+export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
+    const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
+    const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble, opts.node?.check === true);
+    // No env: a process's environment is its own (ask 62), and this source is
+    // content-addressed into an image every process can read. It travels in
+    // the start payload (startArgs.env), in memory.
+    const args = {
+        argv: opts.argv || [],
+        nodeCommandLine: opts.node ?? null,
+        cwd: opts.cwd || '/home/user',
+        filename: opts.filename || '<script>',
+        dirname: opts.dirname || opts.cwd || '/home/user',
+        stdin: opts.stdin || '',
+        attachedTty: opts.attachedTty === true,
+        cred: opts.cred,
+    };
+    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
+    const source = moduleSource `
+import { DurableObject } from "cloudflare:workers";
+${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
+const __NIMBUS_ARGS = ${jsonDataLiteral(args)};
+
+// \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
+// adopted it. Holding both is the double materialisation: the module map's text
+// and this object are the same bytes twice. The code cells the store adopts
+// are getters over the map's own module text.
+let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
+
+// The shared read profile's files this launch staged; each is struck off
+// when read, and what is left at exit is reported unread (read-profile.ts).
+let __nimbusProfileStaged = null;
+// This facet's store: one process, one store, for the life of the isolate.
+const __resident = __nimbusResidentModule.createResidentStore({
+  observeRead: (path) => { if (__nimbusProfileStaged !== null) __nimbusProfileStaged.delete(path); },
+});
+
+let __nimbusStarted = false;
+let __nimbusStarting = null;
+let __nimbusAttachedLifecycle = null;
+
+${RUNNING_FLUSH_SOURCE}
 
 async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
   if (__nimbusStarted) return;
@@ -1833,6 +1845,169 @@ export class NimbusProcess extends DurableObject {
         modules: bundleSource.modules,
         codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
         esModules: { ...bundleSource.esModules, ...bundleSource.esCells, ...entry.esCells },
+    };
+}
+/**
+ * The member of a runner's map that holds what its process boots with
+ * (RunnerBoot, and the manifests), apart from the runtime's code.
+ */
+const RUNNER_BOOT_MODULE = 'nimbus-runner-boot.js';
+/** The entry code a runner's bundle is built for: none of its own, under a key of its own (_buildProcessBundle). */
+const RUNNER_ENTRY = '// a Nimbus runner: each call runs its code as a REPL line\n';
+/**
+ * Generate a runner's main module (FacetManager.runnerRun): a node process
+ * that runs no entry. Its first call boots it as a one-shot boots (its
+ * store in its heap, its output captured), and every call runs its code as
+ * a line typed at the node REPL (runtime/js-repl.ts): compiled by the
+ * runtime-code service's compileReplLine, with top-level `await`, its
+ * declarations kept on the global object, `require` from the working
+ * directory. A call takes an ACQUIRE first, so its code reads what the
+ * session holds now, and makes its writes durable before it answers, as a
+ * resident's request does (RUNNING_FLUSH_SOURCE). Nothing it leaves pending
+ * (a timer) runs after it answers: the platform runs a worker's code only
+ * within a request. Each answer carries the isolate's boot id.
+ */
+export async function generateRunnerCode(vfsState, usesSqlite, sources, wasmImports) {
+    const bundleSource = await facetVfsBundleSourceFor(vfsState);
+    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: 'null' });
+    const source = moduleSource `
+import { WorkerEntrypoint } from "cloudflare:workers";
+${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
+import __NIMBUS_RUNNER from ${JSON.stringify(`./${RUNNER_BOOT_MODULE}`)};
+
+let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
+// This isolate's: the runner's owner tells by it that an isolate was lost.
+const __nimbusRunnerBoot = crypto.randomUUID();
+// The process's store, in this isolate's heap, for as long as the isolate lives.
+const __resident = __nimbusResidentModule.createResidentStore();
+${RUNNING_FLUSH_SOURCE}
+let __nimbusRunnerStart = null;
+
+// Boot the process, and answer the function that runs one call's code.
+async function __nimbusRunnerStarted(workerEnv) {
+  const { argv, env, cwd: _cwd, cred, pid, vfsCursor: __MODULE_VFS_CURSOR, dataPlan, manifests } = __NIMBUS_RUNNER;
+  const nodeCommandLine = null;
+  const filename = "<eval>";
+  const dirname = _cwd;
+  const stdin = "";
+  const captureOutput = true;
+  const __nimbusProcessId = pid;
+  const __nimbusLiveInputPid = 0;
+  const __nimbusStdinWhole = false;
+  const __nimbusStdinAtLeast = 0;
+  const __nimbusStdinFile = null;
+${VFS_CURSOR_SEED_SOURCE}
+  __nimbusStopReplay.begin({ captured: true });
+  const __supervisor = workerEnv?.SUPERVISOR
+    ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR, __nimbusTrackOp)) : null;
+  // Sent as the code is made; each call's flush waits for what is still on its way.
+  __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor).catch(() => {});
+  globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
+  __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+  __resident.admission.setStorage(undefined, __supervisor);
+  __resident.namespace.setCred(cred);
+  __resident.sync.setPlan(dataPlan);
+  __resident.sync.setManifests(manifests);
+  __resident.sync.setPushRoots([_cwd, "/tmp"]);
+  const __residentBooted = await __resident.sync.boot(
+    () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
+    __MODULE_VFS_CURSOR,
+    __supervisor,
+    ${bundleSource.storageBytes},
+  );
+  if (__residentBooted.cursor) {
+    globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+  }
+  const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
+  if (__namespaceFailure) throw new Error(__namespaceFailure);
+${nodeProgramRuntime(sources, false)}
+  __nimbusStopReplay.arm(false, "is a runner's, which Nimbus does not run again");
+  // The REPL's globals (runtime/js-repl.ts): the require of the working
+  // directory, and an import() that resolves as from a module there.
+  const __runnerRequire = __nimbusMakeRequire(mod);
+  globalThis.require = __runnerRequire;
+  const __runnerModule = __pathMod.join(cwd, "repl");
+  const __runnerParent = __nimbusFileHref(__runnerModule);
+  Object.defineProperty(globalThis, ${JSON.stringify(REPL_IMPORT)}, {
+    value: (specifier, options) => globalThis.__nimbusDynamicImport(__runnerParent, specifier, options),
+  });
+  const __runnerInspect = __runnerRequire("node:util").inspect;
+  // What a thrown value is, as the call answers it: an Error's name,
+  // message, stack and code, or any other value as the REPL shows it.
+  const __runnerError = (thrown) => {
+    try {
+      if (!(thrown instanceof Error)) return { message: String(__runnerInspect(thrown)) };
+      const error = { name: String(thrown.name), message: String(thrown.message) };
+      if (typeof thrown.stack === "string") error.stack = thrown.stack;
+      if (typeof thrown.code === "string") error.code = thrown.code;
+      return error;
+    } catch {
+      // Its own getters threw (a Proxy, a getter that throws): the code's value, not the runner's failure.
+      return { message: "the code threw a value that cannot be described" };
+    }
+  };
+  // What nothing awaits throws while a call runs: on that call's stderr, and
+  // the runner goes on, as Node's REPL does.
+  const __runnerUncaught = (thrown) => {
+    const error = __runnerError(thrown);
+    stderr += "Uncaught " + (error.stack ?? (error.name === undefined ? error.message : error.name + ": " + error.message)) + "\\n";
+  };
+  __processMod.on("uncaughtException", __runnerUncaught);
+  __processMod.on("unhandledRejection", __runnerUncaught);
+  __nimbusRuntime = {
+    supervisor: __supervisor,
+    pendingIO: __pendingIO,
+    outputPending: __outputPending,
+    vfsWrites: __vfsWrites,
+    flushVfsWrite: __nimbusFlushVfsWrite,
+    drainVfsMutations: __nimbusDrainVfsMutations,
+    pendingDrainChain: Promise.resolve(),
+  };
+  return async (code) => {
+    stdout = "";
+    stderr = "";
+    // What the session changed since the last call, before the code reads anything.
+    await __nimbusInboundBarrier(undefined, false);
+    await __nimbusStageRequests(code, __vfsKey(__runnerModule));
+    let value;
+    let error;
+    let exited;
+    try {
+      const run = globalThis.__nimbusRuntimeCode.compileReplLine(code);
+      if (run === null) throw new SyntaxError("Unexpected end of input");
+      const result = await __nimbusReflectApply(run, globalThis, []);
+      value = String(__runnerInspect(result === undefined ? undefined : result.value));
+    } catch (thrown) {
+      if (thrown instanceof __ProcessExit) exited = thrown.code;
+      else error = __runnerError(thrown);
+    }
+    try {
+      await __nimbusFlushRuntime();
+    } catch (failure) {
+      // A change the code was told succeeded did not reach the session: the call failed.
+      value = undefined;
+      error ??= __runnerError(failure);
+    }
+    return { value, stdout, stderr, error, exited };
+  };
+}
+
+export default class extends WorkerEntrypoint {
+  async run(input, ended) {
+    // A call its owner ends (a timeout, a kill) aborts this isolate where it stands, as a one-shot's run does.
+    ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
+    const turn = await (__nimbusRunnerStart ??= __nimbusRunnerStarted(this.env));
+    return { boot: __nimbusRunnerBoot, ...(await turn(String(input.code))) };
+  }
+}
+`;
+    return {
+        source,
+        get code() { return source.text; },
+        immutableModules: runtime.immutableModules,
+        modules: bundleSource.modules,
+        codeModules: { ...bundleSource.codeModules, ...runtime.modules },
+        esModules: { ...bundleSource.esModules, ...bundleSource.esCells },
     };
 }
 /** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
@@ -4567,6 +4742,10 @@ export class FacetManager {
     launching = new Map();
     launchTasks = new Set();
     launchesClosed = false;
+    /** The session's runners, by id (runnerRun). */
+    runners = new Map();
+    /** Names this incarnation's runner workers: a later one never enters them, whose SUPERVISOR names this one. */
+    runnerIncarnation = crypto.randomUUID();
     // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
     // spawn created as an OS-child of the attach TUI. When the attach process
     // exits (reported / killed), its serve facet is torn down with it.
@@ -6679,33 +6858,10 @@ export class FacetManager {
             // takes it again for its run.
             let brokered = suspendLaunchAdmission(this.ctx, entry.pid);
             let vfsState;
-            const prepare = () => withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
-                let resized = false;
-                let rebuilt = false;
-                for (;;) {
-                    try {
-                        return await this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
-                    }
-                    catch (error) {
-                        if (error instanceof OneShotAllocationNeeded) {
-                            if (resized)
-                                throw new Error('Nimbus: a regenerated one-shot map exceeded its measured supervisor credit');
-                            resized = true;
-                            if (!vfsState.cacheRetained)
-                                releaseGeneratedSources(vfsState);
-                            this._releaseBuildAdmission(entry.pid);
-                            const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true, this._allocationOwner(entry.pid));
-                            this.buildAdmissions.set(entry.pid, admission);
-                            vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-                            continue;
-                        }
-                        if (!(error instanceof ModuleMapOverCeilingError) || rebuilt)
-                            throw error;
-                        rebuilt = true;
-                        vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
-                    }
-                }
-            });
+            const prepare = () => this._prepareUnderCredit(entry, bundleSpec, pacer, {
+                get: () => vfsState,
+                set: (state) => { vfsState = state; },
+            }, (state) => this._prepareOneShotCode(code, launch, entry, state, pacer, diagSink));
             const prepareAgain = async () => {
                 this._launchStage(entry, 'prepare', abortController.signal);
                 if (vfsState.generatedSourcesReleased)
@@ -7030,6 +7186,215 @@ export class FacetManager {
         if (launch?.stall)
             clearTimeout(launch.stall);
         this.launching.delete(pid);
+    }
+    // ── Runners ───────────────────────────────────────────────────────────
+    /**
+     * Run `code` in runner `id`: a warm node process the session keeps under
+     * a Loader key of its own (session, runner, generation), which runs each
+     * call's code as a REPL line (generateRunnerCode) and holds no Dynamic
+     * Worker between calls. One runner runs its calls one at a time, in order,
+     * and keeps what each leaves for the next; nothing isolates them. It is
+     * made at its first call, from what `resolve` makes of the options it was
+     * asked for (`asked`); a later call that asks for other options is
+     * refused. A call that loses the runner's worker (past its CPU or wall
+     * limit, a kill, process.exit, any failure of its worker) ends that
+     * generation, and the next call makes a new one. An answer is `fresh`
+     * when its code ran in an isolate no earlier call of the runner ran in:
+     * the first call, the one after a loss, and the one after the platform
+     * dropped an idle worker.
+     */
+    runnerRun(id, asked, resolve, code, options) {
+        const key = runnerOptionsKey(asked);
+        let runner = this.runners.get(id);
+        if (runner === undefined) {
+            runner = { asked: key, spec: resolve(), queue: Promise.resolve(), generations: 0, live: null, closed: false };
+            this.runners.set(id, runner);
+        }
+        else if (runner.asked !== key) {
+            return Promise.reject(new TypeError(`runner '${id}' was made with other options; close it, or use another id`));
+        }
+        const record = runner;
+        const call = record.queue.then(() => this._runnerCall(id, record, code, options));
+        record.queue = call.then(() => { }, () => { });
+        return call;
+    }
+    /**
+     * End runner `id`: whether there was one. A call it is running is ended as
+     * a kill ends one, and the calls still in its line are refused.
+     */
+    runnerClose(id) {
+        const runner = this.runners.get(id);
+        if (runner === undefined)
+            return false;
+        this.runners.delete(id);
+        runner.closed = true;
+        this._runnerRetire(runner, { code: 0, killed: true });
+        return true;
+    }
+    async _runnerCall(id, runner, code, options) {
+        const began = Date.now();
+        const cpuMs = options.cpuMs ?? RUNNER_CPU_MS;
+        for (;;) {
+            if (runner.closed)
+                throw new Error(`runner '${id}' was closed`);
+            // Its process ended between calls (a kill, the session's teardown): that generation is over.
+            if (runner.live !== null && this.processes.get(runner.live.pid)?.state !== 'running')
+                this._runnerRetire(runner, { code: 0 });
+            const generation = runner.live ?? await this._runnerGeneration(id, runner);
+            runner.live = generation;
+            if (runner.closed) {
+                this._runnerRetire(runner, { code: 0 });
+                throw new Error(`runner '${id}' was closed`);
+            }
+            const ended = new AbortController();
+            this.processes.setTerminator(generation.pid, () => ended.abort(new RunnerCallEnded('killed')));
+            const timeoutMs = options.timeoutMs;
+            const timer = timeoutMs === undefined ? undefined : setTimeout(() => ended.abort(new RunnerCallEnded('timeout', timeoutMs)), timeoutMs);
+            let sent = false;
+            try {
+                const answer = await this._runnerEnter(generation, code, cpuMs, ended.signal, () => { sent = true; });
+                const fresh = answer.boot !== generation.boot;
+                generation.boot = answer.boot;
+                const ms = Date.now() - began;
+                if (answer.exited !== undefined) {
+                    this._runnerRetire(runner, { code: answer.exited });
+                    return { stdout: answer.stdout, stderr: answer.stderr, error: runnerExited(answer.exited), fresh, ms };
+                }
+                return { value: answer.value, stdout: answer.stdout, stderr: answer.stderr, error: answer.error, fresh, ms };
+            }
+            catch (thrown) {
+                const error = thrown instanceof Error ? thrown : new Error(String(thrown));
+                // The loader asked again for a worker it had loaded: it dropped it while idle, with what it held. A new one runs the call.
+                if (generation.dropped) {
+                    this._runnerRetire(runner, { code: 0 });
+                    continue;
+                }
+                // Refused before it was sent (the ledger's deadlock): no answer of the runner's, as a launch refused there.
+                if (!sent && !(error instanceof RunnerCallEnded))
+                    throw error;
+                const failure = runnerFailure(error, cpuMs, sent);
+                if (sent || (ended.signal.reason instanceof RunnerCallEnded && ended.signal.reason.why === 'killed')) {
+                    this._runnerRetire(runner, { code: 1, cause: failure.message });
+                }
+                return { stdout: '', stderr: '', error: failure, fresh: generation.boot === null, ms: Date.now() - began };
+            }
+            finally {
+                clearTimeout(timer);
+            }
+        }
+    }
+    /**
+     * A new generation of `runner`: its process, its bundle and map, prepared
+     * under its share of the credit before it holds a worker, and its writer.
+     */
+    async _runnerGeneration(id, runner) {
+        const { spec } = runner;
+        const number = ++runner.generations;
+        const entry = this.processes.spawn(`node (runner ${id})`, [], spec.cwd, { cred: spec.cred, ...(spec.execId === undefined ? {} : { execId: spec.execId }) });
+        const pacer = this._launchPacer(entry.pid);
+        const bundleSpec = { scriptPath: undefined, cwd: spec.cwd, entryCode: RUNNER_ENTRY };
+        try {
+            let vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+            const prepare = () => this._prepareUnderCredit(entry, bundleSpec, pacer, {
+                get: () => vfsState,
+                set: (state) => { vfsState = state; },
+            }, (state) => this._prepareOneShotCode(RUNNER_ENTRY, { cwd: spec.cwd }, entry, state, pacer, undefined, generateRunnerCode));
+            const map = await prepare();
+            const dataPlan = await this._staticReadPlan(entry, vfsState, spec.cwd, spec.env.HOME, pacer);
+            const manifests = await this._installedManifests(entry, pacer);
+            const bundlePaths = vfsState.bundlePaths ?? [];
+            this.filesystem?.nameLaunch?.(entry, () => launchNames(spec.cwd, undefined, [], bundlePaths, []));
+            // What it reports missing as it runs is filed against its bundle, for the next generation.
+            if (vfsState.bundleKey)
+                this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
+            const writerId = crypto.randomUUID();
+            this._activateProcessVfsWriter(entry.pid, writerId);
+            const boot = { pid: entry.pid, argv: [], cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: vfsState.cursor ?? null, dataPlan };
+            return {
+                pid: entry.pid,
+                writerId,
+                key: `runner:${this.ctx.id.toString()}:${this.runnerIncarnation}:${id}:${number}`,
+                boot: null,
+                map,
+                prepareAgain: async () => {
+                    if (vfsState.generatedSourcesReleased)
+                        vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+                    else
+                        await this._holdMapShare(entry, vfsState);
+                    return prepare();
+                },
+                bootModule: `export default { ...${jsonDataLiteral(boot)}, manifests: JSON.parse(${JSON.stringify(manifests)}) };\n`,
+                pacer,
+                dropped: false,
+            };
+        }
+        catch (error) {
+            pacer.settle();
+            this._releaseBuildAdmission(entry.pid);
+            this._end(entry.pid, { code: 1, cause: `runner '${id}' could not start: ${errorMessage(error)}` });
+            throw error;
+        }
+    }
+    /**
+     * One call on `generation`'s worker. Its first load is a launch's: its map
+     * parked, under its share of the credit, until the launch is let in on the
+     * ledger, and made again if running work reclaims it meanwhile. A warm
+     * call holds only its worker.
+     */
+    async _runnerEnter(generation, code, cpuMs, signal, onSent) {
+        const call = () => this.processHost.callRunner({
+            pid: generation.pid,
+            writerId: generation.writerId,
+            key: generation.key,
+            code: async () => {
+                const map = generation.map;
+                generation.map = null;
+                if (map === null) {
+                    generation.dropped = true;
+                    throw new Error(`Nimbus: the loader dropped runner worker ${generation.key}`);
+                }
+                generation.pacer.settle();
+                const loaded = await map.code();
+                return { ...loaded, modules: { ...loaded.modules, [RUNNER_BOOT_MODULE]: generation.bootModule } };
+            },
+            input: { code },
+            cpuMs,
+            signal,
+            onSent,
+        }, (answer) => RunnerAnswerSchema.parse(answer));
+        for (;;) {
+            const map = generation.map;
+            if (map === null)
+                return call();
+            const parked = this._parkOneShotMap(generation.pid, map, signal);
+            try {
+                return await withLaunchAdmission(this.ctx, { pid: generation.pid }, parked.signal, () => {
+                    parked.unregister();
+                    parked.signal.throwIfAborted();
+                    return call();
+                }, parked.reclaimable);
+            }
+            catch (error) {
+                if (!parked.reclaimed || signal.aborted)
+                    throw error;
+                generation.map = await generation.prepareAgain();
+            }
+            finally {
+                parked.unregister();
+            }
+        }
+    }
+    /** `runner`'s generation is over: its process ends with `ending`, and what it held goes. */
+    _runnerRetire(runner, ending) {
+        const generation = runner.live;
+        if (generation === null)
+            return;
+        runner.live = null;
+        generation.pacer.settle();
+        this.launchBundles.delete(generation.pid);
+        this._releaseBuildAdmission(generation.pid);
+        this.revokeProcessVfsWriters(generation.pid, generation.writerId);
+        this._end(generation.pid, ending);
     }
     /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now = Date.now()) {
@@ -7470,8 +7835,48 @@ export class FacetManager {
             unregister: () => unregister(),
         };
     }
-    /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
-    async _prepareOneShotCode(code, opts, entry, vfsState, pacer, diagSink) {
+    /**
+     * `entry`'s map from the bundle `bundle` holds, by `prepare`, under its
+     * launch's share of the credit, taken before it holds a worker. A map that
+     * needs more credit than its build took is made again from a bundle built
+     * under that much (OneShotAllocationNeeded), and one over the ceiling from
+     * a bundle built under it (ModuleMapOverCeilingError), each once.
+     */
+    _prepareUnderCredit(entry, bundleSpec, pacer, bundle, prepare) {
+        return withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
+            let resized = false;
+            let rebuilt = false;
+            for (;;) {
+                try {
+                    return await prepare(bundle.get());
+                }
+                catch (error) {
+                    if (error instanceof OneShotAllocationNeeded) {
+                        if (resized)
+                            throw new Error('Nimbus: a regenerated one-shot map exceeded its measured supervisor credit');
+                        resized = true;
+                        if (!bundle.get().cacheRetained)
+                            releaseGeneratedSources(bundle.get());
+                        this._releaseBuildAdmission(entry.pid);
+                        const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true, this._allocationOwner(entry.pid));
+                        this.buildAdmissions.set(entry.pid, admission);
+                        bundle.set(await this._buildProcessBundle(entry, bundleSpec, pacer));
+                        continue;
+                    }
+                    if (!(error instanceof ModuleMapOverCeilingError) || rebuilt)
+                        throw error;
+                    rebuilt = true;
+                    bundle.set(await this._rebuildUnderCeiling(entry, bundleSpec, bundle.get(), error, pacer));
+                }
+            }
+        });
+    }
+    /**
+     * Generate before waiting for a worker, keeping only the map's retained
+     * share until the load takes it. `generate` makes its main module: by
+     * default a one-shot's run of `code`.
+     */
+    async _prepareOneShotCode(code, opts, entry, vfsState, pacer, diagSink, generate) {
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
         const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
         const bindingNames = vfsState.stagedBindings ?? [];
@@ -7482,7 +7887,8 @@ export class FacetManager {
             fetchNodeFacetSources(this.env),
         ]);
         const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-        const generated = await this._generateUnderCeiling(entry.pid, vfsState, moduleMemberBytes(sqliteModules) + memberBytes.wire + ONE_SHOT_HOST_ENTRY_BYTES, (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble, opts.node?.check === true), true);
+        const generated = await this._generateUnderCeiling(entry.pid, vfsState, moduleMemberBytes(sqliteModules) + memberBytes.wire + ONE_SHOT_HOST_ENTRY_BYTES, (state) => generate !== undefined ? generate(state, usesSqlite, sources, wasmImports)
+            : generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble, opts.node?.check === true), true);
         const textBytes = generatedMapRetainedBytes(generated, {});
         this._ensureOneShotShare(entry.pid, prefetchNeed(vfsState.rawBytes ?? 0, memberBytes.owned, textBytes));
         const wasmModules = await this._wasmModulesByValue(entry, wasmImports);
