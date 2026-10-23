@@ -6997,8 +6997,6 @@ var __nimbusResidentModule = (() => {
           return void 0;
         if (inode.state !== null)
           return inode.state.bytes === null ? void 0 : owned(inode.state.bytes, inode.state.size);
-        if (inode.key === inode.origin)
-          return void 0;
         const seen = viewed(inode);
         return seen?.bytes === void 0 ? void 0 : owned(seen.bytes, seen.row.size);
       },
@@ -7086,8 +7084,13 @@ var __nimbusResidentModule = (() => {
             }
           } else if (inode.records.length === retired.length) {
             const last = retired[retired.length - 1];
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-c821f21e0852fef5.js
             if (rewritten && inode.state?.bytes && ownValue(last, "after") !== void 0 && seen.row.type === "file" && seen.row.revision === ownValue(last, "after") && seen.row.size === inode.state.size && inode.state.bytes.length >= inode.state.size) {
               keeping[keeping.length] = { key: seen.name, row: seen.row, bytes: bytesView(inode.state.bytes, 0, inode.state.size) };
+========
+            if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision <= last.after && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
+              keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-dcee556b70faf1ae.js
             }
             dropRecords(inode, setOfList(retired));
             inode.row = (retired.length > 0 ? host2.absorb(seen.name, entryOf(inode)) : void 0) ?? seen.row;

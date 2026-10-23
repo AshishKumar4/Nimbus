@@ -134,8 +134,8 @@ function sequenced(bridge, pid, key, first) {
   assert.equal(kind, 'revoke');
   await sleep(10);
   assert.equal(published, false, 'the write was published before the holder answered its recall');
-  // Committed ahead of the answer, and held: another caller that cannot wait is refused.
-  assert.throws(() => s.kernel.readFile('home/user/d/a.txt'), (error) => error.code === 'EAGAIN');
+  // Not committed ahead of the answer: the write waits for the holder's recall, so another caller that cannot wait reads what is published.
+  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v1', 'the unpublished write is not visible');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v2');

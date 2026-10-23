@@ -1961,8 +1961,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const inode = inodeAtNumber(entry.dev, entry.ino);
       if (inode === undefined) return undefined;
       if (inode.state !== null) return inode.state.bytes === null ? undefined : owned(inode.state.bytes, inode.state.size);
-      // Moved here by a rename the view does not have yet: its bytes are the view's at the name it has it at, not this name's.
-      if (inode.key === inode.origin) return undefined;
+      // The view's bytes at the name it has the inode at: the same file under any name it has (a rename the view does not have yet included).
       const seen = viewed(inode);
       return seen?.bytes === undefined ? undefined : owned(seen.bytes, seen.row.size);
     },
@@ -2046,9 +2045,11 @@ export function provisional(host: ProvisionalHost): Provisional {
           // What it made of the bytes, whole, is the session's at the revision its last change was answered at:
           // the view's still where its row is at that revision.
           const last = retired[retired.length - 1]!;
-          if (rewritten && inode.state?.bytes && ownValue(last, 'after') !== undefined && seen.row.type === 'file' && seen.row.revision === ownValue(last, 'after')
-            && seen.row.size === inode.state.size && inode.state.bytes.length >= inode.state.size) {
-            keeping[keeping.length] = { key: seen.name, row: seen.row, bytes: bytesView(inode.state.bytes, 0, inode.state.size) };
+          // (Its row's revision is its own last change's: at or below the wave's, whose later ops changed other files.)
+          const after = rewritten && inode.state?.bytes ? ownValue(last, 'after') : undefined;
+          if (after !== undefined && seen.row.type === 'file' && seen.row.revision <= after
+            && seen.row.size === inode.state!.size && inode.state!.bytes!.length >= inode.state!.size) {
+            keeping[keeping.length] = { key: seen.name, row: seen.row, bytes: bytesView(inode.state!.bytes!, 0, inode.state!.size) };
           }
           dropRecords(inode, setOfList(retired));
           // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
