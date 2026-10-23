@@ -10,10 +10,10 @@
 //
 // Correctness claim under test: an entry serves again unless a change since
 // its build names something the build read (facets/launch-reads.ts), so it
-// (a) hits on exact repeats, (b) hits after a write to a file the program
-// never reads (a shell history line, an agent's file tool), and (c) misses
-// after a write to a file the program requires — it never serves a stale
-// bundle.
+// (a) hits on exact repeats, (b) hits after a write to a file the launch
+// never reads (outside its working tree, which it snapshots; the shell's
+// history file when the working tree is not home), and (c) misses after a
+// write to a file the program requires — it never serves a stale bundle.
 //
 // Note: cacheHit is the source of truth here, NOT wall-time. Wall-time on a
 // warm isolate is noisy (cold-start, registry, GC); the boolean cacheHit is
@@ -45,9 +45,11 @@ try {
   await t.waitForPrompt(60_000);
 
   // A stable command whose bundle/manifest is identical across runs: it
-  // requires a module of its own, and a file it never reads sits beside it.
-  await t.run('mkdir -p ~/cache-probe ~/notes && echo "module.exports = \'cache-probe\'" > ~/cache-probe/m.js && echo a > ~/notes/a.txt', 10_000);
-  const CMD = 'node -e "console.log(require(\'/home/user/cache-probe/m.js\'))"';
+  // requires a module of its own, from its project directory. A launch
+  // reads its working tree too (the project-data snapshot), so the file it
+  // never reads sits outside it.
+  await t.run('mkdir -p ~/cache-probe ~/notes && echo "module.exports = \'cache-probe\'" > ~/cache-probe/m.js && echo a > ~/notes/a.txt && cd ~/cache-probe', 10_000);
+  const CMD = 'node -e "console.log(require(\'./m.js\'))"';
 
   await reset();
   const r1 = await t.run(CMD, 30_000);
