@@ -26,6 +26,7 @@ import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { RK_BINARY, type ResidentTables } from './tables.js';
+import { isFeedPosition, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
@@ -57,7 +58,8 @@ const RELIST_ATTEMPTS = 3;
  * `version` (or its `stat`) names, or not at all; held, it still vouches for
  * nothing (sync.ts).
  */
-export interface WantedFile { path: string; size: number; rev: number; epoch: string; ckey?: string | null; stat?: RuntimeVfsStat | null; version?: RuntimeFileVersion | null }
+/** A file to fetch: `epoch` the root's where it is the root feed's (dated by `rev` there, rootEpochFor), null for a mount's (dated by its version). */
+export interface WantedFile { path: string; size: number; rev: number; epoch: string | null; ckey?: string | null; stat?: RuntimeVfsStat | null; version?: RuntimeFileVersion | null }
 
 export interface FillReport { requested: number; filled: number; failed: number; bytes?: number; ranges?: number; copied?: number }
 
@@ -252,11 +254,14 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     }
     // One flat list of ranges across all files, so packing is a single pass and
     // a 25 MiB file and a 40-byte one are the same shape.
-    const ranges = new SafeList<{ path: string; rev: number; epoch: string; version: RuntimeFileVersion | null; part: number; parts: number; offset: number; length: number; size: number; ckey: string | null }>();
+    const ranges = new SafeList<{ path: string; rev: number; epoch: string | null; version: RuntimeFileVersion | null; part: number; parts: number; offset: number; length: number; size: number; ckey: string | null }>();
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-      const version = file.rev === 0 ? ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null : null;
+      // A file on the root's feed is dated by its revision there, which the session's reads check; any other (a
+      // mount's, its revision its own feed's, or none) by its version, as its listing's stat named it.
+      const dated = file.rev !== 0 && file.epoch !== null;
+      const version = dated ? null : ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null;
       const ckey = ownValue(file, 'ckey') ?? null;
       for (let part = 0; part < parts; part++) {
         const offset = part * RESIDENT_CHUNK_BYTES;
@@ -312,7 +317,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         for (let i = 0; i < batch.length; i++) {
           const r = batch[i];
           requests[requests.length] = r.version === null
-            ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }
+            ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch!, expectedRevision: r.rev }
             : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) };
         }
         results = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
@@ -400,9 +405,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
       if (!listed || !arrayIsArray(listed.entries)) {
         throw new Error('Nimbus: fsList returned no page');
       }
+      if (!isFeedPosition(listed.position)) throw new Error('Nimbus: fsList returned no position');
       if (cursor === null) {
-        cursor = { epoch: stringOf(listed.epoch), rev: NumberOf(listed.rev) };
-      } else if (stringOf(listed.epoch) !== cursor.epoch) {
+        cursor = listed.position;
+      } else if (!sameEpochs(listed.position, cursor)) {
         return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: 'the supervisor changed incarnation mid-enumeration' };
       }
       for (let i = 0; i < listed.entries.length; i++) {
@@ -434,7 +440,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         }
         // Its stat, for the bytes the store already has: who may read them (namespace.readable).
         const contentKey = ownValue(entry, 'contentKey');
-        entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+        entries[entries.length] = { path, size, rev, epoch: rootEpochFor(cursor, path), ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
       }
       if (listed.next === null || listed.next === undefined) {
         return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };

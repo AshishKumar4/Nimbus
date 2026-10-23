@@ -45,8 +45,9 @@ const SEED = `
   const __cred = (typeof cred !== "undefined" && cred) || { uid: 1000, gid: 1000, groups: [1000] };
   __resident.namespace.setCred(__cred);
   __resident.sync.setPlan([]);
-  const cursor = (globalThis.__nimbusVfsCursor && globalThis.__nimbusVfsCursor.epoch != null)
-    ? globalThis.__nimbusVfsCursor : { epoch: "test-epoch", rev: 1 };
+  const cursor = (globalThis.__nimbusVfsCursor && globalThis.__nimbusVfsCursor.position)
+    ? globalThis.__nimbusVfsCursor.position : { table: "", feeds: { "/": { epoch: "test-epoch", cursor: 1 } } };
+  const cursorRev = cursor.feeds["/"].cursor;
   const bundle = (typeof __vfsBundle !== "undefined" && __vfsBundle) || {};
   // Taken once, by the factory it was declared for.
   const declared = globalThis.__nimbusTestNamespace || {};
@@ -105,7 +106,7 @@ const SEED = `
     names.set(k, { ...base, ...record, type });
   }
   const t = __resident.coherence.tables("test");
-  for (const [k, stat] of names) __resident.namespace.put(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target);
+  for (const [k, stat] of names) __resident.namespace.put(t, k, stat, cursorRev, stat.linkTarget ?? stat.target);
   __resident.namespace.markReady(t, true);
   if (typeof __vfsBundle !== "undefined") __vfsBundle = __resident.bundle;
 })();

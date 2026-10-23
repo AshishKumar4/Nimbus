@@ -193,7 +193,7 @@ export async function registerHostedCommands(self, workspace) {
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
     const cpythonFactories = new Map();
-    const cpython = (restartsWaits) => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
+    const cpython = (contract) => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
         // which builds its own IsolatePool (separate from the
@@ -217,14 +217,15 @@ export async function registerHostedCommands(self, workspace) {
                 // it the prompt cannot write to the session filesystem.
                 pid: ctx.pid,
                 cred: requireVfsCred(ctx.cred, 'Python REPL'),
-                restartsWaits,
+                // The prompt's own interrupt ends a busy line (repl-session.ts); its image is sent no signals.
+                restartsWaits: contract.restartsWaits,
                 start: { cwd: ctx.cwd || from.shell.getCwd(), binName },
             });
         }
         // Args present (one-shot mode: -c, script, -m, -). Fall through to the
         // canonical handler, one per runner contract for the session (imported
         // lazily on first use): it holds the session's warm CPython workers' keys.
-        let factory = cpythonFactories.get(restartsWaits);
+        let factory = cpythonFactories.get(contract);
         if (!factory) {
             factory = (async () => {
                 const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
@@ -236,18 +237,18 @@ export async function registerHostedCommands(self, workspace) {
                     processes: self.processes,
                     startResident: cpythonResidentStart(facetMgr),
                     network: workspace.network,
-                    restartsWaits,
+                    contract,
                     session: self.ctx.id.toString(),
                 });
             })();
-            factory.catch(() => cpythonFactories.delete(restartsWaits));
-            cpythonFactories.set(restartsWaits, factory);
+            factory.catch(() => cpythonFactories.delete(contract));
+            cpythonFactories.set(contract, factory);
         }
         return await (await factory)(manifest, installRoot, binName, binKind)(ctx);
     };
     // Each runner key's build, on its own contract (CPYTHON_RUNNER_CONTRACTS).
-    for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS))
-        workspace.runtimes.registerRunner(key, cpython(restartsWaits));
+    for (const [key, contract] of Object.entries(CPYTHON_RUNNER_CONTRACTS))
+        workspace.runtimes.registerRunner(key, cpython(contract));
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map; each
     // one-shot boots a VM of its own on the session's warm Ruby workers (one

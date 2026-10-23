@@ -1,12 +1,4 @@
-/**
- * A filesystem held in memory: for tests, a bare embedder's /tmp, and
- * anything that needs a scratch tree with POSIX shape and no storage.
- *
- * Synchronous (its `sync` is itself), no credentials (one identity: its
- * entries carry the uid/gid given at construction), and its own revision per
- * entry so a cache over it can tell a change.
- */
-import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
+import type { SyncVFS, VFS, VfsChanges, VfsDirent, VfsStat } from './vfs.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class MemoryVFS implements VFS {
     private readonly owner;
@@ -15,12 +7,40 @@ export declare class MemoryVFS implements VFS {
     private readonly root;
     private clock;
     private inos;
+    /** Entries in its tree, its root among them: what bounds its tombstones. */
+    private count;
+    /** Each changed path's newest change (absolute), in the order of their revisions; `gone`: a removal. */
+    private readonly changed;
+    private tombstones;
+    /** The newest pruned removal's revision: a cursor below it is a poison. */
+    private floor;
+    private listed;
+    private readonly epoch;
     readonly sync: SyncVFS;
+    readonly changes: VfsChanges;
     constructor(owner?: {
         uid: number;
         gid: number;
     });
     private entry;
+    /** What changed since `cursor` of `epoch`: each path's newest change after it, with its lstat now where `stats`. */
+    private since;
+    /**
+     * The name in the tree `path` leads to, as find walks it: each link on the
+     * way followed, a final one where `follow`; where a name on the way is
+     * missing, the rest as spelled.
+     */
+    private treePath;
+    /** The tree name of `path`'s directory, as parentOf finds it (its links followed). */
+    private treeParent;
+    /**
+     * The tree name `key` changed now (treePath, treeParent: a change through a
+     * link is its target's). `structural`: a directory removed, moved or given
+     * another mode; `gone`: nothing is there.
+     */
+    private note;
+    /** The entries `entry` holds, itself among them. */
+    private static sizeOf;
     private touch;
     /** The entry at `path`, following symlinks except a final one when `follow` is false; `call` names a failure. */
     private find;

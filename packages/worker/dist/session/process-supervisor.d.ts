@@ -53,7 +53,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     unlink(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<void>;
     readlink(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<string | null>;
     symlink(target: string, path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<void>;
-    fsAcquire(epoch: string | null, cursor: number, options?: import("@nimbus-sh/core/runtime/os-contracts.js").VfsAcquireOptions): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsAcquireResult>;
+    fsAcquire(position: import("@nimbus-sh/core/runtime/feed-position.js").FeedPosition | null, options?: import("@nimbus-sh/core/runtime/os-contracts.js").VfsAcquireOptions): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsAcquireResult>;
     fsAcquired(acquire: unknown, op: string, args: unknown[]): Promise<import("./rpc.js").FsAcquiredAnswer>;
     fsRevision(path?: string): Promise<number>;
     fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{

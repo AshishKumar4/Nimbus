@@ -67,7 +67,7 @@ manager.setVfs(sessionVfs, processFiles(sessionVfs));
   listingOps = {
     fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null),
     fsReadBatch: (requests) => _rpcFsReadBatch(host, requests),
-    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options),
+    fsAcquire: (position, options) => _rpcFsAcquire(host, position, options),
   };
 }
 /** The generated worker source the facet actually booted from. */

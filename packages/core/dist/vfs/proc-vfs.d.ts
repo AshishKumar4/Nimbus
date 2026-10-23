@@ -1,17 +1,22 @@
-import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
-/**
- * A /proc file's content, for the credential of the process reading it (null:
- * the embedder's view): text made when read, or bytes made once and shared,
- * which a whole-file read copies and a stat or ranged read does not.
- */
-export type ProcGenerator = (cred: VfsCred | null) => string | Uint8Array;
+import { type ProcGenerator } from './proc-files.js';
+import type { SyncVFS, VFS, VfsChanges, VfsCred, VfsDirent, VfsStat } from './vfs.js';
+/** What every view of one /proc shares: its files, which of them are volatile, its tree's version and time, and its feed. */
+interface ProcTree {
+    readonly files: Map<string, ProcGenerator>;
+    readonly volatile: Set<string>;
+    version: number;
+    mtimeMs: number;
+    changes?: VfsChanges;
+}
 export declare class ProcVFS implements VFS {
+    private readonly tree;
     private readonly cred;
-    private readonly files;
     readonly sync: SyncVFS;
-    constructor(files?: Map<string, ProcGenerator>, cred?: VfsCred | null);
-    /** Add or replace `/proc/<name>`. */
-    register(name: string, generator: ProcGenerator): void;
+    readonly changes: VfsChanges;
+    constructor(tree?: ProcTree, cred?: VfsCred | null);
+    private get files();
+    /** Add or replace `/proc/<name>`; `volatile`: its content is made at each read (size 0). */
+    register(name: string, generator: ProcGenerator, volatile?: boolean): void;
     /** The same files, generated for `cred`. */
     as(cred: VfsCred): ProcVFS;
     private isDir;
@@ -50,4 +55,5 @@ export declare const CA_CERTIFICATES_FILE = "/proc/nimbus/ca-certificates.crt";
  * its own with `register`.
  */
 export declare function standardProc(): ProcVFS;
+export {};
 //# sourceMappingURL=proc-vfs.d.ts.map

@@ -62,7 +62,8 @@ const calls = [];
  */
 const remote = (vfs, { dirStats = true } = {}) => new Proxy(vfs, {
   get(target, key) {
-    if (key === 'sync') return undefined;
+    // A remote backend has no synchronous face, its change feed (VfsChanges) among them.
+    if (key === 'sync' || key === 'changes') return undefined;
     const value = target[key];
     if (typeof value !== 'function') return value;
     return async (...args) => {
@@ -268,8 +269,8 @@ console.log(JSON.stringify({
   const store = createResidentStore();
   store.bind({ storage: facetStorage(facetSql()) });
   store.sync.setPlan(['m/kept/data.txt']);
-  store.sync.adoptModuleBundle({}, { epoch: ws.vfs.epoch, rev: ws.vfs.revision() });
   const supervisor = supervisorFor(pid);
+  store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
   await store.sync.synchronize(supervisor);
   assert.equal(dec.decode(/** @type {Uint8Array} */ (store.cells.get('m/kept/data.txt'))), 'old\n', 'the launch held the mounted file');
   await backing.writeFile('/kept/data.txt', enc.encode('new\n'));
@@ -285,7 +286,7 @@ async function listAll(fs, limit) {
   for (let after = null; ;) {
     const page = await fs.list(after, limit);
     for (const entry of page.entries) entries.set(entry.path, entry);
-    if (page.next === null) return { entries, cursor: { epoch: page.epoch, rev: page.rev } };
+    if (page.next === null) return { entries, cursor: page.position };
     after = page.next;
   }
 }
@@ -297,12 +298,11 @@ function launched(named = []) {
   return { pid, fs: ws.filesystem.bind(binding) };
 }
 
-// ── A namespace that is SQLite alone lists at once, as it always has ────────
+// ── A namespace that is SQLite alone lists through the same walk as any ─────
 {
   const fresh = createSqliteVfsTestHarness();
   const alone = await NimbusWorkspace.create({ sql: fresh.sql, transactions: fresh.ctx });
-  const page = alone.filesystem.bind({ pid: 9001, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }).list(null);
-  assert.equal(typeof page.then, 'undefined', 'no mount an embedder made: the page is SQLite\'s, answered synchronously');
+  const page = await alone.filesystem.bind({ pid: 9001, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }).list(null);
   assert.ok(page.entries.some((entry) => entry.path === 'home/user'));
   await alone.close();
 }
@@ -338,13 +338,13 @@ function launched(named = []) {
   root.writeFile('s/app/phantom.txt', 'p');
   root.unlink('s/app/data.txt');
   root.writeFile('home/user/news.txt', 'n');
-  const answer = await fs.acquire(cursor.epoch, cursor.rev, { namespace: true });
+  const answer = await fs.acquire(cursor, { namespace: true });
   assert.equal(answer.poison, false);
   assert.deepEqual(answer.paths.map((entry) => entry.path).filter((path) => path.startsWith('s')), [], 'writes SQLite takes under /s are not reported');
   assert.ok(answer.paths.some((entry) => entry.path === 'home/user/news.txt'), 'a write SQLite shows is');
   // A mount appearing is in no backend's feed: the next barrier relists.
   ws.filesystem.vfs.mount('/late', remote(new MemoryVFS()));
-  assert.equal((await fs.acquire(answer.epoch, answer.rev, { namespace: true })).poison, true, 'a changed mount table is a poison');
+  assert.equal((await fs.acquire(answer.position, { namespace: true })).poison, true, 'a changed mount table is a poison');
   ws.filesystem.vfs.unmount('/late');
   await ws.filesystem.releaseProcess(pid);
   ws.filesystem.vfs.unmount('/s');

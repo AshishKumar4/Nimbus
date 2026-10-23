@@ -15,7 +15,7 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const reports = [];
     let acquireGate = null;
     const { supervisor, log, forward } = facetSupervisor(authority, {
-      fsAcquire: async (epoch, cursor, options) => {
+      fsAcquire: async (position, options) => {
         const gate = acquireGate;
         acquireGate = null;
         if (gate) {
@@ -23,7 +23,7 @@ await runScenarios(fileURLToPath(import.meta.url), {
           await gate.promise;
         }
         // Keep the acquisition gate observable instead of granting a read lease.
-        return forward('fsAcquire', [epoch, cursor, { ...options, lease: false }]);
+        return forward('fsAcquire', [position, { ...options, lease: false }]);
       },
       cpSpawn: async (request) => {
         assert.equal(request.command, 'node');

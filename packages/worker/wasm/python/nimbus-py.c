@@ -16,6 +16,7 @@
  * and exit-code extraction stays on this side. */
 
 #include <Python.h>
+#include <signal.h>
 #include <string.h>
 
 #include "nimbus-ext.h"
@@ -51,8 +52,10 @@ static int exit_status_from(PyObject *exc)
  *
  * Isolated config, because every input CPython would otherwise take from the
  * environment is one the host means to control: argv is set by running Python
- * rather than parsed here, site-packages comes from the session's filesystem,
- * and signal handlers have nothing to deliver. Bytecode writing is off because
+ * rather than parsed here, and site-packages comes from the session's
+ * filesystem. Its signal handlers are CPython's own, as on Linux: the host
+ * delivers the process's signals (nimbus-signal.c, nimbus-signal-check.c), so
+ * Ctrl-C is a KeyboardInterrupt the program may catch. Bytecode writing is off because
  * __pycache__ directories would be written back into the session's VFS on every
  * import, which is a lot of persisted bytes for no reuse — the interpreter is
  * gone at the end of the turn either way. */
@@ -66,7 +69,7 @@ int nimbus_py_init(const char *home)
 	PyConfig config;
 	PyConfig_InitIsolatedConfig(&config);
 	config.parse_argv = 0;
-	config.install_signal_handlers = 0;
+	config.install_signal_handlers = 1;
 	config.write_bytecode = 0;
 	config.user_site_directory = 0;
 	config.buffered_stdio = 0;
@@ -112,8 +115,9 @@ int nimbus_py_init(const char *home)
 
 /* Runs `src` in __main__, which is the same namespace every previous call used,
  * so definitions and generators persist between entries. Returns the exit
- * status: 0 for success, the SystemExit code where there was one, 1 for any
- * other exception (already printed). Every return flushes sys.stdout and
+ * status: 0 for success, the SystemExit code where there was one, 128 + SIGINT
+ * for a KeyboardInterrupt that reached top level (printed; CPython's main then
+ * dies of SIGINT), 1 for any other exception (printed). Every return flushes sys.stdout and
  * sys.stderr first (nimbus_py_flush): the host flushes only an entry that
  * trapped. */
 __attribute__((export_name("nimbus_py_run")))
@@ -139,8 +143,8 @@ int nimbus_py_run(const char *src)
 		status = exit_status_from(exc);
 		Py_XDECREF(exc);
 	} else {
+		status = PyErr_ExceptionMatches(PyExc_KeyboardInterrupt) ? 128 + SIGINT : 1;
 		PyErr_Print();
-		status = 1;
 	}
 	nimbus_py_flush();
 	return status;

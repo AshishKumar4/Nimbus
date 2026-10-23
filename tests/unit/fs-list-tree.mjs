@@ -8,6 +8,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { subtreeListing } from '../../packages/core/src/runtime/fs-list-tree.ts';
@@ -29,7 +30,7 @@ kernel.symlink('empty', 'home/user/to-empty');
 const bridge = new ProcessFiles(engine).bind({ pid: 7, cred: USER });
 
 const listing = await subtreeListing(bridge, '/home/user/proj', 100);
-assert.equal(listing.rev, engine.revision());
+assert.equal(rootOf(listing.position).cursor, engine.revision());
 assert.deepEqual(listing.entries.map((entry) => entry.path.replace(/^\/+/, '')), [
   'home/user/proj/a',
   'home/user/proj/a/b',
@@ -50,8 +51,8 @@ await assert.rejects(subtreeListing(bridge, '/home/user/to-empty', 10), (error) 
   // A change between its pages: the walk is made again, never mixed.
   let calls = 0;
   const pages = (rev) => [
-    { epoch: 'e', rev, entries: [{ path: '/r/a', kind: 'file', stat: {}, rev }], next: '/r/a' },
-    { epoch: 'e', rev, entries: [{ path: '/r/b', kind: 'file', stat: {}, rev }], next: null },
+    { position: positionOf('', { '/': { epoch: 'e', cursor: rev } }), entries: [{ path: '/r/a', kind: 'file', stat: {}, rev }], next: '/r/a' },
+    { position: positionOf('', { '/': { epoch: 'e', cursor: rev } }), entries: [{ path: '/r/b', kind: 'file', stat: {}, rev }], next: null },
   ];
   const changing = { list: async (after) => {
     calls++;
@@ -60,9 +61,9 @@ await assert.rejects(subtreeListing(bridge, '/home/user/to-empty', 10), (error) 
     return pages(calls <= 1 ? 1 : 3)[after === null || after === 'r/' ? 0 : 1];
   } };
   const listed = await subtreeListing(changing, '/r', 10);
-  assert.equal(listed.rev, 3, 'a walk whose pages were at two revisions was answered');
+  assert.equal(rootOf(listed.position).cursor, 3, 'a walk whose pages were at two revisions was answered');
   assert.deepEqual(listed.entries.map((entry) => entry.path), ['/r/a', '/r/b']);
-  const never = { list: async () => ({ epoch: 'e', rev: ++calls, entries: [{ path: '/r/a', kind: 'file', stat: {}, rev: 0 }], next: '/r/a' }) };
+  const never = { list: async () => ({ position: positionOf('', { '/': { epoch: 'e', cursor: ++calls } }), entries: [{ path: '/r/a', kind: 'file', stat: {}, rev: 0 }], next: '/r/a' }) };
   await assert.rejects(subtreeListing(never, '/r', 10), (error) => error.code === 'EAGAIN');
 }
 

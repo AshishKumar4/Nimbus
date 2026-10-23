@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
+import { CPYTHON_RUNNER, CPYTHON_RUNNER_CONTRACTS } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
@@ -46,7 +47,7 @@ function invocationVfs(filesystem) {
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
     '/runtime/python/lib/python313.zip': new Uint8Array(),
   }, 'home/user/locked/tool.py');
-  const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK, session: 'runtime-program-probe-permissions' })(
+  const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK, contract: CPYTHON_RUNNER_CONTRACTS[CPYTHON_RUNNER], session: 'runtime-program-probe-permissions' })(
     {
       version: '3.13.14-3',
       files: [

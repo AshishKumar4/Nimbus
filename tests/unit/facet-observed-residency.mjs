@@ -180,7 +180,7 @@ function makeSupervisor() {
     // namespace before any user code runs.
     fsList: (after, limit) => _rpcFsList(sessionHost, after ?? null, limit ?? null),
     fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost, requests),
-    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(sessionHost, epoch, cursor, options),
+    fsAcquire: (position, options) => _rpcFsAcquire(sessionHost, position, options),
     async stdout() {}, async stderr() {}, async reportExit() {},
     [Symbol.dispose]() {},
   };

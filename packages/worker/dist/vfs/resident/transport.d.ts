@@ -17,11 +17,12 @@ import type { ResidentSupervisor } from './supervisor.js';
  * `version` (or its `stat`) names, or not at all; held, it still vouches for
  * nothing (sync.ts).
  */
+/** A file to fetch: `epoch` the root's where it is the root feed's (dated by `rev` there, rootEpochFor), null for a mount's (dated by its version). */
 export interface WantedFile {
     path: string;
     size: number;
     rev: number;
-    epoch: string;
+    epoch: string | null;
     ckey?: string | null;
     stat?: RuntimeVfsStat | null;
     version?: RuntimeFileVersion | null;

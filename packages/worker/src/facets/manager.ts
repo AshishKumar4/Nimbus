@@ -55,6 +55,7 @@ import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
+  type FacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -1530,7 +1531,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // again on its next run, and its text cells are shared, not copied.
     const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
     if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
     }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
@@ -2011,7 +2012,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // staged at, which is right for a cold store and stale for a kept one —
     // the cursor the boot returns describes what the rows actually are.
     if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
     }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
@@ -2358,7 +2359,7 @@ interface FacetVfsState {
    * cursor it was actually built at makes that first ACQUIRE an ordinary
    * delta, which is what it always was.
    */
-  cursor?: { epoch: string; rev: number };
+  cursor?: FacetVfsCursor;
   /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
   reachableCount: number;
   /** Diagnostics: did the snapshot's raw-byte bound evict optional files? */
@@ -4643,8 +4644,7 @@ async function _buildPrefetchBundle(
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
-  const admitted = await vfs.acquire(null, 0);
-  const cursor = { epoch: admitted.epoch, rev: admitted.rev };
+  const cursor = (await vfs.acquire(null)).position;
   // Where the build's time went, by phase (ms; the clock moves across its turns): its exec telemetry.
   const phases: Record<string, number> = {};
   let phaseFrom = Date.now();

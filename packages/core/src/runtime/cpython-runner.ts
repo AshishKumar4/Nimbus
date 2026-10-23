@@ -51,7 +51,7 @@ import { hostImage, type ProcessView as CredentialedVfs } from './process-files.
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
-import type { FacetHost } from './facet-host.js';
+import { takesOwnSignals, type FacetHost } from './facet-host.js';
 import { CPYTHON_RUNNER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import {
   buildPipInvocation,
@@ -66,7 +66,7 @@ import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import type { NimbusFilesystemAuthority } from './os-contracts.js';
+import type { CPythonRunnerContract, NimbusFilesystemAuthority } from './os-contracts.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
 import { warmFacetKeys } from './warm-facets.js';
@@ -261,8 +261,8 @@ export function makeCPythonRunnerFactory(deps: {
   network: WorkspaceNetwork;
   /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
   startResident?: CPythonResidentStart;
-  /** The installed image asks again a wait its host gave up on: its runner key's contract (CPYTHON_RUNNER_CONTRACTS). */
-  restartsWaits: boolean;
+  /** What the installed image asks of its host: its runner key's contract (CPYTHON_RUNNER_CONTRACTS). */
+  contract: CPythonRunnerContract;
   /** The session the python processes run in: its warm facets are its own (warm-facets.ts). */
   session: string;
 }): CPythonRunnerFactory {
@@ -271,6 +271,7 @@ export function makeCPythonRunnerFactory(deps: {
     plain: warmFacetKeys(deps.session, CPYTHON_RUNNER),
     sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`),
   };
+  const takesSignals = takesOwnSignals(deps.facets, deps.contract.takesSignals);
 
   return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
     const findFile = (rel: string): string | null => installedPath(manifest, installRoot, rel);
@@ -407,7 +408,7 @@ export function makeCPythonRunnerFactory(deps: {
         supervisorPid: ctx.pid,
         // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
         cred,
-        restartsWaits: deps.restartsWaits,
+        restartsWaits: deps.contract.restartsWaits,
       };
 
       // A script or `-m` can bind a port and keep serving, and such a program
@@ -443,7 +444,7 @@ export function makeCPythonRunnerFactory(deps: {
       // Opened per invocation, not cached: the supervisor capability is bound
       // to this process's pid when the facet opens, so one held across calls
       // would hand every later caller the first caller's write credential.
-      const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin' });
+      const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin', takesSignals });
       facetArgs.supervisorPid = stdio.pid;
       let exitCode = 1;
       let facet: import('./facet-host.js').Facet | null = null;
@@ -475,7 +476,9 @@ export function makeCPythonRunnerFactory(deps: {
 
         // Killed while its image was read: it never starts.
         stdio.signal.throwIfAborted();
-        const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
+        // A one-shot's process takes its own signals (its stdio's takesSignals); a
+        // resident's is ended by the session, and its image asks for none.
+        const result = await facet.submit(CPYTHON_RUN_TASK, { ...facetArgs, takesSignals }, {
           signal: stdio.signal,
         });
         keys.give(warm, { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted });

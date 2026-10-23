@@ -73,89 +73,100 @@ async function __nimbusPyBoot(args) {
     stderrBytes: __nimbusPyOutput.stderrBytes,
     // An image whose libc asks again a wait the host gave up on (cpython-runner@3).
     restartsWaits: args.restartsWaits === true,
+    // A one-shot whose process takes its own signals (cpython-runner@4): its
+    // waits end on one, and its interpreter asks for them while it computes.
+    takesSignals: args.takesSignals === true,
   });
-  if (typeof __wasiPrepareFilesystem === 'function') {
-    await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
+  // A boot that fails ends what its process host started (a signal watch, once init asked).
+  try {
+    if (typeof __wasiPrepareFilesystem === 'function') {
+      await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
+    }
+    instance = new WebAssembly.Instance(__nimbusPyModule(), {
+      wasi_snapshot_preview1: made.wasiImport,
+      // nimbus-libc's: the live umask, a created file's mode, the session's credential.
+      nimbus_fs: made.fsImport,
+      nimbus_proc: made.procImport,
+    });
+
+    const exports = instance.exports;
+    if (typeof exports.nimbus_py_init !== 'function' || typeof exports.nimbus_py_run !== 'function') {
+      throw new Error('python.wasm is not a Nimbus reactor build (nimbus_py_init/nimbus_py_run missing)');
+    }
+
+    const withCString = async (text, fn) => {
+      const bytes = new TextEncoder().encode(text);
+      const ptr = exports.malloc(bytes.length + 1);
+      if (!ptr) throw new Error('the interpreter is out of memory');
+      // Taken after malloc and used before the next guest call: growing the
+      // wasm memory detaches every view over the old buffer.
+      const view = new Uint8Array(exports.memory.buffer, ptr, bytes.length + 1);
+      view.set(bytes);
+      view[bytes.length] = 0;
+      try { return await fn(ptr); } finally { exports.free(ptr); }
+    };
+
+    // _initialize is static setup only, so it is safe anywhere. Py_Initialize
+    // reads entropy through random_get, which workerd refuses in module scope —
+    // both run here, at request time.
+    await __nimbusEnterVm(exports._initialize)();
+    const initRc = await withCString(args.pythonHome || '/usr/local',
+      (ptr) => __nimbusEnterVm(exports.nimbus_py_init)(ptr));
+    if (initRc !== 0) {
+      // Do the bytes arrive intact? The interpreter, the stdlib and this preamble
+      // are all proven by tests/unit/cpython-live-authority.mjs over a local
+      // authority. The only thing a live session changes is the transport: the
+      // supervisor RPC. So hash what the transport actually delivers rather
+      // than guessing at a size limit.
+      let transport = 'not-attempted';
+      try {
+        const zipPath = (args.pythonHome || '').replace(/^\/+/, '') + '/lib/python313.zip';
+        const sup = globalThis.__nimbusPySupervisor;
+        if (!sup || typeof sup.fsReadRange !== 'function' || typeof sup.stat !== 'function') {
+          transport = 'no-supervisor';
+        } else {
+          const st = await sup.stat(zipPath);
+          const want = st ? st.size : 0;
+          const got = await sup.fsReadRange(zipPath, 0, want);
+          const bytes = got instanceof Uint8Array ? got : new Uint8Array(got);
+          const digest = await crypto.subtle.digest('SHA-256', bytes);
+          const hex = Array.from(new Uint8Array(digest))
+            .map((b) => b.toString(16).padStart(2, '0')).join('');
+          transport = 'want=' + want + ' got=' + bytes.byteLength + ' sha=' + hex.slice(0, 16);
+        }
+      } catch (e) { transport = 'threw ' + ((e && e.message) || e); }
+
+      // CPython's own message for an unreadable stdlib is "Failed to import
+      // encodings module", which says nothing about where it looked or why the
+      // read failed. These three facts are what separated a mode-0 root from a
+      // missing supervisor from an absent JSPI, each of which presents
+      // identically.
+      throw new Error('the interpreter failed to start: home=' + (args.pythonHome || '/usr/local')
+        + ' supervisor=' + (globalThis.__nimbusPySupervisor ? 'yes' : 'NO')
+        + ' promising=' + (typeof WebAssembly.promising === 'function' ? 'yes' : 'NO')
+        + ' transport[' + transport + ']');
+    }
+
+    // Runtime setup is a separate compilation unit. Appending it to -c or a
+    // script changes every user traceback line by the setup's length.
+    if (args.bootstrapCode) {
+      const setupRc = await withCString(args.bootstrapCode, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr));
+      if (setupRc !== 0) throw new Error('Python runtime bootstrap failed (exit ' + setupRc + ')');
+    }
+
+    // nimbus_py_run flushes sys.stdout and sys.stderr before it returns, so an
+    // entry that returned needs no flush; flush is for one that trapped.
+    return {
+      instance,
+      run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),
+      flush: () => __nimbusEnterVm(exports.nimbus_py_flush)(),
+      // The process host's own waits, its signal watch among them, end with the process.
+      dispose: made.procDispose,
+    };
+  } catch (e) {
+    made.procDispose();
+    throw e;
   }
-  instance = new WebAssembly.Instance(__nimbusPyModule(), {
-    wasi_snapshot_preview1: made.wasiImport,
-    // nimbus-libc's: the live umask, a created file's mode, the session's credential.
-    nimbus_fs: made.fsImport,
-    nimbus_proc: made.procImport,
-  });
-
-  const exports = instance.exports;
-  if (typeof exports.nimbus_py_init !== 'function' || typeof exports.nimbus_py_run !== 'function') {
-    throw new Error('python.wasm is not a Nimbus reactor build (nimbus_py_init/nimbus_py_run missing)');
-  }
-
-  const withCString = async (text, fn) => {
-    const bytes = new TextEncoder().encode(text);
-    const ptr = exports.malloc(bytes.length + 1);
-    if (!ptr) throw new Error('the interpreter is out of memory');
-    // Taken after malloc and used before the next guest call: growing the
-    // wasm memory detaches every view over the old buffer.
-    const view = new Uint8Array(exports.memory.buffer, ptr, bytes.length + 1);
-    view.set(bytes);
-    view[bytes.length] = 0;
-    try { return await fn(ptr); } finally { exports.free(ptr); }
-  };
-
-  // _initialize is static setup only, so it is safe anywhere. Py_Initialize
-  // reads entropy through random_get, which workerd refuses in module scope —
-  // both run here, at request time.
-  await __nimbusEnterVm(exports._initialize)();
-  const initRc = await withCString(args.pythonHome || '/usr/local',
-    (ptr) => __nimbusEnterVm(exports.nimbus_py_init)(ptr));
-  if (initRc !== 0) {
-    // Do the bytes arrive intact? The interpreter, the stdlib and this preamble
-    // are all proven by tests/unit/cpython-live-authority.mjs over a local
-    // authority. The only thing a live session changes is the transport: the
-    // supervisor RPC. So hash what the transport actually delivers rather
-    // than guessing at a size limit.
-    let transport = 'not-attempted';
-    try {
-      const zipPath = (args.pythonHome || '').replace(/^\/+/, '') + '/lib/python313.zip';
-      const sup = globalThis.__nimbusPySupervisor;
-      if (!sup || typeof sup.fsReadRange !== 'function' || typeof sup.stat !== 'function') {
-        transport = 'no-supervisor';
-      } else {
-        const st = await sup.stat(zipPath);
-        const want = st ? st.size : 0;
-        const got = await sup.fsReadRange(zipPath, 0, want);
-        const bytes = got instanceof Uint8Array ? got : new Uint8Array(got);
-        const digest = await crypto.subtle.digest('SHA-256', bytes);
-        const hex = Array.from(new Uint8Array(digest))
-          .map((b) => b.toString(16).padStart(2, '0')).join('');
-        transport = 'want=' + want + ' got=' + bytes.byteLength + ' sha=' + hex.slice(0, 16);
-      }
-    } catch (e) { transport = 'threw ' + ((e && e.message) || e); }
-
-    // CPython's own message for an unreadable stdlib is "Failed to import
-    // encodings module", which says nothing about where it looked or why the
-    // read failed. These three facts are what separated a mode-0 root from a
-    // missing supervisor from an absent JSPI, each of which presents
-    // identically.
-    throw new Error('the interpreter failed to start: home=' + (args.pythonHome || '/usr/local')
-      + ' supervisor=' + (globalThis.__nimbusPySupervisor ? 'yes' : 'NO')
-      + ' promising=' + (typeof WebAssembly.promising === 'function' ? 'yes' : 'NO')
-      + ' transport[' + transport + ']');
-  }
-
-  // Runtime setup is a separate compilation unit. Appending it to -c or a
-  // script changes every user traceback line by the setup's length.
-  if (args.bootstrapCode) {
-    const setupRc = await withCString(args.bootstrapCode, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr));
-    if (setupRc !== 0) throw new Error('Python runtime bootstrap failed (exit ' + setupRc + ')');
-  }
-
-  // nimbus_py_run flushes sys.stdout and sys.stderr before it returns, so an
-  // entry that returned needs no flush; flush is for one that trapped.
-  return {
-    instance,
-    run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),
-    flush: () => __nimbusEnterVm(exports.nimbus_py_flush)(),
-  };
 }
 
 // Ports are the host's to allocate, so the guest cannot bind one by itself:
@@ -222,15 +233,28 @@ async function __cpythonRunOnce(args) {
   try {
     boot = await __nimbusPyBoot(args);
   } catch (e) {
-    return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
+    return { ...__nimbusPyEnded(e), ...drain() };
   }
   try {
     const exitCode = await boot.run(args.userCode || '');
     return { exitCode, ...drain() };
   } catch (e) {
-    try { await boot.flush(); } catch (ignored) { /* the VM is already gone */ }
-    return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
+    // An exit (os._exit, a signal's default action) flushes nothing, as on Linux.
+    if (!(e instanceof __WasiExit)) {
+      try { await boot.flush(); } catch (ignored) { /* the VM is already gone */ }
+    }
+    return { ...__nimbusPyEnded(e), ...drain() };
+  } finally {
+    boot.dispose();
   }
+}
+
+// How an entry into the interpreter that threw ended: the process exited
+// (proc_exit: os._exit, or a signal whose action ends it, 128 + its number),
+// with its own status; anything else failed it, saying why.
+function __nimbusPyEnded(e) {
+  if (e instanceof __WasiExit) return { exitCode: e.code };
+  return { exitCode: 1, error: (e && e.message) || String(e) };
 }
 
 // ── REPL ───────────────────────────────────────────────────────────────────
@@ -273,13 +297,13 @@ async function __cpythonReplLine(args) {
       }
     }
   } catch (e) {
-    return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
+    return { ...__nimbusPyEnded(e), ...drain() };
   }
   try {
     const exitCode = await globalThis.__cpythonReplBoot.run(args.userCode || '');
     return { exitCode, ...drain() };
   } catch (e) {
-    return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
+    return { ...__nimbusPyEnded(e), ...drain() };
   }
 }
 
@@ -301,7 +325,7 @@ globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
   try {
     exitCode = await boot.run(args.userCode || '');
   } catch (e) {
-    error = (e && e.message) || String(e);
+    ({ exitCode, error } = __nimbusPyEnded(e));
   }
   const result = await __nimbusPySettled({
     exitCode,

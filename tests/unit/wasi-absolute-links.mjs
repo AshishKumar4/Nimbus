@@ -31,7 +31,7 @@ import { outputControlReader } from '../../packages/core/src/runtime/wasi/output
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CPYTHON_RUNNER, CPYTHON_RUNNER_CONTRACTS, CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { manifestFile, runtimeSupervisor } from './lib/runtime-session.mjs';
@@ -96,7 +96,7 @@ if (hasHost('python3')) {
   const filesystem = new ProcessFiles(raw);
   const submitted = [];
   const env = { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute(args) { submitted.push(args); return { exitCode: 0, stdout: '', stderr: '' }; } }) }) } };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, session: 'wasi-absolute-links' })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, contract: CPYTHON_RUNNER_CONTRACTS[CPYTHON_RUNNER], session: 'wasi-absolute-links' })(
     { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', new Uint8Array([0])), manifestFile('lib/python313.zip', new Uint8Array([0]))] }, '/runtime/python', 'python3', undefined);
   // What the guest runs (the runner's prelude, then the program), under a real CPython.
   const guest = async (cwd) => {

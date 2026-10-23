@@ -30,7 +30,7 @@
  */
 import { type RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { FacetHost } from './facet-host.js';
+import { type FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority } from './os-contracts.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { type GitFsmonitorState } from './git-fsmonitor.js';

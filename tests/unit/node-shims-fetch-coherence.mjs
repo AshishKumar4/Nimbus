@@ -16,6 +16,7 @@
 //             while the request was in flight.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -48,7 +49,7 @@ const supervisor = {
   access: (p, m) => bridge.access(p, m),
   mkdir: (p) => bridge.mkdir(p, { recursive: true }),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor, options) => { acquireCalls++; return bridge.acquire(epoch, cursor, options); },
+  fsAcquire: (position, options) => { acquireCalls++; return bridge.acquire(position, options); },
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
@@ -70,14 +71,14 @@ let network = async () => {
 globalThis.fetch = async (...args) => { egressCalls++; return network(...args); };
 
 // The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod, fetch: globalThis.fetch };',
 );
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const out = (declareNamespace({ metadata: {
     'home/user/t': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
     'home/user/t/peer.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 },

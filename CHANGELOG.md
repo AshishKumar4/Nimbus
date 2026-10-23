@@ -6,6 +6,13 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a node one-shot whose synchronous read (`fs.readFileSync`, `require`) finds a file its process does not hold runs again as a resident process, which holds it, and the command gets the bytes on its first run. Before, the read failed with `EAGAIN` and the run ended 1, and only the command's next run had the file. What the run printed before that read is shown once, and the command still ends when its program does, with its status; one that then listens runs on as a server, as a one-shot that listens does. A run that cannot be run again (it did something outside itself first, or its output is captured) fails the read as before. The next launch of the command stages the file, and runs as a one-shot.
+- Every mount states its change model, and a process's view answers by it:
+  - `/dev` and `/proc` are listed for every process and answered from its own view (`stat('/dev/null')`, a `/proc` file once read); a WASI program's call that cannot wait is no longer refused there, and Node's `statSync` and `existsSync` see them (they answered ENOENT);
+  - `/proc` stats are procfs's: every generated file (`cpuinfo`, `meminfo`, `uptime`, `version`, `net/info`, `mounts`) is size 0, every mtime the tree's; a process makes each but `mounts` itself, as the session does, so Node's `readFileSync('/proc/version')` (vite's is-wsl) and a WASI program's reads answer at once;
+  - an embedder's `MemoryVFS` mount has a change feed: a process sees another's change to it at its next barrier, where it kept a launch snapshot;
+  - a mount whose backend states no change model (`VFS.changes`) is the session's to answer: a WASI program's call that cannot wait is refused `EAGAIN` there, as before;
+  - a read lease vouches for the engine alone: while one is trusted, a WASI program asks the session for the rows of a mount that changes.
+- `git status` after a mount appears or goes reports that mount's paths, not the whole worktree, and a dirty mount covers what its own feed names beneath it.
 - Added: each write event says which exec made it. `VfsWriteEvent.execId` (from `observeWrites`) is the `execId` the process table held for the writing process when the write committed. Every process an exec starts inherits it, so a command's children, pipelines and background jobs count. It has three possible values:
   - a string: the exec that made the write;
   - `null`: no process made it, a host operation (a client's `files.*`, the kernel, seeding, a launch's images);
@@ -23,6 +30,12 @@ published independently in the `@nimbus-sh` npm scope.
   - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
   - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
   - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
+- Fixed: Ctrl-C ends a python one-shot (`python -c`, `python -`, a pipe) as it ends CPython on Linux: the program gets a `KeyboardInterrupt`, which it may catch, and exits 130 with a traceback if it does not. This needs cpython 3.13.14-4 (`nimbus install cpython@3.13.14-4`; the catalog's default stays 3.13.14-1 until a release moves it).
+  - Before, Ctrl-C gave back the prompt with exit 130 but the program never saw it, so its `except KeyboardInterrupt:` and `finally:` blocks did not run. Now the interpreter asks the host for its signals every 1e4 of its breaker checks, which costs about 0.1% of a computing run. A computing run ends 0.4-0.8 s after Ctrl-C, in the session or on its peer; the abandoned one gave the prompt back after 0.07-0.23 s.
+  - A sleeping run (`time.sleep`) ended 9.5-10 s after Ctrl-C with `OSError: [Errno 58] Not supported`. Now it ends with a `KeyboardInterrupt`.
+  - While a python one-shot computes in the session, the session now answers between two of its asks: a request to the session waited up to 3.3-5.3 s during a 5 s loop, and now waits 0.1-1.8 s.
+  - A script (`python file.py`) and `python -m` still run as a resident process, which Ctrl-C ends without a `KeyboardInterrupt`.
+- Fixed: a python run that ends by `os._exit(n)` ends with status `n`. It ended with 1 and printed the error `[object Object]`. This holds for one-shots, the REPL and servers, with any cpython build.
 - Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 
 ## 2026-10-21 (second release): core 0.27.0, fabric 0.22.0, worker 0.25.0, sdk 0.21.0, react 0.4.3, cli 0.2.12, loom 0.3.5, create-nimbus-app 0.2.8 (platform 0.15.0, config 0.3.2 and the runtimes unchanged)

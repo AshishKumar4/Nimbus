@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
+import { CPYTHON_RUNNER, CPYTHON_RUNNER_CONTRACTS } from '../../packages/core/src/runtime/os-contracts.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
@@ -48,7 +49,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
       kind: 'workerd-adapter',
     }],
   };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, session: 'runtime-home-env' })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, contract: CPYTHON_RUNNER_CONTRACTS[CPYTHON_RUNNER], session: 'runtime-home-env' })(
     manifest,
     '/runtime/python',
     'python',

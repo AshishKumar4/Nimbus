@@ -25,6 +25,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { createAuthority, runScenarios, sleep } from './lib/resident-body.mjs';
 import { ROOT, k, storeSession } from './lib/store-session.mjs';
@@ -89,15 +90,15 @@ await runScenarios(import.meta.path, {
     const s = await storeSession({ f: 'one' }, { eager: true });
     const reached = s.fs.acquireArgs();
     await s.kernel.writeFile(k('g'), enc.encode('g'));
-    const ahead = { ...reached, cursor: reached.cursor + 1_000 };
-    const fromAhead = await s.authority.acquire(reached.epoch, reached.cursor, { namespace: true });
+    const ahead = { ...reached, position: positionOf(reached.position.table, { ...reached.position.feeds, '/': { epoch: rootOf(reached.position).epoch, cursor: rootOf(reached.position).cursor + 1_000 } }) };
+    const fromAhead = await s.authority.acquire(reached.position, { namespace: true });
     let asked = s.calls.fsAcquire ?? 0;
     await s.fs.catchUp({ delivered: { args: ahead, answer: fromAhead } });
     assert.equal(s.calls.fsAcquire, asked + 1, 'one from ahead of the store asks again');
     assert.notEqual(synchronously(s.fs, k('g')), null);
     const args = s.fs.acquireArgs();
     await s.kernel.writeFile(k('h'), enc.encode('h'));
-    const answer = await s.authority.acquire(args.epoch, args.cursor, { namespace: true });
+    const answer = await s.authority.acquire(args.position, { namespace: true });
     asked = s.calls.fsAcquire;
     await s.fs.catchUp({ delivered: { args, answer } });
     assert.equal(s.calls.fsAcquire, asked, 'one from the store\'s own cursor stands in');
@@ -106,7 +107,7 @@ await runScenarios(import.meta.path, {
   async 'an answer a delivery carried does not stand in for a change the process made since'() {
     const s = await storeSession({ f: 'one' }, { eager: true });
     const args = s.fs.acquireArgs();
-    const answer = await s.authority.acquire(args.epoch, args.cursor, { namespace: true });
+    const answer = await s.authority.acquire(args.position, { namespace: true });
     await s.fs.chmod(k('f'), 0o600);
     const asked = s.calls.fsAcquire ?? 0;
     await s.fs.catchUp({ delivered: { args, answer } });
@@ -310,7 +311,7 @@ await runScenarios(import.meta.path, {
     const s = await storeSession({ big: 'b'.repeat(size) }, { eager: true });
     const path = `${ROOT}/big`;
     const { revision } = await s.authority.stat(k('big'));
-    const epoch = s.store.coherence.cursor().epoch;
+    const epoch = rootOf(s.store.coherence.cursor()).epoch;
     for (const [change, outcome, expect] of [
       // The process leases the head the fill writes over; the fill then fails.
       [(t) => s.store.cells.lease(path), 'fails', RK_OWN_WRITE],
@@ -349,7 +350,7 @@ await runScenarios(import.meta.path, {
         const s = await storeSession({ big: 'b'.repeat(size) }, { eager: true, backing });
         const path = `${ROOT}/big`;
         const { revision } = await s.authority.stat(k('big'));
-        const epoch = s.store.coherence.cursor().epoch;
+        const epoch = rootOf(s.store.coherence.cursor()).epoch;
         const t = s.store.coherence.require();
         s.store.cells.put(t, path, new TextEncoder().encode('held'), revision - 1);
         let batches = 0;
@@ -382,7 +383,7 @@ await runScenarios(import.meta.path, {
         const s = await storeSession({ big: 'b'.repeat(size), small: 's' }, { eager: true, backing });
         const path = `${ROOT}/big`;
         const { revision } = await s.authority.stat(k('big'));
-        const epoch = s.store.coherence.cursor().epoch;
+        const epoch = rootOf(s.store.coherence.cursor()).epoch;
         const t = s.store.coherence.require();
         // The store holds another file, dated, which the drops judge as they will.
         assert.equal(dec.decode(await s.fs.readFile(k('small'))), 's');
@@ -412,7 +413,7 @@ await runScenarios(import.meta.path, {
   },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();
-    const acquired = await rpc._acquireOnDelivery(authority.host, { epoch: authority.rawVfs.epoch, cursor: authority.rawVfs.revision(), begin: 4, own: 3 });
+    const acquired = await rpc._acquireOnDelivery(authority.host, { position: authority.cursor(), begin: 4, own: 3 });
     assert.equal(acquired.args.begin, 4);
     assert.equal(acquired.args.own, 3);
   },

@@ -11,6 +11,7 @@
 // rather than an error no `err.code` arm matches.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { acrossRpc } from './lib/rpc-error.mjs';
@@ -107,12 +108,12 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
     readFile: crossing(async (p) => { const bytes = await bridge.readFile(p); return bytes ? new TextDecoder().decode(bytes) : null; }),
     readFileBytes: crossing((p) => bridge.readFile(p)),
     fsReadRange: crossing((p, offset, length) => bridge.readRange(p, offset, length)),
-    fsAcquire: crossing((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
+    fsAcquire: crossing((position, options) => bridge.acquire(position, options)),
   };
   // Its process's waves reach these calls (lib/wave-supervisor.mjs).
   waveSupervisor(supervisor);
   listAuthority(rawVfs);
-  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+  globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
   declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } } });
   const { fs } = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',

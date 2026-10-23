@@ -23,6 +23,8 @@ function session({
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
+  let cursorAt;
+  let base;
   kernel.mkdir('home/user/proj', { recursive: true });
   kernel.chown('home/user', USER.uid, USER.gid);
   kernel.chown('home/user/proj', USER.uid, USER.gid);
@@ -59,7 +61,17 @@ function session({
     list: async () => true, lookup: async () => true, listTree: async () => false,
     content: (key) => viewed(key).content,
     fill: async (key) => bridge.readFile('/' + key),
-    cursor: () => ({ epoch: engine.epoch, rev: engine.revision() }),
+    // Either arm's: the namespace's position where it reads one (the session's table and feeds, read once, the root's
+    // at the engine's revision), the root's epoch and revision where it reads those. One object a revision, as either
+    // arm's store keeps one cursor between its barriers.
+    cursor: () => {
+      const rev = engine.revision();
+      if (cursorAt?.rev !== rev) {
+        base ??= (() => { try { return bridge.acquire(null).position ?? null; } catch { return null; } })();
+        cursorAt = base === null ? { epoch: engine.epoch, rev } : { table: base.table, feeds: { ...base.feeds, '/': { epoch: engine.epoch, cursor: rev } }, epoch: engine.epoch, rev };
+      }
+      return cursorAt;
+    },
     // Whether the barrier landed: an object, read as true by a side whose store answered a boolean.
     barrier: async () => { seen.clear(); return { landed: true }; },
     reserve: () => true, release: () => {},

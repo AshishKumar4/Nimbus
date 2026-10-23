@@ -1,5 +1,5 @@
 {
-  "runtimeCatalogSha256": "6219228c6d471932af08fb62640b3879af94c5c96120e0f5cfb6fe14636a4c90",
+  "runtimeCatalogSha256": "9c096913e9a89aeafe5dc5c3c58c79fb4d28486d557b59b37d71edb64cc165f7",
   "r2BucketPrefix": "nimbus",
   "runtimeCache": {
     "mode": "byoa",

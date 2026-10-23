@@ -6,6 +6,7 @@
 // its cached cells, and what a peer's do.
 
 import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-write-ledger.ts';
+import { positionOf } from '../../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
@@ -50,7 +51,7 @@ export function shimStoreProcess({ seed, writer } = {}) {
     access: (p, m) => bridge.access(p, m),
     mkdir: (p) => bridge.mkdir(p, { recursive: true }),
     fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-    fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
+    fsAcquire: (position, options) => bridge.acquire(position, options),
     ...(writer ? {
       fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
       fsTruncate: (p, s) => bridge.truncate(p, s),
@@ -67,7 +68,7 @@ export function shimStoreProcess({ seed, writer } = {}) {
   // and the launcher seeds globalThis.__nimbusVfsCursor from it
   // (FacetVfsState.cursor -> facets/manager.ts). Without that seed the first
   // ACQUIRE carries a null epoch and is answered with a poison.
-  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+  globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',

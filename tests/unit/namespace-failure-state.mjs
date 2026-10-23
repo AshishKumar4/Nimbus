@@ -43,11 +43,12 @@ const supervisor = {
     return _rpcFsList(host, after ?? null, limit ?? null);
   },
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests),
-  fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options),
+  fsAcquire: (position, options) => _rpcFsAcquire(host, position, options),
 };
 
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+// Where the namespace stands now, as the session says it.
+globalThis.__nimbusVfsCursor = { position: (await _rpcFsAcquire(host, null)).position };
 const { fs, setTimeout: shimTimeout } = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()

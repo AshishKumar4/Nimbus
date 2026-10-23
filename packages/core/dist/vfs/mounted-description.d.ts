@@ -16,7 +16,7 @@
  */
 import { type DescriptorScope, type MountedFileDescription } from '../runtime/descriptors.js';
 import type { RuntimeFileHandle } from '../runtime/os-contracts.js';
-import { type HeldFile, type PinnedName } from './composite.js';
+import type { HeldFile, PinnedName } from './composite.js';
 import { type Awaitable, type VfsStat } from './vfs.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */

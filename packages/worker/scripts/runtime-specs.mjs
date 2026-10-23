@@ -245,7 +245,12 @@ export const SPECS = {
   // and getuid is the session's; and a full name table refuses a new name.
   // -3: nimbus_py_run flushes before every return, its early one too, and
   // the host no longer flushes after it; netdb's records are nimbus-libc's.
-  'cpython/3.13.14-3': {
+  // -4: takes the signals sent to its process (cpython-runner@4): a wait or
+  // a sleep ends on one (nimbus-libc's signal raiser), the interpreter asks
+  // for them while it computes (CPython's periodic check,
+  // nimbus_proc.signal_check), and its handlers are CPython's own, so Ctrl-C
+  // is a KeyboardInterrupt.
+  'cpython/3.13.14-4': {
     cliDefaultSync: true,
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
@@ -253,9 +258,10 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
-      // The first core that registers cpython-runner@3, which restarts a
-      // wait its host gave up on (core 0.22.0 registers @2 alone).
-      core: '>=0.23.0',
+      // The first core that registers cpython-runner@4, which sends a
+      // one-shot its signals (core 0.27.0, the newest published, registers
+      // @3 at most).
+      core: '>=0.27.1',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },

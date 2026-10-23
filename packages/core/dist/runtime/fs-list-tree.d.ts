@@ -2,7 +2,7 @@ import type { RuntimeFsBridge, VfsListTree } from './os-contracts.js';
 /**
  * Everything beneath directory `root` that `bridge`'s process may see, as
  * its listing pages it, walked here at once: every entry current at one
- * revision (a walk whose pages are not all at one is walked again), and the
+ * position (a walk whose pages are not all at one is walked again), and the
  * subtree whole. Past `maxEntries` it is refused (E2BIG), so the caller
  * lists it some other way rather than mistaking part of it for all of it.
  * The root is walked as it stands, never followed: one that is not a

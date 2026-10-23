@@ -28,6 +28,7 @@ import type { Admission } from './admission.js';
 import type { Admitted, Cells } from './cells.js';
 import { residentCellCost, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
+import { feedFor, isFeedPosition, rootEpochFor, sameClock } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsDescribes, nsKey, nsRowAt, type Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { NS_FILE, RK_OWN_WRITE, type NsRow } from './tables.js';
@@ -135,9 +136,9 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
   const catchUp = async (supervisor: ResidentSupervisor | null | undefined, cursor: Cursor): Promise<Cursor> => {
     if (!supervisor || typeof supervisor.fsAcquire !== 'function') return cursor;
     let result;
-    try { result = await supervisor.fsAcquire(cursor.epoch, cursor.rev, acquireOptions()); }
+    try { result = await supervisor.fsAcquire(cursor, acquireOptions()); }
     catch { result = null; }
-    if (!result || result.poison || typeof result.rev !== 'number' || typeof result.epoch !== 'string') {
+    if (!result || result.poison || !isFeedPosition(result.position)) {
       // Unanswered: the namespace keeps the listing's revision, which the
       // program's first barrier brings forward like any other.
       return cursor;
@@ -148,7 +149,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     for (const path of applied.dropped) {
       const found = namespace.resolve(path, false);
       if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE) continue;
-      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch, version: versionOf(found.row) });
+      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
     }
     if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
     return applied.cursor;
@@ -240,15 +241,16 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // from one that was never walked.
     const judgeable = listing.complete;
     const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
-    // May a held revision be COMPARED with a listed one? Only inside one
-    // supervisor incarnation: across a restart the clocks are unrelated, and an
-    // untouched path lists at rev 0, which would vouch for anything.
-    const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;
+    // May a held revision of `path` be COMPARED with a listed one? Only on one
+    // clock: its feed in one incarnation. Across a restart the clocks are
+    // unrelated, and an untouched path lists at rev 0, which would vouch for anything.
+    const at = listing.cursor;
+    const comparable = (path: string): boolean => judgeable && held !== null && sameClock(held, at, path);
     // A file listed at revision 0 has none the store can compare: a mounted
     // file's (its backend keeps no revision on the session's clock; a file
     // SQLite holds was written at a generation past 0). Its row is never
     // vouched for, so a reconcile refetches what the mount holds now.
-    const vouches = (entry: WantedFile | undefined, rev: number): boolean => comparable && entry !== undefined && entry.rev > 0 && rev >= entry.rev;
+    const vouches = (entry: WantedFile | undefined, rev: number): boolean => entry !== undefined && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
 
     const listed = new Map<string, WantedFile>();
     for (const file of listing.entries) listed.set(file.path, file);
@@ -258,18 +260,20 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     const dropped: string[] = [];
     const own: { path: string; rev: number | null }[] = [];
     let rekeyed = 0;
+    /** Dated files the listing proved current: kept, so never swept with the rest. */
+    let vouched = 0;
     for (const row of rows) {
       const entry = listed.get(row.path);
       if (row.rev === RK_OWN_WRITE) {
         current.add(row.path);
         own.push({
           path: row.path,
-          rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev,
+          rev: !comparable(row.path) ? null : entry !== undefined ? entry.rev : feedFor(at, row.path).cursor,
         });
         continue;
       }
-      const keep = vouches(entry, row.rev) || !judgeable;
-      if (keep) { current.add(row.path); continue; }
+      if (vouches(entry, row.rev)) { vouched++; current.add(row.path); continue; }
+      if (!judgeable) { current.add(row.path); continue; }
       // The listing names the same bytes (a revision moved, the content did
       // not, or another epoch): kept and dated at the listing, while its stat
       // says this credential may read them (a chmod or chown moves the
@@ -294,20 +298,22 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       const entry = listed.get(path);
       if (rev === RK_OWN_WRITE) {
         current.add(path);
-        own.push({ path, rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev });
+        own.push({ path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor });
         continue;
       }
-      if (vouches(entry, rev) || !judgeable) { current.add(path); continue; }
+      if (vouches(entry, rev)) { vouched++; current.add(path); continue; }
+      if (!judgeable) { current.add(path); continue; }
       cells.forget(path);
       dropped.push(path);
     }
     // Sweep what could not be vouched for. When NOTHING could — a new supervisor
-    // incarnation, whose revisions say nothing about ours — that is every row but
-    // this facet's own unflushed writes, and at pi scale a per-path delete would
+    // incarnation, whose revisions say nothing about ours, and no other feed's
+    // file kept — that is every row but this facet's own unflushed writes, and
+    // at pi scale a per-path delete would
     // be ~32,000 statements in one turn against an object that has been observed
     // resetting under exactly that load. So it is a predicate there, and per path
     // where a reconcile has made the set small by construction.
-    if (dropped.length > 0 && !comparable && rekeyed === 0) {
+    if (dropped.length > 0 && vouched === 0 && rekeyed === 0) {
       t.dropDatedFiles();
     } else {
       for (const path of dropped) {
@@ -335,7 +341,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         continue;
       }
       if (plan.has(file.path) || wanted.has(file.path)
-        || (pushable(file.path) && (!comparable || file.rev > held!.rev))) fetch.push(file);
+        || (pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held!, file.path).cursor))) fetch.push(file);
     }
     // Reserve mandatory metadata growth while optional data is fetched, but
     // retain the existing namespace publication order across the await.
@@ -381,7 +387,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       rekeyed,
       dropped: dropped.length,
       own,
-      reconciled: comparable,
+      reconciled: comparable(''),
       complete: listing.complete,
       cursor: judgeable ? listing.cursor : null,
       ...(listing.reason ? { incomplete: listing.reason } : {}),
@@ -404,8 +410,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       // store, or empties it first.
       throw new Error('Nimbus: a module bundle is adopted only into an empty store');
     }
-    const given = moduleCursor as { epoch?: unknown; rev?: unknown } | null | undefined;
-    if (!given || given.epoch == null || given.rev == null) {
+    if (!isFeedPosition(moduleCursor)) {
       // An undated snapshot. Adopt NOTHING and serve an empty store.
       //
       // Not a throw, because this is a real path rather than a misuse: a facet
@@ -423,11 +428,10 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       coherence.unseal();
       return null;
     }
-    const rev = Number(given.rev);
     for (const path of Object.keys(bundle || {})) {
-      cells.put(t, path, bundle![path]!, rev);
+      cells.put(t, path, bundle![path]!, feedFor(moduleCursor, path).cursor);
     }
-    return cells.admit({ poison: false, paths: [], epoch: String(given.epoch), rev }).cursor;
+    return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
   };
 
   const fail = (pass: SyncReport | null): string | null => (pass && (pass.skipped || pass.incomplete)) || null;
@@ -548,7 +552,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         if (cells.has(path)) continue;
         const row = nsRowAt(t, path);
         if (row === undefined || row.kind !== NS_FILE) continue;
-        fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null, version: versionOf(row) });
+        fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
       }
       return transport.fetchFiles(supervisor, fetch);
     },

@@ -14,7 +14,7 @@
  * that (ENOTSUP) and decides.
  */
 
-import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { RuntimeDirentType, VfsAcquireOptions, VfsDelta, VfsBackendPage, VfsListOptions } from '../runtime/os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from './events.js';
 
@@ -296,9 +296,12 @@ export interface VFS {
   /** The same operations, completing without waiting. Present only when every call can. */
   readonly sync?: SyncVFS;
   /**
-   * What changed since a cursor, and a complete listing: what a cache of
-   * this backend (a node process's staged files) is kept coherent with. A
-   * backend without it is never cached.
+   * The backend's change model: what changed since a cursor, and a complete
+   * listing, which a process's view of it is kept coherent with (its feed in
+   * the namespace's position, runtime/feed-position.ts). One whose tree never
+   * changes states it as fixed (immutableChanges: /dev, /proc). A backend
+   * without it states none: a process never answers for its names, which are
+   * the session's to answer (a call that cannot wait is refused, EAGAIN).
    */
   readonly changes?: VfsChanges;
   /**
@@ -316,11 +319,13 @@ export interface VFS {
 export interface VfsChanges {
   /** Changes when revisions could regress or be reused: a cursor from another epoch is a poison. */
   readonly epoch: string;
+  /** Its tree never changes while its epoch stands (immutableChanges): the kernel's /dev and /proc, which no launch names guide a walk of. */
+  readonly fixed?: true;
   revision(): number;
   /** Every path changed in (cursor, now], with its stat when asked; a poison when that cannot be answered. */
-  since(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
-  /** One page of every name, in path order. */
-  list(after: string | null, limit: number): VfsListPage;
+  since(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsDelta;
+  /** One page of every name, in path order; `options` what each entry carries beyond its name and stat. */
+  list(after: string | null, limit: number, options?: VfsListOptions): VfsBackendPage;
 }
 
 export type VfsCasResult = { ok: true; revision: VfsRevision } | { ok: false; revision: VfsRevision };

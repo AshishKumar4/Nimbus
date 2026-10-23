@@ -10,6 +10,7 @@
 import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '@nimbus-sh/core/constants.js';
 import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '@nimbus-sh/platform/limits.js';
 import { RESIDENT_ROW_BYTES, residentBytes } from './cell-cost.js';
+import { rootOf } from '@nimbus-sh/core/runtime/feed-position.js';
 export function createPages(coherence, admission, namespace) {
     let clock = null;
     let total = null;
@@ -67,7 +68,8 @@ export function createPages(coherence, admission, namespace) {
         // epoch the platform produces names a revision of another's with other
         // bytes; a store that outlived its database would meet one, and keying by
         // epoch costs nothing.
-        const keyed = cursor.epoch + '\u0000' + k;
+        const epoch = rootOf(cursor).epoch;
+        const keyed = epoch + '\u0000' + k;
         const out = new Array(last - first + 1);
         const missing = [];
         for (let part = first; part <= last; part++) {
@@ -82,7 +84,7 @@ export function createPages(coherence, admission, namespace) {
             const batch = missing.slice(at, at + perBatch);
             const ranges = batch.map((part) => {
                 const offset = part * RESIDENT_PAGE_BYTES;
-                return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+                return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
             });
             // N18: room asked for first; a page the ledger will not admit is still read, only not held.
             await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));

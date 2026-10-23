@@ -2,6 +2,7 @@ import type { ProgramPlacement } from './program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { VfsRemoval } from '../vfs/vfs.js';
+import type { FeedPosition } from './feed-position.js';
 /**
  * A value SQLite can return in a row.
  *
@@ -449,7 +450,7 @@ export interface RuntimeFsBridge {
      * the caller must drop its entire resident set. That costs a cold cache;
      * the alternative would be serving a stale byte.
      */
-    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Awaitable<VfsAcquireResult>;
+    acquire(position: FeedPosition | null, options?: VfsAcquireOptions): Awaitable<VfsAcquireResult>;
     /**
      * Enumerate every path this bridge's credential can see, one bounded page at
      * a time, resuming past `after`.
@@ -664,10 +665,22 @@ export interface VfsAcquireOptions {
         exclude?: string[];
     };
 }
-/** Result of a {@link RuntimeFsBridge.acquire} barrier. */
-export interface VfsAcquireResult {
+/**
+ * What one backend's feed answers (VfsChanges.since, SqliteVFS.acquire):
+ * every path changed since a cursor of its own epoch, at its own revision,
+ * or a poison.
+ */
+export interface VfsDelta {
     epoch: string;
     rev: number;
+    paths: VfsInvalidatedPath[];
+    poison: boolean;
+    /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
+    namespace?: boolean;
+}
+/** Result of a {@link RuntimeFsBridge.acquire} barrier: the namespace's, at the position it leaves its reader. */
+export interface VfsAcquireResult {
+    position: FeedPosition;
     paths: VfsInvalidatedPath[];
     poison: boolean;
     /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
@@ -727,7 +740,7 @@ export interface VfsListEntry {
  * of defect as reading a truncated file as a complete one, which is why
  * `_rpcFsReadBatch` rejects rather than truncates.
  *
- * `epoch`/`rev` are read BEFORE the page is walked, for the same reason
+ * The position (each feed's epoch and cursor) is read BEFORE the page is walked, for the same reason
  * `buildPrefetchBundle` reads its cursor before its walk: a mutation landing
  * during enumeration must be reported by the next ACQUIRE, never silently
  * missed. Dating rows at a cursor OLDER than their bytes costs a refetch;
@@ -746,9 +759,16 @@ export interface VfsListOptions {
     /** Each link's `linkTarget`: a read of its content, which may not be at hand. Default true. */
     linkTargets?: boolean;
 }
-export interface VfsListPage {
+/** One page of one backend's listing (VfsChanges.list, SqliteVFS.list), at its own epoch and revision. */
+export interface VfsBackendPage {
     epoch: string;
     rev: number;
+    entries: VfsListEntry[];
+    next: string | null;
+}
+/** One page of the namespace's listing, at the position it was taken at (read before the page). */
+export interface VfsListPage {
+    position: FeedPosition;
     entries: VfsListEntry[];
     next: string | null;
 }
@@ -759,8 +779,7 @@ export interface VfsListPage {
  * refused (E2BIG), never cut short.
  */
 export interface VfsListTree {
-    epoch: string;
-    rev: number;
+    position: FeedPosition;
     entries: VfsListEntry[];
 }
 export interface RuntimeProcessBridge {
@@ -893,11 +912,24 @@ export declare const BASH_RUNNER_CONTRACTS: Readonly<Record<string, {
  * which an older runner does not give the module, so it is `@2`; 3.13.14-1
  * and before were published under `cpython-runner`. 3.13.14-3 asks again a
  * read or write its host gave up on (nimbus-libc's restart wrappers), which
- * a host may answer only to it, so it is `@3`. A rebuild that changes what
- * the module imports, exports or asks of its host takes the next number, as
- * BASH_RUNNER's do.
+ * a host may answer only to it, so it is `@3`. 3.13.14-4 takes the signals
+ * sent to its process (nimbus-libc's signal raiser, and CPython's periodic
+ * check, nimbus_proc.signal_check), which a host sends only to it, so it is
+ * `@4`. A rebuild that changes what the module imports, exports or asks of
+ * its host takes the next number, as BASH_RUNNER's do.
  */
-export declare const CPYTHON_RUNNER = "cpython-runner@3";
+export declare const CPYTHON_RUNNER = "cpython-runner@4";
+/** What a CPython build asks of its host (CPYTHON_RUNNER_CONTRACTS). */
+export interface CPythonRunnerContract {
+    /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */
+    readonly restartsWaits: boolean;
+    /**
+     * Its libc raises the signals the host sends it (NIMBUS_ESIGNAL), and its
+     * interpreter asks for them while it computes (nimbus_proc.signal_check):
+     * its process takes its own.
+     */
+    readonly takesSignals: boolean;
+}
 /**
  * The contracts this tree's CPython runner implements, the keys it is
  * registered under, and what each build asks of its host: each build's
@@ -905,9 +937,7 @@ export declare const CPYTHON_RUNNER = "cpython-runner@3";
  * and nimbus_proc since @2), and an instantiation ignores the ones a module
  * does not import.
  */
-export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, {
-    readonly restartsWaits: boolean;
-}>>;
+export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, CPythonRunnerContract>>;
 /** What a git build asks of its host (GIT_RUNNER_CONTRACTS). */
 export interface GitRunnerContract {
     /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */

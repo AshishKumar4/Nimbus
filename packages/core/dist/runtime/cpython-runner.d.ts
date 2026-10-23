@@ -42,11 +42,11 @@
  */
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { FacetHost } from './facet-host.js';
+import { type FacetHost } from './facet-host.js';
 import { type PythonMarkerEnvironment } from './python-pip.js';
 import { type RuntimeManifest } from './runtime-manifest.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import type { NimbusFilesystemAuthority } from './os-contracts.js';
+import type { CPythonRunnerContract, NimbusFilesystemAuthority } from './os-contracts.js';
 import { type InterpreterEnv } from './interpreter-env.js';
 /**
  * The environment markers of the CPython build `manifest` installs, as the
@@ -109,8 +109,8 @@ export declare function makeCPythonRunnerFactory(deps: {
     network: WorkspaceNetwork;
     /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
     startResident?: CPythonResidentStart;
-    /** The installed image asks again a wait its host gave up on: its runner key's contract (CPYTHON_RUNNER_CONTRACTS). */
-    restartsWaits: boolean;
+    /** What the installed image asks of its host: its runner key's contract (CPYTHON_RUNNER_CONTRACTS). */
+    contract: CPythonRunnerContract;
     /** The session the python processes run in: its warm facets are its own (warm-facets.ts). */
     session: string;
 }): CPythonRunnerFactory;

@@ -4,6 +4,7 @@
 // reactors. Appended adapters boot its Node store and expose filesystem calls;
 // the CLI itself is not run (no substitute opencode bundle is installed).
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,10 +88,10 @@ try {
   const nodeStats = node.stats();
   const guest = await startResidentWasi(P, wasiProcess.supervisor, wasiCred);
   assert.equal(guest.namespace.ready(), true, 'the bundled WASI host really started its resident store');
-  assert.deepEqual(wasiProcess.acquireRequests[0], { epoch: null, rev: 0 });
+  assert.deepEqual(wasiProcess.acquireRequests[0], null);
   assert.equal((await guest.namespace.barrier()).landed, true);
   assert.deepEqual(wasiProcess.acquireRequests.at(-1), wasiSession.cursor());
-  assert.notEqual(wasiSession.cursor().epoch, nodeCursor.epoch);
+  assert.notEqual(rootOf(wasiSession.cursor()).epoch, rootOf(nodeCursor).epoch);
   assert.deepEqual(node.cursor(), nodeCursor, 'WASI boot and acquire did not replace the Node cursor');
 
   assert.equal(decoder.decode(await guest.fs.readFile('home/user/wasi-only.txt')), 'WASI bytes');

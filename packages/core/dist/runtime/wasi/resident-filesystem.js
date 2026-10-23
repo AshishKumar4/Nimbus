@@ -43,6 +43,9 @@ import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
+import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
+import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
+import { isCharacterDevice } from '../../vfs/vfs.js';
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
 /** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
@@ -96,6 +99,8 @@ const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'see
 const NOT_NOW = Symbol('not now');
 /** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
 const REFUSED_ON_A_DIRECTORY = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
+/** The device of a directory the namespace makes that no backend holds (CompositeVFS: no backend's, the root mount's none). */
+const NAMESPACE_DEV = 0;
 /** Whether the session refuses `syscall` with `args` on a directory: an open as the session's open judges one (refusesDirectory). */
 function refusesADirectory(syscall, args) {
     if (syscall !== 'open')
@@ -346,7 +351,7 @@ export function residentFilesystem(session, resident, delegation) {
             const entry = store.entry(key);
             if (entry === undefined)
                 return { missing: key };
-            if (entry !== null && entry.dev !== store.device)
+            if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
                 return DELEGATE;
             step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
         }
@@ -567,9 +572,76 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = store.entry(key);
         if (entry === undefined)
             return undefined;
-        if (entry !== null && entry.dev !== store.device)
+        if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
             return undefined;
         return entry;
+    };
+    /**
+     * Whether the view answers for `entry` at `key`, a row off the session's
+     * own filesystem's device (whose rows it answers, asked first at each
+     * call site): a row of a fed mount (a mount whose backend states its
+     * change model: VFS.changes, /dev and /proc among them), never one of a
+     * mount without a feed (a snapshot its listing walked), which is the
+     * session's to answer. A row is its fed mount's where its device is that
+     * mount's root's (the deepest fed mount point at or above it): a mount
+     * without a feed beneath it has a device of its own. A directory the
+     * namespace makes above a fed mount point is answered too. A moving
+     * feed's (not fixed) not while a read lease is trusted.
+     */
+    const answerable = (key, entry) => {
+        const cursor = store.cursor();
+        if (cursor === null)
+            return false;
+        // A directory the namespace makes above a fed mount that no backend holds (no device: the namespace's own): the
+        // table's, which a poison moves. One a backend without a feed holds is that backend's, its changes unreported.
+        if (entry.type === 'directory' && entry.dev === NAMESPACE_DEV && abovePoint(cursor, key))
+            return true;
+        const at = feedPointOf(cursor, key);
+        if (at === ROOT_FEED)
+            return false;
+        // A read lease vouches for the engine alone, whose writes recall it (a table change too): while one is
+        // trusted, the view has not asked since it was granted, so a row of a feed that moves is the session's.
+        if (feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true)
+            return false;
+        const point = at.slice(1);
+        const root = point === key ? entry : store.entry(point);
+        return root !== undefined && root !== null && root.dev === entry.dev;
+    };
+    /** Whether `key` is on a mount (its deepest fed mount point is not the root): the session's to change, never this process's to decide. */
+    const onMount = (key) => {
+        const cursor = store.cursor();
+        return cursor !== null && feedPointOf(cursor, key) !== ROOT_FEED;
+    };
+    /**
+     * The row at `key` where this process may decide a change on it: the
+     * session's own filesystem's (absent there too). A mount's row, or a name
+     * absent on a mount, is the session's: a wave deciding on it is refused
+     * (the name leads to a mount, not the file the process decided on).
+     */
+    const ownEntryAt = (key) => {
+        const entry = entryAt(key);
+        if (entry === undefined)
+            return undefined;
+        return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
+    };
+    /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
+    const volatileProc = (key, entry) => {
+        if (entry.type !== 'file' || entry.size !== 0)
+            return false;
+        const cursor = store.cursor();
+        return cursor !== null && feedPointOf(cursor, key) === PROC_MOUNT_POINT;
+    };
+    /**
+     * A generated /proc file's bytes, made here by the session's own generator
+     * (proc-files.ts) where this process has it; undefined where only the
+     * session makes it (/proc/mounts).
+     */
+    const generated = (key) => {
+        const generate = procFileGenerator(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
+        if (generate === undefined)
+            return undefined;
+        const content = generate({ ...store.cred, umask: 0 });
+        return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
     };
     /**
      * A file's bytes: what this process decided for it, else the store's,
@@ -680,11 +752,13 @@ export function residentFilesystem(session, resident, delegation) {
      * anyway, counting it toward taking the subtree.
      */
     const decidable = (key, ...walks) => {
+        if (onMount(key))
+            return false;
         if (holder.client.held(key) === undefined)
             return true;
         const cursor = store.cursor();
         return walks.every((walk) => walk.crossed.every((name) => holder.entry(name) !== undefined
-            || (cursor !== null && holder.client.certifies(name, cursor) !== undefined)));
+            || (cursor !== null && holder.client.certifies(name, rootOf(cursor)) !== undefined)));
     };
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
@@ -813,6 +887,9 @@ export function residentFilesystem(session, resident, delegation) {
         // Only the file the caller stat'd, at the revision it stat'd: anything else is the session's to open.
         if (!entry || entry.type !== 'file' || entry.dev !== stat.dev || entry.ino !== stat.ino || entry.size > WASI_RESIDENT_FILE_CAP_BYTES)
             return null;
+        // Bytes no row holds (a device's, a volatile /proc file's): a descriptor of the session's reads them.
+        if (isCharacterDevice(entry.mode) || volatileProc(key, entry))
+            return null;
         if (!modeAllows(entry, 4, store.cred))
             return null;
         // A file this process changed is the session's to read where its bytes are not known here (its changes are answered there first).
@@ -862,8 +939,10 @@ export function residentFilesystem(session, resident, delegation) {
             throw fsError('EACCES', 'open', path);
         if (entry.type === 'directory')
             throw fsError('EISDIR', 'open', path);
-        if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES)
+        if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode))
             return DELEGATE;
+        if (volatileProc(key, entry))
+            return generated(key) ?? DELEGATE;
         return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
@@ -1010,7 +1089,7 @@ export function residentFilesystem(session, resident, delegation) {
         const walk = walkFor(path, follow);
         if (walk === DELEGATE || walk instanceof Promise)
             throw NOT_NOW;
-        const row = entryAt(walk.key);
+        const row = ownEntryAt(walk.key);
         if (row === undefined)
             throw NOT_NOW;
         const done = decided(walk.key, row);
@@ -1032,7 +1111,7 @@ export function residentFilesystem(session, resident, delegation) {
      * a grant decides a name or the view cannot place one, by the session.
      */
     const ownChange = (keys, decided, session) => {
-        const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : entryAt(key)));
+        const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : ownEntryAt(key)));
         const placed = rows.every((row) => row !== undefined) ? rows : undefined;
         if (now) {
             if (placed === undefined || decided(placed, false) === false)
@@ -1143,7 +1222,7 @@ export function residentFilesystem(session, resident, delegation) {
                 return after(walkFor(path, flags.followSymlinks !== false), (walk) => {
                     if (walk === DELEGATE)
                         return DELEGATE;
-                    const there = entryAt(walk.key);
+                    const there = ownEntryAt(walk.key);
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
                     const opened = holder.provisional.open(walk.key, pathOf(path), flags, there, true);
@@ -1535,11 +1614,11 @@ export function residentFilesystem(session, resident, delegation) {
             const walked = walkOnce('', next, true);
             if (walked === null)
                 throw fsError('ELOOP', 'mkdir', path);
-            const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
+            const entry = typeof walked === 'string' ? ownEntryAt(walked) : undefined;
             if (entry === undefined)
                 throw NOT_NOW;
             if (entry === null) {
-                const parent = entryAt(parentKey(walked));
+                const parent = ownEntryAt(parentKey(walked));
                 // Made where the view cannot say it may be made (another filesystem, a mode it would have to judge): the session's.
                 if (!parent || parent.type !== 'directory' || parent.dev !== store.device)
                     throw NOT_NOW;
@@ -1584,7 +1663,7 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const vouchedContent = ({ key }) => {
         const cursor = store.cursor();
-        if (cursor === null || holder.client.vouch(key, cursor) !== 'held')
+        if (cursor === null || holder.client.vouch(key, rootOf(cursor)) !== 'held')
             return undefined;
         const entry = entryAt(key);
         return entry ? store.content(key, entry.revision) : undefined;

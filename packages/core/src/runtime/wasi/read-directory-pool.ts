@@ -4,10 +4,11 @@ import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
 import type { RuntimeFileHandle, RuntimeFsPath, VfsAcquireResult } from '../os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult, ReadDirectoryDescription } from '../read-directory-batch.js';
 import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry } from './resident-filesystem.js';
+import { notAfter, sameEpochs, type FeedPosition } from '../feed-position.js';
 
 export interface DirectoryPoolStore {
   ready(): boolean;
-  cursor(): { epoch: string; rev: number } | null;
+  cursor(): FeedPosition | null;
   barrier(options?: ResidentBarrierOptions): Promise<ResidentBarrier>;
   entry(key: string): ResidentEntry | null | undefined;
 }
@@ -62,7 +63,8 @@ function keyOfPath(path: RuntimeFsPath): string {
 export function readDirectoryPool({ call, store, client, before, endWaitMs = DIRECTORY_END_WAIT_MS }: Options): ReadDirectoryPool {
   const channel = crypto.randomUUID();
   let sequence = 0, generation = 0, cancelled = 0;
-  let owner: string | null = null, epoch: string | null = null;
+  /** The lease's owner, and the store's incarnation it was applied at (sameEpochs). */
+  let owner: string | null = null, incarnation: FeedPosition | null = null;
   let trustedAtIo = false, ended = false, uncertain = 0, reserved = 0;
   /** The session refused the channel itself (its scope's channel budget, or the channel's own window): the batch is not used again. */
   let unavailable = false;
@@ -89,14 +91,18 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
   const distrust = (): void => { generation++; trustedAtIo = false; };
   /** What the pool knows may be wrong (a failed or foreign answer, the end): every prediction is retired. */
   const invalidate = (): void => { distrust(); discardUnused(); };
+  const sameIncarnation = (): boolean => {
+    const now = store.cursor();
+    return now !== null && incarnation !== null && sameEpochs(now, incarnation);
+  };
   const valid = (): boolean => {
     const yes = trustedAtIo && owner !== null && client.readUnchanged(owner)
-      && store.ready() && store.cursor()?.epoch === epoch;
+      && store.ready() && sameIncarnation();
     if (!yes) {
       trustedAtIo = false;
       // Another incarnation's store: no description of the old one is worth
       // keeping. (Before a lease was applied there is no incarnation to compare.)
-      if (epoch !== null && store.cursor()?.epoch !== epoch) discardUnused();
+      if (incarnation !== null && !sameIncarnation()) discardUnused();
     }
     return yes;
   };
@@ -115,10 +121,10 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
   };
   const exchange = async (open: readonly RuntimeFsPath[], wantLease: boolean, end = false): Promise<readonly ReadDirectoryDescription[]> => {
     await before();
-    const cursor = store.cursor() ?? { epoch: null, rev: 0 };
+    const cursor = store.cursor();
     // Captured ONCE outside the retried RPC. A cached once-delivery answer
     // can never obtain a new deadline from the retry's later arrival.
-    const ask = wantLease && cursor.epoch !== null ? client.readLeaseAsk() : null;
+    const ask = wantLease && cursor !== null ? client.readLeaseAsk() : null;
     const stamp = generation;
     const cancelAt = cancelled;
     const sentRetire = [...retiring];
@@ -127,7 +133,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     reserved += open.length;
     let result: ReadDirectoryBatchResult;
     try {
-      result = await call({ channel, sequence: sentSequence, epoch: cursor.epoch, cursor: cursor.rev,
+      result = await call({ channel, sequence: sentSequence, position: cursor,
         open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
     } catch (error) {
       uncertain += open.length;
@@ -148,9 +154,9 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     const lease = result.acquire.readLease;
     if (lease) client.readLeaseAnswered(lease); // ownership precedes any admission/yield
     const current = store.cursor();
-    const applies = current !== null && (current.epoch === result.acquire.epoch
-      ? current.rev <= result.acquire.rev
-      : current.epoch === cursor.epoch && generation === stamp);
+    const applies = current !== null && (sameEpochs(current, result.acquire.position)
+      ? notAfter(current, result.acquire.position)
+      : cursor !== null && sameEpochs(current, cursor) && generation === stamp);
     let admitted: boolean;
     try { admitted = applies && (await store.barrier({ answer: result.acquire })).applied === true; }
     catch (error) { invalidate(); throw error; }
@@ -158,7 +164,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     if (lease && ask && admitted && !result.acquire.poison && generation === stamp && cancelled === cancelAt) {
       client.readLeased(lease, ask);
       owner = lease.owner;
-      epoch = result.acquire.epoch;
+      incarnation = result.acquire.position;
       trustedAtIo = client.readTrusted(); // a real batch reply, never a timer
     }
     if (open.length > 0 && (cancelled !== cancelAt || ended)) {

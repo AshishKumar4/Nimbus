@@ -22,6 +22,7 @@
 // Each body runs in a child process of its own (runScenarios).
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 
 import { VFS_CURSOR_SEED_SOURCE } from '../../packages/core/src/_shared/facet-vfs-cursor.ts';
 import {
@@ -61,16 +62,16 @@ function session() {
 
 /**
  * What a body asks the session, seen at its SUPERVISOR: the cursor of each
- * ACQUIRE its program's reads ask with (fsAcquire's (epoch, rev), fsAcquired's
- * { epoch, cursor }), and every path whose bytes it reads (fsReadBatch, alone
+ * ACQUIRE its program's reads ask with (fsAcquire's position, fsAcquired's
+ * { position }), and every path whose bytes it reads (fsReadBatch, alone
  * or carried by an fsAcquired).
  */
 function observer() {
   const seen = { acquires: [], reads: [] };
   seen.note = (op, args) => {
     if (globalThis.__cursorTestProgram === true) {
-      if (op === 'fsAcquire') seen.acquires.push({ epoch: args[0], rev: args[1] });
-      if (op === 'fsAcquired') seen.acquires.push({ epoch: args[0].epoch, rev: args[0].cursor });
+      if (op === 'fsAcquire') seen.acquires.push(args[0]);
+      if (op === 'fsAcquired') seen.acquires.push(args[0].position);
     }
     const [name, batch] = op === 'fsAcquired' ? [args[1], args[2]?.[0]] : [op, args[0]];
     if (name !== 'fsReadBatch' || !Array.isArray(batch)) return;
@@ -91,9 +92,10 @@ function assertCoherent(label, seen, staged, line, { launched = false } = {}) {
   assert.deepEqual(seen.reads.filter((path) => path === `${DIR}/data.txt`), [], `${label}: the staged file is the snapshot's, never fetched again (reads: ${JSON.stringify(seen.reads)})`);
   assert.ok(seen.acquires.length > 0, `${label}: the async read asked an ACQUIRE`);
   const [first] = seen.acquires;
-  assert.equal(first.epoch, staged.epoch, `${label}: the program's first ACQUIRE asks in the session's epoch, not a null one (${JSON.stringify(first)})`);
-  if (launched) assert.ok(first.rev >= staged.rev, `${label}: at the revision its snapshot was read at (${first.rev}, launched at ${staged.rev})`);
-  else assert.equal(first.rev, staged.rev, `${label}: at the revision the snapshot was read at`);
+  assert.ok(first, `${label}: the program's first ACQUIRE asks from a position, not a null one (${JSON.stringify(first)})`);
+  assert.equal(rootOf(first).epoch, rootOf(staged).epoch, `${label}: the program's first ACQUIRE asks in the session's epoch (${JSON.stringify(first)})`);
+  if (launched) assert.ok(rootOf(first).cursor >= rootOf(staged).cursor, `${label}: at the revision its snapshot was read at (${rootOf(first).cursor}, launched at ${rootOf(staged).cursor})`);
+  else assert.equal(rootOf(first).cursor, rootOf(staged).cursor, `${label}: at the revision the snapshot was read at`);
   assert.equal(line, 'read:staged', `${label}: the staged file still reads synchronously after the async read`);
 }
 
@@ -192,8 +194,8 @@ if (!process.env.NIMBUS_RESIDENT_BODY_SCENARIO) {
     reachableCount: 1,
     truncated: false,
   });
-  const one = { epoch: 'epoch-under-test', rev: 4242 };
-  const other = { epoch: 'a-different-incarnation', rev: 9 };
+  const one = positionOf('', { '/': { epoch: 'epoch-under-test', cursor: 4242 } });
+  const other = positionOf('', { '/': { epoch: 'a-different-incarnation', cursor: 9 } });
   assert.equal(
     (await generateEntrypointCode('', at(one), false, SOURCES)).code,
     (await generateEntrypointCode('', at(other), false, SOURCES)).code,

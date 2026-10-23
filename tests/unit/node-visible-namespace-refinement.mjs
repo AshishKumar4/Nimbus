@@ -49,6 +49,8 @@ function residentStore() {
   const namespace = () => {
     const out = {};
     for (const key of rows.nsKeys()) {
+      // The kernel's mounts are every reader's now; the fixture states the reader's own names.
+      if (key.name === 'dev' || key.name === 'proc' || key.parent === 'dev' || key.parent.startsWith('dev/') || key.parent === 'proc' || key.parent.startsWith('proc/')) continue;
       const row = rows.nsGet(key.parent, key.name);
       out[key.parent ? `${key.parent}/${key.name}` : key.name] = row.kind === NS_DIR ? 'dir' : 'file';
     }
@@ -73,18 +75,18 @@ for (const [index, testCase] of fixture.cases.entries()) {
   const supervisor = {
     fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
     fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
-    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options, pid),
+    fsAcquire: (position, options) => _rpcFsAcquire(host, position, options, pid),
   };
   const { store, namespace } = residentStore();
   store.namespace.setCred(reader);
-  store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+  store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
   await store.sync.synchronize(supervisor);
   assert.ok(store.namespace.ready(), `${where}: the namespace was not built`);
   assert.deepEqual(sorted(namespace()), sorted(testCase.atCursor), `${where}: namespace at the cursor`);
 
   for (const step of testCase.window) apply(kernel, step, where);
   const held = store.coherence.cursor();
-  const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev, store.sync.acquireOptions()));
+  const applied = store.cells.admit(await supervisor.fsAcquire(held, store.sync.acquireOptions()));
   for (const dir of applied.relist) {
     relists++;
     await store.transport.relist(supervisor, dir);

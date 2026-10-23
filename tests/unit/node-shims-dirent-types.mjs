@@ -9,6 +9,7 @@
 // and /tmp/untyped/dev/null-like entries come back exactly typed.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -62,7 +63,7 @@ const supervisor = {
   readdir: (path) => listing(path),
   exists: async (path) => (await bridge.stat(path)) !== null,
   fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
+  fsAcquire: (position, options) => bridge.acquire(position, options),
   mkdir: (path, options) => bridge.mkdir(path, options),
   chmod: (path, mode) => bridge.chmod(path, mode),
   writeFile: (path, content) => bridge.writeFile(path, typeof content === 'string' ? enc.encode(content) : content),
@@ -75,7 +76,7 @@ listAuthority(rawVfs);
 globalThis.__nimbusTestAuthorityListing.push(['tmp/typed/null', {
   type: 'file', size: 0, mode: 0o020666, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 99,
 }]);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +

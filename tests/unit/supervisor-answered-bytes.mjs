@@ -32,7 +32,7 @@ async function counted(envelope) {
   return readDiagCounters().supervisorAnsweredBytes - before;
 }
 const batch = [[{ path: '/home/user/data.bin', offset: 0, length: SIZE }]];
-const acquire = () => ({ epoch: rawVfs.epoch, cursor: rawVfs.revision() });
+const acquire = () => ({ position: host.supervisorBridge(pid).acquire(null).position });
 
 // ── (1) an fsAcquired's read is counted once ───────────────────────────────
 const alone = await counted({ op: 'fsReadBatch', args: batch });

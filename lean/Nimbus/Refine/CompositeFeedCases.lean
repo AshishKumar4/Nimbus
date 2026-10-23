@@ -169,7 +169,6 @@ def genCase : Gen (Option Json) := do
       nextSrc := nextSrc + 1
   let s0 := s
   let mut independentFeeds := s0.mounts.any (·.2)
-  let mut tableChanges := 0
   let mut out : Array Json := #[]
   -- `sub` entries: a directory removed (rm, or a file written over it), by backend
   -- (none = root) at its path in that backend.
@@ -211,7 +210,6 @@ def genCase : Gen (Option Json) := do
       if !s.mounts.any (·.1 == pt) then
         let ch := (← below 3) != 0
         independentFeeds := independentFeeds || ch
-        tableChanges := tableChanges + 1
         let t ← genTree 2 (60 + i)
         s := { s with mounts := s.mounts ++ [(pt, ch)], bt := setBt s.bt pt t, src := (s.src.filter (·.1 != pt)) ++ [(pt, nextSrc)] }
         nextSrc := nextSrc + 1
@@ -219,7 +217,6 @@ def genCase : Gen (Option Json) := do
     else
       if !s.mounts.isEmpty then
         let (m, _) ← pick s.mounts
-        tableChanges := tableChanges + 1
         s := { s with mounts := s.mounts.filter (·.1 != m) }
         out := out.push (.obj [("op", .str "unmount"), ("point", .str (key m))])
   let T := table s
@@ -227,8 +224,7 @@ def genCase : Gen (Option Json) := do
   -- whose source is the same at both ends (otherwise the table differs anyway).
   let rlog : List LEnt := subs.filterMap fun (b, p) => if b.isNone then some ⟨p, true⟩ else none
   let mlog : Path → List LEnt := fun m => subs.filterMap fun (b, p) => if b == some m then some ⟨p, true⟩ else none
-  let poison := listingPoison (s0.mounts.isEmpty && !independentFeeds) 0 tableChanges
-    (sig s0 != sig s) (subPoison T rlog mlog)
+  let poison := listingPoison (sig s0 != sig s) (subPoison T rlog mlog)
   let mountsJson := s0.mounts.map fun (m, ch) => Json.obj [("point", .str (key m)), ("changes", .bool ch),
     ("entries", entriesJson (((s0.bt.find? (·.1 == m)).map (·.2)).getD []))]
   let named := s0.mounts.map (·.1)
@@ -339,11 +335,11 @@ def generationDirected : Json :=
   let alone : S := { root := [], mounts := [], bt := [] }
   launchCase alone alone [] [
       .obj [("op", .str "mount"), ("point", .str "/m"), ("changes", .bool false), ("entries", .obj [])],
-      .obj [("op", .str "unmount"), ("point", .str "/m")]] (listingPoison true 0 2 false false)
+      .obj [("op", .str "unmount"), ("point", .str "/m")]] (listingPoison false false)
 
 def fixture : String :=
   fixtureText [("fixture", .str "composite-feed"), ("model", .str "Nimbus.Vfs.CompositeFeed"),
-      ("note", .str "ProcessFiles bound listings merge the feed view with a bounded launch-named walk of unfed mounts; walked entries have rev 0; unlisted directories certify no absence; continuing pages retain one walk; ordinary answers retain unfed observations, boot/relist replaces them; independent fed mounts use the composite's multi-feed cursor; structural paths shadow backend entries; table/source changes and structural subtree entries poison; SQLite-only bound listings conservatively relist on every mount-generation change, including ABA; cache observations bridge the resident store's undated held bytes and reconciliation")]
+      ("note", .str "ProcessFiles bound listings merge the feed view with a bounded launch-named walk of unfed mounts; walked entries have rev 0; unlisted directories certify no absence; continuing pages retain one walk; ordinary answers retain unfed observations, boot/relist replaces them; every process cursor is the composite's multi-feed position; structural paths shadow backend entries; table/source changes and structural subtree entries poison, and a mount-table ABA needs none; cache observations bridge the resident store's undated held bytes and reconciliation")]
     (directed ++ launchDirected ++ runGen 0x46454544 (casesOf 150 genCase) ++ [generationDirected])
 
 end Nimbus.Refine.CompositeFeedCases

@@ -17,6 +17,7 @@
  * One barrier for both: it asks (or takes the answer a delivery carried),
  * applies, and differs only in how it repairs what it could not apply.
  */
+import { floorFor, isFeedPosition, notAfter, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsKey, nsRowAt } from './namespace.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE } from './tables.js';
 /** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
@@ -54,38 +55,38 @@ export function createView(coherence, admission, namespace, cells, transport, sy
             return false;
         let answer = null;
         try {
-            answer = await supervisor.fsAcquire(null, 0, { namespace: true });
+            answer = await supervisor.fsAcquire(null, { namespace: true });
         }
         catch {
             return false;
         }
-        if (!answer || typeof answer.epoch !== 'string' || typeof answer.rev !== 'number')
+        if (!answer || !isFeedPosition(answer.position))
             return false;
         // Sealed until now, and this is what unseals it: nothing is held to date.
-        beginLazy(coherence.tables('bootLazy'), { epoch: answer.epoch, rev: answer.rev });
+        beginLazy(coherence.tables('bootLazy'), answer.position);
         return true;
     };
     /**
      * An answer as it stands against the store's cursor now. Answers can be
      * admitted in another order than they were given (one a delivery carried
      * was asked before a barrier that overtook it); everything at or below the
-     * cursor is admitted already, so only the entries above it are news, and
-     * the cursor never moves back. An answer in another epoch, or a poison, is
-     * left as it is.
+     * cursor is admitted already, so only each feed's entries above its cursor
+     * are news (floorFor), and the cursor never moves back. A poison is left
+     * as it is.
      */
     const current = (answer) => {
         const cursor = coherence.cursor();
-        if (cursor === null || answer.poison === true || answer.epoch !== cursor.epoch)
+        if (cursor === null || answer.poison === true)
             return answer;
-        if (answer.rev <= cursor.rev)
-            return { ...answer, rev: cursor.rev, paths: [] };
-        const paths = answer.paths.filter((entry) => entry.rev > cursor.rev);
+        if (notAfter(answer.position, cursor))
+            return { ...answer, position: cursor, paths: [] };
+        const paths = answer.paths.filter((entry) => entry.rev > floorFor(answer.position, cursor, entry.path));
         return paths.length === answer.paths.length ? answer : { ...answer, paths };
     };
     /**
      * The answer a delivery carried, as it stands now, or null when it cannot
-     * stand in for asking: it can when it answers from a cursor the store has
-     * reached, in its epoch, and names everything after it up to the delivery.
+     * stand in for asking: it can when it answers from a position the store
+     * has reached, and names everything after it up to the delivery.
      * A routed request is answered from the session's own cursor, "nothing
      * since now", which stands in only for a store already there.
      */
@@ -96,9 +97,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
         const cursor = coherence.cursor();
         if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths))
             return null;
-        if (typeof answer.rev !== 'number' || answer.epoch !== cursor.epoch || args.epoch !== cursor.epoch)
-            return null;
-        if (!(args.cursor <= cursor.rev))
+        if (!isFeedPosition(answer.position) || !isFeedPosition(args.position) || !notAfter(args.position, cursor))
             return null;
         return current(answer);
     };
@@ -120,7 +119,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
             /** What an ACQUIRE is asked with: the store's cursor, and the push roots it keeps (sync.acquireOptions). */
             const argsNow = () => {
                 const cursor = coherence.cursor();
-                return cursor === null ? null : { epoch: cursor.epoch, cursor: cursor.rev, options: sync.acquireOptions() };
+                return cursor === null ? null : { position: cursor, options: sync.acquireOptions() };
             };
             /**
              * One ACQUIRE from the store's cursor, as it stands now; null when there
@@ -130,7 +129,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
              */
             const acquire = async (lease) => {
                 // An answer to an ACQUIRE asked before the store started again in
-                // another epoch is the last incarnation's: it is asked again, from
+                // another incarnation is the last one's: it is asked again, from
                 // where the store now stands (as a delivery's would not stand in).
                 for (let asks = 0; asks < 2; asks++) {
                     const args = argsNow();
@@ -138,14 +137,15 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                         return null;
                     let answer = null;
                     try {
-                        answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options);
+                        answer = await supervisor.fsAcquire(args.position, lease ? { ...args.options, lease: true } : args.options);
                     }
                     catch {
                         return null;
                     }
-                    if (!answer || typeof answer.epoch !== 'string' || typeof answer.rev !== 'number')
+                    if (!answer || !isFeedPosition(answer.position))
                         return null;
-                    if (coherence.cursor()?.epoch !== args.epoch)
+                    const now = coherence.cursor();
+                    if (now === null || !sameEpochs(now, args.position))
                         continue;
                     if (lease && answer.readLease)
                         lease.answered(answer.readLease);
@@ -163,7 +163,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     return bootLazy(supervisor);
                 if (applied && namespace.ready())
                     return true;
-                beginLazy(coherence.tables('restart'), applied ? coherence.cursor() : { epoch: answer.epoch, rev: answer.rev });
+                beginLazy(coherence.tables('restart'), applied ? coherence.cursor() : answer.position);
                 return true;
             };
             /**
@@ -186,16 +186,16 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 if (answer !== null && answer.poison === true)
                     return false;
                 const floor = coherence.cursor();
-                if (floor === null || (answer !== null && answer.epoch !== floor.epoch))
+                if (floor === null || (answer !== null && !sameEpochs(answer.position, floor)))
                     return false;
                 let delta = null;
                 try {
-                    delta = await supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true });
+                    delta = await supervisor.fsAcquire(floor, { namespace: true });
                 }
                 catch {
                     return false;
                 }
-                if (!delta || delta.poison === true || typeof delta.rev !== 'number' || delta.epoch !== floor.epoch)
+                if (!delta || delta.poison === true || !isFeedPosition(delta.position) || !sameEpochs(delta.position, floor))
                     return false;
                 const applied = await sync.applyAcquire(supervisor, delta);
                 if (!namespace.ready())
@@ -391,7 +391,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null)
                         return null;
-                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry }]);
+                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
                     const bytes = view.content(k, entry.revision);
                     return bytes === undefined ? null : bytes;
                 },
@@ -401,7 +401,7 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null || files.length === 0)
                         return;
-                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry })));
+                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
                 },
                 acquireArgs: () => argsNow(),
                 repairOwed: () => repairOwed,

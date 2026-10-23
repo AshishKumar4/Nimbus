@@ -19,8 +19,16 @@
  * the authority's delta. There is one gate and it is on the only door —
  * `require`, which every read, scan and write goes through.
  */
+import { isFeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
+import { JSONParse, JSONStringify } from '@nimbus-sh/core/_shared/primordials.js';
 export function createCoherence() {
     let t = null;
+    /**
+     * The cursor as last read or written, for the tables it is of: read again
+     * once they are another (bind), or were cleared (a clear seals them, or
+     * writes a cursor at once: beginLazy).
+     */
+    let read = null;
     let heap = null;
     let isSealed = true;
     /**
@@ -32,7 +40,7 @@ export function createCoherence() {
     let undated = false;
     let sealReason = 'the store has not reconciled with the authority in this incarnation';
     return {
-        bind(tables, heapTables) { t = tables; heap = heapTables; },
+        bind(tables, heapTables) { t = tables; heap = heapTables; read = null; },
         bound: () => t !== null,
         serving: () => t !== null && !isSealed,
         tables(doing) {
@@ -57,6 +65,7 @@ export function createCoherence() {
         seal(reason) {
             isSealed = true;
             sealReason = String(reason || 'resealed');
+            read = null;
         },
         unseal() {
             isSealed = false;
@@ -67,13 +76,25 @@ export function createCoherence() {
         cursor() {
             if (t === null)
                 return null;
-            const epoch = t.metaGet('epoch');
-            const rev = t.metaGet('rev');
-            return epoch === undefined || rev === undefined ? null : { epoch, rev: Number(rev) };
+            if (read !== null && read.tables === t)
+                return read.cursor;
+            const text = t.metaGet('position');
+            let cursor = null;
+            if (text !== undefined) {
+                try {
+                    const parsed = JSONParse(text);
+                    cursor = isFeedPosition(parsed) ? parsed : null;
+                }
+                catch {
+                    cursor = null;
+                }
+            }
+            read = { tables: t, cursor };
+            return cursor;
         },
         writeCursor(tables, cursor) {
-            tables.metaSet('epoch', String(cursor.epoch));
-            tables.metaSet('rev', String(Number(cursor.rev)));
+            tables.metaSet('position', JSONStringify(cursor));
+            read = { tables, cursor };
         },
     };
 }

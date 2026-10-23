@@ -186,7 +186,7 @@ for (const delivered of [false, true]) {
     const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
     const files = new ProcessFiles(sqliteFs);
     const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
-    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
     const launching = files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
     launching.mkdir('/.nimbus/facet-images', { recursive: true, mode: 0o755 });
     launching.writeFile('/.nimbus/facet-images/a.js', 'image');
@@ -217,7 +217,7 @@ for (const delivered of [false, true]) {
     sqliteFs.as(CRED_KERNEL).mkdir('srv');
     const files = new ProcessFiles(sqliteFs);
     const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
-    const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
+    const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
     const encoded = new Uint8Array(await new Response(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
       { type: 'call', call: { call: 'writeFile', path: 'srv/a.txt', mode: 0o644, data: new TextEncoder().encode('prefix') } },
       { type: 'rename', from: 'srv/a.txt', to: 'srv/b.txt' },
@@ -261,7 +261,7 @@ for (const delivered of [false, true]) {
       beforeCall: (method) => (method === 'writeFile' ? new Promise(() => { hung.push(method); }) : undefined),
     }));
     const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
-    assert.ok(reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true }).readLease, 'no lease to meet');
+    assert.ok(reader.acquire(reader.acquire(null).position, { lease: true }).readLease, 'no lease to meet');
     const write = (path, text) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: new TextEncoder().encode(text) } });
     const writing = files.bind({ pid: 8, cred: CRED_KERNEL }).writeStream(encodeWriteBatchStream({
       inodes: [], chunks: [], ops: [write('srv/a.txt', 'native'), write('m/b.txt', 'mounted')],
@@ -297,7 +297,7 @@ for (const delivered of [false, true]) {
     }
     const files = new ProcessFiles(sqliteFs);
     const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
-    assert.ok(reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true }).readLease, 'no lease to meet');
+    assert.ok(reader.acquire(reader.acquire(null).position, { lease: true }).readLease, 'no lease to meet');
     const other = files.bind({ pid: 10, cred: CRED_KERNEL });
     let open;
     const opened = new Promise((resolve) => { open = resolve; });

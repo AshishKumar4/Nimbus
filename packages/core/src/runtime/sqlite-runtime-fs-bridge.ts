@@ -1,10 +1,13 @@
-import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { listPageBudget, ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { flagsRefusal, openAccess, openFollows, refusesDirectory } from '../vfs/open-rules.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeAccess, settleHeldAt, type Authority, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
-import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
+import type { CompositeVFS, MountWalk } from '../vfs/composite.js';
+import { positionOf, ROOT_FEED, rootOf, type FeedPosition } from './feed-position.js';
+import { FS_LIST_PAGE_LIMIT } from '../constants.js';
+import { runtimeStatOf } from '../vfs/runtime-stat.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { entryVfsPath, walkVfsPath } from '../vfs/path-walk.js';
@@ -13,7 +16,7 @@ import { modeAllows } from '../vfs/posix-access.js';
 import { sameFileVersion } from './os-contracts.js';
 
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsCred, VfsListEntry, VfsListOptions, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -616,12 +619,32 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
-    return this.vfs.acquire(epoch, cursor, options);
+  /**
+   * What changed since `position`: the namespace's feed (CompositeFeed.since),
+   * each fed mount's changes where the namespace routes to it, or a poison
+   * (none held, or another mount table); SQLite's alone where this bridge
+   * has no namespace.
+   */
+  acquire(position: FeedPosition | null, options?: VfsAcquireOptions): VfsAcquireResult {
+    if (this.namespace === undefined) {
+      const held = position !== null && position.table === SQLITE_ALONE ? rootOf(position) : null;
+      const { epoch, rev, ...delta } = this.vfs.acquire(held?.epoch ?? null, held?.cursor ?? 0, options);
+      return { ...delta, position: positionOf(SQLITE_ALONE, { [ROOT_FEED]: { epoch, cursor: rev } }) };
+    }
+    const answer = this.namespace.feed.since(position, options);
+    return {
+      position: answer.position, paths: answer.paths.map((entry) => ({ ...entry, path: entry.path.slice(1) })), poison: answer.poison,
+      ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
+    };
   }
 
+  /** One page of every name this caller's namespace shows (namespacePage), or SQLite's where it has none. */
   list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage {
-    return this.vfs.list(after ?? null, limit, options);
+    if (this.namespace === undefined) {
+      const { epoch, rev, ...page } = this.vfs.list(after ?? null, limit, options);
+      return { ...page, position: positionOf(SQLITE_ALONE, { [ROOT_FEED]: { epoch, cursor: rev } }) };
+    }
+    return namespacePage(this.namespace, this.vfs.cred, after ?? null, limit, [], options);
   }
 
   realpath(path: RuntimeFsPath): string {
@@ -1106,4 +1129,38 @@ function hasErrorCode(error: unknown, code: string): boolean {
 /** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
 export function fitsWholeRead(stat: { readonly type: string; readonly size: number; readonly mode?: number }, maxBytes: number): boolean {
   return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
+}
+
+/** The table of a namespace of SQLite alone (a bridge made without one): its only feed is the root's. */
+const SQLITE_ALONE = '';
+
+/**
+ * One page of every name `namespace` shows `cred`, in path order: its feed's
+ * listing (CompositeFeed.list), SQLite's names less what a mount covers,
+ * each fed mount's, the directories the namespace makes, and what `walk`
+ * found on the mounts without a feed, cut to a page by SQLite's own bound
+ * (listPageBudget), at the position read before it. A mounted directory
+ * `cred` may not read and search is marked unreadable, as SQLite marks its
+ * own.
+ */
+export function namespacePage(namespace: CompositeVFS, cred: VfsCred, after: string | null, limit: number | undefined, walk: MountWalk, options?: VfsListOptions): VfsListPage {
+  const want = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
+  const feed = namespace.feed;
+  // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
+  const position = feed.position();
+  const root = rootOf(position);
+  const page = feed.list(after === null ? null : `/${after}`, want, walk, options);
+  // SQLite measured its own entries when it listed them; each is measured
+  // here under the path the caller sees, which only re-encodes that path.
+  const fits = listPageBudget(root.epoch, root.cursor);
+  const entries: VfsListEntry[] = [];
+  let next = page.next === null ? null : page.next.slice(1);
+  for (const entry of page.entries) {
+    const path = entry.path.slice(1);
+    const unreadable = entry.kind === 'directory' && entry.unreadable === undefined && !modeAllows(entry.stat, 0o5, cred);
+    const listed: VfsListEntry = unreadable ? { ...entry, path, unreadable: true } : { ...entry, path };
+    if (!fits(listed, path)) { next = entries[entries.length - 1].path; break; }
+    entries.push(listed);
+  }
+  return { position, entries, next };
 }
