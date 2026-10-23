@@ -631,7 +631,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** What `inode` keeps of the budget now: itself and its names, its baseline's and fold's buffers, its records and their bytes, its anchors. */
   const cost = (inode: Inode): number => {
     let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (pendingMoves.size === 0 || inode.cell?.detached !== undefined ? 0 : pendingGrowth(inode.key, inode.origin))
-      + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base ? 0 : retained(inode.state?.bytes))
+      + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base || inode.state?.shared === true ? 0 : retained(inode.state?.bytes))
       + retained(inode.pin?.bytes) + inode.recordsCost;
     return total;
   };
@@ -662,6 +662,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     let capacity = inode.state?.bytes?.byteLength ?? 0;
     let known = inode.state !== null && inode.state.bytes !== null;
     let size = inode.state?.size ?? inode.row.size;
+    // Bytes that alias an operation's payload are charged by its record alone (applyOp); a change to them copies them, charged then.
+    let shared = inode.state?.shared === true;
     if (inode.base === null) {
       // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
       const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
@@ -672,16 +674,26 @@ export function provisional(host: ProvisionalHost): Provisional {
       capacity = baseBytes;
       size = held?.byteLength ?? inode.row.size;
     }
-    let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
+    let total = cost(inode) - retained(inode.base?.bytes) - (inode.state?.shared === true ? 0 : retained(inode.state?.bytes)) + baseBytes;
     for (const op of ops) {
-      if (op.kind === 'truncate' && op.size === 0) known = true;
+      if (op.kind === 'truncate' && op.size === 0) { known = true; capacity = 0; shared = false; }
       const end = op.kind === 'write' ? op.offset + op.data.byteLength : op.kind === 'append' ? size + op.data.byteLength : op.kind === 'truncate' ? op.size : size;
-      if (known && end > capacity) capacity = Math.max(end, capacity * 2, 4096);
+      // The ops that change the bytes (applyOp): a write or append of some, a truncate that grows.
+      const changes = known && (op.kind === 'write' || op.kind === 'append' ? op.data.byteLength > 0 : op.kind === 'truncate' && op.size > size);
+      if (changes && (op.kind === 'write' || op.kind === 'append') && (op.kind === 'append' ? size : op.offset) === 0 && size === 0 && capacity === 0 && !shared) {
+        // Whole into nothing: the payload is the content, charged by its record alone.
+        shared = true;
+        capacity = op.data.byteLength;
+      } else if (changes) {
+        // A change to shared bytes copies them first: the copy is what is charged from here.
+        if (shared) { shared = false; capacity = size; }
+        if (end > capacity) capacity = Math.max(end, capacity * 2, 4096);
+      }
       if (op.kind === 'truncate') size = op.size;
       else if (op.kind === 'write' || op.kind === 'append') size = Math.max(size, end);
       total += RECORD_COST + payloadOf(op);
     }
-    return total + (known ? capacity : 0);
+    return total + (known && !shared ? capacity : 0);
   };
 
   /**

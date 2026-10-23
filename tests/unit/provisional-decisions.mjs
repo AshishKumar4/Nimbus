@@ -124,4 +124,32 @@ for (const [fate, outcome] of [
   assert.equal(decisions.entry('p/e'), undefined, 'a refused rename left its target decided');
 }
 
+// A whole write's payload is what the session is sent, unchanged, when a later change to its file is decided before the wave
+// goes: the state shares the payload until a change copies it (copy-on-write), and the payload is charged once, not twice.
+{
+  const budget = { used: 0 };
+  const { decisions, rows, pending } = overlay(budget);
+  const row = { type: 'file', dev: 1, ino: 21, nlink: 1, size: 0, atime: 1, mtime: 1, ctime: 1, mode: 0o100644, uid: 1000, gid: 1000, revision: 1, target: null };
+  rows.set('p/w', row);
+  const payload = Uint8Array.from({ length: 64 * 1024 }, (_, i) => i & 0xff);
+  const handle = decisions.open('p/w', '/p/w', { write: true, truncate: true }, row);
+  const before = budget.used;
+  decisions.write(handle.id, 0, payload);
+  const charged = budget.used - before;
+  assert.ok(charged >= payload.byteLength && charged < 2 * payload.byteLength, `a whole write is charged once: ${charged} bytes for ${payload.byteLength}`);
+  decisions.write(handle.id, 2, Uint8Array.of(9, 9));
+  decisions.setStatus(handle.id, { append: true });
+  decisions.write(handle.id, null, Uint8Array.of(10, 11));
+  const sent = pending.map(({ op }) => op.call).filter((call) => call.call === 'write' || call.call === 'append');
+  assert.deepEqual(sent.map((call) => call.call), ['write', 'write', 'append']);
+  assert.deepEqual(sent[0].data, payload, 'the whole write is sent as it was written, before the change decided after it');
+  assert.deepEqual([...sent[1].data], [9, 9], 'the in-place write is sent at its offset');
+  assert.deepEqual([...sent[2].data], [10, 11], 'the append is sent');
+  const expected = new Uint8Array(payload.byteLength + 2);
+  expected.set(payload);
+  expected.set([9, 9], 2);
+  expected.set([10, 11], payload.byteLength);
+  assert.deepEqual(decisions.content(row), expected, 'the bytes the process sees are the ones it wrote');
+}
+
 console.log('provisional-decisions: ok');
