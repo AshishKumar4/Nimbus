@@ -10578,15 +10578,9 @@ var __nimbusResidentModule = (() => {
           content: (key, revision) => resident.content(key, revision),
           reserve: (bytes) => resident.reserve(bytes),
           release: (bytes) => resident.release(bytes),
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
           ...ownValue(resident, "keep") === void 0 ? {} : { keep: (key, revision, bytes) => ownValue(resident, "keep")(key, revision, bytes) },
-          mounted: (key) => walkedMounts && mountedName(key),
-          unreported: (key) => walkedMounts && unreportedName(key)
-========
-          ...resident.keep === void 0 ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) },
           mounted: (key) => nodeFs && mountedName(key),
           unreported: (key) => nodeFs && unreportedName(key)
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
         },
         isHomeRoot: ownValue(delegation, "isHomeRoot"),
         ...ownValue(delegation, "grantAfter") === void 0 ? {} : { grantAfter: ownValue(delegation, "grantAfter") },
@@ -10626,22 +10620,13 @@ var __nimbusResidentModule = (() => {
           }
         });
     }
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
     const readers = new SafeSet();
     const readerKeys = new SafeMap();
+    const readerFiles = new SafeMap();
     const unwritten = new SafeSet();
     const directories = new SafeMap();
     const paged = new SafeMap();
     const pins = new SafeMap();
-========
-    const readers = /* @__PURE__ */ new Set();
-    const readerKeys = /* @__PURE__ */ new Map();
-    const readerFiles = /* @__PURE__ */ new Map();
-    const unwritten = /* @__PURE__ */ new Set();
-    const directories = /* @__PURE__ */ new Map();
-    const paged = /* @__PURE__ */ new Map();
-    const pins = /* @__PURE__ */ new Map();
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
     const walkOnce = (root, name, follow, crossed) => {
       const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
       if (crossed !== void 0)
@@ -10942,14 +10927,8 @@ var __nimbusResidentModule = (() => {
         return void 0;
       return entry;
     };
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
-    const answerable = (key, entry) => fedRow(key, entry) === true || walkedMounts && now;
-    const walkedMounts = (delegation === void 0 ? void 0 : ownValue(delegation, "walkedMounts")) === true;
-    const answeredWrites = (delegation === void 0 ? void 0 : ownValue(delegation, "answeredWrites")) === true;
-========
     const answerable = (key, entry) => fedRow(key, entry) === true || nodeFs && now;
-    const nodeFs = delegation?.nodeFs === true;
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
+    const nodeFs = (delegation === void 0 ? void 0 : ownValue(delegation, "nodeFs")) === true;
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
@@ -11186,10 +11165,6 @@ var __nimbusResidentModule = (() => {
       directoryPool?.cancelPending();
     };
     fs.holding = () => holder?.pending() ?? false;
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
-    fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
-    reflectDefineProperty(fs, "client", dataDescriptor(holder?.client ?? null, false, true, false));
-========
     fs.decidedAt = (path) => {
       if (holder === null)
         return false;
@@ -11203,8 +11178,7 @@ var __nimbusResidentModule = (() => {
       }
       return typeof followed === "string" && followed !== "" && holder.provisional.touches(followed);
     };
-    Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
+    reflectDefineProperty(fs, "client", dataDescriptor(holder?.client ?? null, false, true, false));
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
       await holder?.flush();
