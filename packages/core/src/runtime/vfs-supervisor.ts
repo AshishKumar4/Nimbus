@@ -90,16 +90,20 @@ interface AnsweringStub {
   answer(method: SupervisorAnsweredMethod, args: unknown[]): Promise<SupervisorAnswer>;
 }
 
-/** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it. */
+/** What answeringSupervisor's own carries: a supervisor already answering, which a second pass hands back as it is. */
+const ANSWERING: unique symbol = Symbol('answering supervisor');
+
+/** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {
-  return typeof Reflect.get(supervisor, 'answer') === 'function';
+  return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, 'answer') === 'function';
 }
 
 /**
  * `supervisor`, with its filesystem calls made through `answer` and each
  * refusal rethrown as the error it is; every other name is the stub's own.
  * A same-isolate supervisor is handed back as is: its refusals are thrown in
- * this isolate and cross nothing. The call's value is handed on and its
+ * this isolate and cross nothing; so is one already answering, whoever wraps
+ * it since (node's stop-replay ledger). The call's value is handed on and its
  * envelope released.
  *
  * `live` is told of each filesystem call as it is made, with the call in
@@ -114,6 +118,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
   const stub = supervisor;
   return new Proxy(supervisor, {
     get(target, name) {
+      if (name === ANSWERING) return true;
       if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
       return async (...args: unknown[]) => {
         const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
@@ -169,11 +174,12 @@ function toldLive<T>(call: PromiseLike<T>, live: ((call: Promise<unknown>) => un
   return native;
 }
 
-/** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream, retireWaveWriter). */
+/** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream, retireWaveWriter, fsPublished). */
 interface WaveSender {
   openWaveWriter(first: boolean): Promise<string | null>;
   writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
   retireWaveWriter(writer: string): Promise<void>;
+  fsPublished(options?: { escape: true }): Promise<void>;
 }
 
 /**
@@ -189,6 +195,7 @@ export function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFs
     openWriter: (first) => toldLive(waves.openWaveWriter(first), live),
     writeBatchStream: (stream, fence, owner) => toldLive(owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner), live),
     retireWriter: async (writer) => { await toldLive(waves.retireWaveWriter(writer), live); },
+    published: async (escape) => { await toldLive(escape ? waves.fsPublished({ escape: true }) : waves.fsPublished(), live); },
     grants: {
       acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
       release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
