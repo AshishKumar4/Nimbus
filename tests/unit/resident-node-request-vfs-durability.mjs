@@ -13,6 +13,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
+import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, sleep } from './lib/resident-body.mjs';
@@ -721,10 +722,13 @@ async function exitIntent() {
 async function runOneShot() {
   const authority = createAuthority();
   const reports = [];
+  const waves = [];
   let appendCalls = 0;
   const handle = facetSupervisor(authority, {
-    async writeBatchStream() {
+    async writeBatchStream(stream) {
       appendCalls++;
+      const decoded = await decodeWriteBatchStream(stream);
+      for await (const record of decoded.records) waves.push(record.type === 'call' ? record.call.call : record.type === 'file-begin' ? `file-begin:${record.inode.call ?? 'whole'}` : record.type);
       throw EIO('injected one-shot append failure');
     },
     async reportExit(code) { reports.push(code); },
@@ -768,7 +772,7 @@ process.exit(0);
     cwd: '/home/user',
     captureOutput: true,
   });
-  return { result, reports, appendCalls };
+  return { result, reports, appendCalls, waves };
 }
 
 async function oneShotReportsFinalCode() {
@@ -778,9 +782,9 @@ async function oneShotReportsFinalCode() {
 }
 
 async function oneShotAppendNotRetried() {
-  const { result, appendCalls } = await runOneShot();
+  const { result, appendCalls, waves } = await runOneShot();
   assert.equal(result.exitCode, 1, JSON.stringify(result));
-  assert.equal(appendCalls, 1, `definitive EIO is not retried: ${JSON.stringify(result)}`);
+  assert.equal(appendCalls, 1, `definitive EIO is not retried; the waves it was sent: ${JSON.stringify(waves)}; ${JSON.stringify(result)}`);
 }
 
 await runScenarios(import.meta.path, {
