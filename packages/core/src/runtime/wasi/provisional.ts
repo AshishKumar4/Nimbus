@@ -1896,6 +1896,8 @@ export function provisional(host: ProvisionalHost): Provisional {
         nameRecords.splice(0, nameRecords.length, ...kept);
         replay();
       }
+      // The bytes the view may keep of what retires (keep), once what they held is given back.
+      const keeping: [string, ResidentEntry, Uint8Array][] = [];
       // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
       for (const inode of [...loose]) {
         if (host.unreported?.(inode.key) === true) continue;
@@ -1941,7 +1943,7 @@ export function provisional(host: ProvisionalHost): Provisional {
           const last = retired[retired.length - 1]!;
           if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision === last.after
             && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
-            host.keep?.(seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size));
+            keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
           }
           dropRecords(inode, new Set(retired));
           // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
@@ -1971,6 +1973,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         fit(inode);
         release(inode);
       }
+      for (const [key, row, bytes] of keeping) host.keep?.(key, row, bytes);
       activity();
     },
   };
