@@ -375,6 +375,14 @@ export const arrayBufferByteLength: (buffer: ArrayBufferLike) => number = (() =>
 export const arrayShift: <T>(list: T[]) => T | undefined = uncurryThis(Array.prototype.shift);
 const setValuesOf: <T>(set: ReadonlySet<T>) => SetIterator<T> = uncurryThis(Set.prototype.values);
 const setIteratorNext: <T>(iterator: SetIterator<T>) => IteratorResult<T, undefined> = uncurryThis(reflectGet(reflectGetPrototypeOf(new Set<never>().values()) ?? {}, 'next'));
+const mapValuesOf: <K, V>(map: ReadonlyMap<K, V>) => MapIterator<V> = uncurryThis(Map.prototype.values);
+const mapIteratorNext: <V>(iterator: MapIterator<V>) => IteratorResult<V, undefined> = uncurryThis(reflectGet(reflectGetPrototypeOf(new Map<never, never>().values()) ?? {}, 'next'));
+/** The first value of `map` that `test` holds of, or undefined: a walk that stops there, on the Map iterator as the launch found it. */
+export function mapFind<K, V>(map: ReadonlyMap<K, V>, test: (value: V) => boolean): V | undefined {
+  const iterator = mapValuesOf(map);
+  for (let step = mapIteratorNext(iterator); !step.done; step = mapIteratorNext(iterator)) if (test(step.value)) return step.value;
+  return undefined;
+}
 /** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
 export function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined {
   const iterator = setValuesOf(set);

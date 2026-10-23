@@ -37,8 +37,9 @@ import type { W7Attrs, W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp, ProcessFsReceipt } from '../../_shared/process-fs-client.js';
 import { applyOp, copyState, foldOps, owned, type InodeOp, type InodeState } from './inode-fold.js';
 import {
-  arrayIncludes, arrayIndexOf, bytesView, Error, mathMax, mathMin, objectFreeze, objectKeys, ownValue, promiseThen, SafeMap, SafeSet,
-  stringLastIndexOf, stringOf, stringSlice, stringStartsWith, SymbolConstructor, typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
+  arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, bytesView, dataDescriptor, Error, mapFind, mapKeyList, mapValueList, mathMax, mathMin,
+  objectFreeze, objectHasOwn, objectKeys, ownValue, promiseThen, reflectDefineProperty, SafeList, SafeMap, SafeSet, setList, stringLastIndexOf, stringOf,
+  stringSlice, stringStartsWith, SymbolConstructor, typedArrayBuffer, typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
 /** Where a provisional file's own numbers start: past any the session gives. */
@@ -51,9 +52,14 @@ const INODE_COST = 320;
 /** What a string keeps: two bytes a code unit. */
 const stringCost = (text: string): number => text.length * 2;
 /** What a buffer keeps alive: all of what it is a view of. */
-const retained = (bytes: Uint8Array | null | undefined): number => bytes?.buffer.byteLength ?? 0;
+const retained = (bytes: Uint8Array | null | undefined): number => (bytes === null || bytes === undefined ? 0 : arrayBufferByteLength(typedArrayBuffer(bytes)));
 /** The bytes an operation carries, which its record keeps until it retires. */
-const payloadOf = (op: InodeOp): number => ('data' in op ? typedArrayByteLength(op.data) : 0);
+/** The session's revision right after an answered op, where its answer says (ProcessFsAnswer.mutation). */
+const mutationAfter = (answer: ProcessFsAnswer | undefined): number | undefined => {
+  const mutation = answer === undefined ? undefined : ownValue(answer, 'mutation');
+  return mutation === undefined ? undefined : mutation.after;
+};
+const payloadOf = (op: InodeOp): number => (objectHasOwn(op, 'data') ? typedArrayByteLength((op as { readonly data: Uint8Array }).data) : 0);
 
 function parentKey(key: string): string {
   const at = stringLastIndexOf(key, '/');
@@ -403,11 +409,14 @@ export interface Provisional {
 
 export function provisional(host: ProvisionalHost): Provisional {
   /** Every file this process has open or changed, one Inode each, by device and number. */
-  const table = new SafeMap<number, Map<number, Inode>>();
+  const table = new SafeMap<number, SafeMap<number, Inode>>();
   /** The same Inodes by what holds them: a grant (its cell), or these decisions. What visits one kind visits only it. */
   const held = new SafeSet<Inode>();
   const loose = new SafeSet<Inode>();
-  const inodeAtNumber = (dev: number, ino: number): Inode | undefined => table.get(dev)?.get(ino);
+  const inodeAtNumber = (dev: number, ino: number): Inode | undefined => {
+    const numbers = table.get(dev);
+    return numbers === undefined ? undefined : numbers.get(ino);
+  };
   const addInode = (inode: Inode): void => {
     let numbers = table.get(inode.dev);
     if (numbers === undefined) table.set(inode.dev, numbers = new SafeMap());
@@ -416,7 +425,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
   const removeInode = (inode: Inode): void => {
     const numbers = table.get(inode.dev);
-    if (numbers?.get(inode.ino) !== inode) return;
+    if (numbers === undefined || numbers.get(inode.ino) !== inode) return;
     numbers.delete(inode.ino);
     if (numbers.size === 0) table.delete(inode.dev);
     held.delete(inode);
@@ -431,14 +440,18 @@ export function provisional(host: ProvisionalHost): Provisional {
     (cell === undefined ? loose : held).add(inode);
   };
   /** Every Inode: a copy, so what visits may add or remove. */
-  const everyInode = (): Inode[] => [...held, ...loose];
+  const everyInode = (): Inode[] => {
+    const every = setList(held);
+    loose.forEach((inode) => { every[every.length] = inode; });
+    return every;
+  };
   /** Renames planned and not yet settled (planMove). */
   const pendingMoves = new SafeSet<{ readonly from: string; readonly to: string }>();
   /** What a name `key` (the view's `origin`) beneath a pending rename's source grows by once it is made: both beneath its destination. */
   const pendingGrowth = (key: string, origin: string): number => {
     if (pendingMoves.size === 0) return 0;
     let total = 0;
-    for (const { from, to } of pendingMoves) if (within(key, from)) total += mathMax(0, 2 * stringCost(to + stringSlice(key, from.length)) - stringCost(key) - stringCost(origin));
+    pendingMoves.forEach(({ from, to }) => { if (within(key, from)) total += mathMax(0, 2 * stringCost(to + stringSlice(key, from.length)) - stringCost(key) - stringCost(origin)); });
     return total;
   };
   /** Every descriptor of those files, held and provisional alike. */
@@ -447,8 +460,8 @@ export function provisional(host: ProvisionalHost): Provisional {
   const sessions = new SafeMap<string, { handle: number; read: boolean }>();
   /** The overlay: the names the pending name records made, removed or moved, and the listings' changes, replayed over the view. */
   const layer = new SafeMap<string, Inode | null>();
-  const added = new SafeMap<string, Map<string, RuntimeVfsDirEntry['type']>>();
-  const removed = new SafeMap<string, Set<string>>();
+  const added = new SafeMap<string, SafeMap<string, RuntimeVfsDirEntry['type']>>();
+  const removed = new SafeMap<string, SafeSet<string>>();
   const nameRecords: NameRecord[] = [];
   /** The inodes whose own content or attributes the process sees (a fold): every name the view has them at shows them. */
   const touched = new SafeSet<Inode>();
@@ -517,7 +530,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const row = known !== undefined ? known : host.row(key);
       const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
       if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
-        && changed.heldAt === undefined && changed.records.length === 0 && !arrayIncludes([...layer.values()], changed)) {
+        && changed.heldAt === undefined && changed.records.length === 0 && mapFind(layer, (placed) => placed === changed) === undefined) {
         // A retained fold is only the fallback while no name leads to its inode.
         // The view found it again (a peer's rename): its retired content is the view's.
         renamed(changed, key, key, true);
@@ -534,7 +547,9 @@ export function provisional(host: ProvisionalHost): Provisional {
     // A directory made here has no names but the ones made in it.
     const dir = parentKey(key);
     const made = layer.get(dir);
-    return made && made.local && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
+    if (!made || !made.local) return undefined;
+    const madeIn = added.get(dir);
+    return madeIn === undefined || !madeIn.has(nameOf(key)) ? null : undefined;
   };
 
   /**
@@ -635,17 +650,25 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
 
   /** What a record keeps of the budget: itself and what its op carries (an extended one's room, as the state's bytes count theirs). */
-  const recordCost = (record: InodeRecord): number => RECORD_COST + (record.room?.byteLength ?? payloadOf(record.op));
+  const recordCost = (record: InodeRecord): number => RECORD_COST + (record.room === undefined ? payloadOf(record.op) : typedArrayByteLength(record.room));
 
   /** `inode`'s records less `leaving` (a set of them), each gone. */
-  const dropRecords = (inode: Inode, leaving: ReadonlySet<InodeRecord>): void => {
+  const dropRecords = (inode: Inode, leaving: SafeSet<InodeRecord>): void => {
     if (leaving.size === 0) return;
-    inode.records = inode.records.filter((record) => {
-      if (!leaving.has(record)) return true;
+    const kept = new SafeList<InodeRecord>();
+    for (let i = 0; i < inode.records.length; i++) {
+      const record = inode.records[i];
+      if (!leaving.has(record)) { kept[kept.length] = record; continue; }
       record.gone = true;
       inode.recordsCost -= recordCost(record);
-      return false;
-    });
+    }
+    inode.records = kept;
+  };
+  /** The ops of `records`, in order. */
+  const opsOf = (records: readonly InodeRecord[]): SafeList<InodeOp> => {
+    const ops = new SafeList<InodeOp>();
+    for (let i = 0; i < records.length; i++) ops[i] = records[i].op;
+    return ops;
   };
 
   /**
@@ -657,7 +680,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const projectedCost = (inode: Inode, ops: readonly InodeOp[]): number => {
     if (ops.length === 0) return cost(inode);
     let baseBytes = inode.base === null ? 0 : retained(inode.base.bytes);
-    let capacity = inode.state?.bytes?.byteLength ?? 0;
+    let capacity = inode.state === null || inode.state.bytes === null ? 0 : typedArrayByteLength(inode.state.bytes);
     let known = inode.state !== null && inode.state.bytes !== null;
     let size = inode.state?.size ?? inode.row.size;
     if (inode.base === null) {
@@ -666,9 +689,9 @@ export function provisional(host: ProvisionalHost): Provisional {
       const held = inode.cell !== undefined ? bytesView(inode.cell.bytes, 0, inode.cell.length)
         : seen?.bytes ?? pinned(inode, seen, seen?.row.revision ?? inode.row.revision);
       known = held !== undefined || inode.row.size === 0;
-      baseBytes = held?.byteLength ?? 0;
+      baseBytes = held === undefined ? 0 : typedArrayByteLength(held);
       capacity = baseBytes;
-      size = held?.byteLength ?? inode.row.size;
+      size = held === undefined ? inode.row.size : typedArrayByteLength(held);
     }
     let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
     for (let i = 0; i < ops.length; i++) {
@@ -696,7 +719,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (need > 0 && !host.reserve(need)) {
       inode.pin = undefined;
       if (inode.base !== null) inode.base = { ...inode.base, bytes: null };
-      if (inode.state !== null) inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op));
+      if (inode.state !== null) inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, opsOf(inode.records));
       need = cost(inode) - inode.reserved;
       if (need > 0 && !host.reserve(need)) need = 0;
     }
@@ -788,7 +811,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** `inode` has nothing pending, nothing open and no name here: it goes, and what it held goes back. */
   const release = (inode: Inode): void => {
     if (inode.records.length > 0 || inode.descs > 0 || inode.answers > 0 || inode.cell !== undefined) return;
-    for (const value of layer.values()) if (value === inode) return;
+    if (mapFind(layer, (value) => value === inode) !== undefined) return;
     // A name record that may be replayed names it again (one after it refused, say).
     for (let i = 0; i < nameRecords.length; i++) { const record = nameRecords[i]; if (arrayIncludes(record.places, inode)) return; }
     // What the process sees of a file it changed stays until the view has it (retire), but where no name leads to it.
@@ -834,13 +857,13 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `settle` told an acknowledged entry's answer once it comes: refused, or not. */
   const settles = (answer: Promise<ProcessFsAnswer>, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void): void => {
-    void promiseThen(promiseThen(answer, (answered) => { settle(ownValue(answered, 'failed')?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); }), undefined, endedOnly);
+    void promiseThen(promiseThen(answer, (answered) => { const failed = ownValue(answered, 'failed'); settle(failed !== undefined && ownValue(failed, 'refused') === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); }), undefined, endedOnly);
   };
 
   /** `inode`'s fold again from its baseline: what it is with the records it has now. */
   const refold = (inode: Inode): void => {
     if (inode.base === null) return;
-    inode.state = foldOps(inode.base, inode.records.map((record) => record.op));
+    inode.state = foldOps(inode.base, opsOf(inode.records));
   };
 
   /**
@@ -860,28 +883,32 @@ export function provisional(host: ProvisionalHost): Provisional {
       }
       return;
     }
-    const refusedOf = new SafeMap<Inode, Set<InodeRecord>>();
+    const refusedOf = new SafeMap<Inode, SafeSet<InodeRecord>>();
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
       if (record.gone) continue;
       let mine = refusedOf.get(record.owner);
-      if (mine === undefined) refusedOf.set(record.owner, mine = new SafeSet());
+      if (mine === undefined) refusedOf.set(record.owner, mine = new SafeSet<InodeRecord>());
       mine.add(record);
     }
-    for (const [inode, mine] of refusedOf) {
+    refusedOf.forEach((mine, inode) => {
       dropRecords(inode, mine);
       refold(inode);
       fit(inode);
       release(inode);
-    }
+    });
   };
 
   /** What a name record keeps: itself and its names, and a link's target. */
-  const nameCost = (keys: readonly string[], target = ''): number => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
+  const nameCost = (keys: readonly string[], target = ''): number => {
+    let sum = 0;
+    for (let i = 0; i < keys.length; i++) sum += stringCost(keys[i]);
+    return RECORD_COST + sum + stringCost(target);
+  };
 
   /** Log the op that made `records`, their fate its. */
   const loggedOn = (records: readonly InodeRecord[], op: ProcessFsOp, awaited = false): Promise<unknown> | undefined =>
-    logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
+    logged(op, (refused, answer) => settleRecords(records, refused, mutationAfter(answer)), awaited);
 
   /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
   const extended = (record: InodeRecord, data: Uint8Array, at: number): void => {
@@ -904,13 +931,16 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** The overlay rebuilt: every name record still pending replayed over the view, in log order. */
   const replay = (): void => {
-    for (const inode of everyInode()) renamed(inode, inode.origin, inode.origin);
+    const every = everyInode();
+    for (let i = 0; i < every.length; i++) renamed(every[i], every[i].origin, every[i].origin);
     layer.clear();
     added.clear();
     removed.clear();
     for (let i = 0; i < nameRecords.length; i++) { const record = nameRecords[i]; record.replay(); }
     touched.clear();
-    for (const inode of everyInode()) {
+    const now = everyInode();
+    for (let i = 0; i < now.length; i++) {
+      const inode = now[i];
       if (inode.state !== null) touched.add(inode);
       // Its names are what the records left: what it keeps with them.
       fit(inode);
@@ -924,23 +954,29 @@ export function provisional(host: ProvisionalHost): Provisional {
    * subtree at its names, as a change decided there is.
    */
   const loggedName = (op: ProcessFsOp, keys: readonly string[], cost: number, apply: () => void, settled?: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, retired?: () => void, awaited = false): Promise<unknown> | undefined => {
-    const over = keys.map((key) => host.generation(key));
+    const over = new SafeList<number | undefined>();
+    for (let i = 0; i < keys.length; i++) over[i] = host.generation(keys[i]);
     apply();
-    const places = keys.flatMap((key) => {
-      const placed = layer.get(key);
-      return placed ? [placed] : [];
-    });
+    const places = new SafeList<Inode>();
+    for (let i = 0; i < keys.length; i++) {
+      const placed = layer.get(keys[i]);
+      if (placed) places[places.length] = placed;
+    }
     const record: NameRecord = { id: ++ids, keys, over, cost, places, replay: apply, retired, answered: false, answeredAt: 0 };
     nameRecords[nameRecords.length] = record;
     for (let i = 0; i < keys.length; i++) { const key = keys[i]; host.count(key); }
     return logged(op, (refused, answer) => {
       if (refused) {
         const at = arrayIndexOf(nameRecords, record);
-        if (at >= 0) nameRecords.splice(at, 1);
+        if (at >= 0) {
+          for (let i = at; i < nameRecords.length - 1; i++) nameRecords[i] = nameRecords[i + 1];
+          nameRecords.length--;
+        }
         host.release(record.cost);
         replay();
         // What only it kept goes: a file, directory or link it made that nothing else holds now.
-        for (const inode of everyInode()) if (inode.local) release(inode);
+        const every = everyInode();
+        for (let i = 0; i < every.length; i++) if (every[i].local) release(every[i]);
       } else {
         record.answered = true;
         record.answeredAt = barriers;
@@ -951,14 +987,16 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   const note = (dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void => {
     if (type === null) {
-      added.get(dir)?.delete(name);
+      const madeIn = added.get(dir);
+      if (madeIn !== undefined) madeIn.delete(name);
       let gone = removed.get(dir);
-      if (gone === undefined) removed.set(dir, gone = new SafeSet());
+      if (gone === undefined) removed.set(dir, gone = new SafeSet<string>());
       gone.add(name);
     } else {
-      removed.get(dir)?.delete(name);
+      const goneIn = removed.get(dir);
+      if (goneIn !== undefined) goneIn.delete(name);
       let made = added.get(dir);
-      if (made === undefined) added.set(dir, made = new SafeMap());
+      if (made === undefined) added.set(dir, made = new SafeMap<string, RuntimeVfsDirEntry['type']>());
       made.set(name, type);
     }
   };
