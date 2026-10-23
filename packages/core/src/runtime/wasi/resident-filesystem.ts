@@ -1751,8 +1751,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // A grant's cell answers here. Its own description reads the live file;
     // a borrowed anchor is only needed once no name leads to this reader's file.
     const desc = holder!.provisional.descriptor(handleId)!;
-    if (!now && desc.inode.cell === undefined && holder!.provisional.sessionOf(handleId, 'read') !== undefined
-      && (desc.description !== undefined || holder!.provisional.inodeOf(handleId) === undefined)) return readByAnchor(handleId, offset, length);
+    if (!now && ownValue(desc.inode, 'cell') === undefined && holder!.provisional.sessionOf(handleId, 'read') !== undefined
+      && (ownValue(desc, 'description') !== undefined || holder!.provisional.inodeOf(handleId) === undefined)) return readByAnchor(handleId, offset, length);
     const read = (): Uint8Array | undefined => holder!.read(handleId, offset, length);
     let done: Uint8Array | undefined;
     try {
@@ -1820,7 +1820,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           if (opened === undefined) return DELEGATE;
           counts.local++;
           // Its access is the session's to judge at the open, as open(2) judges it: answered before it returns.
-          const opening = holder!.provisional.descriptor(opened.id)?.opening;
+          const desc = holder!.provisional.descriptor(opened.id);
+          const opening = desc === undefined ? undefined : ownValue(desc, 'opening');
           if (opening === undefined) return heldOpen(opened);
           return promiseThen(opening, () => heldOpen(opened), (error: unknown) => {
             holder!.provisional.abandon(opened.id);
@@ -1859,7 +1860,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }, () => authority.fstat(handleId));
     if (holder?.owns(handleId)) return caughtUpFor(() => {
       // As its open description at the session has it (its names, its size), as its reads are.
-      if (!now && holder!.provisional.descriptor(handleId)!.inode.cell === undefined && holder!.provisional.sessionOf(handleId) !== undefined) return statByAnchor(handleId);
+      if (!now && ownValue(holder!.provisional.descriptor(handleId)!.inode, 'cell') === undefined && holder!.provisional.sessionOf(handleId) !== undefined) return statByAnchor(handleId);
       const entry = identified(handleId, 'fstat');
       counts.local++;
       return statOf(entry);
@@ -2002,7 +2003,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const held = holder;
       if (!held?.owns(target.handle)) return reflectApply(bySessionReopen, fs, [target, flags, options]);
       const desc = held.provisional.descriptor(target.handle)!;
-      const described = desc.inode.cell === undefined && (desc.description !== undefined || held.provisional.sessionOf(target.handle) !== undefined);
+      const described = ownValue(desc.inode, 'cell') === undefined && (ownValue(desc, 'description') !== undefined || held.provisional.sessionOf(target.handle) !== undefined);
       const local = !now && described ? undefined : held.reopen(target.handle, flags);
       if (local !== undefined) { counts.local++; return heldOpen(local); }
       if (now) throw NOT_NOW;

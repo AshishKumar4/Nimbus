@@ -669,7 +669,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     for (let i = 0; i < records.length; i++) {
       const record = records[i]!;
       if (!leaving.has(record)) { kept[kept.length] = record; continue; }
-      record.gone = true;
+      setOwnValue(record, 'gone', true);
       inode.recordsCost -= recordCost(record);
     }
     inode.records = arrayCopy(kept);
