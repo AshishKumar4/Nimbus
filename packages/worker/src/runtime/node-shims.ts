@@ -1422,6 +1422,12 @@ const __fsMod = (() => {
     // A content read this process does not hold: a one-shot that can be run again stops here, to run again
     // as a resident, which holds the file (stop-replay.ts miss). Not a speculation's (its fetch repairs it),
     // nor fd 0's read of a \`< file\`, which stops for stdin (__nimbusTakeStdin).
+    // The process's own write, which neither its store nor its heap's own-write bound could hold: the workspace's storage is full.
+    if (mount === null && named && typeof __resident !== "undefined" && __resident.cells.storageMiss(_strip(_resolve(p)))) {
+      const full = _fsErr("ENOSPC", syscall, p, dest);
+      full.message = "ENOSPC: workspace storage is full; '" + String(p) + "' is readable asynchronously" + (asyncForm ? " (" + asyncForm + ")" : "");
+      return full;
+    }
     if (mount === null && named && (syscall === "open" || syscall === "read") && __nimbusReplay && !globalThis.__nimbusVfsSpeculation && !__nimbusTakingStdinFile) {
       __nimbusReplay.miss(_strip(_resolve(p)));
     }
