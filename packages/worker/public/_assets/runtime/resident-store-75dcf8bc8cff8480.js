@@ -8867,8 +8867,6 @@ var __nimbusResidentModule = (() => {
         }
         endReadLease(owner);
         counters.readRecalls++;
-        await promiseThen(client.flush(), void 0, () => {
-        });
         try {
           await port.recalled(owner, kind);
         } catch {
