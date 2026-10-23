@@ -23,7 +23,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority } from './lib/shims-namespace.mjs';
+import { createAuthority, facetSupervisor } from './lib/resident-body.mjs';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 // Each case: a body run with `process` and `fs` in scope, in a fresh directory
@@ -59,11 +60,7 @@ const compare = (front, name, line) => {
   if (line !== host[name]) failures.push(`${front} ${name}\n  node: ${host[name]}  ours: ${line}`);
 };
 
-// The guest's shims, as the hosted node runs a program (node-shims-permissions' way).
-// Its supervisor answers no asynchronous I/O, so an async case's write fails
-// there (EIO); its mode is read before (_createMode, shared with
-// writeFileSync's), so a refused mode would show.
-const ASYNC_IO = new Set(['nullModePromise']);
+// The guest's shims, as the hosted node runs a program, over a session holding `f`.
 for (const name of Object.keys(CASES)) {
   let out = '';
   const factory = new Function(
@@ -72,8 +69,11 @@ for (const name of Object.keys(CASES)) {
       SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
       '\n;return { fs: __fsMod, process: __processMod };',
   );
-  declareNamespace({ metadata: { '/home/user/f': { mode: 0o100644, uid: 1000, gid: 1000 } }, manifest: {} });
-  const shim = factory({ '/home/user/f': new TextEncoder().encode('x\n') }, { '/home/user': true }, { setUmask: async () => {} },
+  const authority = createAuthority();
+  authority.kfs.writeFile('home/user/f', 'x\n', { mode: 0o644 });
+  const { supervisor } = facetSupervisor(authority);
+  listAuthority(authority.rawVfs);
+  const shim = factory({}, {}, supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
   const console = { log: (...parts) => { out += `${parts.join(' ')}\n`; } };
   try {
@@ -83,8 +83,7 @@ for (const name of Object.keys(CASES)) {
   } catch (error) {
     out = `threw ${error?.code ?? ''} ${error?.message ?? error}\n`;
   }
-  if (ASYNC_IO.has(name)) assert.equal(out, 'p EIO\n', `hosted ${name}: the mode is taken, and the write reaches the supervisor`);
-  else compare('hosted', name, out);
+  compare('hosted', name, out);
 }
 
 // The shell's built-in node.
