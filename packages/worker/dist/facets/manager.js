@@ -26,7 +26,7 @@ import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { InterpreterEnvFactsSchema, interpreterProcessEnv } from '@nimbus-sh/core/runtime/interpreter-env.js';
-import { exitCodeForSignal, signalAbortReasonOf } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -7208,7 +7208,8 @@ export class FacetManager {
         // Run again after a read, it is still the command's run: the terminal is
         // its until it ends, or until it listens and runs on as a server does.
         if (read !== undefined) {
-            const exit = await this._endOrListen(pid, opts.signal);
+            // A command held in the foreground is ended by its interrupt there (_holdForeground); else by its run's abort here.
+            const exit = await this._endOrListen(pid, opts.foreground === undefined ? run.signal : undefined);
             if (exit !== null)
                 return { exitCode: exit, stdout: '', stderr: '' };
         }
@@ -7224,12 +7225,12 @@ export class FacetManager {
     }
     /**
      * `pid`'s exit status once it ends, or null once it has a routeable port
-     * first (it listened, and runs on as a server). The command's interrupt
-     * (`signal`) sends it the signal the terminal sent, as a foreground job's.
+     * first (it listened, and runs on as a server). `signal`'s abort kills it,
+     * as the foreground's interrupt kills a one-shot.
      */
     async _endOrListen(pid, signal) {
         const settled = new AbortController();
-        const interrupt = () => { this.kill(pid, signal === undefined ? undefined : signalAbortReasonOf(signal)?.signal); };
+        const interrupt = () => { this.kill(pid); };
         if (signal?.aborted)
             interrupt();
         signal?.addEventListener('abort', interrupt, { once: true });

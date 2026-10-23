@@ -1919,8 +1919,8 @@ export declare class FacetManager {
     private _promote;
     /**
      * `pid`'s exit status once it ends, or null once it has a routeable port
-     * first (it listened, and runs on as a server). The command's interrupt
-     * (`signal`) sends it the signal the terminal sent, as a foreground job's.
+     * first (it listened, and runs on as a server). `signal`'s abort kills it,
+     * as the foreground's interrupt kills a one-shot.
      */
     private _endOrListen;
     /**

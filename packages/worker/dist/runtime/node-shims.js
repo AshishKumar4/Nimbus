@@ -1132,7 +1132,6 @@ const __fsMod = (() => {
   function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
     if (observe && typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
-    if (observe && __nimbusReplay) __nimbusReplay.read(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1698,8 +1697,9 @@ const __fsMod = (() => {
       return full;
     }
     // A one-shot that can be run again stops here, to run again as a
-    // resident, which holds the file (stop-replay.ts miss).
-    if (__nimbusReplay) __nimbusReplay.miss(_strip(absPath));
+    // resident, which holds the file (stop-replay.ts miss). A speculation's
+    // read is repaired asynchronously instead (_recordResidencyMiss).
+    if (__nimbusReplay && !_speculation()) __nimbusReplay.miss(_strip(absPath));
     _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
@@ -1752,6 +1752,13 @@ const __fsMod = (() => {
    * to nor answered: the exit report and the next launch's learning see only
    * the program's own accesses.
    */
+  // A synchronous access to a file's content where its miss would have been
+  // raised (_notResidentError): a run again of a run that stopped at that
+  // miss has reached where it stopped (stop-replay.ts read).
+  function _contentRead(absPath) {
+    if (__nimbusReplay && !_speculation()) __nimbusReplay.read(_strip(absPath));
+  }
+
   function _speculation() {
     return globalThis.__nimbusVfsSpeculation || null;
   }
@@ -4800,6 +4807,7 @@ const __fsMod = (() => {
     if (content === undefined) {
       throw _notResidentError(absPath, p, "open", "fs.promises.readFile");
     }
+    _contentRead(absPath);
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
     // Bytes held under a name the namespace does not show are no file there:
@@ -5623,6 +5631,7 @@ const __fsMod = (() => {
   function _residentWriteBase(absPath, p, syscall) {
     const cell = _writtenCell(absPath);
     if (cell !== undefined) {
+      _contentRead(absPath);
       const denial = _denialCode(cell);
       if (denial) throw _fsErr(denial, syscall, p);
       return _asBytes(cell);
@@ -5812,6 +5821,7 @@ const __fsMod = (() => {
     _readBase(syscall) {
       const bytes = this._residentBytes(syscall);
       if (bytes === undefined) throw this._notResident(syscall);
+      _contentRead(this._abs);
       return bytes;
     }
     _writeBase(syscall) { return _residentWriteBase(this._abs, this._path, syscall); }
@@ -12754,8 +12764,9 @@ function __readFileOr(path, fallback) {
     }
     return fallback;
   }
-  if (__vfsBundle && k in __vfsBundle) return _coerceStr(__vfsBundle[k]);
-  if (__vfsWrites && k in __vfsWrites) return _coerceStr(__vfsWrites[k]);
+  // Held: the read a miss of it would have stopped at (readFileSync's, below).
+  if (__vfsBundle && k in __vfsBundle) { __nimbusReplay?.read(k); return _coerceStr(__vfsBundle[k]); }
+  if (__vfsWrites && k in __vfsWrites) { __nimbusReplay?.read(k); return _coerceStr(__vfsWrites[k]); }
   // Fallback: try through fs shim (handles _resolve for user-facing paths)
   try { return __fsMod.readFileSync("/" + k, "utf8"); } catch { return fallback; }
 }
@@ -12854,6 +12865,8 @@ const __nimbusCommonJsPending = new __NimbusSafeMap();
 // its cell compiled, nothing of it run.
 function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, esModule) {
   if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(__vfsKey(String(resolvedPath)));
+  // A module's load reads its file, held in the map or not: where a miss of it stopped the run before (__readFileOr).
+  __nimbusReplay?.read(__vfsKey(String(resolvedPath)));
   const filename = "/" + __vfsKey(resolvedPath);
   const normalizedPath = __pathSlice(filename, 1);
   // A query's or fragment's import is a job of its own, kept by its URL.
