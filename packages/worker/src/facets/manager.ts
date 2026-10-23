@@ -148,7 +148,7 @@ import { REAL_NOW_SOURCE, STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
-import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayBoundary, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
 import { ReplaySessions } from '../runtime/replay-session.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
@@ -10172,7 +10172,8 @@ export class FacetManager {
     switch (recipe.kind) {
       case 'node': {
         const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
-        return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
+        const resume = recipe.opts.resume === undefined ? {} : { resume: journaledResume(recipe.opts.resume) };
+        return this._spawnResident(recipe.code, { ...recipe.opts, ...resume, env: withRestartPolicy(env, record.restart) }, attempt, identity);
       }
       case 'worker': {
         // Which resolver a worker recipe re-drives through is decided by
@@ -11580,6 +11581,26 @@ export class FacetManager {
   }
 
   get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
+}
+
+/** A replay launch as a release before ReplayBoundary journaled it: what stopped the run before, as a field beside it. */
+type JournaledReplayLaunch = Omit<ReplayLaunch, 'boundary'> & { listen?: true; read?: string; stopAt?: number };
+
+/**
+ * A resident's \`resume\` as its journal row holds it, in today's shape. A
+ * row outlives the release that wrote it (a server runs on across deploys),
+ * and one an earlier release wrote names its replay's boundary by the field
+ * it has.
+ */
+function journaledResume(resume: Omit<StoppedRunNext, 'replay'> & { replay: ReplayLaunch | JournaledReplayLaunch }): StoppedRunNext {
+  const { replay } = resume;
+  if ('boundary' in replay) return { ...resume, replay };
+  const { listen, read, stopAt, ...launch } = replay;
+  const boundary: ReplayBoundary | null = read !== undefined ? { kind: 'read', path: read }
+    : listen === true ? { kind: 'listen' }
+      : stopAt !== undefined ? { kind: 'stdin', stopAt } : null;
+  if (boundary === null) throw new Error('its journaled replay names no boundary to retrace its run to');
+  return { ...resume, replay: { ...launch, boundary } };
 }
 
 /**
