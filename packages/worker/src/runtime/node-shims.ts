@@ -278,10 +278,7 @@ function __nimbusStartProcessFilesystem(root) {
 // live boundary: a response, a served process's flush). A change the program
 // was told succeeded that the session refused is thrown here.
 async function __nimbusFlushFilesystem() {
-  if (__nimbusProcessFilesystem === null) return;
-  await __nimbusProcessFilesystem.flush();
-  const failure = __nimbusProcessFilesystem.client ? __nimbusProcessFilesystem.client.takeFailuresError() : null;
-  if (failure) throw failure;
+  if (__nimbusProcessFilesystem !== null) await __nimbusProcessFilesystem.flush();
 }
 // The run's end: everything held sent and answered, and the first refusal of
 // what the program was told it wrote thrown, naming the file.
@@ -2190,7 +2187,7 @@ const __fsMod = (() => {
    */
   async function _resumptionRelease() {
     if (__nimbusProcessFilesystem === null) return;
-    await __nimbusProcessFilesystem.flush();
+    await __nimbusProcessFilesystem.send();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch

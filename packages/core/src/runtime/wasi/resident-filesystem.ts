@@ -236,9 +236,12 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   /**
    * Send every held write to the session, before something leaves the
    * process (a socket send): what it wrote is there before anyone hears from
-   * it. A refusal stays recorded for the writer's close, fsync or settle.
+   * it. A refusal the session answered by then is this call's to report
+   * (thrown, and reported no more).
    */
   flush(): Promise<void>;
+  /** As flush, but a refusal stays recorded for the writer's close, fsync or settle (node's release barrier: an egress reports nothing). */
+  send(): Promise<void>;
   /**
    * fsync(2) through a descriptor this process holds no writes for (the
    * codec's own copy of a file): the file's held writes go to the session
@@ -1324,7 +1327,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
-  fs.flush = async () => { await holder?.send(); };
+  fs.flush = async () => { await holder?.flush(); };
+  fs.send = async () => { await holder?.send(); };
   fs.settle = async () => {
     const failures: UnsettledWrite[] = [];
     await faultsEnded();
