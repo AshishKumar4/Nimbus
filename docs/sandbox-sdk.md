@@ -121,6 +121,11 @@ await runner.close();
   declares (`const`, `let`, `function`, `class`) or sets on `globalThis`
   stays for the next call. `require` reads the session's files from the
   runner's `cwd`, and `import()` resolves from there too.
+- **Compiled or interpreted.** A Worker compiles code only from the
+  modules it was loaded with. So each call's own code runs in Nimbus's
+  JavaScript interpreter, as a REPL line does, and so does a module written
+  after the runner started. Modules that were in the session when the
+  runner started run compiled by V8. Keep heavy computation in a module.
 - **No isolation between calls.** Calls of one runner share one process and
   its memory. Use a runner for one caller's work, and another runner (or
   `exec`) for work that must not see it.
@@ -173,6 +178,9 @@ await runner.close();
   about 700 ms (measured 2026-10-23). An idle runner holds none of the
   session's ten Dynamic Workers in flight; a call holds one while it runs.
   A session can keep more than ten idle runners warm.
+- **`node:sqlite` and wasm.** A runner carries them only when a module it
+  loads at its start (under its `cwd`) uses them. A `require('node:sqlite')`
+  only in a call's text does not get it.
 - **Options.** `runner({ id, cwd, env, execId })`. Calls with the same `id`
   share one runner; the default `id` is a new UUID. A scoped hosted session
   has runners of its own. Close a runner you no longer need: it keeps a
