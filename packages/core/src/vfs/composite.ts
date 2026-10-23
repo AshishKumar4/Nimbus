@@ -2603,7 +2603,7 @@ export class CompositeVFS implements VFS {
    * takes no credential (Linux applies the umask above every filesystem). One
    * that takes a credential applies it itself, or a default ACL instead.
    */
-  madeMode(mount: Mount, mode: number | undefined): number | undefined {
+  private madeMode(mount: Mount, mode: number | undefined): number | undefined {
     const cred = this.viewer.cred;
     if (mode === undefined || cred === null) return mode;
     const found = this.sourceOf(mount);
