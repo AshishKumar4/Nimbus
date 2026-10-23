@@ -10036,6 +10036,12 @@ export class SqliteVFS {
     } else if (op.type === 'setattr' && op.description === undefined) {
       this.expectAt(op.path, op.expect, true, cred, described);
     } else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir' || op.call.call === 'open')) {
+      // An O_NOFOLLOW open of a link is refused as the open refuses it (ELOOP) whatever file the process decided it on.
+      if (op.call.call === 'open' && op.call.nofollow === true && op.call.expect !== undefined) {
+        let leaf: INode | undefined;
+        try { leaf = this.checkAccess(op.call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode; } catch { leaf = undefined; }
+        if (leaf?.kind === 'symlink') throw vfsError('ELOOP', op.call.path, 'a symbolic link, opened with O_NOFOLLOW');
+      }
       this.expectAt(op.call.path, op.call.expect, op.call.call === 'open' && op.call.nofollow !== true, cred, described);
     }
     if (op.type === 'data-call') {

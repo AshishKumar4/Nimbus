@@ -1415,22 +1415,28 @@ const __fsMod = (() => {
     try { return run(fs); }
     catch (error) { throw _rfError(error, syscall, p, dest, asyncForm); }
   }
-  /** \`run\` over the filesystem, awaited, its refusal Node's \`syscall\` of \`p\`. */
-  async function _async(syscall, p, run, dest) {
-    try { return await run(_rf()); }
-    catch (error) { throw _rfError(error, syscall, p, dest); }
+  /**
+   * \`run\` over the filesystem, awaited, its refusal Node's \`syscall\` of
+   * \`p\`: an operation in flight from its start to its answer, as Node's
+   * libuv request is, so the program is not taken for finished between the
+   * session calls it makes.
+   */
+  function _async(syscall, p, run, dest) {
+    return __nimbusTrackOp((async () => {
+      try { return await run(_rf()); }
+      catch (error) { throw _rfError(error, syscall, p, dest); }
+    })());
   }
   /**
    * An awaited read: what the session holds now, as Node's read of a file
    * another process just wrote finds it. The filesystem owes its barrier
    * before it answers from what this process holds (inbound).
    */
-  async function _asyncRead(syscall, p, run) {
-    try {
-      const fs = _rf();
+  function _asyncRead(syscall, p, run) {
+    return _async(syscall, p, (fs) => {
       fs.inbound();
-      return await run(fs);
-    } catch (error) { throw _rfError(error, syscall, p); }
+      return run(fs);
+    });
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -2107,7 +2113,13 @@ const __fsMod = (() => {
   function openSync(path, flags, mode) {
     const absPath = _at(path);
     const fl = _openFlags(flags, mode);
-    const opened = _sync("open", path, "fs.promises.open", (fs) => fs.open(absPath, fl));
+    const opened = _sync("open", path, "fs.promises.open", (fs) => {
+      // A directory has no descriptor a synchronous caller reads here: EISDIR, as this fs has always answered it.
+      let found = null;
+      try { found = fs.stat(absPath); } catch {}
+      if (!fl.directory && found?.type === "directory") throw _fsErr("EISDIR", "open", path);
+      return fs.open(absPath, fl);
+    });
     return new __FileHandle(path, opened, fl).fd;
   }
 
@@ -3432,6 +3444,8 @@ const __fsMod = (() => {
         if (this._readableState.destroyed) return;
         const want = Math.min(this._readableState.highWaterMark, READ_BATCH_REQUEST_BYTES, this._last - this._pos + 1);
         const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
+        // Nothing there to open: Node's stream fails its open (ENOENT); one gone after it opened ends.
+        if (chunk === null && this.bytesRead === 0) throw _fsErr("ENOENT", "open", this.path);
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
         this.bytesRead += chunk.byteLength;

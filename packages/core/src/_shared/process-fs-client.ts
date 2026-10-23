@@ -752,6 +752,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       failures.push({ op: entry.name, path, errno, message });
       entry.resolve({ failed: { errno, message, ...(refused ? { refused: true as const } : {}) } });
     } else {
+      // Its caller is told; a fate the session cannot answer is a durability failure besides, caught or not.
+      if (!refused) failures.push({ op: entry.name, path, errno, message });
       entry.reject(fsError(errno, message, path));
     }
   };

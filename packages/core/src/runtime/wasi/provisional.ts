@@ -114,6 +114,12 @@ export interface ProvisionalHost {
    * has none of that file.
    */
   absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
+  /**
+   * The bytes this process made of the file at `key`, which the session holds
+   * at `row`'s revision (the last change it made of them was answered at it):
+   * the view may keep them as its content there, as a fill of it would.
+   */
+  keep?(key: string, row: ResidentEntry, bytes: Uint8Array): void;
   /** Whether `key` is on a mount: what is decided there names no file of this filesystem it expects (a wave refuses an expectation there). */
   mounted?(key: string): boolean;
   /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
@@ -239,6 +245,8 @@ interface InodeRecord {
   answered: boolean;
   /** Barriers begun when it was answered: one begun after retires it. */
   answeredAt: number;
+  /** The session's revision right after it, where its answer says (ProcessFsAnswer.mutation): its file's, as it made it. */
+  after?: number;
   /** Gone from its inode's records (refused, retired or moved): its answer says nothing more. */
   gone?: true;
 }
@@ -830,12 +838,13 @@ export function provisional(host: ProvisionalHost): Provisional {
    * inode folds again; an answered one is stamped, and stays until the view
    * has its outcome (retire).
    */
-  const settleRecords = (records: readonly InodeRecord[], refused: boolean): void => {
+  const settleRecords = (records: readonly InodeRecord[], refused: boolean, after?: number): void => {
     if (!refused) {
       for (const record of records) {
         if (record.gone) continue;
         record.answered = true;
         record.answeredAt = barriers;
+        if (after !== undefined) record.after = after;
       }
       return;
     }
@@ -859,7 +868,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** Log the op that made `records`, their fate its. */
   const loggedOn = (records: readonly InodeRecord[], op: ProcessFsOp, awaited = false): Promise<unknown> | undefined =>
-    logged(op, (refused) => settleRecords(records, refused), awaited);
+    logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
 
   /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
   const extended = (record: InodeRecord, data: Uint8Array, at: number): void => {
@@ -1099,7 +1108,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       sessions.delete(description);
     }
     closeRetained(inode);
-    settleRecords(records, refused);
+    settleRecords(records, refused, answer?.mutation?.after);
     fit(inode);
     release(inode);
   };
@@ -1208,7 +1217,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const record = recorded(desc.inode, op, desc.description);
     desc.lastRecord = record;
     desc.lastAnswer = answer;
-    settles(answer, (refused) => settleRecords([record], refused));
+    settles(answer, (refused, answered) => settleRecords([record], refused, answered?.mutation?.after));
   };
 
   /**
@@ -1350,8 +1359,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
       const records = ops.map((op) => fold(target, op));
       const whole: ProcessFsOp = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
-      const settled = (refused: boolean): void => {
-        settleRecords(records, refused);
+      const settled = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
+        settleRecords(records, refused, answer?.mutation?.after);
         fit(target);
         release(target);
       };
@@ -1927,6 +1936,13 @@ export function provisional(host: ProvisionalHost): Provisional {
             inode.state = null;
           }
         } else if (inode.records.length === retired.length) {
+          // What it made of the bytes, whole, is the session's at the revision its last change was answered at:
+          // the view's still where its row is at that revision.
+          const last = retired[retired.length - 1]!;
+          if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision === last.after
+            && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
+            host.keep?.(seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size));
+          }
           dropRecords(inode, new Set(retired));
           // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
           inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
