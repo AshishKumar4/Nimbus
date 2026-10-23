@@ -214,4 +214,46 @@ try {
   for (const dir of entryDirs) rmSync(dir, { recursive: true, force: true });
 }
 
+// ── 4. A runner's call the platform refused is sent again; one it ran, never ──
+// For every wording the platform has refused a start with (the first through
+// 2026-10-13, the others from 2026-10-23, the last two relayed by a peer).
+const REFUSALS = [
+  CAP_MESSAGE,
+  'Too many dynamic workers.',
+  'Too many dynamic workers. (remote) (peer-do)',
+  'Too many dynamic workers are starting concurrently. (remote) (peer-do)',
+];
+/** A loader keeping one runner worker whose `run` the case writes; `refuse` calls are refused with `words` before entry. */
+function runnerHost(words, refuse, run) {
+  const calls = { refused: 0, entered: 0 };
+  const env = { LOADER: { get: () => ({ getEntrypoint: () => ({
+    async run(input, ended) {
+      if (calls.refused < refuse) { calls.refused++; throw new Error(words); }
+      calls.entered++;
+      await ended();
+      return run(input);
+    },
+    [Symbol.dispose]() {},
+  }), [Symbol.dispose]() {} }) } };
+  return { env, calls };
+}
+const runnerCall = (pid) => ({
+  pid, writerId: `runner-${pid}`, key: `runner-${pid}`, code: async () => spec, input: { code: '1' }, cpuMs: 1_000,
+  signal: new AbortController().signal, onSent() {}, onEntered() {},
+});
+let runnerPid = 100;
+for (const words of REFUSALS) {
+  {
+    const writes = [];
+    const { env, calls } = runnerHost(words, 0, () => { writes.push('once'); throw new Error(words); });
+    await assert.rejects(processes(ctx, env).callRunner(() => PROPS, runnerCall(++runnerPid), (answer) => answer), (error) => error.message.includes(words.slice(0, 24)));
+    assert.deepEqual([calls, writes], [{ refused: 0, entered: 1 }, ['once']], `"${words}" thrown by a runner's call that ran is not sent again`);
+  }
+  {
+    const { env, calls } = runnerHost(words, 1, () => ({ value: 42 }));
+    assert.deepEqual(await processes(ctx, env).callRunner(() => PROPS, runnerCall(++runnerPid), (answer) => answer), { value: 42 });
+    assert.deepEqual(calls, { refused: 1, entered: 1 }, `"${words}" before entry: the runner's call is sent again`);
+  }
+}
+
 console.log('a one-shot\'s SUPERVISOR is its host\'s capability, handed with the call that runs it');
