@@ -78,7 +78,7 @@ const GUEST_LOADING_FUNCTIONS = new Map([
     'giveBackReadLease', 'answerReadRecalls', 'within', 'endReadLease',
   ]],
   [join(WASI, 'inode-fold.ts'), [
-    'applyOp', 'owned', 'foldOps', 'copyState', 'grown',
+    'applyOp', 'owned', 'foldOps', 'copyState', 'grown', 'copyInto',
   ]],
 ]);
 /** The file that implements each interface of those files their functions call members of (others are the session's or the caller's). */
