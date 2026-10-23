@@ -90,8 +90,13 @@ interface AnsweringStub {
   answer(method: SupervisorAnsweredMethod, args: unknown[]): Promise<SupervisorAnswer>;
 }
 
-/** What answeringSupervisor's own carries: a supervisor already answering, which a second pass hands back as it is. */
-const ANSWERING: unique symbol = Symbol('answering supervisor');
+/**
+ * What answeringSupervisor's own carries: a supervisor already answering,
+ * which a second pass hands back as it is. Registered, not made: the
+ * launch's copy of this module and the store bundle's (vfs/resident) agree
+ * on it, or the second would answer through the first's `answer` again.
+ */
+const ANSWERING: unique symbol = Symbol.for('nimbus.answering-supervisor');
 
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {

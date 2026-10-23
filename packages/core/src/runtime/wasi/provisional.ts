@@ -246,6 +246,8 @@ interface InodeRecord {
 /** An inode with none: one shared empty list each, frozen, until it has one of its own. */
 const NO_RECORDS = Object.freeze([]) as readonly InodeRecord[] as InodeRecord[];
 const NO_RETAINED = Object.freeze([]) as readonly string[] as string[];
+/** What a whole-file write on a mount answers in place of a descriptor: it was logged as one writeFile, nothing opened. */
+const WHOLE_WRITTEN: unique symbol = Symbol('written whole');
 
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
 interface NameRecord {
@@ -1275,7 +1277,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * description of its own, then `bytes` written by it and, with `close`,
    * closed. `chmod`: the mode its open sets (a copy's keepMode).
    */
-  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number, awaited = false): RuntimeFileHandle | undefined => {
+  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number, awaited = false): RuntimeFileHandle | typeof WHOLE_WRITTEN | undefined => {
     // Its own bytes: what it logs and what it folds, whatever the caller does with its buffer after.
     const bytes = given === null ? null : owned(given);
     const read = flags.read === true;
@@ -1343,6 +1345,23 @@ export function provisional(host: ProvisionalHost): Provisional {
       target.reserved += (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
     } else {
       target = inode!;
+    }
+    // A whole file written on a mount goes as one write of it (a mount's backend is asked once, as by writeFile(2)'s callers).
+    if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
+      const records = ops.map((op) => fold(target, op));
+      const whole: ProcessFsOp = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
+      const settled = (refused: boolean): void => {
+        settleRecords(records, refused);
+        fit(target);
+        release(target);
+      };
+      if (row === null) loggedName(whole, [key], nameCost([key]), () => place(key, target), settled);
+      else {
+        host.count(key);
+        logged(whole, settled);
+      }
+      fit(target);
+      return WHOLE_WRITTEN;
     }
     target.answers++;
     // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
@@ -1520,6 +1539,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // One that makes or empties its file, or may write it, is opened at the session as here.
       if (write || flags.truncate || (row === null && flags.create)) {
         const handle = openToWrite(key, path, flags, row, null, false, undefined, awaited);
+        if (handle === WHOLE_WRITTEN) throw new Error('internal: an open with nothing to write was written whole');
         if (handle !== undefined) descOf(handle.id).write = write;
         return handle;
       }
