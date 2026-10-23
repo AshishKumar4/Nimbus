@@ -33,6 +33,7 @@ import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { enteredFailure } from './task-body-error.js';
 import { withResolvers } from './turn-budget.js';
 export { DO_DYNAMIC_WORKER_LIMIT };
 /**
@@ -151,7 +152,7 @@ function hold(entry, workerKey, claim, holder) {
                 entry.news.delete(holder);
             }
         }
-        if (classifyError(failure) === 'dynamic_worker_cap')
+        if (refusedStart(failure))
             refused(entry, epoch);
         else if (epoch === entry.epoch && entry.pauseMs === 0)
             entry.refusals = 0;
@@ -478,7 +479,7 @@ export function beginLoaderFetch(ctx, workerKey, claim, holder) {
  * wakes one waiter and no other caller can take it first; once resolved, it
  * is the caller's to end.
  *
- * A call refused with "Dynamic worker concurrency limit exceeded" ends its
+ * A call the platform refused at the Dynamic Worker limit ends its
  * hold with the refusal (`end(error)`) and waits again: the refusal pauses
  * admission (50 ms, doubling to 2 s while refusals continue), because the
  * platform counts a worker for a moment after its call returns and no
@@ -549,8 +550,8 @@ export const REFUSED_CALL_WAIT_MS = 15_000;
 /** Names a launch's run readmitted as a worker of its own, each distinct. */
 let ownRuns = 0;
 /**
- * The hold to send a call again on, after the platform refused it ("Dynamic
- * worker concurrency limit exceeded"): it refuses a call before the call
+ * The hold to send a call again on, after the platform refused it at the
+ * Dynamic Worker limit: it refuses a call before the call
  * starts, so nothing ran. It still counts workers the ledger has given back
  * (one called over RPC stays counted until its session has closed, which no
  * release here can show), so `refused`, the call's hold, ended with that
@@ -834,13 +835,21 @@ function claimedWidth(entry) {
     return width;
 }
 /**
- * Name the per-DO accounting on a "Dynamic worker concurrency limit exceeded"
- * failure; hand every other error back untouched. The platform's message
+ * Whether `error` is the platform refusing a Dynamic Worker's start at its
+ * limit: worded so (classifyError), and not thrown by a task its call had
+ * entered (RUN_ENTERED), which may say anything and must not run again.
+ */
+export function refusedStart(error) {
+    return classifyError(error) === 'dynamic_worker_cap' && !enteredFailure(error);
+}
+/**
+ * Name the per-DO accounting on a refusal at the Dynamic Worker limit; hand
+ * every other error back untouched. The platform's message
  * says only that the limit was hit — which workers were in flight, and what
  * fan-outs had claimed, is what the operator needs to know to shrink anything.
  */
 export function withDynamicWorkerCapNamed(ctx, error) {
-    if (classifyError(error) !== 'dynamic_worker_cap')
+    if (!refusedStart(error))
         return error;
     const entry = ledger(ctx);
     const platform = error instanceof Error ? error.message : String(error);

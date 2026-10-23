@@ -1,4 +1,4 @@
-import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
+import { ENTERED_FAILURE_SOURCE, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
 /**
  * one-shot-entry.ts — how a one-shot program its host builds is entered: by
@@ -9,13 +9,6 @@ import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
 /** The entry module's name in a one-shot's module map. */
 export const ONE_SHOT_ENTRY = 'nimbus-one-shot.js';
-
-/**
- * Set on whatever a one-shot's program throws, once its run was entered
- * (carried across by enhanced_error_serialization): the platform refuses a
- * run before entering it, so only an error without it can be a refusal.
- */
-export const RUN_ENTERED = 'nimbusRunEntered';
 
 /**
  * `code`, entered by `run(request, supervisor, ended)`: its SUPERVISOR is the
@@ -30,13 +23,14 @@ function entrySource(mainModule: string): string {
   return `import { WorkerEntrypoint } from "cloudflare:workers";
 import program from ${JSON.stringify(`./${mainModule}`)};
 ${TASK_BODY_ERROR_SOURCE}
+${ENTERED_FAILURE_SOURCE}
 export default class extends WorkerEntrypoint {
   async run(request, supervisor, ended) {
     ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
     try {
       return await program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
     } catch (error) {
-      throw Object.assign(__nimbusTaskBodyError(error instanceof Error ? error : new Error(String(error)), request), { ${RUN_ENTERED}: true });
+      throw __nimbusEntered(__nimbusTaskBodyError(error instanceof Error ? error : new Error(String(error)), request));
     }
   }
 }

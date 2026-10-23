@@ -6,4 +6,15 @@
  * its body as JSON, so a body that arrived changed in transit fails there.
  */
 export declare const TASK_BODY_ERROR_SOURCE: string;
+/**
+ * Set on whatever a task throws once its call entered it (the pool's
+ * execute, a one-shot's run), carried across by enhanced_error_serialization:
+ * the platform refuses a call before entering it, so only an error without it
+ * can be a refusal (budgets.ts refusedStart).
+ */
+export declare const RUN_ENTERED = "nimbusRunEntered";
+/** Whether `error` is what a task threw once its call entered it (RUN_ENTERED): its own, so never a reason to run it again. */
+export declare function enteredFailure(error: unknown): boolean;
+/** Source for the same entries: \`__nimbusEntered(error)\` is \`error\`, as an Error, marked RUN_ENTERED. */
+export declare const ENTERED_FAILURE_SOURCE: string;
 //# sourceMappingURL=task-body-error.d.ts.map

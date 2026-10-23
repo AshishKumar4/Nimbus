@@ -15,12 +15,12 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, HOST_FAILED_HEADER, receivedFailure, } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
-import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ProcessNotAdmitted } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { getCtxExports, stagedBootAssembler, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, launchWorkerKey, readmitRefused, withDynamicWorkerCapNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, launchWorkerKey, readmitRefused, refusedStart, withDynamicWorkerCapNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, RESIDENT_SETTLE_DEADLINE_MS, residentLoaderConfig, } from './process-fabric.js';
 import { bindingSupervisor, egressMarker, supervisorLoaderKey, workspaceOutbound } from './supervisor-props.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
@@ -28,7 +28,7 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 import { applyFacetLimits, effectiveFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
-import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import { enteredByRun } from './one-shot-entry.js';
 import { holdThreadWatch } from './thread-stalls.js';
 /**
  * A staged one-shot's entrypoint (OneShotCode `stage`): a NimbusLoadedEntrypoint
@@ -765,7 +765,7 @@ async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
                 });
             }
             catch (error) {
-                if (started || Reflect.get(Object(error), RUN_ENTERED) === true || classifyError(error) !== 'dynamic_worker_cap')
+                if (started || !refusedStart(error))
                     throw error;
                 // Refused before it was entered: an RPC-invoked worker stays counted until its session tears down, and workerd gives no signal for that.
                 // The ledger learns the refusal from the hold it ends.
@@ -842,7 +842,7 @@ async function callRunner(ctx, env, supervisor, params, consume) {
                 });
             }
             catch (error) {
-                if (entered || classifyError(error) !== 'dynamic_worker_cap')
+                if (entered || !refusedStart(error))
                     throw error;
                 // Refused before it was entered: the ledger learns it from the hold it ends (runOneShot).
                 endFetch(error);

@@ -35,7 +35,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hashSource } from './vendor/serialize.js';
 import { requireFacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
-import { beginLoaderFetch, readmitRefused, claimAdmission, suspendHeldAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
+import { beginLoaderFetch, readmitRefused, claimAdmission, refusedStart, suspendHeldAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -44,7 +44,7 @@ import { FACET_ERROR_KEY } from '@nimbus-sh/core/runtime/facet-host.js';
 import { SupervisorLoadWaitError, acquireSupervisorLoad, reclaimableSupervisorAllocation, tryAcquireSupervisorLoad, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { hostWasmIdentity } from './host-wasm.js';
-import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
+import { ENTERED_FAILURE_SOURCE, enteredFailure, RUN_ENTERED, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 /** Result ownership shared by guest tasks that call the supervisor. */
 const FACET_RPC_PREAMBLE = [
     'const __nimbusDisposeRpcResult = (value) => {',
@@ -90,7 +90,7 @@ export function assembleLoaderWorkerModuleSource(options) {
     const requestCallExpr = options.hasBindings
         ? '__fn__(request, this.env)'
         : '__fn__(request)';
-    lines.push(TASK_BODY_ERROR_SOURCE, 'export default class extends WorkerEntrypoint {', '  execute(...args) {', `    return ${callExpr};`, '  }', '', '  // Loads the worker and runs nothing (IsolatePool.warm).', '  warm() {}', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const failure = __nimbusTaskBodyError(err, request);', '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);', `      return Response.json({ ${JSON.stringify(FACET_ERROR_KEY)}: message }, { status: 500 });`, '    }', '  }', '}');
+    lines.push(TASK_BODY_ERROR_SOURCE, ENTERED_FAILURE_SOURCE, 'export default class extends WorkerEntrypoint {', '  // What the task throws is its own, never a refusal to start it (RUN_ENTERED).', '  async execute(...args) {', '    try {', `      return await ${callExpr};`, '    } catch (error) {', '      throw __nimbusEntered(error);', '    }', '  }', '', '  // Loads the worker and runs nothing (IsolatePool.warm).', '  warm() {}', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const failure = __nimbusTaskBodyError(err, request);', '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);', `      return Response.json({ ${JSON.stringify(FACET_ERROR_KEY)}: message }, { status: 500 });`, '    }', '  }', '}');
     return lines.join('\n');
 }
 /**
@@ -637,7 +637,7 @@ export class IsolatePool {
                         return await runOnce(null);
                     }
                     if (err instanceof Error) {
-                        throw new ExecutionError(err.message, err.stack);
+                        throw Object.assign(new ExecutionError(err.message, err.stack), { [RUN_ENTERED]: enteredFailure(err) });
                     }
                     throw new ExecutionError(String(err));
                 }
@@ -732,7 +732,8 @@ export class IsolatePool {
                     this.slotGenerations.set(slotIndex, generation);
                     throw lastError;
                 }
-                if (cause === 'clone_refused' && !retriedCloneRefusal) {
+                // A task that threw those words itself ran: only a refusal to clone its call into the worker is retried.
+                if (cause === 'clone_refused' && !retriedCloneRefusal && !enteredFailure(lastError)) {
                     retriedCloneRefusal = true;
                     const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
                     this.slotGenerations.set(slotIndex, generation);
@@ -746,7 +747,7 @@ export class IsolatePool {
                     // reverse direction. This refresh targets the stale-loader case.
                     continue;
                 }
-                if (cause === 'dynamic_worker_cap' && held) {
+                if (refusedStart(lastError) && held) {
                     // The platform refused to start this call: nothing ran, so it is
                     // sent again, without spending an attempt, once the ledger lets it in.
                     firstRefusal ??= Date.now();

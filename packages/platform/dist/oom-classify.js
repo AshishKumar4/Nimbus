@@ -125,12 +125,15 @@ export function classifyMessage(msg) {
     // Subrequest cap (Cloudflare platform)
     if (m.includes('too many subrequests'))
         return 'subrequest_cap';
-    // Dynamic Worker concurrency limit (Cloudflare platform): a Durable Object
-    // may have a fixed number of distinct Dynamic Workers with in-flight
-    // requests at once (fabric budgets.ts, DO_DYNAMIC_WORKER_LIMIT). Production
-    // words it "Dynamic worker concurrency limit exceeded: each request may
-    // have up to 10 concurrent dynamic worker invocations. …".
-    if (m.includes('dynamic worker concurrency limit exceeded'))
+    // Dynamic Worker limit (Cloudflare platform): a Durable Object may have a
+    // fixed number of distinct Dynamic Workers with in-flight requests at once
+    // (fabric budgets.ts, DO_DYNAMIC_WORKER_LIMIT). The platform refuses a
+    // start beyond it, and has changed its words: "Dynamic worker concurrency
+    // limit exceeded: each request may have up to 10 concurrent dynamic worker
+    // invocations. …" through 2026-10-13; "Too many dynamic workers." and "Too
+    // many dynamic workers are starting concurrently." from 2026-10-23. Each
+    // is matched by the part its wording keeps.
+    if (m.includes('dynamic worker concurrency limit') || m.includes('too many dynamic workers'))
         return 'dynamic_worker_cap';
     // Memory exhaustion. workerd trace outcome `exceededMemory`; in-band it
     // arrives as a `broken.exceededMemory` actor break, a "…exceeded [its]
