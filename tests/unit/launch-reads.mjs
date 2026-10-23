@@ -9,7 +9,7 @@
 // keep the build instead, without ever serving a stale one.
 
 import assert from 'node:assert/strict';
-import { readsAffectedBy, readsUnderMounts, recordLaunchReads } from '../../packages/worker/src/facets/launch-reads.ts';
+import { readsUnderMounts, recordLaunchReads, staleReason } from '../../packages/worker/src/facets/launch-reads.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 
 const files = {
@@ -40,7 +40,7 @@ console.log('  reads, probes and listings are noted');
 const change = (path, extra = {}) => ({ path, rev: 9, ...extra });
 // What is at a name now: the tree as the test says it is after its changes.
 const kinds = (now = {}) => async (name) => now[name] ?? (files[name] !== undefined ? 'file' : null);
-const affected = (r, changes, now) => readsAffectedBy(r, changes, kinds(now));
+const affected = async (r, changes, now) => (await staleReason(r, changes, kinds(now))) !== null;
 assert.equal(await affected(reads, []), false, 'no change');
 assert.equal(await affected(reads, [change('home/user/notes/a.txt'), change('home/user/.bash_history')]), false,
   'a write to files the build never asked about');

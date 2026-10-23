@@ -43,7 +43,7 @@ import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from
 import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
-import { type LaunchReads, readsAffectedBy, readsUnderMounts, recordLaunchReads } from './launch-reads.js';
+import { type LaunchReads, readsUnderMounts, recordLaunchReads, staleReason } from './launch-reads.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
@@ -5722,6 +5722,8 @@ export class FacetManager {
     mounted: boolean;
   }>();
   private static readonly PREFETCH_CACHE_MAX = 16;
+  /** With exec telemetry on: why each key's entry was last dropped as stale (its record's cacheDrop), until a record takes it. */
+  private readonly prefetchCacheDrops = new Map<string, string>();
   /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
   private prefetchCacheBytes = 0;
   /**
@@ -7084,7 +7086,7 @@ export class FacetManager {
   /**
    * The entry for `key`, if what its build read is as it was. An entry at an
    * older revision is checked against what changed since its build, as
-   * `vfs` names the changes (launch-reads.ts readsAffectedBy): unaffected, it
+   * `vfs` names the changes (launch-reads.ts staleReason): unaffected, it
    * is dated at `revision` and served; affected, or past the retained change
    * log (poison), it is dropped before the build that replaces it allocates,
    * so the stale graph and the new one never co-reside. The other entries of
@@ -7098,13 +7100,17 @@ export class FacetManager {
       const changes = entry.mounted ? null : await vfs.acquire(entry.stamp.epoch, entry.stamp.rev);
       // What is at a name now, as a listing names it: lstat, so a link is a link.
       const kindNow = async (name: string) => (await Promise.resolve(vfs.stat('/' + name, { followSymlinks: false })).catch(() => null))?.type ?? null;
-      if (changes !== null && !changes.poison && !(await readsAffectedBy(entry.reads, changes.paths, kindNow))) {
+      const stale = changes === null ? 'it read under a mount, and the filesystem changed'
+        : changes.poison ? 'the change log no longer reaches back to its build'
+        : await staleReason(entry.reads, changes.paths, kindNow);
+      if (stale === null && changes !== null) {
         entry.revision = revision;
         entry.stamp = { epoch: changes.epoch, rev: changes.rev };
         continue;
       }
       // Checked again only if still there: another launch may have replaced it while the barrier answered.
       if (this.prefetchBundleCache.get(entryKey) !== entry) continue;
+      if (stale !== null && isExecDiagEnabled()) this.prefetchCacheDrops.set(entryKey, stale);
       this.prefetchBundleCache.delete(entryKey);
       this.prefetchCacheBytes -= entry.bytes;
       dropped = true;
@@ -7577,6 +7583,14 @@ export class FacetManager {
       modules.set(codeKey, wrapCommonJsCell(code));
     }
     return modules.size > 0 ? modules : undefined;
+  }
+
+  /** Why `key`'s entry was last dropped as stale, for its launch's exec record, once. */
+  private _takeCacheDrop(key: string | undefined): { cacheDrop?: string } {
+    if (key === undefined) return {};
+    const drop = this.prefetchCacheDrops.get(key);
+    this.prefetchCacheDrops.delete(key);
+    return drop === undefined ? {} : { cacheDrop: drop };
   }
 
   /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
@@ -8142,6 +8156,7 @@ export class FacetManager {
               fsRpcReads: result.diag?.fsRpcReads ?? 0,
               esmAdoptions: result.diag?.esmAdoptions ?? 0,
               cacheHit: vfsState.cacheHit ?? false,
+              ...this._takeCacheDrop(vfsState.bundleKey),
               ...execBreakdown(vfsState),
               turns: pacer.chunks,
               exitCode: result.exitCode,
