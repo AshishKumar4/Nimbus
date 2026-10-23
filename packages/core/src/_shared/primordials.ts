@@ -238,7 +238,7 @@ export const stringIncludes: (text: string, search: string) => boolean = uncurry
 export const stringIndexOf: (text: string, search: string, position?: number) => number = uncurryThis(String.prototype.indexOf);
 export const stringToLowerCase: (text: string) => string = uncurryThis(String.prototype.toLowerCase);
 export const arrayIncludes: <T>(list: readonly T[], value: T) => boolean = uncurryThis(Array.prototype.includes);
-export const arrayIndexOf: <T>(list: readonly T[], value: T) => number = uncurryThis(Array.prototype.indexOf);
+export const arrayIndexOf: <T>(list: readonly T[], value: T, from?: number) => number = uncurryThis(Array.prototype.indexOf);
 export const setForEach: <T>(set: ReadonlySet<T>, each: (value: T) => void) => void = uncurryThis(Set.prototype.forEach);
 /** Array.prototype.sort of a SafeList, which inherits nothing it could read or write past its end. */
 export const arraySort: <T>(list: SafeList<T>, compare: (a: T, b: T) => number) => SafeList<T> = uncurryThis(Array.prototype.sort);

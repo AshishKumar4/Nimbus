@@ -452,7 +452,7 @@ export function unsettledNoteOf(error: unknown): string {
 
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
-const FOLD_BUFFER: unique symbol = SymbolConstructor('process-fs-fold-buffer');
+const FOLD_BUFFER: unique symbol = SymbolConstructor('process-fs-fold-buffer') as never;
 
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
@@ -1286,7 +1286,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const giveBackReadLease = async (owner: string): Promise<void> => {
     endReadLease(owner);
     counters.readReleased++;
-    await promiseThen(session.grants?.release(owner), undefined, () => {});
+    const grants = session.grants;
+    if (grants !== undefined) await promiseThen(grants.release(owner), undefined, () => {});
   };
   /** The run ended (settle): it takes no read lease again. */
   let runEnded = false;

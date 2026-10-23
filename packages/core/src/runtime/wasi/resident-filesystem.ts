@@ -351,7 +351,7 @@ function extensionOf(name: string): string {
 }
 
 /** What this adapter answers itself is decided here: anything else is the authority's. */
-const DELEGATE: unique symbol = SymbolConstructor('delegate');
+const DELEGATE: unique symbol = SymbolConstructor('delegate') as never;
 type Delegate = typeof DELEGATE;
 
 /** A walk that met a name the store does not know. */
@@ -403,7 +403,7 @@ const DESCRIPTOR_CALLS = new SafeSet<string>(['read', 'write', 'close', 'fstat',
  * Thrown where a call that must answer now (ResidentFilesystem.synchronous)
  * would begin waiting on the session, before anything it would have done.
  */
-const NOT_NOW: unique symbol = SymbolConstructor('not now');
+const NOT_NOW: unique symbol = SymbolConstructor('not now') as never;
 
 /** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
 const REFUSED_ON_A_DIRECTORY: ReadonlySet<string> = new SafeSet(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);

@@ -259,7 +259,7 @@ interface InodeRecord {
 const NO_RECORDS = objectFreeze([]) as readonly InodeRecord[] as InodeRecord[];
 const NO_RETAINED = objectFreeze([]) as readonly string[] as string[];
 /** What a whole-file write on a mount answers in place of a descriptor: it was logged as one writeFile, nothing opened. */
-const WHOLE_WRITTEN: unique symbol = SymbolConstructor('written whole');
+const WHOLE_WRITTEN: unique symbol = SymbolConstructor('written whole') as never;
 
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
 interface NameRecord {

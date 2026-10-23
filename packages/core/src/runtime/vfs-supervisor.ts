@@ -97,7 +97,7 @@ interface AnsweringStub {
  * launch's copy of this module and the store bundle's (vfs/resident) agree
  * on it, or the second would answer through the first's `answer` again.
  */
-const ANSWERING: unique symbol = symbolFor('nimbus.answering-supervisor');
+const ANSWERING: unique symbol = symbolFor('nimbus.answering-supervisor') as never;
 
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {
