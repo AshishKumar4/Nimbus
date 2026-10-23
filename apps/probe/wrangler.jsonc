@@ -69,7 +69,7 @@
     }
   ],
   "vars": {
-    "NIMBUS_RUNTIME_CATALOG_SHA256": "fbdd62059a86961da09c6b9c7aacc1477f8b7a67fa74b3b990d07f5d838bd9fa",
+    "NIMBUS_RUNTIME_CATALOG_SHA256": "9c096913e9a89aeafe5dc5c3c58c79fb4d28486d557b59b37d71edb64cc165f7",
     "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
     "NIMBUS_AGENT_GATEWAY_ID": "default",
     "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
@@ -91,7 +91,7 @@
   },
   "previews": {
     "vars": {
-      "NIMBUS_RUNTIME_CATALOG_SHA256": "fbdd62059a86961da09c6b9c7aacc1477f8b7a67fa74b3b990d07f5d838bd9fa",
+      "NIMBUS_RUNTIME_CATALOG_SHA256": "9c096913e9a89aeafe5dc5c3c58c79fb4d28486d557b59b37d71edb64cc165f7",
       "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
       "NIMBUS_AGENT_GATEWAY_ID": "default",
       "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
