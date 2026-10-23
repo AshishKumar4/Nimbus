@@ -490,12 +490,14 @@ export interface ResidentDelegation {
   /** Told of each change the process's client logs (HolderOptions.logged). */
   readonly logged?: HolderOptions['logged'];
   /**
-   * A mount that states no change model is answered as the store's walk of
-   * it left it (its launch named it), and what this process changes on a
-   * mount (but the kernel's /dev and /proc) is decided here, staying its own
-   * where the view never hears of it: node's, as its fs always answered.
-   * Without it such a mount is the session's to answer, and every mount's
-   * changes the session's to decide.
+   * A mount's rows are answered as the store's walk of it left it (its launch
+   * named it, and a fed mount's deltas since), a feedless mount's whatever
+   * its feed would say, and what this process changes on a mount (but the
+   * kernel's /dev and /proc) is decided here, staying its own where the view
+   * never hears of it: node's, as its fs always answered. Without it a
+   * feedless mount, or a moving feed's rows under a trusted read lease, are
+   * the session's to answer, and every mount's changes the session's to
+   * decide.
    */
   readonly walkedMounts?: boolean;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
@@ -1019,10 +1021,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * namespace makes above a fed mount point is answered too. A moving
    * feed's (not fixed) not while a read lease is trusted.
    */
-  const answerable = (key: string, entry: ResidentEntry): boolean => {
-    const fed = fedRow(key, entry);
-    return fed === true || (fed === undefined && walkedMounts);
-  };
+  const answerable = (key: string, entry: ResidentEntry): boolean => walkedMounts || fedRow(key, entry) === true;
   const walkedMounts = delegation?.walkedMounts === true;
 
   /**
