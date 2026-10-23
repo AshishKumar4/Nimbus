@@ -1346,16 +1346,13 @@ export function provisional(host) {
                 desc.position = start + chunk.byteLength;
             return chunk;
         },
-        write: (handleId, offset, bytes, awaited = false, sync = false) => {
+        write: (handleId, offset, bytes, awaited = false) => {
             const desc = descOf(handleId);
             if (!desc.write)
                 throw fsError('EBADF', 'write', desc.path);
             // write(2) of nothing to a regular file changes nothing.
             if (bytes.byteLength === 0)
                 return 0;
-            // A sync write to bytes this view does not hold cannot be folded over them: undefined, its caller answers not resident.
-            if (sync && bytesOf(desc.inode, 'write', desc.path) === undefined && entryOf(desc.inode).size > 0)
-                return undefined;
             const at = host.now();
             const start = desc.append ? undefined : offset ?? desc.position;
             if (!awaited && continued(desc, start, bytes, at)) {

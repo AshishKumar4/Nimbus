@@ -147,7 +147,7 @@ export interface DelegationHolder {
     /** Undefined where its bytes are the store's and it does not hold them (a provisional descriptor's: Provisional.inodeOf). */
     read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
     /** `awaited`: a provisional descriptor's caller waits for the session's answer (Provisional.write); a held one's never does. */
-    write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean, sync?: boolean): number | Promise<number> | undefined;
+    write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean): number | Promise<number>;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     ftruncate(handleId: number, size: number, awaited?: boolean): void | Promise<void>;
     /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (Provisional.fstat). */

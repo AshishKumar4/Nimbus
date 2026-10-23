@@ -626,11 +626,49 @@ http.createServer(async (req, res) => {
 }).listen(${PORT});
 `;
 
+/**
+ * A wave override refusing each wave while `failing()` holds: the stream cancelled, the caller told EIO. The
+ * truncate is the session's open, ftruncate and close in one wave now, so this is where its failure is made.
+ */
+const refuseWhile = (failing) => (next) => async (stream, fence, owner) => {
+  if (!failing()) return next(stream, fence, owner);
+  await stream.cancel();
+  throw EIO('injected clean truncate failure');
+};
+
 /** The CLEAN program's process, warm: its clean handle open and its file written. */
-async function cleanProcess(authority, gate, fail = () => null) {
-  const { proc } = await residentOnSession(authority, CLEAN, { gate, fail });
+async function cleanProcess(authority, gate, fail = () => null, wave = undefined) {
+  const { proc } = await residentOnSession(authority, CLEAN, { gate, fail, wave });
   assert.equal((await proc.handleHttpRequest(request('warm'))).status, 200);
   return proc;
+}
+async function cleanTruncateFailureRejects() {
+  const authority = createAuthority();
+  const gate = gateOf();
+  let failTruncate = false;
+  const proc = await cleanProcess(authority, gate, undefined, refuseWhile(() => failTruncate));
+  const truncate = gate.arm();
+  failTruncate = true;
+  const response = proc.handleHttpRequest(request('truncate'));
+  await truncate.held;
+  truncate.release();
+  await assert.rejects(
+    response,
+    /injected clean truncate failure/,
+    'a floated clean mutation failure rejects the response instead of returning 200',
+  );
+}
+
+async function cleanTruncateSettledFailureRejects() {
+  const authority = createAuthority();
+  let failTruncate = false;
+  const proc = await cleanProcess(authority, gateOf(), undefined, refuseWhile(() => failTruncate));
+  failTruncate = true;
+  await assert.rejects(
+    proc.handleHttpRequest(request('truncate-immediate')),
+    /injected clean truncate failure/,
+    'a mutation failure that settles before response headers remains visible to the boundary',
+  );
 }
 
 async function cleanRangeHoldsResponse() {
@@ -655,7 +693,7 @@ async function cleanTruncateHoldsResponse() {
   const authority = createAuthority();
   const gate = gateOf();
   const proc = await cleanProcess(authority, gate);
-  const truncate = gate.arm(['fsTruncate']);
+  const truncate = gate.arm();
   let returned = false;
   const response = proc.handleHttpRequest(request('truncate')).then((answer) => {
     returned = true;
@@ -669,34 +707,6 @@ async function cleanTruncateHoldsResponse() {
   assert.equal(await authority.peer.readFileString('/home/user/clean-truncate.txt'), 'ab');
 }
 
-async function cleanTruncateFailureRejects() {
-  const authority = createAuthority();
-  const gate = gateOf();
-  let failTruncate = false;
-  const proc = await cleanProcess(authority, gate, (name) => (failTruncate && name === 'fsTruncate' ? EIO('injected clean truncate failure') : null));
-  const truncate = gate.arm(['fsTruncate']);
-  failTruncate = true;
-  const response = proc.handleHttpRequest(request('truncate'));
-  await truncate.held;
-  truncate.release();
-  await assert.rejects(
-    response,
-    /injected clean truncate failure/,
-    'a floated clean mutation failure rejects the response instead of returning 200',
-  );
-}
-
-async function cleanTruncateSettledFailureRejects() {
-  const authority = createAuthority();
-  let failTruncate = false;
-  const proc = await cleanProcess(authority, gateOf(), (name) => (failTruncate && name === 'fsTruncate' ? EIO('injected clean truncate failure') : null));
-  failTruncate = true;
-  await assert.rejects(
-    proc.handleHttpRequest(request('truncate-immediate')),
-    /injected clean truncate failure/,
-    'a mutation failure that settles before response headers remains visible to the boundary',
-  );
-}
 
 const EXIT = `
 const fs = require('node:fs');

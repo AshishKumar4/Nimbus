@@ -1564,15 +1564,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.write = (handleId, offset, bytes) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            // Node's fs refuses a sync write it cannot fold over bytes it holds (as it always did); a WASI guest's is logged as made.
-            const done = holder.write(handleId, offset, bytes, !now && answeredWrites, now && answeredWrites);
-            if (done !== undefined)
-                return done;
-            // Bytes this process does not hold are refused as the sync read of them is, and their fetch begun.
-            const of = holder.provisional.inodeOf(handleId);
-            if (of !== undefined && !holder.provisional.pending(of.entry.dev, of.entry.ino))
-                refusedFetch = faultIn(of.key, of.entry);
-            throw NOT_NOW;
+            return holder.write(handleId, offset, bytes, !now && answeredWrites);
         }
         if (now)
             throw NOT_NOW;

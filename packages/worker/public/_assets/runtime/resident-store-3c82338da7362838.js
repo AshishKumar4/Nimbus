@@ -6294,14 +6294,12 @@ var __nimbusResidentModule = (() => {
           desc.position = start + chunk.byteLength;
         return chunk;
       },
-      write: (handleId, offset, bytes, awaited = false, sync = false) => {
+      write: (handleId, offset, bytes, awaited = false) => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EBADF", "write", desc.path);
         if (bytes.byteLength === 0)
           return 0;
-        if (sync && bytesOf(desc.inode, "write", desc.path) === void 0 && entryOf(desc.inode).size > 0)
-          return void 0;
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
         if (!awaited && continued(desc, start, bytes, at)) {
@@ -9328,10 +9326,10 @@ var __nimbusResidentModule = (() => {
           handle.position = start + chunk.byteLength;
         return chunk;
       },
-      write: (handleId, offset, bytes, awaited, sync) => {
+      write: (handleId, offset, bytes, awaited) => {
         const handle = heldDesc(handleId);
         if (handle === void 0)
-          return prov.write(handleId, offset, bytes, awaited, sync);
+          return prov.write(handleId, offset, bytes, awaited);
         if (!handle.write)
           throw fsError2("EBADF", "write", handle.path);
         const inode = handle.inode;
@@ -11109,13 +11107,7 @@ var __nimbusResidentModule = (() => {
     fs.write = (handleId, offset, bytes) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        const done = holder.write(handleId, offset, bytes, !now && answeredWrites, now && answeredWrites);
-        if (done !== void 0)
-          return done;
-        const of = holder.provisional.inodeOf(handleId);
-        if (of !== void 0 && !holder.provisional.pending(of.entry.dev, of.entry.ino))
-          refusedFetch = faultIn(of.key, of.entry);
-        throw NOT_NOW;
+        return holder.write(handleId, offset, bytes, !now && answeredWrites);
       }
       if (now)
         throw NOT_NOW;
