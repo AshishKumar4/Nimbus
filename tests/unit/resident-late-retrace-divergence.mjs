@@ -42,7 +42,7 @@ async function lostAfterBoot(authenticated, { stderrRefused = false } = {}) {
     resume: { replay: { run: 2, boundary: { kind: 'listen' }, tape, prefix: { stdout: '', stderr: '' } } },
   });
   assert.equal(processes.get(pid)?.state, 'running', 'the resident booted');
-  assert.equal(startedWith.replay.listen, true, 'it keeps retracing its first run up to its listen');
+  assert.deepEqual(startedWith.replay.boundary, { kind: 'listen' }, 'it keeps retracing its first run up to its listen');
   assert.ok(startedWith.stopNonce.length >= 16, 'this launch minted its stop nonce');
   const watching = hostActivity(ctx).acquire();
   try {
