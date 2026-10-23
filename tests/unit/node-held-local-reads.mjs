@@ -86,7 +86,7 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   });
   const { fs } = globalThis.__probe;
   if (take) await takeOut(fs);
-  return { authority, fs, root, counted, asked: () => counted.asked, barriers: () => counted.barriers };
+  return { authority, fs, root, counted, asked: () => counted.asked + counted.barriers };
 }
 
 /** Take `out`: write there until the process holds it, then let what it wrote be answered. */
@@ -270,12 +270,12 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a cursor from another incarnation asks the session (T15)'() {
-    const { authority, fs, asked, barriers } = await boot();
+    const { authority, fs, asked } = await boot();
     await fs.promises.stat(`${OUT}/seeded.txt`);
     authority.rawVfs.rotateIncarnation();
-    const before = asked() + barriers();
+    const before = asked();
     const stat = await fs.promises.stat(`${OUT}/seeded.txt`);
-    assert.ok(asked() + barriers() > before, 'a cursor held against the last incarnation asked the session');
+    assert.ok(asked() > before, 'a cursor held against the last incarnation asked the session');
     assert.equal(stat.size, 'seeded'.length, 'the stat is the session\'s');
     assert.equal(await fs.promises.readFile(`${OUT}/seeded.txt`, 'utf8'), 'seeded', 'and so is the read');
   },

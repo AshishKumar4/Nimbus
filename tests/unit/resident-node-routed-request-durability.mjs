@@ -28,7 +28,7 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 
 const PORT = 4471;
 
@@ -41,9 +41,10 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  // The session's own writer: a whole-file write is descriptor records, which only its namespace router keeps.
-  const waves = new ProcessFiles(sessionVfs).waves;
-  const view = sessionVfs.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
+  // The session's own writer over its namespace: a whole-file write is descriptor records, which only the namespace router keeps.
+  const namespace = new CompositeVFS(sessionVfs);
+  const waves = processFiles(namespace).waves;
+  const view = namespace.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
   return {
     props,
     openWaveWriter: async () => null,
