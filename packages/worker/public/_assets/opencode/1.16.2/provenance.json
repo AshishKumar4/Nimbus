@@ -6,9 +6,9 @@
     "url": "https://github.com/sst/opencode",
     "inputs": {
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-      "packages/worker/scripts/opencode/build-node.ts": "c2954c1f37c40cfbd06bf1b3f4f409513befc791b74c2212e96cddefbbb4d89d",
-      "packages/worker/scripts/opencode/bundle-patches.ts": "091e620065cb87a938e238b5a52ebb672721e73434cfbbfc8d4ada8497649aca",
-      "packages/worker/scripts/opencode/inputs.mjs": "665d2b30a66b0604109ce5235d593d622ce7b03520549f835e5891738c471930",
+      "packages/worker/scripts/opencode/build-node.ts": "667dcf3504693bfa10088cc7c4975093928dfa57ea144d5b638381e38ca7096e",
+      "packages/worker/scripts/opencode/bundle-patches.ts": "09f9b029470e19e6b291877365b278a3f2d5eed0f81ff74f775bbecfc196a1dd",
+      "packages/worker/scripts/opencode/inputs.mjs": "596704d7bdecc76e21ab86a5f7b063951bd2c701f986d05bcd6d388fd0b909d5",
       "packages/worker/scripts/opencode/models-catalog.mjs": "5598ca3400661284ffde8f4d753ac6ae73b4601f0563c4ed193e66aacf4c75b8",
       "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
       "packages/worker/scripts/opencode/nimbus-tree-sitter-exports.patch": "63a643a0827e88630e88614e354ddcc963937285ed7a256a8174416850841361",
@@ -19,7 +19,9 @@
       "packages/worker/scripts/opencode/stubs/parser-worker-threads.ts": "cff7a27dafe59ab26b760db346c1f620fd50ef7d7adc28b6bc0ca2726add5c8d",
       "packages/worker/scripts/opencode/stubs/pty-stub.ts": "b169c1ff0bd8cdfbacedb36bea2eedc8fec30e09bdbcd3eb8fd2647185fa8772",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
-      "scripts/ci/rebuild-opencode.mjs": "d5d55f040765784dbb0345a00c06129e302b891134f58a62e8549896b9bf6337",
+      "scripts/ci/rebuild-opencode.mjs": "6c3ccf16b02582a128fbd28ca62c8861ad8c8c53f8b646f6d406509b05027dda",
+      "bun.lock#@tsrs/linux-x64-gnu": "0d316975e0e6228e501751bffb603c7e921a001a59d2a9921958cdd5a97f8782",
+      "bun.lock#tsrs": "0d94a33c5b6a176f58f9eee6286c1ce690306693ca8a6e06831dfc51a93b56f2",
       "toolchain#bun": "74b860b3270666137a4d543c3e3d1e4e473d54636f7593d1c17bf693e6540bbe"
     },
     "catalogSnapshotSha256": "47762e1d6c662e747ae6dc3eff4a1684e77e63bc897728795259523ce594cb8e",

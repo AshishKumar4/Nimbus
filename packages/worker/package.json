@@ -205,7 +205,6 @@
     "react-refresh": "0.14.2",
     "rolldown": "1.2.11",
     "scheduler": "0.23.2",
-    "typescript": "^5.7.0",
     "vite": "6.4.2",
     "yargs": "18.1.0"
   },

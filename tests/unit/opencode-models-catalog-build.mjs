@@ -19,10 +19,10 @@ try {
     return built.outputs[0].text();
   };
   const before = await build(input);
-  const after = await build(nimbusFoldModelsCatalogGuard(input, 'models-dev.ts'));
+  const after = await build(await nimbusFoldModelsCatalogGuard(input, 'models-dev.ts'));
   assert.equal(after.split(marker).length - 1, 1, 'the configured snapshot is emitted once');
   const loaded = await import('data:text/javascript;base64,' + Buffer.from(after).toString('base64'));
   assert.deepEqual(loaded.snapshot(), catalog, 'server lookup still receives the complete configured snapshot');
   console.log(`catalog copies before=${before.split(marker).length - 1} after=1`);
-  assert.throws(() => nimbusFoldModelsCatalogGuard('export const snapshot = 1;', 'models-dev.ts'), /expected one/);
+  await assert.rejects(nimbusFoldModelsCatalogGuard('export const snapshot = 1;', 'models-dev.ts'), /expected one/);
 } finally { rmSync(scratch, { recursive: true, force: true }); }
