@@ -1150,6 +1150,7 @@ const __fsMod = (() => {
   function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
     if (observe && typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
+    if (observe && __nimbusReplay) __nimbusReplay.read(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1714,6 +1715,9 @@ const __fsMod = (() => {
         + (_supervisor() ? " (" + asyncForm + ")" : "");
       return full;
     }
+    // A one-shot that can be run again stops here, to run again as a
+    // resident, which holds the file (stop-replay.ts miss).
+    if (__nimbusReplay) __nimbusReplay.miss(_strip(absPath));
     _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
