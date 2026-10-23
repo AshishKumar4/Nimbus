@@ -260,6 +260,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     cpCatchSignals: {
         readonly kind: 'control';
     };
+    cpSignalsTaken: {
+        readonly kind: 'control';
+    };
     cpWait: {
         kind: "observation";
         answer: typeof withAcquire;

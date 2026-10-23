@@ -195,6 +195,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     cpNextSignal(waitMs: number): Promise<string | null>;
     cpTakeSignal(waitMs: number): Promise<string | null>;
     cpCatchSignals(catches: readonly string[]): Promise<void>;
+    cpSignalsTaken(received: number): Promise<void>;
     cpBlocked(report: {
         blocked: boolean;
         frontier: number;

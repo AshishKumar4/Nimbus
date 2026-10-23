@@ -172,6 +172,8 @@ export type WasiSupervisorStub = FilesystemSupervisor & Partial<ReadDirectorySup
     cpReadStdin?(pid: number, waitMs: number, acquire: undefined, maxBytes: number): WasiInputPacket | Promise<WasiInputPacket>;
     /** The next signal sent to the guest's process, whose program takes its own (SessionProcessSupervisor.takeSignals): null if none came in `waitMs`. */
     cpNextSignal?(waitMs: number): Promise<string | null>;
+    /** The guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+    cpSignalsTaken?(received: number): Promise<void>;
 };
 /**
  * The two hooks the WASI layer has into the green-thread scheduler.
@@ -366,7 +368,7 @@ export interface WasiInstanceBundle {
     /** Once the guest exited: stop following its children (they run on, as orphans do). */
     procDispose(): void;
     /** Once an entry into the guest returned (Processes.left). */
-    procLeft(): void;
+    procLeft(): Promise<void>;
     getStdout(): string;
     getStderr(): string;
 }

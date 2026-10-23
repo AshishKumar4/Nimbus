@@ -458,8 +458,17 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * ask past goes back to the front.
      */
     parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
-    /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
+    /**
+     * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
+     * null: one handed to it that it has not said it took (signalsTaken, or a
+     * wait past it), else the first that waits in its box.
+     */
     untakenSignal(pid: number): ProcessSignalName | null;
+    /**
+     * `pid`'s program took each of the first `received` signals handed to it:
+     * what it was last handed is taken, unless one was handed since it counted.
+     */
+    signalsTaken(pid: number, received: number): void;
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid: number, signal: ProcessSignalName): boolean;
     /**

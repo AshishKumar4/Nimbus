@@ -514,6 +514,8 @@ export declare function _rpcCpNextSignal(self: RpcHost, pid: number | undefined,
  */
 export declare function _rpcCpTakeSignal(self: ProcessRpcHost, pid: number | undefined, waitMs: unknown): Promise<string | null>;
 /** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
+/** `pid`'s guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+export declare function _rpcCpSignalsTaken(self: ProcessRpcHost, pid: number | undefined, received: unknown): Promise<void>;
 export declare function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;

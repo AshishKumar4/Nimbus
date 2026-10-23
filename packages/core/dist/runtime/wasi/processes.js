@@ -93,6 +93,8 @@ export function processHost(opts) {
     let watching = false;
     /** The guest checks for its signals while it computes (signal_check): they are watched for the rest of its run. */
     let checking = false;
+    /** How many signals the session has handed the guest, by any of its waits (signalled). */
+    let received = 0;
     /**
      * Session operations in progress that take the process's signals
      * themselves and answer one (a stdin read, a write to a child's stdin):
@@ -102,6 +104,8 @@ export function processHost(opts) {
     let delegated = 0;
     /** A signal arrived: every wait in progress ends, for the guest to take it. */
     const signalled = (name) => {
+        if (name)
+            received++;
         const errno = name ? SIGNAL_ERRNOS.get(name) : undefined;
         if (errno === undefined)
             return;
@@ -795,6 +799,10 @@ export function processHost(opts) {
             return { ready, cancel };
         },
         dispose: () => { disposed = true; },
-        left: () => { checking = false; },
+        left: async () => {
+            checking = false;
+            if (pendingSignal === null && received > 0)
+                await supervisor()?.cpSignalsTaken?.(received).catch(() => { });
+        },
     };
 }

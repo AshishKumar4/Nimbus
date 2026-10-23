@@ -81,7 +81,7 @@ async function __nimbusPyBoot(args) {
   const enter = (fn) => {
     const entered = __nimbusEnterVm(fn);
     return async (...input) => {
-      try { return await entered(...input); } finally { made.procLeft(); }
+      try { return await entered(...input); } finally { await made.procLeft(); }
     };
   };
   // A boot that fails ends what its process host started (a signal watch, once init asked).
