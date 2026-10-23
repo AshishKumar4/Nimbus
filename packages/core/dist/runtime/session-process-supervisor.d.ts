@@ -45,6 +45,8 @@ export interface ProcessSpawnOptions {
     execId?: string;
     /** The controlling terminal of a process that does not take its parent's (`ProcessEntry.terminal`): a terminal's shell. */
     terminal?: string;
+    /** A shell's background job (`ProcessEntry.backgroundJob`). */
+    backgroundJob?: boolean;
     /** The process this one restarts (`ProcessEntry.restartedFrom`). */
     restartedFrom?: ProcessRestart;
 }
@@ -456,11 +458,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * ask past goes back to the front.
      */
     parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
-    /**
-     * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
-     * null: one handed to it that it has not said it has (it asks again once it
-     * takes one, nextSignal), else the first that waits in its box.
-     */
+    /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
     untakenSignal(pid: number): ProcessSignalName | null;
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid: number, signal: ProcessSignalName): boolean;
@@ -490,12 +488,12 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * `reason`'s signal to the foreground job of the shell `pid`, as a
      * terminal's key after the first (which the job's command took as its
      * abort): each running process below the shell whose output is the
-     * terminal's (setForeground) and that is not inside one of its
-     * `background` jobs, the topmost of each such chain with its group
-     * ({@link signalGroup}). A server an earlier command left running has
-     * given the terminal back, and is not sent it.
+     * terminal's (setForeground), the topmost of each such chain, with its
+     * group ({@link signalGroup}). Nothing inside a background job (`cmd &`,
+     * from any subshell) is the foreground's, nor is a server an earlier
+     * command left running: it gave the terminal back.
      */
-    signalForeground(pid: number, reason: SignalAbortReason, background: ReadonlySet<number>): void;
+    signalForeground(pid: number, reason: SignalAbortReason): void;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {

@@ -143,10 +143,6 @@ export function processHost(opts) {
     const unanswered = (gaveUp) => {
         const errno = pendingSignal;
         pendingSignal = null;
-        // Taken: the guest says so at once (nextSignal clears what it was
-        // handed), and takes the next one sent, if one already waits.
-        if (errno !== null)
-            void supervisor()?.cpNextSignal?.(0).then(signalled, () => { });
         return errno ?? gaveUp;
     };
     /**

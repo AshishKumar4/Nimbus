@@ -104,6 +104,8 @@ export class ProcessTable {
             entry.execId = execId;
         if (terminal !== undefined)
             entry.terminal = terminal;
+        if (options.backgroundJob === true)
+            entry.backgroundJob = true;
         if (options.restartedFrom !== undefined)
             entry.restartedFrom = { ...options.restartedFrom };
         this.processes.set(pid, entry);

@@ -73,7 +73,7 @@ export declare class Shell {
     /** The line it is running, while it runs one: a terminal list's foreground. */
     foreground: string | null;
     private abortController;
-    /** The process the running line runs as: its foreground job is what it started that is not a background job. */
+    /** The process the running line runs as: its foreground job is below it (signalForeground). */
     private linePid;
     private terminalStdin;
     private stdinLineBuffer;
