@@ -9803,7 +9803,7 @@ var __nimbusResidentModule = (() => {
   var identity = (dev, ino) => `${dev}:${ino}`;
   function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, barrierFailures: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
     let now = false;
     const begin = (io) => {
       if (now)
@@ -9892,6 +9892,8 @@ var __nimbusResidentModule = (() => {
       const ask = client !== void 0 && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
       const lease = ask === null ? void 0 : { answered: (terms) => client.readLeaseAnswered(terms) };
       return store.barrier({ ...delivered ? { delivered } : {}, ...lease ? { lease } : {} }).then((result) => {
+        if (!result.landed)
+          counts.barrierFailures++;
         if (!result.landed || !store.ready())
           return false;
         if (ask !== null && result.readLease && !result.fromDelivery)

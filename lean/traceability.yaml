@@ -377,14 +377,14 @@ requirements:
       - Nimbus.Coherence.Store.admit_rows
       - Nimbus.Coherence.Store.flush_rows
     tsRefs:
-      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+      - packages/core/src/runtime/wasi/resident-filesystem.ts#residentFilesystem
       - packages/worker/src/vfs/resident/cells.ts#createCells
       - packages/worker/src/vfs/resident/coherence.ts#createCoherence
-      - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
+      - packages/core/src/runtime/wasi/provisional.ts#provisional
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     remainingEvidence:
-      - Store mode only; the heap-mode barrier (__vfsBundleRevisions) is not modeled
-      - Own partial mutations under a lease (_ownMutation) are not modeled; whole-file write-back is
+      - Store mode only; a one-shot's heap-backed store is not modeled
+      - Own partial mutations held as provisional decisions (provisional.ts) are not modeled; whole-file write-back is
       - fsList's per-path revision is taken to be at or above the path's last commit, which VFS-REV-001 proves of the code
       - No refinement fixture yet drives the shims; the model names the shim functions in its header
   COH-002:
@@ -424,9 +424,10 @@ requirements:
       - Nimbus.Coherence.Store.own_fresh_when_acks_settled
       - Nimbus.Coherence.Store.a_per_answer_wait_misses_an_earlier_report
     tsRefs:
-      - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
-      - packages/worker/src/runtime/node-shims.ts#generateShimsCode
+      - packages/core/src/runtime/wasi/provisional.ts#provisional
+      - packages/core/src/runtime/wasi/resident-filesystem.ts#residentFilesystem
     remainingEvidence:
+      - A process's own records retire only by a barrier begun after their answer (provisional.ts retire, the holder's barrierBegun), which is the model's settled-acknowledgement wait; the node runtime's write ledger it was first refined against is gone (node runs on the resident filesystem)
       - The fix is ResidentCoherenceLane's b6825561 (work/resident-coherence); tests/unit/resident-store-provenance.mjs drives each trace on the real resident body, red before the fix ('a peer write that lands while the own write is in flight', 'a later barrier while an earlier one waits on the acknowledgement', 'a poison while the own write is in flight', 'a newer write parked over one being acknowledged')
       - The guard counts only the current write's acknowledgement (parked = its write), which is the code's supersession exemption; lease acknowledgements are never skipped and leases are not modeled
   COH-005:

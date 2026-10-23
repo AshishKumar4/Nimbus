@@ -655,8 +655,8 @@ const RESIDENCY_MISS_REPORT = `
 // The data reads wait for the fetches their misses started (ResidentFilesystem.misses).
 async function __nimbusDataReadMisses() {
   const out = [];
-  if (typeof globalThis.__nimbusProgramMisses !== "function") return out;
-  const keys = await globalThis.__nimbusProgramMisses();
+  if (__nimbusProcessFilesystem === null) return out;
+  const keys = await __nimbusProcessFilesystem.misses();
   for (let i = 0; i < keys.length; i++) out[i] = keys[i];
   return out;
 }

@@ -1011,7 +1011,7 @@ function __ocEmitMemDiag(tag) {
       const __fsStats = __nimbusProcessFilesystem === null ? null : __nimbusProcessFilesystem.stats();
       if (__fsStats !== null) {
         __vfsN = __fsStats.client ? __fsStats.client.ops : 0;
-        __vfsB = __fsStats.provisionalBytes + (globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.pendingBytes : 0);
+        __vfsB = __fsStats.provisionalBytes + (__nimbusProcessFilesystem.client ? __nimbusProcessFilesystem.client.pendingBytes : 0);
       }
     } catch {}
     const __line =

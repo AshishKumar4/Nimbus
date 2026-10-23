@@ -178,7 +178,7 @@ let __nimbusCarrierFailure = null;
 // What leaves by the platform's own network, which no gate of the session's
 // sees, goes once what the process wrote is published (ProcessFsClient.published).
 function __nimbusNetworkGate() {
-  const client = globalThis.__nimbusProcessFs;
+  const client = __nimbusProcessFilesystem === null ? null : __nimbusProcessFilesystem.client;
   return client ? client.published() : null;
 }
 // A raw socket (one a connect opens, or a response upgrades to) carries
@@ -189,32 +189,42 @@ function __nimbusNetworkGate() {
 function __nimbusRawSocket() {
   let bound = null;
   try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
-  return bound && globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.rawSocket() : null;
+  const client = __nimbusProcessFilesystem === null ? null : __nimbusProcessFilesystem.client;
+  return bound && client ? client.rawSocket() : null;
 }
 
 // The process's filesystem (core runtime/wasi/process-filesystem.ts): the
 // launch's store's view of the session's, with what the process decides held
 // over it and sent in its client's waves. Every fs call goes through it.
 let __nimbusProcessFilesystem = null;
+// The session a process started with no SUPERVISOR asks: none. Its
+// filesystem answers what its store holds, and every call that needs the
+// session fails (EIO), as S's did.
+const __nimbusNoSupervisor = new Proxy({}, {
+  get: (target, name) => (typeof name !== "string" || name === "answer" || name === "then" ? undefined
+    : () => Promise.reject(Object.assign(new Error("EIO: this process has no supervisor to ask"), { code: "EIO" }))),
+});
 function __nimbusResidentFs() {
   if (__nimbusProcessFilesystem === null) throw Object.assign(new Error("EIO: this process has no filesystem to call"), { code: "EIO" });
   return __nimbusProcessFilesystem;
 }
 // Why a launch with a supervisor cannot make its filesystem, or null: it was
 // handed no stat of the session's root (the device its view answers for).
+// One without a supervisor answers from its store alone.
 function __nimbusRootRefusal(supervisor, root) {
   return supervisor && !root ? "node: the process was not started: its launch did not carry the session's root" : null;
 }
 // Made once the launch's store has booted, over the session's root (\`root\`,
 // its stat as of the store's cursor or after it): its client is the one the
-// runtime's effect and exit boundaries gate on (globalThis.__nimbusProcessFs),
-// and the host's settle before an abort logs what it holds (__nimbusSettle).
+// runtime's effect and exit boundaries gate on, and the host's settle before
+// an abort logs what it holds (__nimbusSettle). Published for the code the
+// launch runs at module scope (globalThis.__nimbusProcessFs: the runtime-code
+// report reads its misses).
 function __nimbusStartProcessFilesystem(root) {
   globalThis.__nimbusProcessFs = null;
   globalThis.__nimbusSettle = undefined;
-  globalThis.__nimbusProgramMisses = undefined;
-  const supervisor = typeof __supervisor !== "undefined" ? __supervisor : null;
-  if (!supervisor || !root) return;
+  if (!root) return;
+  const supervisor = (typeof __supervisor !== "undefined" && __supervisor) || __nimbusNoSupervisor;
   const fs = __nimbusResidentModule.processFilesystem(supervisor, __resident.view.namespaceView(supervisor, root, cred), {
     // The platform's timers and clock: its resends are the runtime's, not a program's resumption or tape.
     timers: { setTimeout: globalThis.__nimbusRawSetTimeout || setTimeout, clearTimeout: globalThis.__nimbusRawClearTimeout || clearTimeout },
@@ -225,7 +235,7 @@ function __nimbusStartProcessFilesystem(root) {
     residency: {
       // An import()'s prefetch (__nimbusHydrated): its misses are its own, charged to its quota.
       speculation: () => globalThis.__nimbusVfsSpeculation || null,
-      // The program's: reported for the next launch to stage (__nimbusProgramMisses).
+      // The program's: reported for the next launch to stage (ResidentFilesystem.misses).
       missed: () => { if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode(); },
     },
     // A change the program made: a run that can stop does not wait for stdin after one (stop-replay.ts).
@@ -233,9 +243,8 @@ function __nimbusStartProcessFilesystem(root) {
     ...(globalThis.__nimbusFsJournalSql ? { journalSql: globalThis.__nimbusFsJournalSql } : {}),
   });
   __nimbusProcessFilesystem = fs;
-  globalThis.__nimbusProcessFs = fs.client;
+  globalThis.__nimbusProcessFs = fs;
   globalThis.__nimbusSettle = () => fs.logHeld();
-  globalThis.__nimbusProgramMisses = () => fs.misses();
 }
 // What the process holds, sent; answered once everything it logged is (a
 // live boundary: a response, a served process's flush). A change the program
@@ -1154,11 +1163,6 @@ const __fsMod = (() => {
     return _coerceMode(opts !== null && typeof opts === "object" ? opts.mode : undefined, 0o666);
   }
 
-  function _supervisor() {
-    try { return typeof __supervisor !== "undefined" ? __supervisor : null; }
-    catch { return null; }
-  }
-
   // The errors this fs made itself, as Node words them: a call's refusal passes them on as they are (_rfError).
   const _madeHere = new __NimbusSafeWeakSet();
   function _fsErr(code, syscall, p, dest) {
@@ -2073,8 +2077,8 @@ const __fsMod = (() => {
    * I/O just arrived, which a trusted read lease answers without asking.
    */
   async function _resumptionAcquire(delivered, viaIo) {
-    if (!_supervisor()) return;
-    await _rf().catchUp({ viaIo: !!viaIo, delivered: delivered ?? null });
+    if (__nimbusProcessFilesystem === null) return;
+    await __nimbusProcessFilesystem.catchUp({ viaIo: !!viaIo, delivered: delivered ?? null });
   }
 
   /**
@@ -2083,8 +2087,8 @@ const __fsMod = (() => {
    * on a relayed socket): what is held is sent first.
    */
   async function _resumptionRelease() {
-    if (!_supervisor()) return;
-    await _rf().flush();
+    if (__nimbusProcessFilesystem === null) return;
+    await __nimbusProcessFilesystem.flush();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch
@@ -2096,7 +2100,7 @@ const __fsMod = (() => {
   function _installResumptionBarriers() {
     // This run's, each run: a loader that reuses the isolate runs another process on another filesystem.
     globalThis.__nimbusVfsAcquireBarrier = _resumptionAcquire;
-    globalThis.__nimbusVfsAcquireArgs = () => (_supervisor() ? _rf().acquireArgs() : null);
+    globalThis.__nimbusVfsAcquireArgs = () => (__nimbusProcessFilesystem === null ? null : __nimbusProcessFilesystem.acquireArgs());
     globalThis.__nimbusVfsReleaseBarrier = _resumptionRelease;
     if (globalThis.__nimbusResumptionBarriersInstalled) return;
     globalThis.__nimbusResumptionBarriersInstalled = true;
@@ -7071,7 +7075,7 @@ function __nimbusHoldOutput(promise) {
 // What is held (__nimbusOutputHold) is waited for too; the output is written
 // meanwhile, so a run that stops carries it (runtime/stop-replay.ts).
 function __nimbusOutputGate() {
-  const client = globalThis.__nimbusProcessFs;
+  const client = __nimbusProcessFilesystem === null ? null : __nimbusProcessFilesystem.client;
   const gate = client ? client.effect() : null;
   const hold = __nimbusOutputHold;
   if (hold === null) return gate;

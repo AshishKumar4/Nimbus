@@ -281,8 +281,9 @@ export interface ResidentFilesystemStats {
     /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
     pagedReads: number;
     pagesFetched: number;
-    /** ACQUIRE barriers taken. */
+    /** ACQUIRE barriers taken, and of those, ones that did not land (owed still). */
     barriers: number;
+    barrierFailures: number;
     /** Barriers owed by input a trusted read lease answered without asking. */
     leasedBarriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */

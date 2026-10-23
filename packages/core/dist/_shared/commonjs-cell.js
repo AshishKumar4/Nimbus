@@ -1110,9 +1110,9 @@ function __nimbusFlushRuntimeCode(supervisor) {
     // retired there, the program's not-found branch, nothing the next
     // launch should stage.
     let missed = null;
-    if (typeof globalThis.__nimbusProgramMisses === "function") {
+    if (globalThis.__nimbusProcessFs) {
       try {
-        const keys = await globalThis.__nimbusProgramMisses();
+        const keys = await globalThis.__nimbusProcessFs.misses();
         missed = new __NimbusCellSet();
         for (let i = 0; i < keys.length; i++) missed.add(keys[i]);
       } catch {}
