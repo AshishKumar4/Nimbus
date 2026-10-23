@@ -226,6 +226,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   cancelPendingDirectories(): void;
   /** Whether writes are held that the session does not have yet. */
   holding(): boolean;
+  /** Whether this process decided a change at `path` (its name, as spelled) that the session has not answered yet. */
+  decidedAt(path: string): boolean;
   /**
    * The process's filesystem client, its holder's and the only one it has:
    * its effect is the output gate (what the holder decided logged and sent
@@ -1331,6 +1333,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
+  fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
   Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.

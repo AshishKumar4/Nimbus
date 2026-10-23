@@ -40,8 +40,9 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  // The session's own writer for the process, as its RPC bodies bind it (session-supervisor-ops bridge).
-  const bound = () => sessionHost().supervisorBridge(props?.pid ?? 1);
+  // The session's own writer for the process, bound to it as the session binds it (ProcessFiles.bind).
+  const writer = processFiles(sessionVfs).bind({ pid: props?.pid ?? 1, cred: CRED_SESSION_USER });
+  const bound = () => writer;
   return {
     props,
     openWaveWriter: async () => null,
