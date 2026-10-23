@@ -220,9 +220,11 @@ export function isTransientDoReset(input) {
 /**
  * Whether `input` is a structured-clone refusal of a version the receiving
  * side cannot read ("Unable to deserialize cloned data due to invalid or
- * unsupported version"): a worker built before the code that sent it, which a
- * fresh one reads. One that could not be cloned at all ("… could not be
- * cloned") is the value's own, and fails the same way however often it is sent.
+ * unsupported version"). Its words do not say which side refused: a worker
+ * built before the code that sent its call (a fresh one reads it), or a
+ * caller that cannot read the answer of a call that ran. One that could not
+ * be cloned at all ("… could not be cloned") is the value's own, and fails
+ * the same way however often it is sent.
  */
 export function isCloneVersionRefusal(input) {
     return readMessage(input).toLowerCase().includes('deserialize cloned data');

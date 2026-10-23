@@ -732,9 +732,11 @@ export class IsolatePool {
                     this.slotGenerations.set(slotIndex, generation);
                     throw lastError;
                 }
-                // Only a worker that could not read its call's version is tried afresh: a
-                // value that cannot be cloned fails again (and may come after the task
-                // ran, unmarked), and a task that threw those words itself ran.
+                // Only a refusal of version is tried afresh, for a worker that could not
+                // read its call; its words do not tell that from a caller that could not
+                // read the answer of a call that ran, which this still sends again (see
+                // below). A value that cannot be cloned fails again, after the task ran
+                // when it is its answer; a task that threw those words itself ran.
                 if (isCloneVersionRefusal(lastError) && !retriedCloneRefusal && !enteredFailure(lastError)) {
                     retriedCloneRefusal = true;
                     const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
