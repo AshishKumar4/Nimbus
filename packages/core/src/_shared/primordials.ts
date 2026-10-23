@@ -431,9 +431,6 @@ const PromisePrototypeFinally: unknown = Promise.prototype.finally;
 const PromiseAllOf: unknown = Promise.all;
 const PromiseRaceOf: unknown = Promise.race;
 const PromiseSpecies: unknown = reflectGetOwnPropertyDescriptor(Promise, Symbol.species)?.get;
-const ArrayPrototypeValues: unknown = Array.prototype[Symbol.iterator];
-const ArrayIteratorPrototype: object = reflectGetPrototypeOf([][Symbol.iterator]()) ?? {};
-const ArrayIteratorPrototypeNext: unknown = reflectGet(ArrayIteratorPrototype, 'next');
 /** Whether `object`'s own `key` is still the data property `value`: read without calling an accessor a program put there. */
 function stillOwn(object: object, key: PropertyKey, value: unknown): boolean {
   const descriptor = reflectGetOwnPropertyDescriptor(object, key);
@@ -447,8 +444,8 @@ function promisesAsFound(): boolean {
 }
 /** And what its all and race reach besides: Promise.resolve and an array's iterator. */
 function combinatorsAsFound(): boolean {
-  return promisesAsFound() && stillOwn(PromiseConstructor, 'resolve', PromiseResolve) && stillOwn(ArrayPrototype, symbolIterator, ArrayPrototypeValues)
-    && stillOwn(ArrayIteratorPrototype, 'next', ArrayIteratorPrototypeNext);
+  return promisesAsFound() && stillOwn(PromiseConstructor, 'resolve', PromiseResolve) && stillOwn(ArrayPrototype, symbolIterator, ArrayValues)
+    && stillOwn(ArrayIteratorPrototype, 'next', ArrayIteratorNext);
 }
 /** Settled as the first of `list` to settle: Promise.race, without the list's iterator or the program's Promise.resolve and then. */
 export function promiseRace<T>(list: ArrayLike<T>): Promise<Awaited<T>> {
