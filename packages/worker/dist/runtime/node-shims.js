@@ -1942,9 +1942,12 @@ const __fsMod = (() => {
     if (p instanceof __FileHandle) return p.truncate(len);
     const absPath = _at(p);
     const size = Math.max(0, Math.trunc(Number(len) || 0));
-    // Node's own: an open of it 'r+', its ftruncate, its close (decided and sent in order, as truncateSync's).
+    // Node's own: an open of it 'r+', its ftruncate, its close, decided in the call's turn where the view can (its place
+    // in the log is the call's, before a change made after it), else once the session opens it.
     await _async("truncate", p, async (fs) => {
-      const opened = await fs.open(absPath, _openFlags("r+"));
+      let opened;
+      try { opened = fs.synchronous.open(absPath, _openFlags("r+")); }
+      catch (error) { if (error === null || typeof error !== "object" || error.code !== "EAGAIN") throw error; opened = await fs.open(absPath, _openFlags("r+")); }
       let done = false;
       try { await fs.ftruncate(opened.id, size); done = true; }
       finally { try { await fs.close(opened.id); } catch (error) { if (done) throw error; } }

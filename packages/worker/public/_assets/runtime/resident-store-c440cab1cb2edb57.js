@@ -11055,7 +11055,7 @@ var __nimbusResidentModule = (() => {
       const file = readerFiles.get(handleId);
       if (file !== void 0)
         return answer("fstat", () => {
-          if (owed.own > caught.own)
+          if (owed.own > caught.own || holder?.provisional.touches(file.key) === true)
             return DELEGATE;
           const entry = entryAt(file.key);
           return entry !== void 0 && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
