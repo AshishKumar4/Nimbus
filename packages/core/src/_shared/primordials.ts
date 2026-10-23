@@ -421,6 +421,12 @@ export function promiseFinally<T>(promise: Promise<T>, onFinally: () => unknown)
     (reason: unknown) => promiseThen(promiseResolve(onFinally()), (): never => { throw reason; }),
   );
 }
+/** A SafeSet of `list`'s members, in its order: `new Set(list)` without the list's iterator. */
+export function setOfList<T>(list: ArrayLike<T>): SafeSet<T> {
+  const set = new SafeSet<T>();
+  for (let i = 0; i < list.length; i++) set.add(list[i]);
+  return set;
+}
 /** The members of `set`, in its order: a SafeList, by SafeSet's forEach as the launch captured it. */
 export function setList<T>(set: ReadonlySet<T>): SafeList<T> {
   const list = new SafeList<T>();

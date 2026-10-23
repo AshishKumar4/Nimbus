@@ -43,7 +43,7 @@ import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitT
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { ownNames } from './own-names.js';
 import { provisional as provisionalDecisions, type Desc, type HeldCell, type Inode, type Provisional } from './provisional.js';
-import { owned } from './inode-fold.js';
+import { isModeChange, isOwnerChange, isTimesChange, owned } from './inode-fold.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
@@ -638,8 +638,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   /** An owner or group id a chown keeps (null, or -1 as fchown(2) spells it): null, as chownRefusal takes it. */
   /** `entry` as chmod, chown (the set-id bits chownedMode clears) and utimes leave it, its ctime now. */
   const changedBy = (entry: ResidentEntry, attrs: W7Attrs): ResidentEntry => (
-    'mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
-      : 'uid' in attrs ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
+    isModeChange(attrs) ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+      : isOwnerChange(attrs) ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
         : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() });
 
   const holder: DelegationHolder = {
@@ -987,10 +987,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Only the owner (or root) changes a mode, an owner or times here, as
       // chmod, chown and utimes allow it; anything else is the session's to judge.
       if (store.cred.uid !== 0 && store.cred.uid !== current.uid) return false;
-      if ('uid' in attrs && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null) return false;
+      if (isOwnerChange(attrs) && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null) return false;
       // A grant a confined principal may not make: the session's to judge.
-      if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
-      if ('mode' in attrs) {
+      if (isModeChange(attrs) && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
+      if (isModeChange(attrs)) {
         throughAt([key]);
         if (provisionalActive && prov.touches(key)) return false;
       }
@@ -1002,7 +1002,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         local.mode = next.mode & 0o7777;
         local.umask = undefined;
       }
-      log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
+      log({ type: 'setattr', path: key, attrs: isOwnerChange(attrs) ? { uid: next.uid, gid: next.gid } : attrs });
       return true;
     },
 
@@ -1017,7 +1017,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const entry = file.detached ?? atName(inode);
       // Its times as it is decided (timeAt): now, explicit, or as they are.
       const at = now();
-      const attrs: W7Attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
+      const attrs: W7Attrs = entry && isTimesChange(change) ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
       if (file.detached === undefined) {
         // By its name where its grant decides it; else no grant decides the file from now on: the provisional decisions', through its description.
         if (entry && holder.setattr(inode.key, attrs)) return true;
@@ -1031,10 +1031,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // principal too (judged confined once no grant there says).
       const detached = file.detached;
       const confined = client.held(inode.key)?.confined ?? true;
-      const refused = 'mode' in attrs ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
-        : 'uid' in attrs ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
-        : utimesRefusal(detached, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
-      if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + inode.key);
+      const refused = isModeChange(attrs) ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
+        : isOwnerChange(attrs) ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
+        : utimesRefusal(detached, isTimesChange(change) && explicitTimes(change.atime, change.mtime), store.cred);
+      if (refused !== null) throw fsError(refused, isModeChange(attrs) ? 'fchmod' : isOwnerChange(attrs) ? 'fchown' : 'futimes', '/' + inode.key);
       file.detached = changedBy(detached, attrs);
       file.mode = file.detached.mode & 0o7777;
       return true;
