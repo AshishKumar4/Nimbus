@@ -28,7 +28,6 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 
 const PORT = 4471;
 
@@ -41,8 +40,8 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  // The session's own writer over its namespace, bound to the process as the session binds it (ProcessFiles.bind).
-  const bound = processFiles(new CompositeVFS(sessionVfs)).bind({ pid: props?.pid ?? 1, cred: CRED_SESSION_USER });
+  // The session's own writer for the process, as its RPC bodies bind it (session-supervisor-ops bridge).
+  const bound = () => sessionHost().supervisorBridge(props?.pid ?? 1);
   return {
     props,
     openWaveWriter: async () => null,
@@ -50,7 +49,7 @@ function makeSupervisor(props) {
       // Slow the write down so ordering has to be REAL. If the response could
       // overtake it, this is where the race would open.
       if (writeDelayMs > 0) await new Promise((r) => setTimeout(r, writeDelayMs));
-      const answer = await bound.writeStream(stream);
+      const answer = await bound().writeStream(stream);
       order.push('write');
       return answer;
     },

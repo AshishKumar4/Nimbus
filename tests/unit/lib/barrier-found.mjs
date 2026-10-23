@@ -350,62 +350,6 @@ const FOUND = {
 
 /** Known gaps, by scenario: what the engine lacks, and what its failure shows. */
 const GAPS = {
-  'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
-    lacks: 'S dates a moved file\'s bytes only by a write parked under its old name: bytes held otherwise (read, or written and already sent) stay its own at the new name past every barrier, as no rename has a receipt to date them by (closed by the cutover: RF retires own state by identity); '
-      + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
-    shows: 'at rest, sync readFile top answered "c3219.3"',
-  },
-  'an awaited read of a file a relist is on its way to is answered, not refused [node]': {
-    lacks: 'B2: node-shims refuses an awaited read under a directory its relist is on its way to (EAGAIN), where it should wait (the cutover\'s relist fence); '
-      + 'meanwhile fs.promises.readFile of such a file can reject EAGAIN',
-    shows: 'own readFile d/e/g answered EAGAIN',
-  },
-  'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700) [node]': {
-    lacks: 'S: what a write\'s answer installs outlives the removal the same wave carried, past every barrier since (closed by the cutover: one own state, RF\'s); '
-      + 'meanwhile a Node program\'s readdirSync can list a file it deleted with unlinkSync, which the session no longer holds',
-    shows: 'at rest, sync readdir . answered',
-  },
-  'a directory the process renamed away and a peer made again holds none of what it held (3378) [node]': {
-    lacks: 'S keeps a rename of a directory as its own effect over the rows the launch listed under the old name, and leaves those rows; once a peer makes the name again they show under it (closed by the cutover: RF decides own renames in the store); '
-      + 'meanwhile, in a program that renames a directory away and another process then creates one of that name, statSync and readFileSync can answer files the old directory held',
-    shows: 'sync stat d/e/g answered file 644 size 5',
-  },
-  'a directory the process made that a peer removed is gone after an input (5581) [node]': {
-    lacks: 'S answers a directory of its own making, which a peer removed, past the input after the removal (closed by the cutover: RF retires own state at a barrier); '
-      + 'meanwhile statSync can report a directory that is gone',
-    shows: 'sync stat x/e answered directory 755',
-  },
-  'an awaited read of a file the session holds is answered, not refused (5479) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile d/f answered EAGAIN',
-  },
-  'an awaited read of a file the session holds is answered, not refused (5652) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile d/f answered EAGAIN',
-  },
-  'an awaited read of a file the session holds is answered, not refused (5425) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile x/e/g answered EAGAIN',
-  },
-  'a file the process renamed away keeps its size while a new file is written at its old name (6113) [node]': {
-    lacks: 'S gives a write in flight at a name the size of the file it renamed away from that name (closed by the cutover: RF keeps own state by identity); '
-      + 'meanwhile statSync of the renamed file can report the size of the file being written at its old name',
-    shows: 'sync stat d/n answered file 644 size 7',
-  },
-  'an awaited read of a directory a peer moved is answered, not refused (5786) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session answers it (closed by the cutover: RF waits for the session); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile d/e answered EAGAIN',
-  },
-  'a directory the process removed and made again lists no name before its write is made (5891) [node]': {
-    lacks: 'S lists, in a directory the process removed and made again, a name the session does not hold there while the process\'s own write of it is in flight (closed by the cutover: one own state, RF\'s); '
-      + 'meanwhile readdirSync can list a file before its write is made',
-    shows: 'sync readdir d/e answered ["g"]',
-  },
-  'a file a call that cannot wait missed and the process then renamed away is no miss (6614, drawn before mounts) [node]': {
-    lacks: 'the oracle and S disagree on a file missed by readFileSync then renamed away by the process while a listing was held (main draws it too; the cutover replaces S\'s ledger); '
-      + 'meanwhile the program\'s misses ledger may leave out a file a later rename moved',
-    shows: 'at rest, the program\'s misses are []; unanswered are [home/user/app/d/e/g]',
-  },
   'a fed mount beneath one with no feed answers as the session holds it [node]': {
     lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (closed by the cutover: such a mount is the session\'s to answer, awaited); '
       + 'meanwhile readFileSync of a missing file on such a mount can be refused EAGAIN',
@@ -416,17 +360,9 @@ const GAPS = {
       + 'meanwhile readdirSync can leave out a directory the program made after a mount appeared',
     shows: 'parked by seed 7078',
   },
-  'a directory root shut and took is refused to a read that cannot wait (7451) [node]': {
-    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (main does too; closed by the cutover: RF answers it as the session does)',
-    shows: 'sync readFile d/e answered EISDIR',
-  },
   'a file read after the session\'s database restarted is held for a call that cannot wait (7519) [eager]': {
     lacks: 'after the session\'s database restarts, the eager engine does not hold the bytes of a file its process then read awaited (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/f answered EAGAIN',
-  },
-  'a fed mount made over a directory a peer and the process wrote in shows the mount\'s files at rest (8134) [node]': {
-    lacks: 'S answers a file of the session\'s own that a fed mount then covered, at rest (closed by the cutover: RF follows the mount\'s feed)',
-    shows: 'at rest, sync stat d/e/g answered',
   },
   'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [holder]': {
     lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
@@ -444,36 +380,9 @@ const GAPS = {
     lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over directories it had read, absent (7696\'s class, open)',
     shows: 'sync stat x/h answered null',
   },
-  'a directory the process made again lists no name before its write is made (8576) [node]': {
-    lacks: 'S lists, in a directory the process removed and made again, a name its own write in flight has not made yet (5891\'s class; closed by the cutover: one own state, RF\'s)',
-    shows: 'sync readdir z answered ["g"]',
-  },
-  'a directory root shut and took is refused to a read that cannot wait (8354) [node]': {
-    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (7451\'s class, which main has; closed by the cutover)',
-    shows: 'sync readFile x answered EISDIR',
-  },
   'a file read after a peer changed its mode is held for a call that cannot wait (7896) [eager]': {
     lacks: 'the eager engine reads a file a peer just changed the mode of by its old revision (ESTALE) and holds no bytes for the next call that cannot wait (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/e/g answered EAGAIN',
-  },
-  'an awaited read of a directory the process lists is answered, not refused (7597) [node]': {
-    lacks: 'S refuses an awaited read of a directory EAGAIN while its listing is held (main does too; closed by the cutover: RF waits for the session)',
-    shows: 'own readFile x answered EAGAIN',
-  },
-  'a name on a mount with no feed answers as the session holds it now [node]': {
-    lacks: 'a feedless mount\'s names answer from the launch\'s walk (as node\'s fs always answered them: Kinu\'s synchronous require from its Drive); '
-      + 'exact answers need the mount to declare a feed, so readFileSync of a file on such a mount can serve bytes another process has since replaced',
-    shows: 'sync readFile x/h answered "u00"',
-  },
-  'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
-    lacks: 'B2: a directory whose relist is on its way answers its listing without the names the process wrote there since (the cutover\'s relist fence); '
-      + 'meanwhile a Node program\'s readdirSync can miss a file it has just written, while the directory is relisted',
-    shows: 'sync readdir d answered ["e","f"]',
-  },
-  'a directory the process may search again shows nothing stale while it is relisted [node]': {
-    lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
-      + 'meanwhile a call that cannot wait sees a false ENOENT for a name the session holds there',
-    shows: 'answered null',
   },
 };
 
