@@ -89,10 +89,10 @@ export class VfsError extends Error {
     this.errno = VFS_ERRNO[code];
     const syscall = options === undefined ? undefined : ownValue(options, 'syscall');
     const dest = options === undefined ? undefined : ownValue(options, 'dest');
-    if (syscall !== undefined) this.syscall = syscall;
-    if (dest !== undefined) this.dest = dest;
+    if (syscall !== undefined) reflectDefineProperty(this, 'syscall', dataDescriptor(syscall, true, true, true));
+    if (dest !== undefined) reflectDefineProperty(this, 'dest', dataDescriptor(dest, true, true, true));
     const detail = (options === undefined ? undefined : ownValue(options, 'detail')) ?? (syscall === undefined && message !== VFS_DESCRIPTION[code] ? message : undefined);
-    if (detail !== undefined) this.detail = detail;
+    if (detail !== undefined) reflectDefineProperty(this, 'detail', dataDescriptor(detail, true, true, true));
   }
 }
 

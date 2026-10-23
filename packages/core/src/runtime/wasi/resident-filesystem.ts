@@ -1496,7 +1496,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           // only directories it actually reported; no invented path/prefix.
           await listingOf(key);
           // What the last run opened next comes first; then the walk on from here.
-          const next = arrayCopy(new SafeSet([...guessed, ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)]));
+          const named = new SafeSet<string>();
+          const ordered = new SafeList<string>();
+          const after = walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1);
+          for (let i = 0; i < guessed.length + after.length; i++) {
+            const candidate = i < guessed.length ? guessed[i] : after[i - guessed.length];
+            if (!named.has(candidate)) { named.add(candidate); ordered[ordered.length] = candidate; }
+          }
+          const next = arrayCopy(ordered);
           // Carry the caller's confinement/descriptor root to the authority;
           // never replace a beneath lookup with an absolute one. A
           // descriptor-relative open names only what is beneath its directory.

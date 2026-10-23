@@ -42,7 +42,7 @@ export function processFilesystem(supervisor: WasiSupervisorStub, view: Resident
     session: supervisorSession(supervisor, authority, undefined, holdsGrants !== false),
     isHomeRoot: isHomeDirectory,
     ...(typeof reflectGet(directories, 'fsReadDirectories') === 'function'
-      ? { readDirectories: (request) => reflectApply(reflectGet(directories, 'fsReadDirectories'), directories, [request]) } : {}),
+      ? { readDirectories: (request) => reflectApply(reflectGet(directories, 'fsReadDirectories') as Function, directories, [request]) } : {}),
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
   });
 }

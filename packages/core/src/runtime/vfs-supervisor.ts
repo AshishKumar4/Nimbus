@@ -139,7 +139,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
         const answer = await asked;
         try {
           if (objectHasOwn(answer, 'refusal')) throw supervisorRefusalError((answer as { readonly refusal: SupervisorRefusal }).refusal);
-          return answer.value;
+          return (answer as { readonly value: unknown }).value;
         } finally {
           disposeRpcResource(answer);
         }
