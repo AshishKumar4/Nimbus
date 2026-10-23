@@ -223,19 +223,23 @@ export function createCells(
     unheld.delete(path);
   };
 
+  /** Held cells given up, least recently read first, until the held bytes are at most `under` or none is left: unheld (storageMiss). */
+  const shedTo = (under: number): void => {
+    held.forEach((old, oldest) => {
+      if (admission.heldBytes <= under) return;
+      held.delete(oldest);
+      admission.addHeld(-cellSize(old.cell));
+      unheld.add(oldest);
+    });
+  };
+  admission.setHeldShedder((bytes) => shedTo(admission.heldBytes - bytes));
+
   const hold = (path: string, cell: ResidentCell, rev = RK_OWN_WRITE): void => {
     forgetHeld(path);
     const size = cellSize(cell);
     const limit = admission.heldLimit(FACET_OWN_WRITE_MEMORY_BYTES);
     if (size > limit) { unheld.add(path); return; }
-    if (admission.heldBytes + size > limit) {
-      held.forEach((old, oldest) => {
-        if (admission.heldBytes + size <= limit) return;
-        held.delete(oldest);
-        admission.addHeld(-cellSize(old.cell));
-        unheld.add(oldest);
-      });
-    }
+    if (admission.heldBytes + size > limit) shedTo(limit - size);
     held.set(path, { cell, rev });
     admission.addHeld(size);
   };
