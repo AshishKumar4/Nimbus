@@ -168,10 +168,17 @@ function sequenced(bridge, pid, key, first) {
   assert.ok(!meanwhile.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'a barrier reported a waiting write');
   assert.equal(new TextDecoder().decode(await withRecall(() => other.readFile('/home/user/d/a.txt'))), 'v1', 'another read a write not made yet');
   reader.recalled(taken.readLease.owner, 'revoke');
-  // A lease granted meanwhile is recalled too before the write is made: no lease vouches for what it changes.
+  // A lease granted meanwhile is recalled too before the write is made (or ended first): no lease vouches for what it changes.
   if (meanwhile.readLease !== undefined) {
-    assert.equal(await other.awaitRecall(meanwhile.readLease.owner, 1000), 'revoke');
-    other.recalled(meanwhile.readLease.owner, 'revoke');
+    const owner = meanwhile.readLease.owner;
+    const answered = (async () => {
+      try {
+        if (await other.awaitRecall(owner, 1000) === 'revoke') other.recalled(owner, 'revoke');
+      } catch (error) {
+        if (error?.code !== 'ESTALE') throw error;
+      }
+    })();
+    await Promise.all([writing, answered]);
   }
   await writing;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'waits');
