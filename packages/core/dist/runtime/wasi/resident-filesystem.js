@@ -569,8 +569,11 @@ export function residentFilesystem(session, resident, delegation) {
             fetchingAhead.delete(key); });
         return outstanding(batch.then(held));
     };
-    /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up. */
-    const resolve = (path, follow, content = false, crossed) => {
+    /**
+     * Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up.
+     * `viewFirst`: a change node decides as it is called (nodeFs) takes the walk the view answers as it stands, before any barrier it owes.
+     */
+    const resolve = (path, follow, content = false, crossed, viewFirst = false) => {
         let root;
         let name;
         if (typeof path === 'string') {
@@ -604,6 +607,12 @@ export function residentFilesystem(session, resident, delegation) {
         const attempt = (asked) => {
             if (!store.ready())
                 return DELEGATE;
+            // Node decides a change as it is called: a walk the view answers is decided over the view as it stands, not behind the barrier owed.
+            if (viewFirst && nodeFs && !now) {
+                const first = walkOnce(root, name, follow, crossed);
+                if (first === null || first === DELEGATE || typeof first === 'string')
+                    return first;
+            }
             // A debt that keeps coming while it catches up: the session walks it.
             if (owes() && !now)
                 return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => (ok ? attempt(asked) : DELEGATE));
@@ -890,10 +899,10 @@ export function residentFilesystem(session, resident, delegation) {
             return value;
         });
     };
-    /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. */
-    const walkFor = (path, follow) => {
+    /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. `viewFirst`: as resolve's. */
+    const walkFor = (path, follow, viewFirst = false) => {
         const crossed = [];
-        return after(resolve(path, follow, false, crossed), (key) => {
+        return after(resolve(path, follow, false, crossed, viewFirst), (key) => {
             // Links that do not end (more than the walk follows): open(2)'s ELOOP.
             if (key === null)
                 throw fsError('ELOOP', 'open', pathOf(path));
@@ -1127,9 +1136,16 @@ export function residentFilesystem(session, resident, delegation) {
         if (key === DELEGATE || key === null)
             return DELEGATE;
         const entry = entryAt(key);
-        if (entry === undefined || entry === null)
+        if (entry === undefined)
             return DELEGATE;
-        if (entry.type !== 'directory')
+        // Node's readdir of a name the view knows is absent, or is a file: the session's answer (readdirIn's order: EACCES
+        // before ENOTDIR), which a call that cannot wait cannot ask for.
+        if (nodeFs && (entry === null || entry.type === 'file')) {
+            if (entry !== null && !modeAllows(entry, 4, store.cred))
+                throw fsError('EACCES', 'scandir', path);
+            throw fsError(entry === null ? 'ENOENT' : 'ENOTDIR', 'scandir', path);
+        }
+        if (entry === null || entry.type !== 'directory')
             return DELEGATE;
         if (!modeAllows(entry, 4, store.cred))
             return DELEGATE;
@@ -1811,7 +1827,7 @@ export function residentFilesystem(session, resident, delegation) {
         }
         const mode = options?.mode ?? 0o777;
         let named;
-        const local = decide(() => after(walkFor(path, false), (walk) => {
+        const local = decide(() => after(walkFor(path, false, true), (walk) => {
             if (walk === DELEGATE)
                 return DELEGATE;
             named = walk.key;
@@ -1882,7 +1898,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null)
             return bySessionUnlink(path);
         let named;
-        const local = decide(() => after(walkFor(path, false), (walk) => {
+        const local = decide(() => after(walkFor(path, false, true), (walk) => {
             if (walk === DELEGATE)
                 return DELEGATE;
             named = walk.key;
@@ -1944,8 +1960,8 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null)
             return bySessionRename(from, to);
         let names;
-        const local = decide(() => after(walkFor(from, false), (source) => (source === DELEGATE ? DELEGATE
-            : after(walkFor(to, false), (target) => {
+        const local = decide(() => after(walkFor(from, false, true), (source) => (source === DELEGATE ? DELEGATE
+            : after(walkFor(to, false, true), (target) => {
                 if (target === DELEGATE)
                     return DELEGATE;
                 names = [source.key, target.key];
@@ -1974,7 +1990,7 @@ export function residentFilesystem(session, resident, delegation) {
             if (holder === null)
                 return passed.call(fs, path, ...rest);
             let named;
-            const local = decide(() => after(walkFor(path, !link), (walk) => {
+            const local = decide(() => after(walkFor(path, !link, name === 'chmod'), (walk) => {
                 if (walk === DELEGATE)
                     return DELEGATE;
                 named = walk.key;
@@ -1997,7 +2013,7 @@ export function residentFilesystem(session, resident, delegation) {
     const byName = (name, passed, pathAt, op, decided) => (...args) => {
         if (holder === null)
             return passed(...args);
-        return after(walkFor(args[pathAt], false), (walk) => {
+        return after(walkFor(args[pathAt], false, name === 'rmdir'), (walk) => {
             const key = walk === DELEGATE ? undefined : walk.key;
             return ownChange([key], ([row], awaited) => decided(key, row, args, awaited), () => (key === undefined ? passed(...args) : byClient(name, op(key, args))));
         });

@@ -10335,7 +10335,7 @@ var __nimbusResidentModule = (() => {
       });
       return outstanding(batch.then(held));
     };
-    const resolve = (path, follow, content = false, crossed) => {
+    const resolve = (path, follow, content = false, crossed, viewFirst = false) => {
       let root;
       let name;
       if (typeof path === "string") {
@@ -10358,6 +10358,11 @@ var __nimbusResidentModule = (() => {
       const attempt = (asked) => {
         if (!store.ready())
           return DELEGATE;
+        if (viewFirst && nodeFs && !now) {
+          const first = walkOnce(root, name, follow, crossed);
+          if (first === null || first === DELEGATE || typeof first === "string")
+            return first;
+        }
         if (owes() && !now)
           return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => ok ? attempt(asked) : DELEGATE);
         const walked = walkOnce(root, name, follow, crossed);
@@ -10556,9 +10561,9 @@ var __nimbusResidentModule = (() => {
         return value;
       });
     };
-    const walkFor = (path, follow) => {
+    const walkFor = (path, follow, viewFirst = false) => {
       const crossed = [];
-      return after2(resolve(path, follow, false, crossed), (key) => {
+      return after2(resolve(path, follow, false, crossed, viewFirst), (key) => {
         if (key === null)
           throw fsError2("ELOOP", "open", pathOf(path));
         return typeof key === "string" && key !== "" ? { key, crossed } : DELEGATE;
@@ -10757,9 +10762,14 @@ var __nimbusResidentModule = (() => {
       if (key === DELEGATE || key === null)
         return DELEGATE;
       const entry = entryAt(key);
-      if (entry === void 0 || entry === null)
+      if (entry === void 0)
         return DELEGATE;
-      if (entry.type !== "directory")
+      if (nodeFs && (entry === null || entry.type === "file")) {
+        if (entry !== null && !modeAllows(entry, 4, store.cred))
+          throw fsError2("EACCES", "scandir", path);
+        throw fsError2(entry === null ? "ENOENT" : "ENOTDIR", "scandir", path);
+      }
+      if (entry === null || entry.type !== "directory")
         return DELEGATE;
       if (!modeAllows(entry, 4, store.cred))
         return DELEGATE;
@@ -11296,7 +11306,7 @@ var __nimbusResidentModule = (() => {
       }
       const mode = options?.mode ?? 511;
       let named;
-      const local = decide(() => after2(walkFor(path, false), (walk) => {
+      const local = decide(() => after2(walkFor(path, false, true), (walk) => {
         if (walk === DELEGATE)
           return DELEGATE;
         named = walk.key;
@@ -11357,7 +11367,7 @@ var __nimbusResidentModule = (() => {
       if (holder === null)
         return bySessionUnlink(path);
       let named;
-      const local = decide(() => after2(walkFor(path, false), (walk) => {
+      const local = decide(() => after2(walkFor(path, false, true), (walk) => {
         if (walk === DELEGATE)
           return DELEGATE;
         named = walk.key;
@@ -11402,7 +11412,7 @@ var __nimbusResidentModule = (() => {
       if (holder === null)
         return bySessionRename(from, to);
       let names2;
-      const local = decide(() => after2(walkFor(from, false), (source) => source === DELEGATE ? DELEGATE : after2(walkFor(to, false), (target) => {
+      const local = decide(() => after2(walkFor(from, false, true), (source) => source === DELEGATE ? DELEGATE : after2(walkFor(to, false, true), (target) => {
         if (target === DELEGATE)
           return DELEGATE;
         names2 = [source.key, target.key];
@@ -11421,7 +11431,7 @@ var __nimbusResidentModule = (() => {
         if (holder === null)
           return passed.call(fs, path, ...rest);
         let named;
-        const local = decide(() => after2(walkFor(path, !link), (walk) => {
+        const local = decide(() => after2(walkFor(path, !link, name === "chmod"), (walk) => {
           if (walk === DELEGATE)
             return DELEGATE;
           named = walk.key;
@@ -11443,7 +11453,7 @@ var __nimbusResidentModule = (() => {
     const byName = (name, passed, pathAt, op, decided) => (...args) => {
       if (holder === null)
         return passed(...args);
-      return after2(walkFor(args[pathAt], false), (walk) => {
+      return after2(walkFor(args[pathAt], false, name === "rmdir"), (walk) => {
         const key = walk === DELEGATE ? void 0 : walk.key;
         return ownChange([key], ([row], awaited) => decided(key, row, args, awaited), () => key === void 0 ? passed(...args) : byClient(name, op(key, args)));
       });
