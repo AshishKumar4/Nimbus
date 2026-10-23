@@ -15,7 +15,7 @@
  * each directory it listed. recordLaunchReads passes a build's bridge
  * through and notes those. A later change (the barrier's report since the
  * build's cursor, RuntimeFsBridge.acquire) leaves the build's answer as it
- * was unless it names one of them (readsAffectedBy):
+ * was unless it names one of them (staleReason):
  *   - a path the build asked about;
  *   - a directory above one, removed, renamed or given another mode or owner
  *     (a structural change, or a subtree's, moves what is under it);
@@ -61,10 +61,10 @@ export declare function readsUnderMounts(reads: LaunchReads, mountPoints: readon
 /** The kind a name has now, as a listing names it, or null when nothing is there. */
 export type KindNow = (name: string) => Promise<RuntimeDirentType | null>;
 /**
- * Whether any of `changes` (a barrier's report since the build's cursor) can
- * change what a build that asked `reads` answers. `kindNow` answers what is
- * at a name in a directory the build listed, now, which says whether the
- * listing would answer the same.
+ * Why `changes` (a barrier's report since the build's cursor) can change
+ * what a build that asked `reads` answers, or null when none of them can.
+ * `kindNow` answers what is at a name in a directory the build listed, now,
+ * which says whether the listing would answer the same.
  */
-export declare function readsAffectedBy(reads: LaunchReads, changes: readonly VfsInvalidatedPath[], kindNow: KindNow): Promise<boolean>;
+export declare function staleReason(reads: LaunchReads, changes: readonly VfsInvalidatedPath[], kindNow: KindNow): Promise<string | null>;
 //# sourceMappingURL=launch-reads.d.ts.map

@@ -1266,6 +1266,8 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
+    /** With exec telemetry on: why each key's entry was last dropped as stale (its record's cacheDrop), until a record takes it. */
+    private readonly prefetchCacheDrops;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
     /**
@@ -1722,7 +1724,7 @@ export declare class FacetManager {
     /**
      * The entry for `key`, if what its build read is as it was. An entry at an
      * older revision is checked against what changed since its build, as
-     * `vfs` names the changes (launch-reads.ts readsAffectedBy): unaffected, it
+     * `vfs` names the changes (launch-reads.ts staleReason): unaffected, it
      * is dated at `revision` and served; affected, or past the retained change
      * log (poison), it is dropped before the build that replaces it allocates,
      * so the stale graph and the new one never co-reside. The other entries of
@@ -1805,6 +1807,8 @@ export declare class FacetManager {
      * launch interprets it (core native-esm.ts).
      */
     private _stagedRuntimeCode;
+    /** Why `key`'s entry was last dropped as stale, for its launch's exec record, once. */
+    private _takeCacheDrop;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
     private _admitPrefetchCacheEntry;
     /**

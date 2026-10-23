@@ -150,16 +150,16 @@ function parentOf(name) {
     return at === -1 ? '' : name.slice(0, at);
 }
 /**
- * Whether any of `changes` (a barrier's report since the build's cursor) can
- * change what a build that asked `reads` answers. `kindNow` answers what is
- * at a name in a directory the build listed, now, which says whether the
- * listing would answer the same.
+ * Why `changes` (a barrier's report since the build's cursor) can change
+ * what a build that asked `reads` answers, or null when none of them can.
+ * `kindNow` answers what is at a name in a directory the build listed, now,
+ * which says whether the listing would answer the same.
  */
-export async function readsAffectedBy(reads, changes, kindNow) {
-    if (reads.whole)
-        return changes.length > 0;
+export async function staleReason(reads, changes, kindNow) {
     if (changes.length === 0)
-        return false;
+        return null;
+    if (reads.whole)
+        return `${nameOf(changes[0].path)} changed, and the build enumerated or wrote`;
     // Every directory above a name the build asked about: a structural change there moves what is under it.
     const above = new Set();
     for (const name of [...reads.paths, ...reads.listed.keys()])
@@ -173,22 +173,24 @@ export async function readsAffectedBy(reads, changes, kindNow) {
         const name = nameOf(change.path);
         if (change.structural === true || change.subtree === true) {
             if (reads.paths.has(name) || reads.listed.has(name) || above.has(name))
-                return true;
+                return `${name} was moved, removed or changed under, above or at what the build read`;
             continue;
         }
         // A path the build asked about, unless it found a directory there and the record is only the parent of another change.
         if (reads.paths.has(name) && (reads.absent.has(name) || !parents.has(name)))
-            return true;
+            return `${name}, which the build ${reads.absent.has(name) ? 'did not find' : 'read'}, changed`;
         // A name in a directory the build listed: made, removed, or of another kind than the listing said.
         const parent = parentOf(name);
         if (!reads.listed.has(parent))
             continue;
         const listing = reads.listed.get(parent);
         if (listing === null || listing === undefined)
-            return true;
+            return `${name} changed in ${parent || '/'}, which the build listed without an answer to compare`;
         const leaf = name.slice(parent === '' ? 0 : parent.length + 1);
-        if ((listing.get(leaf) ?? null) !== await kindNow(name))
-            return true;
+        const was = listing.get(leaf) ?? null;
+        const now = await kindNow(name);
+        if (was !== now)
+            return `${name} in ${parent || '/'}, which the build listed, was ${was ?? 'absent'} and is ${now ?? 'absent'}`;
     }
-    return false;
+    return null;
 }
