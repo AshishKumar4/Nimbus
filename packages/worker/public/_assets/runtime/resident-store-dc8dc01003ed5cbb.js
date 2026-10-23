@@ -4861,6 +4861,24 @@ var __nimbusResidentModule = (() => {
     return flags.create === true || flags.truncate === true || flags.append === true || flags.write === true && !describes;
   }
 
+  // ../core/dist/runtime/descriptors.js
+  function openFlags(flags) {
+    if (flags.path === true) {
+      return { read: false, write: false, append: false, create: false, exclusive: false, directory: !!flags.directory, truncate: false, followSymlinks: flags.followSymlinks !== false };
+    }
+    return {
+      read: !!flags.read || !flags.write,
+      write: !!flags.write,
+      append: !!flags.append,
+      create: !!flags.create,
+      exclusive: !!flags.exclusive,
+      directory: !!flags.directory,
+      truncate: !!flags.truncate,
+      followSymlinks: flags.followSymlinks !== false,
+      expectedRevision: flags.expectedRevision
+    };
+  }
+
   // ../core/dist/runtime/wasi/filesystem.js
   var encoder4 = new TextEncoder();
   var decoder2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -11184,7 +11202,8 @@ var __nimbusResidentModule = (() => {
     fs.rmdir = byName("rmdir", (path) => bySessionRmdir(path), 0, (key) => ({ type: "call", call: { call: "rmdir", path: key } }), (key, row, [path], awaited) => holder.provisional.rmdir(key, pathOf(path), row, awaited));
     const bySessionSymlink = fs.symlink;
     fs.symlink = byName("symlink", (target, path) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: "call", call: { call: "symlink", path: key, target } }), (key, row, [target, path], awaited) => holder.provisional.symlink(key, pathOf(path), target, row, awaited));
-    const openRefusal = (path, flags) => {
+    const openRefusal = (path, given) => {
+      const flags = openFlags(given);
       const flagged = flagsRefusal(flags);
       if (flagged !== null)
         return fsError2(flagged, "open", path);

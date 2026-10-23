@@ -37,6 +37,7 @@
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import { flagsRefusal, openFollows, refusesDirectory } from '../../vfs/open-rules.js';
+import { openFlags } from '../descriptors.js';
 import { errnoCodeOf } from '../../vfs/vfs-error.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
@@ -1871,7 +1872,8 @@ export function residentFilesystem(session, resident, delegation) {
      * O_CREAT|O_EXCL, a link the open declined to follow. Null where it would
      * go on to open.
      */
-    const openRefusal = (path, flags) => {
+    const openRefusal = (path, given) => {
+        const flags = openFlags(given);
         const flagged = flagsRefusal(flags);
         if (flagged !== null)
             return fsError(flagged, 'open', path);
