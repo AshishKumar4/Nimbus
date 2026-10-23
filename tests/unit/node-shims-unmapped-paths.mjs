@@ -22,71 +22,29 @@
 // that is simply absent (plain ENOENT, which the config idiom depends on).
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority } from './lib/shims-namespace.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-
+const authority = createAuthority();
 const APP = '/home/user/example-app';
-vfs.mkdir(APP, { recursive: true });
-vfs.writeFile(`${APP}/entry.js`, enc.encode('module.exports = 1;\n'));
+authority.kfs.mkdir(APP, { recursive: true });
+authority.kfs.writeFile(`${APP}/entry.js`, 'module.exports = 1;\n');
 // What no walk of the working directory reaches: a template cache, and a
 // tool's config directory under $HOME.
 const MINIMAL = '/tmp/cache/templates/minimal';
-vfs.mkdir(`${MINIMAL}/src`, { recursive: true });
-vfs.writeFile(`${MINIMAL}/meta.json`, enc.encode('{"name":"minimal"}'));
-vfs.writeFile(`${MINIMAL}/README.md`, enc.encode('# minimal\n'));
-vfs.writeFile(`${MINIMAL}/src/main.js`, enc.encode('export default 1;\n'));
+authority.kfs.mkdir(`${MINIMAL}/src`, { recursive: true });
+authority.kfs.writeFile(`${MINIMAL}/meta.json`, '{"name":"minimal"}');
+authority.kfs.writeFile(`${MINIMAL}/README.md`, '# minimal\n');
+authority.kfs.writeFile(`${MINIMAL}/src/main.js`, 'export default 1;\n');
 const CFG = '/home/user/.config';
-vfs.mkdir(`${CFG}/present-tool`, { recursive: true });
-vfs.writeFile(`${CFG}/present-tool/state.json`, enc.encode('{"real":true}'));
-function ownTree(path = '') {
-  for (const entry of vfs.readdir(path)) {
-    const at = path ? `${path}/${entry.name}` : entry.name;
-    vfs.chown(at, 1000, 1000);
-    if (entry.type === 'directory') ownTree(at);
-  }
-}
-ownTree();
+authority.kfs.mkdir(`${CFG}/present-tool`, { recursive: true });
+authority.kfs.writeFile(`${CFG}/present-tool/state.json`, '{"real":true}');
 
-const supervisor = {
-  readFile: async (path) => { const bytes = await bridge.readFile(path); return bytes ? dec.decode(bytes) : null; },
-  stat: (path) => bridge.stat(path),
-  lstat: (path) => bridge.stat(path, { followSymlinks: false }),
-  readdir: (path) => bridge.readdir(path),
-  exists: async (path) => (await bridge.stat(path)) !== null,
-  fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-
-listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
-    '\n;return { fs: __fsMod };',
-);
-const { fs } = factory(
-  { 'home/user/example-app/entry.js': 'module.exports = 1;\n' },
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  APP,
-  [],
-  {},
-  `${APP}/entry.js`,
-  APP,
-);
+const { fs } = shimsOnSession({
+  authority,
+  cwd: APP,
+  bundle: { 'home/user/example-app/entry.js': 'module.exports = 1;\n' },
+});
 
 // A tree outside the working directory: the same answers sync and async.
 assert.deepEqual(fs.readdirSync(MINIMAL).sort(), ['README.md', 'meta.json', 'src'], 'a listing is the directory, never []');
@@ -110,6 +68,6 @@ assert.equal(fs.existsSync(`${CFG}/present-tool/state.json`), true, 'a present c
 assert.equal(await fs.promises.readFile(`${CFG}/present-tool/state.json`, 'utf8'), '{"real":true}');
 
 // Nothing answered for a path that was there was ever an absence: no misses.
-assert.deepEqual([...(globalThis.__nimbusVfsResidencyMisses ?? [])].filter((k) => k.includes('templates') || k.includes('.config')), []);
+assert.deepEqual((await globalThis.__nimbusProcessFs.misses()).filter((k) => k.includes('templates') || k.includes('.config')), []);
 
 process.stdout.write('node-shims-unmapped-paths: all tests passed\n');

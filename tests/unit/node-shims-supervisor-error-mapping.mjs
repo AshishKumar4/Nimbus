@@ -9,54 +9,28 @@
 // site. A failure with no code at all (the object was reset, the RPC
 // disconnected) still reaches the program as a coded fs error, EIO,
 // rather than an error no `err.code` arm matches.
+//
+// The failing call is a read of a file the namespace holds and the process
+// has not fetched: the namespace answers stat and existence itself, so the
+// read is the call the session is asked, and it is the one that fails.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { acrossRpc } from './lib/rpc-error.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace, listAuthority } from './lib/shims-namespace.mjs';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority, runScenarios } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-// A supervisor whose calls fail exactly the way a real one does: the error
-// arrives having crossed the RPC hop.
-function facetWithFailure(failure) {
+const THING = '/home/user/thing.txt';
+
+/** The program's file, which the session fails each read of with `failure`, as the RPC hop delivers it. */
+function readsFailing(failure) {
+  const authority = createAuthority();
+  authority.kfs.writeFile(THING, 'thing');
   const crossed = () => Promise.reject(acrossRpc(failure));
-  const supervisor = {
-    stat: crossed,
-    lstat: crossed,
-    readdir: crossed,
-    mkdir: crossed,
-    unlink: crossed,
-    rename: crossed,
-    writeFile: crossed,
-    readFile: crossed,
-    exists: crossed,
-    access: crossed,
-    fsReadRange: crossed,
-    fsWriteRange: crossed,
-    fsTruncate: crossed,
-  };
-  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
-  waveSupervisor(supervisor);
-  return new Function(
-    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + generateShimsCode() +
-      '\n;return { fs: __fsMod };',
-  )(
-    {},
-    {},
-    supervisor,
-    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user',
-    [],
-    {},
-    '/home/user/main.mjs',
-    '/home/user',
-  ).fs;
+  const { fs } = shimsOnSession({
+    authority,
+    overrides: { readFile: crossed, readFileBytes: crossed, fsReadBatch: crossed, fsReadRange: crossed },
+  });
+  return fs;
 }
 
 async function rejection(promise) {
@@ -65,59 +39,27 @@ async function rejection(promise) {
   throw new Error('expected a rejection');
 }
 
+const scenarios = {};
+
 // ── the authority's code reaches the program ──────────────────────────────
-for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]]) {
-  const fs = facetWithFailure(
-    Object.assign(new Error(`${code}: stat '/home/user/gone.txt'`), { code, syscall: 'stat', path: '/home/user/gone.txt' }),
-  );
-  const error = await rejection(fs.promises.stat('/home/user/gone.txt'));
-  assert.equal(error.code, code, `a ${code} from the authority is a ${code} in the program`);
-  assert.equal(error.errno, errno, `errno matches ${code}`);
-  assert.equal(error.syscall, 'stat', 'the syscall is filled in from the call site');
-  assert.equal(error.path, '/home/user/gone.txt', 'the path is filled in from the call site');
-  assert.equal(
-    error.message,
-    `${code}: ${{ ENOENT: 'no such file or directory', EACCES: 'permission denied', ENOTDIR: 'not a directory' }[code]}, stat '/home/user/gone.txt'`,
-    "the message is node's",
-  );
+for (const [code, errno, text] of [['ENOENT', -2, 'no such file or directory'], ['EACCES', -13, 'permission denied'], ['ENOTDIR', -20, 'not a directory']]) {
+  scenarios[`the authority's ${code} is a ${code} in the program`] = async () => {
+    const fs = readsFailing(Object.assign(new Error(`${code}: ${text}, open '${THING}'`), { code, syscall: 'open', path: THING }));
+    const error = await rejection(fs.promises.readFile(THING));
+    assert.equal(error.code, code, `a ${code} from the authority is a ${code} in the program`);
+    assert.equal(error.errno, errno, `errno matches ${code}`);
+    assert.equal(error.syscall, 'open', 'the syscall is filled in from the call site');
+    assert.equal(error.path, THING, 'the path is filled in from the call site');
+    assert.equal(error.message, `${code}: ${text}, open '${THING}'`, "the message is node's");
+  };
 }
 
 // ── a call naming two paths reports both, as Node 22 does ─────────────────
-// fs.promises.rename of a missing name, against the real bridge, its error
-// crossing the RPC hop: Node's message names both paths, and so does `dest`.
-{
-  const harness = createSqliteVfsTestHarness();
-  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  const root = rawVfs.as(CRED_KERNEL);
-  root.mkdir('home/user', { recursive: true });
-  root.chown('home/user', 1000, 1000);
-  root.writeFile('home/user/a.txt', 'a');
-  root.writeFile('home/user/b.txt', 'b');
-  const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-  const bridge = processBridge(rawVfs, user);
-  const crossing = (run) => async (...args) => {
-    try { return await run(...args); } catch (error) { throw acrossRpc(error); }
-  };
-  const supervisor = {
-    stat: crossing((p) => bridge.stat(p)),
-    lstat: crossing((p) => bridge.stat(p, { followSymlinks: false })),
-    readdir: crossing((p) => bridge.readdir(p)),
-    rename: crossing((from, to) => bridge.rename(from, to)),
-    symlink: crossing((target, path) => bridge.symlink(target, path)),
-    readFile: crossing(async (p) => { const bytes = await bridge.readFile(p); return bytes ? new TextDecoder().decode(bytes) : null; }),
-    readFileBytes: crossing((p) => bridge.readFile(p)),
-    fsReadRange: crossing((p, offset, length) => bridge.readRange(p, offset, length)),
-    fsAcquire: crossing((position, options) => bridge.acquire(position, options)),
-  };
-  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
-  waveSupervisor(supervisor);
-  listAuthority(rawVfs);
-  globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-  declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } } });
-  const { fs } = new Function(
-    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return { fs: __fsMod };',
-  )({}, {}, supervisor, user, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
+scenarios['a call naming two paths reports both, as Node 22 does'] = async () => {
+  const authority = createAuthority();
+  authority.kfs.writeFile('/home/user/a.txt', 'a');
+  authority.kfs.writeFile('/home/user/b.txt', 'b');
+  const { fs } = shimsOnSession({ authority });
   const error = await rejection(fs.promises.rename('/home/user/nope', '/home/user/new'));
   assert.deepEqual(
     [error.message, error.code, error.errno, error.syscall, error.path, error.dest],
@@ -153,7 +95,7 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
     [refused?.message, refused?.syscall, refused?.path, refused?.dest],
     ["EEXIST: file already exists, copyfile '/home/user/a.txt' -> '/home/user/b.txt'", 'copyfile', '/home/user/a.txt', '/home/user/b.txt'],
   );
-}
+};
 
 // ── an UNCODED failure still reaches the program as an fs error ───────────
 // A supervisor can fail for reasons that have no errno spelling at all — the
@@ -165,27 +107,29 @@ for (const [label, failure] of [
   ['an unknown code', Object.assign(new Error('WEIRDCODE: not a real errno'), { code: 'WEIRDCODE' })],
   ['a thrown string', 'boom'],
 ]) {
-  const fs = facetWithFailure(failure);
-  const error = await rejection(fs.promises.stat('/home/user/thing.txt'));
-  assert.equal(error.code, 'EIO', `${label} reaches the program as EIO`);
-  assert.ok(
-    Number.isInteger(error.errno) && error.errno < 0,
-    `${label} carries a negative errno like every other fs error`,
-  );
-  assert.equal(error.syscall, 'stat', `${label} names the syscall that failed`);
-  assert.equal(error.path, '/home/user/thing.txt', `${label} names the path`);
+  scenarios[`${label} reaches the program as EIO`] = async () => {
+    const fs = readsFailing(failure);
+    const error = await rejection(fs.promises.readFile(THING));
+    assert.equal(error.code, 'EIO', `${label} reaches the program as EIO`);
+    assert.ok(
+      Number.isInteger(error.errno) && error.errno < 0,
+      `${label} carries a negative errno like every other fs error`,
+    );
+    assert.equal(error.syscall, 'open', `${label} names the syscall that failed`);
+    assert.equal(error.path, THING, `${label} names the path`);
+  };
 }
 
 // ── the original failure text is not thrown away ──────────────────────────
 // Classifying the error must not cost the operator the reason it failed.
-{
-  const fs = facetWithFailure(new Error('The Durable Object was reset because its code was updated.'));
-  const error = await rejection(fs.promises.readFile('/home/user/thing.txt'));
+scenarios['the authority’s own words survive into the message'] = async () => {
+  const fs = readsFailing(new Error('The Durable Object was reset because its code was updated.'));
+  const error = await rejection(fs.promises.readFile(THING));
   assert.match(
     error.message,
     /Durable Object was reset/,
     'the authority’s own words survive into the message',
   );
-}
+};
 
-console.log('node-shims-supervisor-error-mapping: PASS');
+await runScenarios(import.meta.path, scenarios);

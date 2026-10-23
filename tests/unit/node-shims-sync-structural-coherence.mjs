@@ -1,120 +1,76 @@
 #!/usr/bin/env bun
 // A synchronous structural mutation — mkdirSync, rmdirSync, unlinkSync,
 // renameSync — has no channel to the authority: a sync syscall cannot make
-// an RPC. writeFileSync parks a cell that the write ledger flushes later;
-// directories and removals had no such path and edited local tables only.
-// So node-tar's per-entry sequence, `mkdirSync(dir)` then
+// an RPC. So node-tar's per-entry sequence, `mkdirSync(dir)` then
 // `fs.promises.open(dir + '/file', 'w')`, asked the authority to open a file
 // under a directory it had never heard of, and was answered ENOENT. That is
 // create-astro's template copy.
 //
-// The repair queues the authority mutation behind the sync effect, ordered
-// behind every pending mutation of the path's ancestors, and every async
-// entry point that reaches the authority waits for those first. This test
-// pins the ORDER the authority observes, against the real SqliteVFS.
+// The process's structural decisions reach the session in program order: each
+// mkdir, rename, unlink and write is a record in a wave, ordered behind every
+// earlier change of the path's ancestors, and every async entry point that
+// reaches the session waits for those first. This pins that ORDER as the
+// session receives it (the wave records), and the outcomes the process sees.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { createAuthority, sleep } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
-const dec = new TextDecoder();
 const home = '/home/user';
-vfs.mkdir(home, { recursive: true });
 
-// An append the test can hold in flight: while \`appendGate\` is set, each
-// ranged write (an append to a file the authority has) waits on it before
-// reaching the authority.
-let appendGate = null;
-// A write-back the test holds in flight: a writeFile of \`writeGate.path\`
-// waits on it before reaching the authority.
+// Every change the session receives, in the order it receives it.
+const received = [];
+const seen = (op, path, extra = {}) => received.push({ op, path, ...extra });
+
+// While `writeGate` is set, each wave waits before reaching the session.
 let writeGate = null;
 
-// Every authority call, in the order the authority received it.
-const calls = [];
-const record = (op, path, fn) => (...args) => {
-  calls.push({ op, path: String(path(...args)) });
-  return fn(...args);
-};
-const first = (...args) => args[0];
-const supervisor = {
-  readFile: record('readFile', first, async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; }),
-  writeFile: record('writeFile', first, async (p, c) => {
-    if (writeGate && writeGate.path === p) await writeGate.promise;
-    return bridge.writeFile(p, c);
-  }),
-  stat: record('stat', first, (p) => bridge.stat(p)),
-  lstat: record('lstat', first, (p) => bridge.stat(p, { followSymlinks: false })),
-  readdir: record('readdir', first, (p) => bridge.readdir(p)),
-  exists: record('exists', first, async (p) => (await bridge.stat(p)) !== null),
-  access: record('access', first, (p, m) => bridge.access(p, m)),
-  mkdir: record('mkdir', first, (p, o) => bridge.mkdir(p, o ?? { recursive: true })),
-  rmdir: record('rmdir', first, (p) => bridge.rmdir(p)),
-  unlink: record('unlink', first, (p) => bridge.unlink(p)),
-  rename: record('rename', (a, b) => `${a} -> ${b}`, (a, b) => bridge.rename(a, b)),
-  fsReadRange: record('fsReadRange', first, (p, o, l) => bridge.readRange(p, o, l)),
-  fsWriteRange: record('fsWriteRange', first, async (p, o, b) => {
-    if (appendGate) await appendGate.promise;
-    return bridge.writeRange(p, o, b);
-  }),
-  fsTruncate: record('fsTruncate', first, (p, s) => bridge.truncate(p, s)),
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
-  + '\n;return { fs: __fsMod, drain: () => __nimbusDrainVfsWrites(__supervisor) };',
-);
-// The process's working tree is its own, as a session's home is: every name
-// the kernel made above is handed to the process's user.
-function ownTree(path = 'home') {
-  vfs.chown(path, 1000, 1000);
-  if (vfs.lstat(path).type !== 'directory') return;
-  for (const entry of vfs.readdir(path)) ownTree(`${path}/${entry.name}`);
-}
+const authority = createAuthority();
+authority.kfs.mkdir(home, { recursive: true });
 // Case 9's source with a file and an empty destination, both listed.
-vfs.mkdir(`${home}/listed_src`);
-vfs.writeFile(`${home}/listed_src/f.txt`, new TextEncoder().encode('old source'));
-vfs.mkdir(`${home}/listed_dest`);
-vfs.mkdir(`${home}/later_src`);
-vfs.mkdir(`${home}/later_dest`);
+authority.kfs.mkdir(`${home}/listed_src`);
+authority.kfs.writeFile(`${home}/listed_src/f.txt`, 'old source');
+authority.kfs.mkdir(`${home}/listed_dest`);
+authority.kfs.mkdir(`${home}/later_src`);
+authority.kfs.mkdir(`${home}/later_dest`);
 // Case 8's existing log files, which the process lists but never holds.
 for (const name of ['logs_parked', 'logs_in_flight']) {
-  vfs.mkdir(`${home}/${name}`);
-  vfs.writeFile(`${home}/${name}/app.log`, new TextEncoder().encode('prefix\n'));
+  authority.kfs.mkdir(`${home}/${name}`);
+  authority.kfs.writeFile(`${home}/${name}/app.log`, 'prefix\n');
 }
-ownTree();
-listAuthority(rawVfs);
-const { fs, drain } = (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  home,
-  [],
-  {},
-  `${home}/s.mjs`,
-  home,
-));
 
-const indexOf = (op, path) => calls.findIndex((c) => c.op === op && c.path === path);
+const { fs } = shimsOnSession({
+  authority,
+  cwd: home,
+  overrides: (forward) => ({
+    writeBatchStream: async (stream, fence, owner) => {
+      const [read, sent] = stream.tee();
+      const decoded = await decodeWriteBatchStream(read);
+      const reading = (async () => {
+        for await (const record of decoded.records) {
+          if (record.type === 'call') seen(record.call.call, `/${record.call.path}`);
+          else if (record.type === 'rename') seen('rename', `/${record.from}`, { to: `/${record.to}` });
+          else if (record.type === 'delete') seen('unlink', `/${record.path}`);
+          else if (record.type === 'directory') seen('mkdir', `/${record.inode.path}`);
+          else if (record.type === 'file-end') seen('file', `/${record.path}`);
+        }
+      })();
+      if (writeGate !== null) await writeGate.promise;
+      const answer = await forward('writeBatchStream', [sent, fence, owner]);
+      await reading;
+      return answer;
+    },
+  }),
+});
+const drain = () => globalThis.__nimbusProcessFs.flush();
+const indexOf = (op, path) => received.findIndex((c) => c.op === op && c.path === path);
+const at = (p) => (authority.kfs.exists(p) ? authority.kfs.readFileString(p) : null);
+const kindAt = (p) => (authority.kfs.exists(p) ? authority.kfs.stat(p).type : null);
 const rejectsWith = async (promise, code) => {
-  let seen = null;
-  try { await promise; } catch (error) { seen = error.code; }
-  assert.equal(seen, code, `expected ${code}, got ${seen}`);
+  let got = null;
+  try { await promise; } catch (error) { got = error.code; }
+  assert.equal(got, code, `expected ${code}, got ${got}`);
 };
 
 // 1. mkdirSync then fs.promises.open under it, the node-tar sequence.
@@ -123,11 +79,12 @@ const rejectsWith = async (promise, code) => {
   const handle = await fs.promises.open(`${home}/d/f`, 'w');
   await handle.write('hello');
   await handle.close();
+  await drain();
   const mkdirAt = indexOf('mkdir', `${home}/d`);
-  const firstTouch = calls.findIndex((c) => c.path === `${home}/d/f`);
+  const firstTouch = received.findIndex((c) => c.path === `${home}/d/f`);
   assert.ok(mkdirAt >= 0, 'the authority received the mkdir');
   assert.ok(firstTouch > mkdirAt, `mkdir(d) at ${mkdirAt} must precede the first touch of d/f at ${firstTouch}`);
-  assert.equal(dec.decode(bridge.readFile(`${home}/d/f`)), 'hello', 'the file content reached the authority');
+  assert.equal(at(`${home}/d/f`), 'hello', 'the file content reached the authority');
 }
 
 // 2. Nested mkdirSync lands parent before child at the authority.
@@ -135,35 +92,36 @@ const rejectsWith = async (promise, code) => {
   fs.mkdirSync(`${home}/a`);
   fs.mkdirSync(`${home}/a/b`);
   await fs.promises.access(`${home}/a/b`);
+  await drain();
   const parent = indexOf('mkdir', `${home}/a`);
   const child = indexOf('mkdir', `${home}/a/b`);
   assert.ok(parent >= 0 && child >= 0, 'both directories reached the authority');
   assert.ok(parent < child, `mkdir(a) at ${parent} must precede mkdir(a/b) at ${child}`);
-  assert.equal(bridge.stat(`${home}/a/b`)?.type, 'directory');
+  assert.equal(kindAt(`${home}/a/b`), 'directory');
 }
 
 // 3. mkdirSync then an async readdir of it answers [] rather than ENOENT.
 {
   fs.mkdirSync(`${home}/x`);
-  const entries = await fs.promises.readdir(`${home}/x`);
-  assert.deepEqual(entries, []);
+  assert.deepEqual(await fs.promises.readdir(`${home}/x`), []);
 }
 
 // 4. writeFileSync then unlinkSync: the authority never ends with the file.
-// Once for a file that only ever existed as a parked cell, and once for a
+// Once for a file that only ever existed as a pending write, and once for a
 // file the authority already held — the unlink must reach it.
 {
   fs.writeFileSync(`${home}/g`, '1');
   fs.unlinkSync(`${home}/g`);
   await rejectsWith(fs.promises.access(`${home}/g`), 'ENOENT');
-  assert.equal(bridge.stat(`${home}/g`), null, 'the authority does not hold g');
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(bridge.stat(`${home}/g`), null, 'and no later write-back resurrects it');
+  assert.equal(at(`${home}/g`), null, 'the authority does not hold g');
+  await sleep(50);
+  assert.equal(at(`${home}/g`), null, 'and no later write-back resurrects it');
 
-  vfs.writeFile(`${home}/h`, new TextEncoder().encode('held'));
+  authority.kfs.writeFile(`${home}/h`, 'held');
   fs.unlinkSync(`${home}/h`);
   await rejectsWith(fs.promises.access(`${home}/h`), 'ENOENT');
-  assert.equal(bridge.stat(`${home}/h`), null, 'a sync unlink of an authority-held file lands');
+  assert.equal(at(`${home}/h`), null, 'a sync unlink of an authority-held file lands');
+  await drain();
   assert.ok(indexOf('unlink', `${home}/h`) >= 0, 'the authority received the unlink');
 }
 
@@ -171,22 +129,19 @@ const rejectsWith = async (promise, code) => {
 {
   fs.mkdirSync(`${home}/r`);
   fs.renameSync(`${home}/r`, `${home}/s`);
-  const st = await fs.promises.stat(`${home}/s`);
-  assert.ok(st.isDirectory(), 's is a directory at the authority');
+  assert.ok((await fs.promises.stat(`${home}/s`)).isDirectory(), 's is a directory at the authority');
   await rejectsWith(fs.promises.stat(`${home}/r`), 'ENOENT');
 }
 
 // 7. Files written synchronously into a directory that is then renamed move
 // with it, as Vite's optimizer does: it writes deps_temp_<hash>/ and renames
-// it to deps/. Their write-back was bound for the old name and ordered behind
-// the move, which refused it ENOENT for a directory that was gone. They are
-// written back under the old name ahead of the move now, which carries them.
+// it to deps/. They are written back under the old name ahead of the move, which carries them.
 for (const rename of [
   (from, to) => fs.renameSync(from, to),
   (from, to) => fs.promises.rename(from, to),
 ]) {
-  const from = `${home}/deps_temp_${calls.length}`;
-  const to = `${home}/deps_${calls.length}`;
+  const from = `${home}/deps_temp_${received.length}`;
+  const to = `${home}/deps_${received.length}`;
   fs.mkdirSync(`${from}/chunks`, { recursive: true });
   fs.writeFileSync(`${from}/package.json`, '{"type":"module"}');
   fs.writeFileSync(`${from}/chunks/react.js`, 'export default 1;');
@@ -198,111 +153,107 @@ for (const rename of [
   assert.equal(await fs.promises.readFile(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'it reads back from the authority');
   await drain();
   assert.throws(() => fs.readFileSync(`${from}/package.json`), { code: 'ENOENT' }, 'the old name stays gone once its write lands');
-  assert.equal(dec.decode(bridge.readFile(`${to}/package.json`)), '{"type":"module"}', 'the authority holds the file under the new name');
-  assert.equal(dec.decode(bridge.readFile(`${to}/chunks/react.js`)), 'export default 1;', 'and the nested one');
-  assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
+  assert.equal(at(`${to}/package.json`), '{"type":"module"}', 'the authority holds the file under the new name');
+  assert.equal(at(`${to}/chunks/react.js`), 'export default 1;', 'and the nested one');
+  assert.equal(at(from), null, 'the old name is gone at the authority');
 }
 
 // 8. An append to a file inside a renamed directory stays an append. The
 // process never held the file, so its cell is only the appended bytes:
 // moved as a whole write, it replaced the file with them. Once with the
-// append parked, and once with its write-back already in flight when the
+// append pending, and once with its write-back already in flight when the
 // directory moves.
 for (const inFlight of [false, true]) {
   const from = `${home}/${inFlight ? 'logs_in_flight' : 'logs_parked'}`;
   const to = `${from}_moved`;
   fs.appendFileSync(`${from}/app.log`, 'first\n');
   if (inFlight) {
-    appendGate = Promise.withResolvers();
-    const issued = calls.length;
+    writeGate = Promise.withResolvers();
+    const issued = received.length;
     // The debounced write-back issues the append, which the gate holds.
-    for (let i = 0; i < 50 && !calls.slice(issued).some((c) => c.op === 'fsWriteRange'); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    assert.ok(calls.slice(issued).some((c) => c.op === 'fsWriteRange'), 'the append is in flight');
+    for (let i = 0; i < 50 && !received.slice(issued).some((c) => c.path === `${from}/app.log`); i++) await sleep(5);
     fs.appendFileSync(`${from}/app.log`, 'second\n');
   }
   fs.renameSync(from, to);
-  if (appendGate) { appendGate.resolve(); appendGate = null; }
+  if (writeGate !== null) { writeGate.resolve(); writeGate = null; }
   await drain();
   const expected = inFlight ? 'prefix\nfirst\nsecond\n' : 'prefix\nfirst\n';
-  assert.equal(dec.decode(bridge.readFile(`${to}/app.log`)), expected, `the authority keeps the prefix and every append (in flight: ${inFlight})`);
-  assert.equal(bridge.stat(from), null, 'the old name is gone at the authority');
+  assert.equal(at(`${to}/app.log`), expected, `the authority keeps the prefix and every append (in flight: ${inFlight})`);
+  assert.equal(at(from), null, 'the old name is gone at the authority');
 }
 
-// 9. A rename rename(2) refuses changes nothing, and the writes parked
+// 9. A rename rename(2) refuses changes nothing, and the writes pending
 // beneath its source land under the source: a directory renamed to itself,
 // into its own subtree, or onto a directory that is not empty, whether this
 // process lists the destination or only the authority does.
 {
-  const dir = `${home}/refused_${calls.length}`;
-  const parked = (name) => { fs.mkdirSync(`${dir}/${name}`, { recursive: true }); fs.writeFileSync(`${dir}/${name}/f.txt`, name); };
-  parked('self');
+  const dir = `${home}/refused_${received.length}`;
+  const pending = (name) => { fs.mkdirSync(`${dir}/${name}`, { recursive: true }); fs.writeFileSync(`${dir}/${name}/f.txt`, name); };
+  pending('self');
   fs.renameSync(`${dir}/self`, `${dir}/self`);
   assert.throws(() => fs.renameSync(`${dir}/absent`, `${dir}/absent`), { code: 'ENOENT' }, 'a missing name renamed to itself is ENOENT');
-  parked('sub');
+  pending('sub');
   assert.throws(() => fs.renameSync(`${dir}/sub`, `${dir}/sub/inner`), { code: 'EINVAL' }, 'into its own subtree is EINVAL');
   fs.mkdirSync(`${dir}/full`);
   fs.writeFileSync(`${dir}/full/keep.txt`, 'keep');
-  parked('known');
+  pending('known');
   assert.throws(() => fs.renameSync(`${dir}/known`, `${dir}/full`), { code: 'ENOTEMPTY' }, 'onto a listed non-empty directory is ENOTEMPTY');
   await drain();
   // A destination only the authority holds: the authority refuses the move.
-  vfs.mkdir(`${dir}/theirs`);
-  vfs.writeFile(`${dir}/theirs/keep.txt`, new TextEncoder().encode('theirs'));
-  parked('unknown');
-  await assert.rejects(fs.promises.rename(`${dir}/unknown`, `${dir}/theirs`), { code: 'ENOTEMPTY' }, 'the authority refuses a move onto its non-empty directory');
+  authority.kfs.mkdir(`${dir}/theirs`);
+  authority.kfs.writeFile(`${dir}/theirs/keep.txt`, 'theirs');
+  pending('unknown');
+  await rejectsWith(fs.promises.rename(`${dir}/unknown`, `${dir}/theirs`), 'ENOTEMPTY');
   await drain();
   // A destination listed empty that only the authority has filled since:
   // the move it refuses leaves nothing of the source's under its name.
-  vfs.writeFile(`${home}/listed_dest/f.txt`, new TextEncoder().encode('theirs'));
-  // Bytes, which a resident store holds as a copy of the parked cell.
-  fs.writeFileSync(`${home}/listed_src/f.txt`, new TextEncoder().encode('new parked source'));
-  await assert.rejects(fs.promises.rename(`${home}/listed_src`, `${home}/listed_dest`), { code: 'ENOTEMPTY' }, 'the authority refuses a move onto a directory it filled');
+  authority.kfs.writeFile(`${home}/listed_dest/f.txt`, 'theirs');
+  // Bytes, which a resident store holds as a copy of the pending cell.
+  fs.writeFileSync(`${home}/listed_src/f.txt`, 'new pending source');
+  await rejectsWith(fs.promises.rename(`${home}/listed_src`, `${home}/listed_dest`), 'ENOTEMPTY');
   await drain();
-  assert.equal(dec.decode(bridge.readFile(`${home}/listed_dest/f.txt`)), 'theirs', 'the destination keeps its file');
-  assert.equal(dec.decode(bridge.readFile(`${home}/listed_src/f.txt`)), 'new parked source', 'the source gets its parked write');
+  assert.equal(at(`${home}/listed_dest/f.txt`), 'theirs', 'the destination keeps its file');
+  assert.equal(at(`${home}/listed_src/f.txt`), 'new pending source', 'the source gets its pending write');
   let destRead;
   try { destRead = fs.readFileSync(`${home}/listed_dest/f.txt`, 'utf8'); } catch (error) { destRead = error.code; }
-  assert.notEqual(destRead, 'new parked source', 'the sync view does not show the source under the destination');
+  assert.notEqual(destRead, 'new pending source', 'the sync view does not show the source under the destination');
   // A write to the moved name while the refused move is in flight is its
   // own: the refusal leaves its bytes and its record alone.
-  vfs.writeFile(`${home}/later_dest/f.txt`, new TextEncoder().encode('theirs'));
+  authority.kfs.writeFile(`${home}/later_dest/f.txt`, 'theirs');
   fs.writeFileSync(`${home}/later_src/f.txt`, 'source');
-  appendGate = null;
-  writeGate = { path: `${home}/later_dest/f.txt`, ...Promise.withResolvers() };
+  writeGate = Promise.withResolvers();
   const refusedLater = fs.promises.rename(`${home}/later_src`, `${home}/later_dest`).then(() => 'moved', (error) => error.code);
-  fs.writeFileSync(`${home}/later_dest/f.txt`, new TextEncoder().encode('later'));
+  fs.writeFileSync(`${home}/later_dest/f.txt`, 'later');
+  writeGate.resolve();
+  writeGate = null;
   assert.equal(await refusedLater, 'ENOTEMPTY');
   assert.equal(fs.readFileSync(`${home}/later_dest/f.txt`, 'utf8'), 'later', 'the later write reads back while it is held');
   assert.equal(fs.statSync(`${home}/later_dest/f.txt`).size, 'later'.length, 'and stats');
-  writeGate.resolve();
-  writeGate = null;
   await drain();
-  assert.equal(dec.decode(bridge.readFile(`${home}/later_dest/f.txt`)), 'later', 'and lands');
+  assert.equal(at(`${home}/later_dest/f.txt`), 'later', 'and lands');
   for (const name of ['self', 'sub', 'known', 'unknown']) {
-    assert.equal(dec.decode(bridge.readFile(`${dir}/${name}/f.txt`)), name, `a refused rename's source keeps its parked write (${name})`);
+    assert.equal(at(`${dir}/${name}/f.txt`), name, `a refused rename's source keeps its pending write (${name})`);
   }
-  assert.equal(bridge.stat(`${dir}/sub/inner`), null, 'nothing was moved into the subtree');
-  assert.equal(bridge.stat(`${dir}/full/f.txt`), null, 'nothing was written into the listed destination');
-  assert.equal(dec.decode(bridge.readFile(`${dir}/full/keep.txt`)), 'keep', 'which keeps its own file');
-  assert.equal(bridge.stat(`${dir}/theirs/f.txt`), null, 'nothing was written into the authority\'s destination');
-  assert.equal(dec.decode(bridge.readFile(`${dir}/theirs/keep.txt`)), 'theirs', 'which keeps its own file');
+  assert.equal(at(`${dir}/sub/inner`), null, 'nothing was moved into the subtree');
+  assert.equal(at(`${dir}/full/f.txt`), null, 'nothing was written into the listed destination');
+  assert.equal(at(`${dir}/full/keep.txt`), 'keep', 'which keeps its own file');
+  assert.equal(at(`${dir}/theirs/f.txt`), null, 'nothing was written into the authority\'s destination');
+  assert.equal(at(`${dir}/theirs/keep.txt`), 'theirs', 'which keeps its own file');
 }
 
 // 10. An asynchronous write still in progress when its directory is renamed
 // resolves only once the bytes are at the authority, under the new name once
-// the move lands. It resolved while they were still in flight.
+// the move lands.
 {
-  const from = `${home}/inflight_${calls.length}`;
+  const from = `${home}/inflight_${received.length}`;
   const to = `${from}_moved`;
   fs.mkdirSync(from);
   const writing = fs.promises.writeFile(`${from}/f.txt`, 'streamed in');
   fs.renameSync(from, to);
   await writing;
-  assert.equal(dec.decode(bridge.readFile(`${from}/f.txt`) ?? bridge.readFile(`${to}/f.txt`) ?? new Uint8Array()), 'streamed in', 'the awaited write is at the authority');
+  assert.equal(at(`${from}/f.txt`) ?? at(`${to}/f.txt`), 'streamed in', 'the awaited write is at the authority');
   await drain();
-  assert.equal(dec.decode(bridge.readFile(`${to}/f.txt`)), 'streamed in', 'and moves with the directory');
+  assert.equal(at(`${to}/f.txt`), 'streamed in', 'and moves with the directory');
   assert.equal(fs.statSync(`${to}/f.txt`).size, 'streamed in'.length, 'the sync view stats it at its size');
 }
 
@@ -310,7 +261,7 @@ for (const inFlight of [false, true]) {
 {
   fs.mkdirSync(`${home}/only`);
   await drain();
-  assert.equal(bridge.stat(`${home}/only`)?.type, 'directory', 'the exit drain carried the directory across');
+  assert.equal(kindAt(`${home}/only`), 'directory', 'the exit drain carried the directory across');
 }
 
 console.log('node-shims-sync-structural-coherence: all assertions passed');

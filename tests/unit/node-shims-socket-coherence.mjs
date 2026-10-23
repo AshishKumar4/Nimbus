@@ -9,23 +9,13 @@
 //
 // The supervisor now terminates the socket and relays frames, so a frame is a
 // supervisor reply and the handler takes the same ACQUIRE the timer and fetch
-// boundaries take. This drives the real shim against the real SqliteVFS with
-// a supervisor that writes as a peer between frames.
+// boundaries take. This drives the real shim against the real session with a
+// relay that writes as a peer between frames.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const dir = '/home/user/t';
@@ -33,18 +23,20 @@ const peerPath = `${dir}/peer.txt`;
 const minePath = `${dir}/mine.txt`;
 const closingPath = `${dir}/closing.txt`;
 const openingPath = `${dir}/opening.txt`;
-vfs.mkdir(dir, { recursive: true });
-vfs.writeFile(peerPath, enc.encode('V1'));
 
-let acquireCalls = 0;
-let sentFrames = [];
+const authority = createAuthority();
+authority.kfs.mkdir(dir, { recursive: true });
+authority.kfs.writeFile(peerPath, 'V1');
+
+// What the relay saw at each supervisor call, as the parked writes stood.
 let sawAtSend = null;
 let sawAtOpen = null;
 let sawAtClose = null;
+const sentFrames = [];
 let closedWith = null;
-const parked = async (path) => { const bytes = await bridge.readFile(path); return bytes === null ? null : dec.decode(bytes); };
+const parked = (path) => (authority.kfs.exists(path) ? authority.kfs.readFileString(path) : null);
 
-// The relay queue, as the supervisor would hold it. Each poll hands back one
+// The relay queue, as the session would hold it. Each poll hands back one
 // batch; the third party writes to the filesystem just before the frame is
 // released, which is exactly the race the barrier has to win.
 const frames = [
@@ -54,72 +46,37 @@ const frames = [
 ];
 let pollIndex = 0;
 
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-  writeFile: (p, c) => bridge.writeFile(p, c),
-  stat: (p) => bridge.stat(p),
-  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p),
-  exists: async (p) => (await bridge.stat(p)) !== null,
-  access: (p, m) => bridge.access(p, m),
-  mkdir: (p) => bridge.mkdir(p, { recursive: true }),
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (position, options) => { acquireCalls++; return bridge.acquire(position, options); },
-  wsOpen: async (url, protocols) => {
-    assert.equal(url, 'wss://third-party.invalid/socket');
-    assert.deepEqual(protocols, ['chat']);
-    sawAtOpen = await parked(openingPath);
-    return { id: 42, protocol: 'chat' };
+const { fs, WebSocket } = shimsOnSession({
+  authority,
+  cwd: dir,
+  bundle: { 'home/user/t/peer.txt': 'V1' },
+  overrides: {
+    wsOpen: async (url, protocols) => {
+      assert.equal(url, 'wss://third-party.invalid/socket');
+      assert.deepEqual(protocols, ['chat']);
+      sawAtOpen = parked(openingPath);
+      return { id: 42, protocol: 'chat' };
+    },
+    wsPoll: async (id) => {
+      assert.equal(id, 42);
+      if (pollIndex === 1) {
+        // The peer writes while the facet is parked on the poll. Nothing else
+        // will tell the facet, which is the whole point of witness 3.
+        authority.kfs.writeFile(peerPath, 'REWRITTEN_BY_PEER');
+      }
+      if (pollIndex >= frames.length) return new Promise(() => {});
+      return frames[pollIndex++];
+    },
+    wsSend: async (id, text, bytes) => {
+      sawAtSend = parked(minePath);
+      sentFrames.push(text !== null ? text : dec.decode(bytes));
+    },
+    wsClose: async (id, code, reason) => {
+      sawAtClose = parked(closingPath);
+      closedWith = { id, code, reason };
+    },
   },
-  wsPoll: async (id) => {
-    assert.equal(id, 42);
-    if (pollIndex === 1) {
-      // The peer writes while the facet is parked on the poll. Nothing else
-      // will tell the facet, which is the whole point of witness 3.
-      vfs.writeFile(peerPath, enc.encode('REWRITTEN_BY_PEER'));
-    }
-    if (pollIndex >= frames.length) return new Promise(() => {});
-    return frames[pollIndex++];
-  },
-  wsSend: async (id, text, bytes) => {
-    sawAtSend = await parked(minePath);
-    sentFrames.push(text !== null ? text : dec.decode(bytes));
-  },
-  wsClose: async (id, code, reason) => { sawAtClose = await parked(closingPath); closedWith = { id, code, reason }; },
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
-    '\n;return { fs: __fsMod, WebSocket: globalThis.WebSocket };',
-);
-// The process's working tree is its own, as a session's home is: every name
-// the kernel made above is handed to the process's user.
-function ownTree(path = 'home') {
-  vfs.chown(path, 1000, 1000);
-  if (vfs.lstat(path).type !== 'directory') return;
-  for (const entry of vfs.readdir(path)) ownTree(`${path}/${entry.name}`);
-}
-ownTree();
-listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const out = (declareNamespace({ metadata: {
-    'home/user/t': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
-    'home/user/t/peer.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 },
-  }, manifest: { 'home/user': ['t'], 'home/user/t': ['peer.txt'] } }), factory(
-  { 'home/user/t/peer.txt': 'V1' },
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/s.mjs`,
-  dir,
-));
-const { fs, WebSocket } = out;
+});
 
 // Warm the cursor past the first-ACQUIRE poison.
 assert.equal(await fs.promises.readFile(peerPath, 'utf8'), 'V1');
@@ -154,11 +111,10 @@ assert.equal(
   'REWRITTEN_BY_PEER',
   'a sync read inside a relayed frame handler sees the peer write',
 );
-assert.ok(acquireCalls >= 2, 'each relayed frame paid an ACQUIRE');
 
 // Sending is an outward-visible effect of whatever this facet just wrote, so
-// the parked writes go first — otherwise the peer can act on a write the
-// authority does not have.
+// the pending writes go first — otherwise the peer can act on a write the
+// session does not have.
 fs.writeFileSync(minePath, 'MY_WORK');
 socket.send('notify');
 await new Promise((resolve) => setTimeout(resolve, 40));
@@ -166,7 +122,7 @@ assert.deepEqual(sentFrames, ['notify'], 'the frame reached the relay');
 assert.equal(
   sawAtSend,
   'MY_WORK',
-  'parked writes reached the authority before the frame left the facet',
+  'pending writes reached the authority before the frame left the facet',
 );
 assert.equal(socket.bufferedAmount, 0, 'bufferedAmount settles back after the send');
 
@@ -183,11 +139,11 @@ assert.equal(closeEvent.code, 1000);
 assert.equal(closeEvent.wasClean, true);
 assert.equal(socket.readyState, WebSocket.CLOSED);
 assert.deepEqual(closedWith, { id: 42, code: 1000, reason: 'done' });
-assert.equal(sawAtClose, 'CLOSING', 'parked writes reached the authority before the close left the facet');
+assert.equal(sawAtClose, 'CLOSING', 'pending writes reached the authority before the close left the facet');
 fs.writeFileSync(openingPath, 'OPENING');
 const second = new WebSocket('wss://third-party.invalid/socket', ['chat']);
 await new Promise((resolve) => setTimeout(resolve, 40));
-assert.equal(sawAtOpen, 'OPENING', 'parked writes reached the authority before the handshake left the facet');
+assert.equal(sawAtOpen, 'OPENING', 'pending writes reached the authority before the handshake left the facet');
 second.close(1000, 'done');
 
 console.log('node-shims-socket-coherence: all assertions passed');

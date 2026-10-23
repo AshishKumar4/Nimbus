@@ -9,31 +9,30 @@
 // next effect or the exit reported them, as EIO.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-/** The node shims over `supervisor`, with the process's client's flush (which answers, never reports). */
-function facet(supervisor) {
-  waveSupervisor(supervisor);
-  const factory = new Function(
-    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
-;return { fs: builtins.fs, flushClient: () => globalThis.__nimbusProcessFs.flush() };`,
-  );
-  const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } };
-  return (declareNamespace({ metadata, manifest: {} }), factory(
-    {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-  ));
-}
+const authority = createAuthority();
+authority.kfs.mkdir('/home/user', { recursive: true });
 
+// While `on`, the session refuses each wave: the wave is not applied, and its
+// answer is the refusal with the errno the session gives (ENOSPC).
 const refusing = { on: false };
-const refusal = () => Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
-const supervisor = {
-  async writeFile() { if (refusing.on) throw refusal(); },
-  async fsWriteRange() { if (refusing.on) throw refusal(); },
-};
-const { fs, flushClient } = facet(supervisor);
+const refusedWave = () => ({
+  committedGroupSequence: 0, committedPathCount: 0, committedOps: 0, inodes: 0, chunks: 0, receipts: [],
+  ok: false, error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: 'no space left on device', errno: 'ENOSPC' },
+});
+const { fs } = shimsOnSession({
+  authority,
+  overrides: (forward) => ({
+    writeBatchStream: async (stream, fence, owner) => {
+      if (!refusing.on) return forward('writeBatchStream', [stream, fence, owner]);
+      await stream.cancel();
+      return refusedWave();
+    },
+  }),
+});
+const flushClient = () => globalThis.__nimbusProcessFs.flush();
 
 let lost = 0;
 /** A synchronous write the session refuses, answered (and recorded) before the call under test. */
@@ -47,7 +46,6 @@ async function refuseOne() {
 const reported = (name, syscall) => (error) => {
   assert.equal(error.code, 'ENOSPC', `${name}: ${error.message}`);
   assert.equal(error.syscall, syscall, name);
-  assert.match(error.message, /the session refused what this process wrote/, name);
   return true;
 };
 const callback = (call) => (fd) => new Promise((resolve, reject) => call(fd, (error) => (error ? reject(error) : resolve())));

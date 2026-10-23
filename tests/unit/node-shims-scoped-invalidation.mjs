@@ -10,61 +10,25 @@
 // a synchronous read there no longer returns the old bytes.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
+// The process reads as READER; the files are the session user's (OWNER), which
+// makes changes through authority.peer.
 const READER = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
-const OWNER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const root = rawVfs.as(CRED_KERNEL);
-const owner = rawVfs.as(OWNER);
-root.mkdir('home/user', { recursive: true, mode: 0o755 });
-root.chown('home/user', OWNER.uid, OWNER.gid);
-for (const dir of ['d', 'g', 'k']) {
-  owner.mkdir(`/home/user/${dir}`);
-  owner.writeFile(`/home/user/${dir}/f.txt`, `${dir} v1`);
+const DIRS = ['d', 'g', 'k'];
+const authority = createAuthority();
+for (const dir of DIRS) {
+  authority.kfs.mkdir(`/home/user/${dir}`);
+  authority.kfs.writeFile(`/home/user/${dir}/f.txt`, `${dir} v1`);
 }
-// The process reads as READER, through its own view of the authority.
-const bridge = processBridge(rawVfs, rawVfs.as(READER));
-const dec = new TextDecoder();
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-  writeFile: (p, c) => bridge.writeFile(p, c),
-  stat: (p) => bridge.stat(p), lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p), exists: async (p) => (await bridge.stat(p)) !== null,
-  access: (p, m) => bridge.access(p, m), mkdir: (p) => bridge.mkdir(p, { recursive: true }),
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (position, options) => bridge.acquire(position, options),
-};
-const bundle = {};
-const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
-const manifest = { 'home/user': ['d', 'g', 'k'] };
-for (const dir of ['d', 'g', 'k']) {
-  bundle[`home/user/${dir}/f.txt`] = `${dir} v1`;
-  metadata[`home/user/${dir}`] = { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 };
-  metadata[`home/user/${dir}/f.txt`] = { type: 'file', size: 4, mode: 0o644, uid: 1000, gid: 1000 };
-  manifest[`home/user/${dir}`] = ['f.txt'];
-}
-// The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };'
-);
-listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-const out = (declareNamespace({ metadata: metadata, manifest: manifest }), factory(bundle, {}, supervisor, READER, '/home/user', [], {}, '/home/user/s.mjs', '/home/user'));
-const { fs } = out;
+// The launch stages the bytes it holds of each file.
+const bundle = Object.fromEntries(DIRS.map((dir) => [`home/user/${dir}/f.txt`, `${dir} v1`]));
+const { fs, setTimeout: later } = shimsOnSession({ authority, cred: READER, bundle });
 
 /** A synchronous read inside a timer callback, after the barrier it runs behind. */
 const readInTimer = (path) => new Promise((resolve) => {
-  out.setTimeout(() => {
+  later(() => {
     try {
       resolve(fs.readFileSync(path, 'utf8'));
     } catch (error) {
@@ -75,18 +39,18 @@ const readInTimer = (path) => new Promise((resolve) => {
 
 // The first barrier establishes the cursor, and each async read installs its
 // cell at it, so a later synchronous read is served from the heap.
-for (const dir of ['d', 'g', 'k']) {
+for (const dir of DIRS) {
   assert.equal(await fs.promises.readFile(`/home/user/${dir}/f.txt`, 'utf8'), `${dir} v1`);
 }
-for (const dir of ['d', 'g', 'k']) assert.equal(await readInTimer(`/home/user/${dir}/f.txt`), `${dir} v1`);
+for (const dir of DIRS) assert.equal(await readInTimer(`/home/user/${dir}/f.txt`), `${dir} v1`);
 
 // ── A directory made private: its cells go ───────────────────────────────
-owner.chmod('/home/user/d', 0o700);
+await authority.peer.chmod('/home/user/d', 0o700);
 assert.notEqual(await readInTimer('/home/user/d/f.txt'), 'd v1', 'a cell under a directory the process was locked out of was served');
 
 // ── Made private, then removed ────────────────────────────────────────────
-owner.chmod('/home/user/g', 0o700);
-owner.removeRecursive('/home/user/g');
+await authority.peer.chmod('/home/user/g', 0o700);
+await authority.peer.removeRecursive('/home/user/g');
 assert.notEqual(await readInTimer('/home/user/g/f.txt'), 'g v1', 'a cell for a removed file was served');
 
 // ── An untouched directory keeps its cells ────────────────────────────────
