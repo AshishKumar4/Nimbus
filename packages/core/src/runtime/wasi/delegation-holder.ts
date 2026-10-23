@@ -381,7 +381,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       && (keys === undefined || keys.some((key) => within(inode.key, key))));
     if (open.length === 0) return;
     drain();
-    for (const inode of open) unhold(inode);
+    for (let i = 0; i < open.length; i++) { const inode = open[i]; unhold(inode); }
   };
 
   /**

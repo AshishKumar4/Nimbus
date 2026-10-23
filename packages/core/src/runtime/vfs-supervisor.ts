@@ -52,7 +52,7 @@ export const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[] = 
 // Set.prototype.has (or put a name on Object.prototype).
 const ANSWERED: Partial<Record<string, true>> = {};
 reflectSetPrototypeOf(ANSWERED, null);
-for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
+for (let i = 0; i < SUPERVISOR_ANSWERED_METHODS.length; i++) { const name = SUPERVISOR_ANSWERED_METHODS[i]; ANSWERED[name] = true; }
 
 // The answered calls that wait on the session for as long as it likes (FILESYSTEM_METHODS `waits`).
 const WAITS: Partial<Record<string, true>> = {};

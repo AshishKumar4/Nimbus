@@ -102,7 +102,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
   const isManifest = (path: string): boolean => (path === 'package.json' || stringEndsWith(path, '/package.json')) && !stringIncludes(('/' + path), '/.git/');
 
   const pushable = (path: string): boolean => {
-    for (const root of pushRoots) {
+    for (let i = 0; i < pushRoots.length; i++) {
+      const root = pushRoots[i];
       if (root !== '' && path !== root && !stringStartsWith(path, root + '/')) continue;
       const rest = root === '' ? path : stringSlice(path, root.length + 1);
       if (!rest.split('/').some((seg) => arrayIncludes(PUSH_EXCLUDE, seg))) return true;
@@ -125,7 +126,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
   const applyAcquire = async (supervisor: ResidentSupervisor | null | undefined, result: VfsAcquireResult): Promise<Admitted> => {
     await admission.roomForPushed(result);
     const applied = cells.admit(result);
-    for (const dir of applied.relist) await transport.relist(supervisor, dir);
+    for (let i = 0; i < applied.relist.length; i++) { const dir = applied.relist[i]; await transport.relist(supervisor, dir); }
     return applied;
   };
 
@@ -150,7 +151,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     const applied = await applyAcquire(supervisor, result);
     // A dropped row was held, so it is wanted again at its new revision.
     const refetch: WantedFile[] = [];
-    for (const path of applied.dropped) {
+    for (let i = 0; i < applied.dropped.length; i++) {
+      const path = applied.dropped[i];
       const found = namespace.resolve(path, false);
       if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE) continue;
       refetch[refetch.length] = { path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) };
@@ -257,7 +259,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     const vouches = (entry: WantedFile | undefined, rev: number): boolean => entry !== undefined && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
 
     const listed = new SafeMap<string, WantedFile>();
-    for (const file of listing.entries) listed.set(file.path, file);
+    for (let i = 0; i < listing.entries.length; i++) { const file = listing.entries[i]; listed.set(file.path, file); }
 
     const rows = t.fileRows();
     const current = new SafeSet<string>();
@@ -266,7 +268,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     let rekeyed = 0;
     /** Dated files the listing proved current: kept, so never swept with the rest. */
     let vouched = 0;
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
       const entry = listed.get(row.path);
       if (row.rev === RK_OWN_WRITE) {
         current.add(row.path);
@@ -320,7 +323,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     if (dropped.length > 0 && vouched === 0 && rekeyed === 0) {
       t.dropDatedFiles();
     } else {
-      for (const path of dropped) {
+      for (let i = 0; i < dropped.length; i++) {
+        const path = dropped[i];
         t.chunkDelete(path);
         t.fileDelete(path);
       }
@@ -333,7 +337,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     const wanted = new SafeSet(dropped);
     const fetch: WantedFile[] = [];
     const copied: { file: WantedFile; text: string }[] = [];
-    for (const file of listing.entries) {
+    for (let i = 0; i < listing.entries.length; i++) {
+      const file = listing.entries[i];
       if (current.has(file.path)) continue;
       if (manifests !== null && isManifest(file.path)) {
         // A copy is the file's bytes (equal content keys) and is held only
@@ -359,9 +364,10 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       // A copy holds the bytes the listing names (equal content keys), dated at
       // its revision; one the store has no room for is fetched like the rest.
       let copiedBytes = 0;
-      for (const { text } of copied) copiedBytes += residentCellCost(text);
+      for (let i = 0; i < copied.length; i++) { const { text } = copied[i]; copiedBytes += residentCellCost(text); }
       if (copiedBytes > 0) await admission.ensureRoom(copiedBytes);
-      for (const { file, text } of copied) {
+      for (let i = 0; i < copied.length; i++) {
+        const { file, text } = copied[i];
         if (!cells.put(t, file.path, text, file.rev, file.ckey)) fetch[fetch.length] = file;
       }
       filled = await transport.fetchFiles(supervisor, fetch);

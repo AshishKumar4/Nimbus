@@ -69,7 +69,8 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
     while (held() + size > limit) {
       const oldest = t.pageOldest(16);
       if (oldest.length === 0) break;
-      for (const row of oldest) {
+      for (let i = 0; i < oldest.length; i++) {
+        const row = oldest[i];
         t.pageDelete(row.path, row.rev, row.part);
         total = held() - row.size;
         if (total + size <= limit) break;

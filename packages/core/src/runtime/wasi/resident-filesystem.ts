@@ -56,10 +56,10 @@ import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf, type FeedPosition }
 import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 import {
-  arrayIncludes, arrayIndexOf, arrayJoin, bytesCopy, bytesView, dateNow, Error, mathFloor, mathMax, mathMin, NumberOf, objectCreate, ObjectPrototype,
-  PromiseConstructor, promiseResolve, promiseThen, Proxy, reflectApply, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeMap,
-  SafeSet, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringStartsWith, SymbolConstructor, typedArrayByteLength, typedArraySet,
-  Uint8ArrayConstructor,
+  arrayCopy, arrayIncludes, arrayIndexOf, arrayJoin, bytesCopy, bytesView, dateNow, Error, mathFloor, mathMax, mathMin, NumberOf, objectCreate,
+  ObjectPrototype, PromiseConstructor, promiseResolve, promiseThen, Proxy, reflectApply, reflectGet, reflectGetPrototypeOf, reflectOwnKeys,
+  reflectSet, SafeMap, SafeSet, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringStartsWith, SymbolConstructor,
+  typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -595,7 +595,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (typeof name === 'string' && DESCRIPTOR_CALLS.has(name) && typeof args[0] === 'number' && directoryPool?.closed(args[0])) {
           throw fsError('EBADF', name, stringOf(args[0]));
         }
-        for (const arg of args) {
+        for (let i = 0; i < args.length; i++) {
+          const arg = args[i];
           if (arg && typeof arg === 'object' && 'directory' in arg && 'path' in arg
             && typeof arg.directory === 'number' && typeof arg.path === 'string' && directoryPool?.closed(arg.directory)) {
             throw fsError('EBADF', stringOf(name), stringOf(arg.directory));
@@ -989,7 +990,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (!looked.has(walked.missing)) {
         const spelled = prefixes(root, name).filter((key) => !looked.has(key) && store.entry(key) === undefined);
         const keys = arrayIncludes(spelled, walked.missing) ? spelled.slice(arrayIndexOf(spelled, walked.missing)) : [walked.missing];
-        for (const key of keys) looked.add(key);
+        for (let i = 0; i < keys.length; i++) { const key = keys[i]; looked.add(key); }
         counts.lookups++;
         // The bytes of what the call names, when it is a small file: a stat is followed by an open.
         const target = spelled[spelled.length - 1];
@@ -1436,8 +1437,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   // The session lists a directory by name in locale order, and through a
   // descriptor in the filesystem's own (code unit) order: each is kept.
-  const byLocale = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => [...entries].sort((a, b) => stringLocaleCompare(a.name, b.name));
-  const byCodeUnit = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const byLocale = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => arrayCopy(entries).sort((a, b) => stringLocaleCompare(a.name, b.name));
+  const byCodeUnit = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => arrayCopy(entries).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   fs.readlink = (path) => answer<string | null>('readlink', () => after(resolve(path, false), (key) => {
     if (key === DELEGATE) return DELEGATE;
@@ -1495,7 +1496,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           // only directories it actually reported; no invented path/prefix.
           await listingOf(key);
           // What the last run opened next comes first; then the walk on from here.
-          const next = [...new SafeSet([...guessed, ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)])];
+          const next = arrayCopy(new SafeSet([...guessed, ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)]));
           // Carry the caller's confinement/descriptor root to the authority;
           // never replace a beneath lookup with an absolute one. A
           // descriptor-relative open names only what is beneath its directory.
@@ -2045,7 +2046,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (entry.type !== 'directory') throw fsError(last ? 'EEXIST' : 'ENOTDIR', 'mkdir', path);
       current = walked as string;
     }
-    for (const key of planned) fs.mkdir('/' + key, { ...(options.mode === undefined ? {} : { mode: options.mode }), ...(options.umask === undefined ? {} : { umask: options.umask }) });
+    for (let i = 0; i < planned.length; i++) { const key = planned[i]; fs.mkdir('/' + key, { ...(options.mode === undefined ? {} : { mode: options.mode }), ...(options.umask === undefined ? {} : { umask: options.umask }) }); }
     return undefined;
   };
   const bySessionUnlink = fs.unlink;

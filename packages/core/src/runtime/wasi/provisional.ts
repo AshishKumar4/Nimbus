@@ -671,7 +671,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       size = held?.byteLength ?? inode.row.size;
     }
     let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
-    for (const op of ops) {
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
       if (op.kind === 'truncate' && op.size === 0) known = true;
       const end = op.kind === 'write' ? op.offset + typedArrayByteLength(op.data) : op.kind === 'append' ? size + typedArrayByteLength(op.data) : op.kind === 'truncate' ? op.size : size;
       if (known && end > capacity) capacity = mathMax(end, capacity * 2, 4096);
@@ -789,7 +790,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (inode.records.length > 0 || inode.descs > 0 || inode.answers > 0 || inode.cell !== undefined) return;
     for (const value of layer.values()) if (value === inode) return;
     // A name record that may be replayed names it again (one after it refused, say).
-    for (const record of nameRecords) if (arrayIncludes(record.places, inode)) return;
+    for (let i = 0; i < nameRecords.length; i++) { const record = nameRecords[i]; if (arrayIncludes(record.places, inode)) return; }
     // What the process sees of a file it changed stays until the view has it (retire), but where no name leads to it.
     if (inode.state !== null && named(inode)) return;
     touched.delete(inode);
@@ -850,7 +851,8 @@ export function provisional(host: ProvisionalHost): Provisional {
    */
   const settleRecords = (records: readonly InodeRecord[], refused: boolean, after?: number): void => {
     if (!refused) {
-      for (const record of records) {
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
         if (record.gone) continue;
         record.answered = true;
         record.answeredAt = barriers;
@@ -859,7 +861,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       return;
     }
     const refusedOf = new SafeMap<Inode, Set<InodeRecord>>();
-    for (const record of records) {
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
       if (record.gone) continue;
       let mine = refusedOf.get(record.owner);
       if (mine === undefined) refusedOf.set(record.owner, mine = new SafeSet());
@@ -905,7 +908,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     layer.clear();
     added.clear();
     removed.clear();
-    for (const record of nameRecords) record.replay();
+    for (let i = 0; i < nameRecords.length; i++) { const record = nameRecords[i]; record.replay(); }
     touched.clear();
     for (const inode of everyInode()) {
       if (inode.state !== null) touched.add(inode);
@@ -929,7 +932,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     });
     const record: NameRecord = { id: ++ids, keys, over, cost, places, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
     nameRecords[nameRecords.length] = record;
-    for (const key of keys) host.count(key);
+    for (let i = 0; i < keys.length; i++) { const key = keys[i]; host.count(key); }
     return logged(op, (refused, answer) => {
       if (refused) {
         const at = arrayIndexOf(nameRecords, record);
@@ -1068,14 +1071,14 @@ export function provisional(host: ProvisionalHost): Provisional {
       addInode(made);
     } else {
       for (const desc of descs.values()) if (desc.inode === made) desc.inode = owner;
-      for (const record of made.records) record.owner = owner;
+      for (let i = 0; i < made.records.length; i++) { const record = made.records[i]; record.owner = owner; }
       owner.records = [...owner.records, ...made.records].sort((a, b) => a.id - b.id);
       owner.recordsCost += made.recordsCost;
       owner.descs += made.descs;
       owner.answers += made.answers;
       owner.retained = [...owner.retained, ...made.retained];
       for (const [key, value] of layer) if (value === made) layer.set(key, owner);
-      for (const record of nameRecords) record.places = record.places.map((inode) => (inode === made ? owner : inode));
+      for (let i = 0; i < nameRecords.length; i++) { const record = nameRecords[i]; record.places = record.places.map((inode) => (inode === made ? owner : inode)); }
       touched.delete(made);
       host.release(made.reserved);
       made.reserved = 0;
@@ -1128,7 +1131,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (inode.descs > 0 || inode.made !== undefined || inode.retained.length === 0) return;
     const retained = inode.retained;
     inode.retained = NO_RETAINED;
-    for (const description of retained) {
+    for (let i = 0; i < retained.length; i++) {
+      const description = retained[i];
       sessions.delete(description);
       logged({ type: 'call', call: { call: 'close', path: inode.key, description } }, () => {});
     }
@@ -1193,7 +1197,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** An open description of `inode` at the session, any of its descriptors': what reaches it whatever names it (its anchor). */
   const anchorOf = (inode: Inode, read = false): string | undefined => {
     if (inode.descs === 0) return undefined;
-    for (const description of inode.retained) if (!read || sessions.get(description)?.read === true) return description;
+    for (let i = 0; i < inode.retained.length; i++) { const description = inode.retained[i]; if (!read || sessions.get(description)?.read === true) return description; }
     for (const desc of descs.values()) if (desc.inode === inode && desc.description !== undefined && (!read || sessions.get(desc.description)?.read === true)) return desc.description;
     return undefined;
   };
@@ -1394,7 +1398,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.count(key);
       opening = logged(open, answered, awaited);
     }
-    for (const op of ops) {
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
       if (op.kind !== 'write') continue;
       loggedOn([fold(target, op, description)], { type: 'call', call: { call: 'write', path: key, description, offset: op.offset, data: op.data } });
     }
@@ -1463,7 +1468,8 @@ export function provisional(host: ProvisionalHost): Provisional {
         const files = beneath();
         pendingMoves.delete(plan);
         // Made, its names are beneath `to`, what they grew by taken as charged; not, the growth goes back.
-        for (const inode of files) {
+        for (let i = 0; i < files.length; i++) {
+          const inode = files[i];
           if (made) renamed(inode, to + stringSlice(inode.key, from.length), to + stringSlice(inode.key, from.length));
           else fit(inode);
         }
@@ -1512,7 +1518,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     kept: () => {
       let total = 0;
       for (const inode of everyInode()) total += cost(inode);
-      for (const record of nameRecords) total += record.cost;
+      for (let i = 0; i < nameRecords.length; i++) { const record = nameRecords[i]; total += record.cost; }
       return total;
     },
     owns: (handleId) => descs.size > 0 && descs.has(handleId),
@@ -1546,7 +1552,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const listed = dir && dir.local ? [] : viewed;
       if (listed === undefined) return undefined;
       const out = new SafeMap<string, RuntimeVfsDirEntry['type']>();
-      for (const child of listed) if (!gone?.has(child.name)) out.set(child.name, child.type);
+      for (let i = 0; i < listed.length; i++) { const child = listed[i]; if (!gone?.has(child.name)) out.set(child.name, child.type); }
       for (const [name, type] of made ?? []) out.set(name, type);
       return [...out].map(([name, type]) => ({ name, type }));
     },
@@ -1942,7 +1948,7 @@ export function provisional(host: ProvisionalHost): Provisional {
           if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0)) continue;
           dropRecords(inode, new SafeSet(retired));
           unshared(inode);
-          if (inode.base !== null) for (const record of retired) inode.base = applyOp(inode.base, record.op);
+          if (inode.base !== null) for (let i = 0; i < retired.length; i++) { const record = retired[i]; inode.base = applyOp(inode.base, record.op); }
           if (inode.records.length === 0 && inode.descs === 0) {
             inode.base = null;
             inode.state = null;

@@ -812,7 +812,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Number `entries` under the epoch: from where its numbering starts, one each in journal order. */
   const numberEntries = (entries: readonly Entry[]): void => {
     const current = epoch!;
-    for (const entry of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
       if (entry.seq !== 0) continue;
       if (current.numbering === null) {
         // Recorded first: a numbering the journal did not take is not the epoch's.
@@ -840,7 +841,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const fresh = next.paths.filter((path) => !owned.has(path));
       const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
       if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
-      for (const path of fresh) owned.add(path);
+      for (let i = 0; i < fresh.length; i++) { const path = fresh[i]; owned.add(path); }
       pathBytes += freshBytes;
       bytes += next.bytes;
       taken[taken.length] = arrayShift(queue)!;
@@ -862,7 +863,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         endedProcess(entries, error, epoch?.writer ?? null);
         return;
       }
-      for (const entry of entries) fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : stringOf(error)}`, true);
+      for (let i = 0; i < entries.length; i++) { const entry = entries[i]; fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : stringOf(error)}`, true); }
       forget(entries[entries.length - 1]!.jid, false);
       return;
     }
@@ -871,7 +872,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     try {
       ops = entries.map(opOf);
       // Sent: the heap's copy is the wave's now.
-      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
+      for (let i = 0; i < entries.length; i++) { const entry = entries[i]; if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; } }
       bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
       // Numbered once, under the epoch they are first sent under; a re-send keeps them.
       numberEntries(entries);
@@ -880,14 +881,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // an op no wave can carry): answered as refused, each one, never left waiting.
       const code = (error as { code?: unknown } | null)?.code;
       const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
-      for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : stringOf(error)}`, true);
+      for (let i = 0; i < entries.length; i++) { const entry = entries[i]; fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : stringOf(error)}`, true); }
       forget(entries[entries.length - 1]!.jid, false);
       // An epoch numbers ops by their place in the log: dropped, these leave
       // a gap the session would refuse what follows for. What follows is
       // numbered under a new epoch (nothing of this wave left, and what the
       // old one sent was answered, so it has nothing to retire).
       epoch = null;
-      for (const entry of queue) entry.seq = 0;
+      for (let i = 0; i < queue.length; i++) { const entry = queue[i]; entry.seq = 0; }
       return;
     }
     const firstSeq = entries[0]!.seq;
@@ -979,7 +980,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (!recalling) recalled = null;
     if (answer.ok || refused !== null || (recalled !== null && now() - recalled.since < WAVE_RECALL_BOUND_MS)) {
       // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
-      for (const entry of back) entry.lingers = false;
+      for (let i = 0; i < back.length; i++) { const entry = back[i]; entry.lingers = false; }
       queue.unshift(...back);
       if (recalled !== null) await new PromiseConstructor<void>((resolve) => { timers.setTimeout(resolve, recallWaitMs(recalled!.waits++)); });
       return;
@@ -997,7 +998,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * over, what the new epoch sends.
    */
   const lostEpoch = (entries: Entry[], message: string, writer: string | null): void => {
-    for (const entry of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
       counters.lost++;
       // A caller that awaited it is told, and its fate is a durability failure besides, caught or not.
       if (!entry.acknowledged) failures[failures.length] = { op: entry.name, path: entry.paths[0] ?? '', errno: 'EIO', message };
@@ -1007,7 +1009,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (writer !== null) retiring[retiring.length] = writer;
     epoch = null;
     ownThrough = Infinity;
-    for (const entry of queue) entry.seq = 0;
+    for (let i = 0; i < queue.length; i++) { const entry = queue[i]; entry.seq = 0; }
   };
 
   /**
@@ -1019,7 +1021,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const endedProcess = (entries: Entry[], refusal: Error & { code: string }, writer: string | null): void => {
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
-    for (const entry of ended) {
+    for (let i = 0; i < ended.length; i++) {
+      const entry = ended[i];
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
       fail(entry, 'ESRCH', processGone.message);
     }
@@ -1032,7 +1035,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const exhaustedInvocation = (entries: Entry[], refusal: Error): void => {
     processGone ??= fsError('EIO', refusal.message, '');
     const stopped = [...entries, ...queue.splice(0)];
-    for (const entry of stopped) {
+    for (let i = 0; i < stopped.length; i++) {
+      const entry = stopped[i];
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
       fail(entry, 'EIO', refusal.message);
     }
@@ -1072,7 +1076,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     const op = withUmaskOf(given, options.umask);
     const named = pathsOf(op);
     const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
-    for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+    for (let i = 0; i < named.length; i++) { const path = named[i]; if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path); }
     // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
     if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
       throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
@@ -1356,7 +1360,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const held = live();
       if (held.length >= MAX_DELEGATIONS_PER_PROCESS) {
         let best = '';
-        for (const grant of held) {
+        for (let i = 0; i < held.length; i++) {
+          const grant = held[i];
           const shared = commonAncestor(grant.root, root);
           if (shared.length > best.length) best = shared;
         }
@@ -1478,7 +1483,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     certifies(key, root) {
       if (escaped !== null) return undefined;
       let found: 'held' | 'above' | undefined;
-      for (const grant of grants) {
+      for (let i = 0; i < grants.length; i++) {
+        const grant = grants[i];
         const certificate = grant.certificate;
         if (certificate === undefined || certificate.epoch !== root.epoch || root.cursor < certificate.revision) continue;
         const standing = standingOf(grant, key);
@@ -1508,7 +1514,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return entered(given, submitOptions, true);
     },
     hurry() {
-      for (const entry of queue) entry.lingers = false;
+      for (let i = 0; i < queue.length; i++) { const entry = queue[i]; entry.lingers = false; }
       schedule();
     },
     seal() {
@@ -1702,7 +1708,7 @@ export async function drainProcessFsJournal(options: {
   }
   const numberingOf = (jid: number): ProcessFsNumbering => {
     let found = numberings[0]!;
-    for (const numbering of numberings) if (numbering.jid <= jid) found = numbering;
+    for (let i = 0; i < numberings.length; i++) { const numbering = numberings[i]; if (numbering.jid <= jid) found = numbering; }
     return found;
   };
   // Its waves are numbered past any the process sent under the same writer:
@@ -1716,7 +1722,8 @@ export async function drainProcessFsJournal(options: {
     const owned = new SafeSet<string>();
     let bytes = 0;
     let pathBytes = 0;
-    for (const entry of held) {
+    for (let i = 0; i < held.length; i++) {
+      const entry = held[i];
       if (numberingOf(entry.jid) !== numbering) break;
       const seq = numbering.seq + (entry.jid - numbering.jid);
       if (taken.length > 0 && seq !== taken[taken.length - 1]!.seq + 1) break;
@@ -1751,7 +1758,8 @@ export async function drainProcessFsJournal(options: {
         ? { seq: cursor + 1, errno: result.error.errno, message: result.error.message } : null)
       : result.sequence?.refused ?? null;
     let through = 0;
-    for (const entry of taken) {
+    for (let i = 0; i < taken.length; i++) {
+      const entry = taken[i];
       if (entry.seq <= cursor && (refused === null || entry.seq !== refused.seq)) { drained.landed++; through = entry.jid; continue; }
       if (refused !== null && entry.seq === refused.seq) {
         drained.failures[drained.failures.length] = { op: nameOf(entry.op), path: pathsOf(entry.op)[0] ?? '', errno: refused.errno, message: refused.message };

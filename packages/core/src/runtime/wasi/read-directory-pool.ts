@@ -5,7 +5,9 @@ import type { RuntimeFileHandle, RuntimeFsPath, VfsAcquireResult } from '../os-c
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult, ReadDirectoryDescription } from '../read-directory-batch.js';
 import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry } from './resident-filesystem.js';
 import { notAfter, sameEpochs, type FeedPosition } from '../feed-position.js';
-import { arrayJoin, Error, mathMin, objectAssign, PromiseConstructor, promiseResolve, promiseThen, SafeMap, SafeSet } from '../../_shared/primordials.js';
+import {
+  arrayCopy, arrayJoin, Error, mathMin, objectAssign, PromiseConstructor, promiseResolve, promiseThen, SafeMap, SafeSet,
+} from '../../_shared/primordials.js';
 
 export interface DirectoryPoolStore {
   ready(): boolean;
@@ -135,7 +137,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     let result: ReadDirectoryBatchResult;
     try {
       result = await call({ channel, sequence: sentSequence, position: cursor,
-        open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
+        open: arrayCopy(open), retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
     } catch (error) {
       uncertain += open.length;
       invalidate();
@@ -146,12 +148,12 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
       invalidate();
       throw failure('ESTALE', 'directory batch reply belongs to another request');
     }
-    for (const id of result.retired) retiring.delete(id);
-    for (const id of result.claimed) claiming.delete(id);
+    for (let i = 0; i < result.retired.length; i++) { const id = result.retired[i]; retiring.delete(id); }
+    for (let i = 0; i < result.claimed.length; i++) { const id = result.claimed[i]; claiming.delete(id); }
     uncertain = 0; // advancing the channel retires an abandoned earlier answer
     // Account for every received ID before admission can yield or fail.
     // Successful adoption transfers it from this retirement set to unused/owned.
-    for (const entry of result.opened) retiring.add(entry.handle.id);
+    for (let i = 0; i < result.opened.length; i++) { const entry = result.opened[i]; retiring.add(entry.handle.id); }
     const lease = result.acquire.readLease;
     if (lease) client.readLeaseAnswered(lease); // ownership precedes any admission/yield
     const current = store.cursor();
@@ -169,7 +171,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
       trustedAtIo = client.readTrusted(); // a real batch reply, never a timer
     }
     if (open.length > 0 && (cancelled !== cancelAt || ended)) {
-      for (const entry of result.opened) retiring.add(entry.handle.id);
+      for (let i = 0; i < result.opened.length; i++) { const entry = result.opened[i]; retiring.add(entry.handle.id); }
       throw failure('EAGAIN', 'directory batch completed after its park ended');
     }
     return result.opened;
