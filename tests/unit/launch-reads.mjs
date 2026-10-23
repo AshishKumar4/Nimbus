@@ -31,6 +31,7 @@ const reads = recorded.reads();
 assert.deepEqual([...reads.paths].sort(), ['home/user/app/index.js', 'home/user/app/lib', 'home/user/app/lib.js', 'home/user/app/lib/index.js'],
   'each path read, stat\'ed or probed (found or not) and each directory listed, by its name without slashes');
 assert.deepEqual([...reads.listed], ['home/user/app/lib']);
+assert.deepEqual([...reads.absent], ['home/user/app/lib.js'], 'what was not there');
 assert.equal(reads.whole, false, 'reads and a barrier are not a dependence on everything');
 console.log('  reads, probes and listings are noted');
 
@@ -42,8 +43,22 @@ assert.equal(readsAffectedBy(reads, [change('home/user/notes/a.txt'), change('ho
 assert.equal(readsAffectedBy(reads, [change('home/user/app/index.js')]), true, 'a file it read');
 assert.equal(readsAffectedBy(reads, [change('/home/user/app/lib.js')]), true, 'a file it probed and did not find, made since');
 assert.equal(readsAffectedBy(reads, [change('home/user/app/lib/extra.js')]), true, 'a new name in a directory it listed');
-assert.equal(readsAffectedBy(reads, [change('home/user/app', { structural: 'renamed' })]), true, 'a directory above what it read');
-assert.equal(readsAffectedBy(reads, [change('home/user/app/other.js')]), false, 'a new name in a directory it did not list');
+assert.equal(readsAffectedBy(reads, [change('home/user/app', { structural: true })]), true, 'a directory above what it read, renamed or removed');
+assert.equal(readsAffectedBy(reads, [change('home/user', { subtree: true })]), true, 'a change it may not see, above what it read');
+// A write reports its file and the directory the file is in (SqliteVFS's publication).
+assert.equal(readsAffectedBy(reads, [change('home/user/app/other.js'), change('home/user/app')]), false,
+  'a new name in a directory it did not list, with that directory\'s record of it');
+assert.equal(readsAffectedBy(reads, [change('home/user/revision-marker'), change('home/user')]), false,
+  'a write in a directory above what it read is not a change to what it read');
+assert.equal(readsAffectedBy(reads, [change('home/user/app/lib/index.js'), change('home/user/app/lib')]), true, 'a file it read, with its directory');
+assert.equal(readsAffectedBy(reads, [change('home/user/app/lib')]), true, 'a directory it listed, changed by itself');
+// Resolution looked for a directory that was not there; it is made, with a file in it.
+{
+  const probing = recordLaunchReads(launchFs(files).fs);
+  await probing.view.stat('/home/user/app/node_modules/x');
+  assert.equal(readsAffectedBy(probing.reads(), [change('home/user/app/node_modules/x/index.js'), change('home/user/app/node_modules/x'), change('home/user/app/node_modules')]), true,
+    'a directory it did not find, made since, counts even beside the file made in it');
+}
 console.log('  a change counts only where the build asked');
 
 // ── A build that wrote, or enumerated, depends on everything ──────────────
