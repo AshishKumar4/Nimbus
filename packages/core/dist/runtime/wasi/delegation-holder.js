@@ -652,10 +652,10 @@ export function delegationHolder(options) {
                 handle.position = start + chunk.byteLength;
             return chunk;
         },
-        write: (handleId, offset, bytes) => {
+        write: (handleId, offset, bytes, awaited) => {
             const handle = heldDesc(handleId);
             if (handle === undefined)
-                return prov.write(handleId, offset, bytes);
+                return prov.write(handleId, offset, bytes, awaited);
             if (!handle.write)
                 throw fsError('EBADF', 'write', handle.path);
             const inode = handle.inode;
@@ -685,10 +685,10 @@ export function delegationHolder(options) {
             handle.position = position;
             return position;
         },
-        ftruncate: (handleId, size) => {
+        ftruncate: (handleId, size, awaited) => {
             const handle = heldDesc(handleId);
             if (handle === undefined)
-                return prov.ftruncate(handleId, size);
+                return prov.ftruncate(handleId, size, awaited);
             if (!handle.write)
                 throw fsError('EINVAL', 'ftruncate', handle.path);
             const inode = handle.inode;

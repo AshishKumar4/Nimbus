@@ -5905,7 +5905,7 @@ var __nimbusResidentModule = (() => {
       const description = desc.description ?? anchorOf(desc.inode);
       return description !== void 0 ? { description } : { ino: desc.inode.ino };
     };
-    const contentOp = (desc, op, call, logs, syscall) => {
+    const contentOp = (desc, op, call, logs, syscall, awaited = false) => {
       const inode = desc.inode;
       if (desc.description === void 0 && inode.state === null && !named(inode))
         throw fsError2("ESTALE", syscall, desc.path);
@@ -5914,8 +5914,21 @@ var __nimbusResidentModule = (() => {
       admitOps(inode, [op], syscall, desc.path);
       ready(inode);
       host2.drain();
+      if (awaited) {
+        const record = recorded(desc.inode, op, desc.description);
+        desc.lastRecord = record;
+        const answer = host2.client.submit(call);
+        desc.lastAnswer = answer;
+        void answer.then((answered) => settleRecords([record], false, answered.mutation?.after), () => settleRecords([record], true)).then(() => {
+          fit(inode);
+          host2.sent();
+        }).catch(endedOnly);
+        fit(inode);
+        return answer;
+      }
       recordedFor(desc, op, host2.client.submit(call, { acknowledged: true }));
       fit(inode);
+      return void 0;
     };
     const recordedFor = (desc, op, answer) => {
       const record = recorded(desc.inode, op, desc.description);
@@ -6270,33 +6283,35 @@ var __nimbusResidentModule = (() => {
           desc.position = start + chunk.byteLength;
         return chunk;
       },
-      write: (handleId, offset, bytes) => {
+      write: (handleId, offset, bytes, awaited = false) => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EBADF", "write", desc.path);
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
-        if (continued(desc, start, bytes, at)) {
+        if (!awaited && continued(desc, start, bytes, at)) {
           desc.position = start === void 0 ? desc.inode.state.size : offset === null ? start + bytes.byteLength : desc.position;
           return bytes.byteLength;
         }
         const data = owned(bytes);
+        let answer;
         if (desc.append) {
-          contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, data.byteLength, "write");
+          answer = contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, data.byteLength, "write", awaited);
           desc.position = desc.inode.state.size;
         } else {
           const start2 = offset ?? desc.position;
-          contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, data.byteLength, "write");
+          answer = contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, data.byteLength, "write", awaited);
           if (offset === null)
             desc.position = start2 + data.byteLength;
         }
-        return bytes.byteLength;
+        return answer === void 0 ? bytes.byteLength : answer.then(() => bytes.byteLength);
       },
-      ftruncate: (handleId, size) => {
+      ftruncate: (handleId, size, awaited = false) => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EINVAL", "ftruncate", desc.path);
-        contentOp(desc, { kind: "truncate", size, at: host2.now() }, { type: "call", call: { call: "ftruncate", path: desc.inode.key, ...by(desc), size } }, 0, "ftruncate");
+        const answer = contentOp(desc, { kind: "truncate", size, at: host2.now() }, { type: "call", call: { call: "ftruncate", path: desc.inode.key, ...by(desc), size } }, 0, "ftruncate", awaited);
+        return answer === void 0 ? void 0 : answer.then(() => void 0);
       },
       seek: (handleId, offset, whence) => {
         const desc = descOf(handleId);
@@ -7702,6 +7717,7 @@ var __nimbusResidentModule = (() => {
   var sessionTimers = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
 
   // ../core/dist/_shared/process-fs-client.js
+  var ORPHANED_ERRNOS = /* @__PURE__ */ new Set(["ENOENT", "EEXIST", "ELOOP", "ENOTDIR"]);
   var PROCESS_FS_SYNC_CAP_BYTES = 256 * 1024 * 1024;
   var PROCESS_FS_HEAP_SYNC_CAP_BYTES = 64 * 1024 * 1024;
   var PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
@@ -7910,11 +7926,25 @@ var __nimbusResidentModule = (() => {
           marks.splice(at, 1)[0].resolve();
       }
     };
-    const fail2 = (entry, errno2, message, refused = false) => {
+    const orphanedDescriptions = /* @__PURE__ */ new Set();
+    const orphanedRefusal = (op, errno2) => {
+      if (op === null || op.type !== "call" && op.type !== "rename" && op.type !== "setattr")
+        return false;
+      if (op.type === "call" && "description" in op.call && op.call.description !== void 0 && orphanedDescriptions.has(op.call.description))
+        return true;
+      const decided = op.type === "rename" ? op.expect !== void 0 || op.expectTo !== void 0 : op.type === "setattr" ? op.expect !== void 0 : "expect" in op.call && op.call.expect !== void 0 || op.call.call === "open" && op.call.nofollow === true;
+      if (!decided || !ORPHANED_ERRNOS.has(errno2))
+        return false;
+      if (op.type === "call" && op.call.call === "open" && op.call.description !== void 0)
+        orphanedDescriptions.add(op.call.description);
+      return true;
+    };
+    const fail2 = (entry, errno2, message, refused = false, op = null) => {
       settled(entry);
       const path = entry.paths[0] ?? "";
       if (entry.acknowledged) {
-        failures.push({ op: entry.name, path, errno: errno2, message });
+        if (!(refused && orphanedRefusal(op, errno2)))
+          failures.push({ op: entry.name, path, errno: errno2, message });
         entry.resolve({ failed: { errno: errno2, message, ...refused ? { refused: true } : {} } });
       } else {
         entry.reject(fsError3(errno2, message, path));
@@ -8079,7 +8109,7 @@ var __nimbusResidentModule = (() => {
       for (const [index, entry] of entries.entries()) {
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
-          fail2(entry, refused.errno, refused.message, true);
+          fail2(entry, refused.errno, refused.message, true, ops[index] ?? null);
           if (writer === null)
             ack = Math.max(ack, entry.seq);
           continue;
@@ -9274,10 +9304,10 @@ var __nimbusResidentModule = (() => {
           handle.position = start + chunk.byteLength;
         return chunk;
       },
-      write: (handleId, offset, bytes) => {
+      write: (handleId, offset, bytes, awaited) => {
         const handle = heldDesc(handleId);
         if (handle === void 0)
-          return prov.write(handleId, offset, bytes);
+          return prov.write(handleId, offset, bytes, awaited);
         if (!handle.write)
           throw fsError2("EBADF", "write", handle.path);
         const inode = handle.inode;
@@ -9307,10 +9337,10 @@ var __nimbusResidentModule = (() => {
         handle.position = position;
         return position;
       },
-      ftruncate: (handleId, size) => {
+      ftruncate: (handleId, size, awaited) => {
         const handle = heldDesc(handleId);
         if (handle === void 0)
-          return prov.ftruncate(handleId, size);
+          return prov.ftruncate(handleId, size, awaited);
         if (!handle.write)
           throw fsError2("EINVAL", "ftruncate", handle.path);
         const inode = handle.inode;
@@ -10009,7 +10039,7 @@ var __nimbusResidentModule = (() => {
     const catchUp = (given) => {
       const at = { input: owed.input, own: owed.own };
       const own = given?.args.own;
-      const delivered = given && typeof own === "number" && owed.own <= own ? given : void 0;
+      const delivered = given && (typeof own === "number" ? owed.own <= own : owed.own <= caught.own) ? given : void 0;
       counts.barriers++;
       const client = holder?.client;
       const ask = client !== void 0 && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
@@ -10344,6 +10374,7 @@ var __nimbusResidentModule = (() => {
     };
     const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
     const walkedMounts = delegation?.walkedMounts === true;
+    const answeredWrites = delegation?.answeredWrites === true;
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
@@ -11011,7 +11042,7 @@ var __nimbusResidentModule = (() => {
     fs.write = (handleId, offset, bytes) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        return holder.write(handleId, offset, bytes);
+        return holder.write(handleId, offset, bytes, !now && answeredWrites);
       }
       if (now)
         throw NOT_NOW;
@@ -11021,8 +11052,7 @@ var __nimbusResidentModule = (() => {
     fs.ftruncate = (handleId, size) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        holder.ftruncate(handleId, size);
-        return;
+        return holder.ftruncate(handleId, size, !now && answeredWrites);
       }
       if (now)
         throw NOT_NOW;

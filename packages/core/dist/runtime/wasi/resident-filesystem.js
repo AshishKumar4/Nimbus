@@ -253,14 +253,17 @@ export function residentFilesystem(session, resident, delegation) {
      * The barrier, for what is owed now: true once it lands (a debt made while
      * it ran is owed still). An answer a delivery carried stands in only if no
      * own debt arose since its arguments were built: an own change the session
-     * answered meanwhile is not in it. It asks a read lease with it where this
-     * run takes them, held from the moment it is granted and vouched once
-     * applied.
+     * answered meanwhile is not in it. One the session started itself (a
+     * routed request's, answered from where the session stands: no arguments
+     * of this process's) stands in only if no own debt arose since this
+     * process last caught up (protocol §9.2's piggyback). It asks a read lease
+     * with it where this run takes them, held from the moment it is granted
+     * and vouched once applied.
      */
     const catchUp = (given) => {
         const at = { input: owed.input, own: owed.own };
         const own = given?.args.own;
-        const delivered = given && typeof own === 'number' && owed.own <= own ? given : undefined;
+        const delivered = given && (typeof own === 'number' ? owed.own <= own : owed.own <= caught.own) ? given : undefined;
         counts.barriers++;
         const client = holder?.client;
         const ask = client !== undefined && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
@@ -669,6 +672,7 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
     const walkedMounts = delegation?.walkedMounts === true;
+    const answeredWrites = delegation?.answeredWrites === true;
     /**
      * Whether `entry` at `key`, a row off the session's own device, is a fed
      * mount's (true), one a feed answers for but not now (false: a moving feed
@@ -1521,7 +1525,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.write = (handleId, offset, bytes) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            return holder.write(handleId, offset, bytes);
+            return holder.write(handleId, offset, bytes, !now && answeredWrites);
         }
         if (now)
             throw NOT_NOW;
@@ -1531,8 +1535,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.ftruncate = (handleId, size) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            holder.ftruncate(handleId, size);
-            return;
+            return holder.ftruncate(handleId, size, !now && answeredWrites);
         }
         if (now)
             throw NOT_NOW;

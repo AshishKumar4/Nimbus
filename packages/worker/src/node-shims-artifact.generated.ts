@@ -10,14 +10,14 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-708fe8eb629a0d4c.js";
-export const NODE_SHIMS_BUILD_ID: string = "708fe8eb629a0d4c";
-export const NODE_SHIMS_SHA256: string = "708fe8eb629a0d4c6d56f59606a1178cc0841267996ca63426b79d58d1cf1c8c";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-67360513ecdc2f69.js";
+export const NODE_SHIMS_BUILD_ID: string = "67360513ecdc2f69";
+export const NODE_SHIMS_SHA256: string = "67360513ecdc2f699ee863264c15b96b7d71348e2c722cd5d76a75a6eb2e763e";
 
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-efb482ebd7f7ef0c.js";
-export const RESIDENT_STORE_BUILD_ID: string = "efb482ebd7f7ef0c";
-export const RESIDENT_STORE_SHA256: string = "efb482ebd7f7ef0c21d26cf2f0f18e25f680c0fb7e0128289c8e2b373bebea96";
+export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-d3f338564aff7845.js";
+export const RESIDENT_STORE_BUILD_ID: string = "d3f338564aff7845";
+export const RESIDENT_STORE_SHA256: string = "d3f338564aff7845860b917ade6773141ba4d41e6ada009a033c9c7152ba1195";
 
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-eb58a6d5234006d4.js";

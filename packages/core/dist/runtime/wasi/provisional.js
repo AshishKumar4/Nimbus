@@ -918,7 +918,7 @@ export function provisional(host) {
      * its own (or retained), its logged bytes under the client's cap, what it
      * keeps admitted; then folded and logged as it was made.
      */
-    const contentOp = (desc, op, call, logs, syscall) => {
+    const contentOp = (desc, op, call, logs, syscall, awaited = false) => {
         const inode = desc.inode;
         // Through its description the session reaches its file wherever, or whether, a name leads to it; by number only while one does.
         if (desc.description === undefined && inode.state === null && !named(inode))
@@ -928,8 +928,20 @@ export function provisional(host) {
         admitOps(inode, [op], syscall, desc.path);
         ready(inode);
         host.drain();
+        if (awaited) {
+            // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
+            const record = recorded(desc.inode, op, desc.description);
+            desc.lastRecord = record;
+            const answer = host.client.submit(call);
+            desc.lastAnswer = answer;
+            void answer.then((answered) => settleRecords([record], false, answered.mutation?.after), () => settleRecords([record], true))
+                .then(() => { fit(inode); host.sent(); }).catch(endedOnly);
+            fit(inode);
+            return answer;
+        }
         recordedFor(desc, op, host.client.submit(call, { acknowledged: true }));
         fit(inode);
+        return undefined;
     };
     /** `op` a record of its own, settled by `answer` (its client entry's): the one a write the client folds into that entry extends (continued). */
     const recordedFor = (desc, op, answer) => {
@@ -1334,35 +1346,37 @@ export function provisional(host) {
                 desc.position = start + chunk.byteLength;
             return chunk;
         },
-        write: (handleId, offset, bytes) => {
+        write: (handleId, offset, bytes, awaited = false) => {
             const desc = descOf(handleId);
             if (!desc.write)
                 throw fsError('EBADF', 'write', desc.path);
             const at = host.now();
             const start = desc.append ? undefined : offset ?? desc.position;
-            if (continued(desc, start, bytes, at)) {
+            if (!awaited && continued(desc, start, bytes, at)) {
                 desc.position = start === undefined ? desc.inode.state.size : offset === null ? start + bytes.byteLength : desc.position;
                 return bytes.byteLength;
             }
             // One private copy: what is folded and what is logged, whatever the caller does with its buffer after.
             const data = owned(bytes);
+            let answer;
             if (desc.append) {
-                contentOp(desc, { kind: 'append', data, at }, { type: 'call', call: { call: 'append', path: desc.inode.key, ...by(desc), data } }, data.byteLength, 'write');
+                answer = contentOp(desc, { kind: 'append', data, at }, { type: 'call', call: { call: 'append', path: desc.inode.key, ...by(desc), data } }, data.byteLength, 'write', awaited);
                 desc.position = desc.inode.state.size;
             }
             else {
                 const start = offset ?? desc.position;
-                contentOp(desc, { kind: 'write', offset: start, data, at }, { type: 'call', call: { call: 'write', path: desc.inode.key, ...by(desc), offset: start, data } }, data.byteLength, 'write');
+                answer = contentOp(desc, { kind: 'write', offset: start, data, at }, { type: 'call', call: { call: 'write', path: desc.inode.key, ...by(desc), offset: start, data } }, data.byteLength, 'write', awaited);
                 if (offset === null)
                     desc.position = start + data.byteLength;
             }
-            return bytes.byteLength;
+            return answer === undefined ? bytes.byteLength : answer.then(() => bytes.byteLength);
         },
-        ftruncate: (handleId, size) => {
+        ftruncate: (handleId, size, awaited = false) => {
             const desc = descOf(handleId);
             if (!desc.write)
                 throw fsError('EINVAL', 'ftruncate', desc.path);
-            contentOp(desc, { kind: 'truncate', size, at: host.now() }, { type: 'call', call: { call: 'ftruncate', path: desc.inode.key, ...by(desc), size } }, 0, 'ftruncate');
+            const answer = contentOp(desc, { kind: 'truncate', size, at: host.now() }, { type: 'call', call: { call: 'ftruncate', path: desc.inode.key, ...by(desc), size } }, 0, 'ftruncate', awaited);
+            return answer === undefined ? undefined : answer.then(() => undefined);
         },
         seek: (handleId, offset, whence) => {
             const desc = descOf(handleId);
