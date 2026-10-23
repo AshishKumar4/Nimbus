@@ -19,7 +19,8 @@
  *   - a path the build asked about;
  *   - a directory above one, removed, renamed or given another mode or owner
  *     (a structural change, or a subtree's, moves what is under it);
- *   - a directory the build listed, or a name in it.
+ *   - a name made or removed in a directory the build listed, or one that
+ *     changed kind (a listing answers names and kinds, not contents).
  * The barrier reports, beside each changed path, the directory it is in
  * (SqliteVFS's publication records the parent). For a directory the build
  * found there, that record says only that something in it changed, which
@@ -31,14 +32,14 @@
  * A build that enumerated the namespace, or that wrote, or that named a path
  * by a descriptor rather than by name, depends on everything.
  */
-import type { Awaitable, RuntimeFsBridge, RuntimeFsPath, VfsInvalidatedPath } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { Awaitable, RuntimeDirentType, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, VfsInvalidatedPath } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** What a build asked the filesystem about, by the names the barrier reports (no leading or trailing slash). */
 export interface LaunchReads {
   /** Each path it read, stat'ed, resolved or probed, found or not. */
   readonly paths: ReadonlySet<string>;
-  /** Each directory it listed. */
-  readonly listed: ReadonlySet<string>;
+  /** Each directory it listed, with the names and kinds the listing answered (null: the listing failed). */
+  readonly listed: ReadonlyMap<string, ReadonlyMap<string, RuntimeDirentType> | null>;
   /** The paths it asked about that were not there (an answer of null, or an error): a change that makes one counts. */
   readonly absent: ReadonlySet<string>;
   /** It enumerated the namespace, wrote, or named a path it cannot name here: any change may matter. */
@@ -56,7 +57,7 @@ const nameOf = (path: string): string => path.replace(/^\/+/, '').replace(/\/+$/
 /** `bridge`, passed through, noting what each call asks about (see the header). */
 export function recordLaunchReads(bridge: RuntimeFsBridge): RecordedLaunchFs {
   const paths = new Set<string>();
-  const listed = new Set<string>();
+  const listed = new Map<string, ReadonlyMap<string, RuntimeDirentType> | null>();
   const absent = new Set<string>();
   let whole = false;
   const read = (path: RuntimeFsPath | string): void => {
@@ -86,13 +87,27 @@ export function recordLaunchReads(bridge: RuntimeFsBridge): RecordedLaunchFs {
       throw error;
     });
   };
-  const list = (path: RuntimeFsPath): void => {
-    if (typeof path === 'string') {
-      paths.add(nameOf(path));
-      listed.add(nameOf(path));
-    } else {
+  /** A listing of `path`, noted with what it answered. */
+  const list = (path: RuntimeFsPath, answer: () => Awaitable<RuntimeVfsDirEntry[]>): Awaitable<RuntimeVfsDirEntry[]> => {
+    if (typeof path !== 'string') {
       whole = true;
+      return answer();
     }
+    const name = nameOf(path);
+    const note = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => {
+      listed.set(name, new Map(entries.map((entry) => [entry.name, entry.type])));
+      return entries;
+    };
+    listed.set(name, null);
+    return found(path, () => {
+      const entries = answer();
+      return entries instanceof Promise ? entries.then(note) : note(entries);
+    });
+  };
+  /** A descriptor opened on `path`: it may read or list it. */
+  const opened = (path: RuntimeFsPath): void => {
+    read(path);
+    if (typeof path === 'string') listed.set(nameOf(path), null);
   };
   /** A call whose answer this module cannot attribute to a name: the build depends on everything. */
   const everything = (): void => { whole = true; };
@@ -110,12 +125,12 @@ export function recordLaunchReads(bridge: RuntimeFsBridge): RecordedLaunchFs {
     access: (...args) => found(args[0], () => bridge.access(...args)),
     chown: (...args) => { everything(); return bridge.chown(...args); },
     // A descriptor reads, or lists, what it was opened on.
-    open: (...args) => { list(args[0]); return bridge.open(...args); },
+    open: (...args) => { opened(args[0]); return bridge.open(...args); },
     reopen: (...args) => { everything(); return bridge.reopen(...args); },
     read: (...args) => bridge.read(...args),
     write: (...args) => { everything(); return bridge.write(...args); },
     close: (...args) => bridge.close(...args),
-    readdir: (...args) => { list(args[0]); return found(args[0], () => bridge.readdir(...args)); },
+    readdir: (...args) => list(args[0], () => bridge.readdir(...args)),
     mkdir: (...args) => { everything(); return bridge.mkdir(...args); },
     unlink: (...args) => { everything(); return bridge.unlink(...args); },
     rmdir: (...args) => { everything(); return bridge.rmdir(...args); },
@@ -151,7 +166,7 @@ export function recordLaunchReads(bridge: RuntimeFsBridge): RecordedLaunchFs {
     recalled: (...args) => bridge.recalled(...args),
     published: (...args) => bridge.published(...args),
   };
-  return { view, reads: () => ({ paths: new Set(paths), listed: new Set(listed), absent: new Set(absent), whole }) };
+  return { view, reads: () => ({ paths: new Set(paths), listed: new Map(listed), absent: new Set(absent), whole }) };
 }
 
 /**
@@ -163,7 +178,7 @@ export function recordLaunchReads(bridge: RuntimeFsBridge): RecordedLaunchFs {
 export function readsUnderMounts(reads: LaunchReads, mountPoints: readonly string[]): boolean {
   const points = mountPoints.map(nameOf).filter((point) => point !== '');
   if (points.length === 0) return false;
-  return [...reads.paths, ...reads.listed].some((name) => points.some((point) => name === point || name.startsWith(point + '/')));
+  return [...reads.paths, ...reads.listed.keys()].some((name) => points.some((point) => name === point || name.startsWith(point + '/')));
 }
 
 /** Each directory above `name`, nearest first. */
@@ -181,13 +196,21 @@ function parentOf(name: string): string {
   return at === -1 ? '' : name.slice(0, at);
 }
 
-/** Whether any of `changes` (a barrier's report since the build's cursor) can change what a build that asked `reads` answers. */
-export function readsAffectedBy(reads: LaunchReads, changes: readonly VfsInvalidatedPath[]): boolean {
+/** The kind a name has now, as a listing names it, or null when nothing is there. */
+export type KindNow = (name: string) => Promise<RuntimeDirentType | null>;
+
+/**
+ * Whether any of `changes` (a barrier's report since the build's cursor) can
+ * change what a build that asked `reads` answers. `kindNow` answers what is
+ * at a name in a directory the build listed, now, which says whether the
+ * listing would answer the same.
+ */
+export async function readsAffectedBy(reads: LaunchReads, changes: readonly VfsInvalidatedPath[], kindNow: KindNow): Promise<boolean> {
   if (reads.whole) return changes.length > 0;
   if (changes.length === 0) return false;
   // Every directory above a name the build asked about: a structural change there moves what is under it.
   const above = new Set<string>();
-  for (const name of [...reads.paths, ...reads.listed]) for (const ancestor of ancestorsOf(name)) above.add(ancestor);
+  for (const name of [...reads.paths, ...reads.listed.keys()]) for (const ancestor of ancestorsOf(name)) above.add(ancestor);
   // The directories the report names as the parent of another of its changes.
   const parents = new Set<string>();
   for (const change of changes) parents.add(parentOf(nameOf(change.path)));
@@ -197,10 +220,15 @@ export function readsAffectedBy(reads: LaunchReads, changes: readonly VfsInvalid
       if (reads.paths.has(name) || reads.listed.has(name) || above.has(name)) return true;
       continue;
     }
-    // A name made, removed or changed in a directory the build listed, or that directory's own record of it.
-    if (reads.listed.has(name) || reads.listed.has(parentOf(name))) return true;
     // A path the build asked about, unless it found a directory there and the record is only the parent of another change.
     if (reads.paths.has(name) && (reads.absent.has(name) || !parents.has(name))) return true;
+    // A name in a directory the build listed: made, removed, or of another kind than the listing said.
+    const parent = parentOf(name);
+    if (!reads.listed.has(parent)) continue;
+    const listing = reads.listed.get(parent);
+    if (listing === null || listing === undefined) return true;
+    const leaf = name.slice(parent === '' ? 0 : parent.length + 1);
+    if ((listing.get(leaf) ?? null) !== await kindNow(name)) return true;
   }
   return false;
 }
