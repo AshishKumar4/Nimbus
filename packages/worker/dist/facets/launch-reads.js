@@ -2,7 +2,7 @@ const nameOf = (path) => path.replace(/^\/+/, '').replace(/\/+$/, '');
 /** `bridge`, passed through, noting what each call asks about (see the header). */
 export function recordLaunchReads(bridge) {
     const paths = new Set();
-    const listed = new Set();
+    const listed = new Map();
     const absent = new Set();
     let whole = false;
     const read = (path) => {
@@ -38,14 +38,28 @@ export function recordLaunchReads(bridge) {
             throw error;
         });
     };
-    const list = (path) => {
-        if (typeof path === 'string') {
-            paths.add(nameOf(path));
-            listed.add(nameOf(path));
-        }
-        else {
+    /** A listing of `path`, noted with what it answered. */
+    const list = (path, answer) => {
+        if (typeof path !== 'string') {
             whole = true;
+            return answer();
         }
+        const name = nameOf(path);
+        const note = (entries) => {
+            listed.set(name, new Map(entries.map((entry) => [entry.name, entry.type])));
+            return entries;
+        };
+        listed.set(name, null);
+        return found(path, () => {
+            const entries = answer();
+            return entries instanceof Promise ? entries.then(note) : note(entries);
+        });
+    };
+    /** A descriptor opened on `path`: it may read or list it. */
+    const opened = (path) => {
+        read(path);
+        if (typeof path === 'string')
+            listed.set(nameOf(path), null);
     };
     /** A call whose answer this module cannot attribute to a name: the build depends on everything. */
     const everything = () => { whole = true; };
@@ -63,12 +77,12 @@ export function recordLaunchReads(bridge) {
         access: (...args) => found(args[0], () => bridge.access(...args)),
         chown: (...args) => { everything(); return bridge.chown(...args); },
         // A descriptor reads, or lists, what it was opened on.
-        open: (...args) => { list(args[0]); return bridge.open(...args); },
+        open: (...args) => { opened(args[0]); return bridge.open(...args); },
         reopen: (...args) => { everything(); return bridge.reopen(...args); },
         read: (...args) => bridge.read(...args),
         write: (...args) => { everything(); return bridge.write(...args); },
         close: (...args) => bridge.close(...args),
-        readdir: (...args) => { list(args[0]); return found(args[0], () => bridge.readdir(...args)); },
+        readdir: (...args) => list(args[0], () => bridge.readdir(...args)),
         mkdir: (...args) => { everything(); return bridge.mkdir(...args); },
         unlink: (...args) => { everything(); return bridge.unlink(...args); },
         rmdir: (...args) => { everything(); return bridge.rmdir(...args); },
@@ -107,7 +121,7 @@ export function recordLaunchReads(bridge) {
         recalled: (...args) => bridge.recalled(...args),
         published: (...args) => bridge.published(...args),
     };
-    return { view, reads: () => ({ paths: new Set(paths), listed: new Set(listed), absent: new Set(absent), whole }) };
+    return { view, reads: () => ({ paths: new Set(paths), listed: new Map(listed), absent: new Set(absent), whole }) };
 }
 /**
  * Whether the build asked about a name under one of `mountPoints` (a mount
@@ -119,7 +133,7 @@ export function readsUnderMounts(reads, mountPoints) {
     const points = mountPoints.map(nameOf).filter((point) => point !== '');
     if (points.length === 0)
         return false;
-    return [...reads.paths, ...reads.listed].some((name) => points.some((point) => name === point || name.startsWith(point + '/')));
+    return [...reads.paths, ...reads.listed.keys()].some((name) => points.some((point) => name === point || name.startsWith(point + '/')));
 }
 /** Each directory above `name`, nearest first. */
 function ancestorsOf(name) {
@@ -135,15 +149,20 @@ function parentOf(name) {
     const at = name.lastIndexOf('/');
     return at === -1 ? '' : name.slice(0, at);
 }
-/** Whether any of `changes` (a barrier's report since the build's cursor) can change what a build that asked `reads` answers. */
-export function readsAffectedBy(reads, changes) {
+/**
+ * Whether any of `changes` (a barrier's report since the build's cursor) can
+ * change what a build that asked `reads` answers. `kindNow` answers what is
+ * at a name in a directory the build listed, now, which says whether the
+ * listing would answer the same.
+ */
+export async function readsAffectedBy(reads, changes, kindNow) {
     if (reads.whole)
         return changes.length > 0;
     if (changes.length === 0)
         return false;
     // Every directory above a name the build asked about: a structural change there moves what is under it.
     const above = new Set();
-    for (const name of [...reads.paths, ...reads.listed])
+    for (const name of [...reads.paths, ...reads.listed.keys()])
         for (const ancestor of ancestorsOf(name))
             above.add(ancestor);
     // The directories the report names as the parent of another of its changes.
@@ -157,11 +176,18 @@ export function readsAffectedBy(reads, changes) {
                 return true;
             continue;
         }
-        // A name made, removed or changed in a directory the build listed, or that directory's own record of it.
-        if (reads.listed.has(name) || reads.listed.has(parentOf(name)))
-            return true;
         // A path the build asked about, unless it found a directory there and the record is only the parent of another change.
         if (reads.paths.has(name) && (reads.absent.has(name) || !parents.has(name)))
+            return true;
+        // A name in a directory the build listed: made, removed, or of another kind than the listing said.
+        const parent = parentOf(name);
+        if (!reads.listed.has(parent))
+            continue;
+        const listing = reads.listed.get(parent);
+        if (listing === null || listing === undefined)
+            return true;
+        const leaf = name.slice(parent === '' ? 0 : parent.length + 1);
+        if ((listing.get(leaf) ?? null) !== await kindNow(name))
             return true;
     }
     return false;

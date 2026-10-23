@@ -6022,7 +6022,9 @@ export class FacetManager {
             if (entry.revision === revision || !entryKey.includes(`\x00${credKey}\x00`))
                 continue;
             const changes = entry.mounted ? null : await vfs.acquire(entry.stamp.epoch, entry.stamp.rev);
-            if (changes !== null && !changes.poison && !readsAffectedBy(entry.reads, changes.paths)) {
+            // What is at a name now, as a listing names it: lstat, so a link is a link.
+            const kindNow = async (name) => (await Promise.resolve(vfs.stat('/' + name, { followSymlinks: false })).catch(() => null))?.type ?? null;
+            if (changes !== null && !changes.poison && !(await readsAffectedBy(entry.reads, changes.paths, kindNow))) {
                 entry.revision = revision;
                 entry.stamp = { epoch: changes.epoch, rev: changes.rev };
                 continue;
