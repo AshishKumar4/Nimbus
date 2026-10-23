@@ -255,17 +255,20 @@ for (let ticks = 0; ticks < 16; ticks++) {
   assert.ok(Date.now() - started >= 290, `and the wait lasted its bound: ${Date.now() - started} ms`);
 }
 
-// The terminal's keys after the first: the shell's foreground job, not its background ones.
+// The terminal's keys after the first: the shell's foreground job, not a
+// background job's processes (their output is the terminal's too), nor a
+// server an earlier command left running (it gave the terminal back).
 {
   const processes = new SessionProcessSupervisor();
   const shell = processes.spawn('sh', ['sh'], '/home/user');
   const job = processes.spawn('python3', ['python3', 'a.py'], '/home/user', { parentPid: shell.pid });
   const child = processes.spawn('cat', ['cat'], '/home/user', { parentPid: job.pid });
-  const background = processes.spawn('python3', ['python3', 'b.py'], '/home/user', { parentPid: shell.pid });
-  processes.takeSignals(job.pid, CATCHES);
-  processes.takeSignals(background.pid, CATCHES);
-  processes.setForeground(job.pid, true);
-  processes.signalForeground(shell.pid, signalAbortReason('INT'));
+  const backgroundJob = processes.spawn('sh', ['sh'], '/home/user', { parentPid: shell.pid });
+  const background = processes.spawn('python3', ['python3', 'b.py'], '/home/user', { parentPid: backgroundJob.pid });
+  const server = processes.spawn('python3', ['python3', 'server.py'], '/home/user', { parentPid: shell.pid });
+  for (const { pid } of [job, background, server]) processes.takeSignals(pid, CATCHES);
+  for (const { pid } of [job, child, background]) processes.setForeground(pid, true);
+  processes.signalForeground(shell.pid, signalAbortReason('INT'), new Set([backgroundJob.pid]));
   assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'the foreground job\'s program is sent it, and it waits there untaken');
   assert.equal(await processes.nextSignal(job.pid, 100), 'SIGINT', 'until its program takes it');
   assert.equal(processes.untakenSignal(job.pid), null);
@@ -273,6 +276,7 @@ for (let ticks = 0; ticks < 16; ticks++) {
   assert.equal(processes.get(shell.pid).state, 'running', 'the shell is not');
   assert.equal(processes.untakenSignal(background.pid), null, 'a background job is sent nothing');
   assert.equal(processes.get(background.pid).state, 'running');
+  assert.equal(processes.untakenSignal(server.pid), null, 'nor a server that gave the terminal back');
 }
 
 console.log('process-takes-signals: ok');
