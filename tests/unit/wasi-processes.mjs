@@ -836,6 +836,9 @@ for (const takesSignals of [true, false]) {
   assert.equal(answer, ESIGINT, 'it raises the signal it was handed');
   await g.left();
   assert.deepEqual(g.sup.taken, [1], 'and says, as it leaves, it took the one it was handed');
+  // One the session never heard (its call failed) fails the leaving: the entry does not end as if it had.
+  g.sup.cpSignalsTaken = async () => { throw new Error('Network connection lost.'); };
+  await assert.rejects(g.left(), /Network connection lost/);
   g.dispose();
   checks++;
 }
