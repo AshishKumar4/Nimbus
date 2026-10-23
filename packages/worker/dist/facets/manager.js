@@ -4164,7 +4164,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // Other sessions' misses in the packages this closure can load
     // (read-profile.ts) are evidence of the same kind: a learned module joins
     // the module map with its imports, as this session's own misses do.
-    const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+    const learned = learnedFor ? await learnedFor(Object.keys(bundle), Math.max(0, room)).catch(() => []) : [];
     const own = await addObservedReads(vfs, observedReads ?? new Set(), bundle, observedPaths, budgetState, Math.max(0, room), pacer);
     room -= own.bytes;
     const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
@@ -6353,12 +6353,11 @@ export class FacetManager {
             const stamp = (await vfs.acquire(null)).position;
             const readProfile = this.readProfile;
             const offered = [];
-            const learnedFor = readProfile === null ? undefined : async (closure) => {
+            const learnedFor = readProfile === null ? undefined : async (closure, room) => {
                 const roots = this._profileRoots(closure, spec.cwd);
                 if (roots.length === 0)
                     return [];
-                // Another tenant's reads, read by no run of this one: a guess for this launch.
-                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), LAUNCH_GUESS_MAX_BYTES));
+                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), room));
                 return offered.map((entry) => entry.path);
             };
             const learning = await this.learning.forLaunch(key);

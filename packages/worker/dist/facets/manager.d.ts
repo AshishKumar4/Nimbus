@@ -783,7 +783,7 @@ export interface PrefetchBundleOptions {
     /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
     maxBundleBytes?: number;
     /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
-    learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+    learnedFor?: (closure: readonly string[], room: number) => Promise<readonly string[]>;
     /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
     executedModules?: readonly RequiredModuleRoot[];
     /** Where the launch's transform results are kept by content. */
