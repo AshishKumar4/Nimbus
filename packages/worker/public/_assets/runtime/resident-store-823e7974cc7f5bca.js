@@ -4699,7 +4699,7 @@ var __nimbusResidentModule = (() => {
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
-  var ANSWERING = /* @__PURE__ */ Symbol("answering supervisor");
+  var ANSWERING = /* @__PURE__ */ Symbol.for("nimbus.answering-supervisor");
   function isAnsweringStub(supervisor) {
     return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, "answer") === "function";
   }
@@ -5191,6 +5191,7 @@ var __nimbusResidentModule = (() => {
   var descriptionId = () => crypto.randomUUID().replaceAll("-", "");
   var NO_RECORDS = Object.freeze([]);
   var NO_RETAINED = Object.freeze([]);
+  var WHOLE_WRITTEN = /* @__PURE__ */ Symbol("written whole");
   function provisional(host2) {
     const table = /* @__PURE__ */ new Map();
     const held = /* @__PURE__ */ new Set();
@@ -6003,6 +6004,23 @@ var __nimbusResidentModule = (() => {
       } else {
         target = inode;
       }
+      if (close && bytes !== null && chmod === void 0 && host2.mounted?.(key) === true) {
+        const records = ops.map((op) => fold(target, op));
+        const whole = { type: "call", call: { call: "writeFile", path: key, mode: asked, umask, data: bytes } };
+        const settled = (refused) => {
+          settleRecords(records, refused);
+          fit(target);
+          release(target);
+        };
+        if (row === null)
+          loggedName(whole, [key], nameCost([key]), () => place(key, target), settled);
+        else {
+          host2.count(key);
+          logged(whole, settled);
+        }
+        fit(target);
+        return WHOLE_WRITTEN;
+      }
       target.answers++;
       const opened = ops.filter((op) => op.kind !== "write").map((op) => fold(target, op, description));
       const answered = openAnswered(target, description, opened, row === null, read);
@@ -6176,6 +6194,8 @@ var __nimbusResidentModule = (() => {
         const write = flags.write === true || flags.append === true;
         if (write || flags.truncate || row === null && flags.create) {
           const handle = openToWrite(key, path, flags, row, null, false, void 0, awaited);
+          if (handle === WHOLE_WRITTEN)
+            throw new Error("internal: an open with nothing to write was written whole");
           if (handle !== void 0)
             descOf(handle.id).write = write;
           return handle;

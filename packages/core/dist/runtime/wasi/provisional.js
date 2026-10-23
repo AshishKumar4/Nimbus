@@ -57,6 +57,8 @@ const descriptionId = () => crypto.randomUUID().replaceAll('-', '');
 /** An inode with none: one shared empty list each, frozen, until it has one of its own. */
 const NO_RECORDS = Object.freeze([]);
 const NO_RETAINED = Object.freeze([]);
+/** What a whole-file write on a mount answers in place of a descriptor: it was logged as one writeFile, nothing opened. */
+const WHOLE_WRITTEN = Symbol('written whole');
 export function provisional(host) {
     /** Every file this process has open or changed, one Inode each, by device and number. */
     const table = new Map();
@@ -1068,6 +1070,24 @@ export function provisional(host) {
         else {
             target = inode;
         }
+        // A whole file written on a mount goes as one write of it (a mount's backend is asked once, as by writeFile(2)'s callers).
+        if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
+            const records = ops.map((op) => fold(target, op));
+            const whole = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
+            const settled = (refused) => {
+                settleRecords(records, refused);
+                fit(target);
+                release(target);
+            };
+            if (row === null)
+                loggedName(whole, [key], nameCost([key]), () => place(key, target), settled);
+            else {
+                host.count(key);
+                logged(whole, settled);
+            }
+            fit(target);
+            return WHOLE_WRITTEN;
+        }
         target.answers++;
         // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
         const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op, description));
@@ -1254,6 +1274,8 @@ export function provisional(host) {
             // One that makes or empties its file, or may write it, is opened at the session as here.
             if (write || flags.truncate || (row === null && flags.create)) {
                 const handle = openToWrite(key, path, flags, row, null, false, undefined, awaited);
+                if (handle === WHOLE_WRITTEN)
+                    throw new Error('internal: an open with nothing to write was written whole');
                 if (handle !== undefined)
                     descOf(handle.id).write = write;
                 return handle;

@@ -808,7 +808,7 @@ return globalThis.Go;
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
-  var ANSWERING =   Symbol("answering supervisor");
+  var ANSWERING =   Symbol.for("nimbus.answering-supervisor");
   function isAnsweringStub(supervisor) {
     return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, "answer") === "function";
   }
