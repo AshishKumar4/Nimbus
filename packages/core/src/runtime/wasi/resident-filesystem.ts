@@ -1719,7 +1719,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // may hold what the view has not seen yet: a caller that may wait is answered by it, as one decided here is.
       let answer: boolean | Promise<unknown>;
       // A name a held subtree holds is answered once logged, as its other changes there are: awaited only where none holds it.
-      try { answer = decided(placed, !keys.some((key) => holder!.holds(key!))); } catch { return session(); }
+      try {
+        let holds = false;
+        for (let i = 0; !holds && i < keys.length; i++) holds = holder!.holds(keys[i]!);
+        answer = decided(placed, !holds);
+      } catch { return session(); }
       if (answer !== false) {
         counts.local++;
         return after(answer, () => undefined);
@@ -2236,9 +2240,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const copyOnSession = (from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean; preserve?: boolean }): Promise<void> => {
     const key = keyOf(pathOf(to));
-    const answered = Promise.resolve(bySessionCopy(from, to, options));
+    const answered = promiseResolve(bySessionCopy(from, to, options));
     holder!.copying(key, answered);
-    return answered.then(() => { holder!.superseded(key); });
+    return promiseThen(answered, () => { holder!.superseded(key); });
   };
   fs.copyFile = (from, to, options) => {
     if (holder === null || options?.preserve === true) return bySessionCopy(from, to, options);

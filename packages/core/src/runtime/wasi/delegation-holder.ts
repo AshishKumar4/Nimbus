@@ -47,7 +47,7 @@ import { owned } from './inode-fold.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
-import { bytesCopy, dateNow, ownValue, SafeSet } from '../../_shared/primordials.js';
+import { bytesCopy, dateNow, ownValue, SafeMap, SafeSet } from '../../_shared/primordials.js';
 
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
@@ -473,7 +473,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   };
 
   /** The session calls by name this process has in flight, per name (copying): the provisional decisions expect nothing of those names. */
-  const copies = new Map<string, number>();
+  const copies = new SafeMap<string, number>();
   const prov: Provisional = provisionalDecisions({
     // The store's, as it knows it when asked (it learns it at its first barrier).
     get device() { return store.device; },
