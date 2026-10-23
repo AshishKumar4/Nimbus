@@ -26,9 +26,12 @@
  *     `x.require(...)` on another module, which resolves from that module;
  *   - `import(...)` other than `import(<plain>)` with no options;
  *   - a static import or export from a specifier that is not plain;
+ *   - `module` anywhere but as `module.exports` (its require, its constructor
+ *     Module and Module._load, its parent and children), and `arguments` (in
+ *     a CommonJS module's scope it holds the wrapper's require);
  *   - a name that loads or makes code by a computed name, as an identifier
- *     or a property: createRequire, getBuiltinModule, eval, Function, _load,
- *     bindings, vm, importScripts, __nimbusDynamicImport.
+ *     or a property: createRequire, getBuiltinModule, mainModule, eval,
+ *     Function, _load, bindings, vm, importScripts, __nimbusDynamicImport.
  * A plain specifier is a string or a template with no substitution, written
  * with no escape and no quote character, as the walk's patterns read one.
  */
@@ -36,7 +39,8 @@ import type { AnyNode, Expression, SpreadElement } from 'acorn';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 
 const CODE_BY_NAME: ReadonlySet<string> = new Set([
-  'createRequire', 'getBuiltinModule', 'eval', 'Function', '_load', 'bindings', 'vm', 'importScripts', '__nimbusDynamicImport',
+  'createRequire', 'getBuiltinModule', 'mainModule', 'eval', 'Function', '_load', 'bindings', 'vm', 'importScripts', '__nimbusDynamicImport',
+  'arguments',
 ]);
 /** What a specifier the walk's patterns read may hold: no quote of any kind, no escape, no line break, no `$`. */
 const PLAIN = /^[^'"`\\\n$]+$/;
@@ -52,11 +56,16 @@ function plain(node: Expression | SpreadElement | undefined | null): boolean {
   return false;
 }
 
+/** A word without which a module makes no load at all, nor code from a string: one is needed before a parse can tell anything. */
+const LOAD_WORDS = /require|import|export|module|Module|arguments|getBuiltinModule|eval|Function|_load|bindings|vm|importScripts|__nimbusDynamicImport|\\u/;
+
 /** Whether `source` can load code the walk does not stage (see the header). */
 export function hasOpaqueLoads(source: string): boolean {
+  // Most of a closure (a builtins-only program, a leaf module) names none of them: no parse needed.
+  if (!LOAD_WORDS.test(source)) return false;
   const program = parseJavaScriptProgram(source);
   if (program === null) return true;
-  // The `require` identifiers that are the callee of a load the walk follows.
+  // The `require` identifiers that are the callee of a load the walk follows, and the `module`s of `module.exports`.
   const followed = new Set<AnyNode>();
   let opaque = false;
   forEachNode(program, (node) => {
@@ -67,6 +76,8 @@ export function hasOpaqueLoads(source: string): boolean {
       if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier' && callee.object.name === 'require'
         && callee.property.type === 'Identifier' && callee.property.name === 'resolve') followed.add(callee.object);
     }
+    if (node.type === 'MemberExpression' && !node.computed && node.object.type === 'Identifier' && node.object.name === 'module'
+      && node.property.type === 'Identifier' && node.property.name === 'exports') followed.add(node.object);
     if (node.type === 'ImportExpression' && ((node.options ?? null) !== null || !plain(node.source))) opaque = true;
     if ((node.type === 'ImportDeclaration' || node.type === 'ExportAllDeclaration') && !plain(node.source)) opaque = true;
     if (node.type === 'ExportNamedDeclaration' && node.source && !plain(node.source)) opaque = true;
@@ -74,7 +85,7 @@ export function hasOpaqueLoads(source: string): boolean {
   if (opaque) return true;
   forEachNode(program, (node) => {
     if (opaque || node.type !== 'Identifier') return;
-    if (CODE_BY_NAME.has(node.name) || (node.name === 'require' && !followed.has(node))) opaque = true;
+    if (CODE_BY_NAME.has(node.name) || ((node.name === 'require' || node.name === 'module') && !followed.has(node))) opaque = true;
   });
   return opaque;
 }

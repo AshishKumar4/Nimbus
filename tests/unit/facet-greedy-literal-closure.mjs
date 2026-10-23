@@ -61,6 +61,7 @@ const build = (entryCode) => buildPrefetchBundle(launchFs(files).fs, { cwd: `/${
     `require('x'); require("y"); require(\`z\`); require.resolve('w');`,
     `import('./a.js').then(() => {});`,
     `import a from 'a'; export { b } from "b"; export * from './c.js';`,
+    `module.exports = require('./a.js'); module.exports.b = 1;`,
     `// require(name) in a comment\nconst n = 1; /* import(x) */`,
     `const s = 'no loads here, not even require(name)'; console.log(\`\${s} \${1 + 1}\`);`,
   ];
@@ -74,8 +75,9 @@ const build = (entryCode) => buildPrefetchBundle(launchFs(files).fs, { cwd: `/${
     `require("\\x66oo")`, `require("it's")`, `require("foo", {})`, `import("b", { with: { type: 'json' } })`,
     // A template's substitution holds a computed load.
     `const name = 'foo'; const s = \`\${\`http://a\`}\${require(name)}\`;`,
-    // require on another module resolves from that module.
-    `module.require('v')`, `process.mainModule.require('foo')`,
+    // require on another module resolves from that module; a module's own object reaches Module and the others.
+    `module.require('v')`, `process.mainModule.require('foo')`, `module['req' + 'uire']('x')`, `module.constructor._load('x')`,
+    `module.parent.require('x')`, `arguments[1]('x')`,
     // What does not parse as JavaScript.
     `const x: number = require('x');`, `<div>{require('x')}</div>`,
   ];

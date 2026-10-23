@@ -4735,8 +4735,20 @@ async function _buildPrefetchBundle(
   // package.json scripts say "mocha --require"), nor a native binary. A
   // build with no program of its own (opencode's data-only staging, which
   // runs its own code over the project's modules) has nothing to prove.
-  const opaque = dataOnly || (scriptPath === undefined && entryCode === '') || hasOpaqueLoads(entryCode)
-    || [...closurePaths].some((path) => !path.endsWith('.json') && !isNativeBinPath(path) && hasOpaqueLoads(prefetch.bundle[path]));
+  // Each module is parsed (opaque-loads.ts), which costs about what the walk's
+  // own reading did: paced as the passes are, the smallest first, so one
+  // that proves the closure opaque is most often found before the largest
+  // is parsed.
+  const codeCells = [...closurePaths]
+    .filter((path) => !path.endsWith('.json') && !isNativeBinPath(path))
+    .map((path) => prefetch.bundle[path])
+    .sort((a, b) => a.length - b.length);
+  let opaque = dataOnly || (scriptPath === undefined && entryCode === '') || hasOpaqueLoads(entryCode);
+  for (const text of codeCells) {
+    if (opaque) break;
+    if (pacer) await pacer.spend(text.length);
+    opaque = hasOpaqueLoads(text);
+  }
   const greedy = opaque
     ? await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions })
     : { added: 0, groups: [] };
