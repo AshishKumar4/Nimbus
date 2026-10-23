@@ -399,8 +399,11 @@ export interface Provisional {
   /** The bytes of the file `entry` names, where this process's are its content. */
   content(entry: ResidentEntry): Uint8Array | undefined;
   barrierBegun(): number;
-  /** A barrier that began as `begun` landed: what was answered before it, outside a held subtree, is the view's now. */
-  retire(begun: number): void;
+  /**
+   * A barrier that began as `begun` landed: what was answered before it, outside a held subtree, is the view's now. The names
+   * whose bytes the process made and the view has no content for are returned: the caller fetches them before it lands.
+   */
+  retire(begun: number): [string, ResidentEntry][];
 }
 
 export function provisional(host: ProvisionalHost): Provisional {
@@ -1288,7 +1291,9 @@ export function provisional(host: ProvisionalHost): Provisional {
     const recordRoom = last.room !== undefined && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
     const capacity = state.bytes?.byteLength ?? 0;
     const end = start === undefined ? state.size + bytes.byteLength : start + bytes.byteLength;
-    const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0);
+    // A state sharing its payload is copied by this change (applyOp): the copy grows, uncharged until now.
+    const stateGrows = state.bytes === null ? 0 : state.shared === true ? (end > capacity ? Math.max(end, capacity * 2, 4096) : state.size) : end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0;
+    const growth = recordRoom - (last.room?.byteLength ?? before) + stateGrows;
     host.drain();
     host.client.fitsSync(bytes.byteLength, desc.path);
     if (growth > 0) {
@@ -1955,6 +1960,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       }
       // The bytes the view may keep of what retires (keep), once what they held is given back.
       const keeping: [string, ResidentEntry, Uint8Array][] = [];
+      const owed: [string, ResidentEntry][] = [];
       // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
       for (const inode of [...loose]) {
         if (host.unreported?.(inode.key) === true) continue;
@@ -1968,6 +1974,9 @@ export function provisional(host: ProvisionalHost): Provisional {
         if (retired.length === 0 && inode.records.length > 0) continue;
         // Nothing of it pending and nothing open on it (a file given back, say): it goes, and the view is not asked what it is.
         if (inode.records.length === 0 && inode.descs === 0 && inode.answers === 0) {
+          // What it held goes, and the view names it: the session's bytes of it are owed the view, unless the store holds them.
+          const named = inode.state?.bytes ? viewed(inode) : undefined;
+          if (named !== undefined && named.row.type === 'file' && named.bytes === undefined) owed.push([named.name, named.row]);
           inode.base = null;
           inode.state = null;
           touched.delete(inode);
@@ -2002,6 +2011,9 @@ export function provisional(host: ProvisionalHost): Provisional {
           if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision <= last.after
             && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
             keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
+          } else if (rewritten && inode.state?.bytes && seen.row.type === 'file' && seen.bytes === undefined) {
+            // What the process made of the file is not the view's to keep here (a change since, or a move): the session's bytes are owed.
+            owed.push([seen.name, seen.row]);
           }
           dropRecords(inode, new Set(retired));
           // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
@@ -2033,6 +2045,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       }
       for (const [key, row, bytes] of keeping) host.keep?.(key, row, bytes);
       activity();
+      return owed;
     },
   };
   return provisional;

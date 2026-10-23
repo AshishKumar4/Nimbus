@@ -630,10 +630,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // a delivered answer's, when its arguments were built (acquireArgs); one this process did not build vouches for nothing.
     barrier: (options) => {
       const begun = holder?.barrierBegun();
-      return begin(() => resident.barrier(options)).then((result) => {
+      return begin(() => resident.barrier(options)).then(async (result) => {
         // A given answer was asked when its caller asked, not now: it retires nothing.
         const from = options?.answer ? undefined : result.fromDelivery ? options?.delivered?.args.begin : begun;
-        if (result.landed && typeof from === 'number') holder?.retire(from);
+        if (result.landed && typeof from === 'number') {
+          // What the process made and the session holds, which the view has no bytes of: fetched before the barrier lands.
+          const owed = holder?.retire(from) ?? [];
+          await Promise.all(owed.map(([key, row]) => store.fill(key, row).catch(() => null)));
+        }
         return result;
       });
     },
