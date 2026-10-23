@@ -405,7 +405,9 @@ export function createView(
           const standIn = options.answer === undefined ? delivered(options.delivered) : null;
           const answer = options.answer !== undefined ? current(options.answer) : standIn ?? await acquire(options.lease);
           const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
-          return standIn === null ? result : { ...result, fromDelivery: true };
+          // An ACQUIRE that got no answer, whatever the repair after it did: the store's own failure.
+          const dropped = answer === null && options.answer === undefined && standIn === null;
+          return { ...result, ...(standIn === null ? {} : { fromDelivery: true }), ...(dropped ? { dropped: true } : {}) };
         },
         cursor: () => coherence.cursor(),
         reserve: (bytes) => admission.pin(bytes),
