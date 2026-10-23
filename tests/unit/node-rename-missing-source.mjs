@@ -28,7 +28,7 @@ const supervisor = waveSupervisor({
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
-;return { fs: builtins.fs, flushClient: () => __nimbusProcessFs().flush() };`,
+;return { fs: builtins.fs, flushClient: () => globalThis.__nimbusProcessFs.flush() };`,
 );
 const metadata = {
   'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },

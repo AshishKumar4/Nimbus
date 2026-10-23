@@ -11,7 +11,7 @@ import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processBridge } from './process-bridge.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority } from './shims-namespace.mjs';
 import { waveSupervisor } from './wave-supervisor.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -74,10 +74,10 @@ export function shimStoreProcess({ seed, writer } = {}) {
     '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
   );
-  declareNamespace({
-    metadata: { 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: USER.uid, gid: USER.gid } },
-    manifest: { 'home/user': ['p'], 'home/user/p': [] },
-  });
+  // The namespace as a launch lists it, and the root it carries.
+  listAuthority(rawVfs);
   const { fs, setTimeout } = factory({}, {}, supervisor, USER, PROCESS_DIR, [], {}, `${PROCESS_DIR}/s.mjs`, PROCESS_DIR);
-  return { rawVfs, vfs, bridge, supervisor, fs, setTimeout, stats: globalThis.__nimbusVfsCoherence };
+  // The process's filesystem's counters (ResidentFilesystem.stats), read when asked.
+  const processFs = globalThis.__nimbusProcessFs;
+  return { rawVfs, vfs, bridge, supervisor, fs, setTimeout, stats: () => processFs.stats() };
 }

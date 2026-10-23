@@ -144,7 +144,7 @@ async function authStep(authority, step) {
       // a new epoch: a restore to an earlier point in time.
       rawVfs.rotateIncarnation();
       // A reader's lease is broken by it, and the reader told.
-      await until(() => !globalThis.__nimbusProcessFs?.readTrusted(), 'the reader heard its lease was broken');
+      await until(() => !globalThis.__nimbusProcessFs?.client?.readTrusted(), 'the reader heard its lease was broken');
       return;
     }
     default: throw new Error(`unknown authority step ${step.auth}`);

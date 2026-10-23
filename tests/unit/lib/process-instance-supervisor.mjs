@@ -21,6 +21,8 @@ export function processInstanceSupervisor(authority, cred) {
   });
   return {
     supervisor, pid, acquireRequests, outputs,
+    /** The session's root, as a launch carries it (FacetVfsState.root, the request's vfsRoot). */
+    root: () => authority.host.supervisorBridge().stat('/'),
     async close() {
       authority.host.processes.exit(pid, 0);
       await authority.host.processes.released(pid);

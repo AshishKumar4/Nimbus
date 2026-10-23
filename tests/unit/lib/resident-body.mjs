@@ -21,6 +21,7 @@
  * process and Buffer — so a second launch in the same realm would run behind
  * the first one's barrier. `runScenarios` gives every scenario its own child.
  */
+import { rootOf } from '../../../packages/core/src/runtime/feed-position.ts';
 import { plugin } from 'bun';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -307,6 +308,11 @@ export async function residentDataPlan(authority, cwd, closure = []) {
     stat: async (path) => { try { const st = view.stat(path); return { kind: st.type, size: st.size }; } catch { return null; } },
   }), { cwd, home: '/home/user', closure, refs: [] });
   return plan.paths;
+}
+
+/** The root feed's cursor the program's store has applied (its next barrier asks from it). */
+export function appliedCursor() {
+  return rootOf(globalThis.__nimbusProcessFs.acquireArgs().position).cursor;
 }
 
 /** The program's filesystem's counters (ResidentFilesystem.stats). */

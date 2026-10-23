@@ -37,7 +37,7 @@ const generated = await generateLongRunningNodeCode('console.log("boot");', {
   bundle: {}, manifest: {}, metadata: {}, cursor: null, serializedManifest: '{}', serializedMetadata: '{}',
 }, { cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }, false, sources);
 const refs = generated.source.recipe().filter((part) => typeof part !== 'string');
-for (const name of ['shims', 'ledger', 'residentStore', 'registry']) {
+for (const name of ['shims', 'residentStore', 'registry']) {
   assert.ok(refs.some((pin) => pin.sha256 === sources.immutable[name].asset.sha256), name + ' is a shared source');
 }
 assert.equal(generated.codeModules[RUNTIME_NODE_LIB_MODULE], undefined);

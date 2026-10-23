@@ -51,7 +51,7 @@ async function run(program) {
   try {
     const response = await mod.default.fetch(new Request('http://facet/', {
       method: 'POST',
-      body: JSON.stringify({
+      body: JSON.stringify({ vfsRoot: process.root(),
         argv: [], env: {}, cwd: '/home/user', filename: '/home/user/main.js', dirname: '/home/user',
         stdin: '', captureOutput: true, cred, pid: process.pid,
       }),

@@ -65,7 +65,7 @@ async function bootTrusted(seed, prepare) {
   await rawSleep(READ_LEASE_TRUST_MS + 20);
   await booted.probe.resume();
   await booted.probe.resume();
-  assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+  assert.ok(globalThis.__nimbusProcessFs.client.readTrusted(), 'the barrier took no lease');
   return booted;
 }
 
@@ -87,7 +87,7 @@ await runScenarios(import.meta.path, {
     const before = asked(log);
     for (let i = 0; i < 5; i++) await probe.timer();
     assert.equal(asked(log), before + 5, 'a timer under a trusted lease asked nothing');
-    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'a timer\'s answer did not confirm the lease');
+    assert.ok(globalThis.__nimbusProcessFs.client.readTrusted(), 'a timer\'s answer did not confirm the lease');
   },
 
   async 'a barrier made before a read asks the session under a trusted read lease: only one taken as I/O arrives may skip'() {
@@ -112,12 +112,12 @@ await runScenarios(import.meta.path, {
   async "another's change is seen by the next response, and waited for the process's answer"() {
     const { authority, probe, log } = await boot();
     await probe.resume();
-    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
-    const recallsBefore = globalThis.__nimbusProcessFs.stats().readRecalls;
+    assert.ok(globalThis.__nimbusProcessFs.client.readTrusted(), 'the barrier took no lease');
+    const recallsBefore = globalThis.__nimbusProcessFs.client.stats().readRecalls;
     // A writer that is not the process: its write recalls the lease and waits for the answer.
     await withRecall(() => authority.kfs.writeFile('home/user/app/f.txt', 'v2'));
-    assert.equal(globalThis.__nimbusProcessFs.stats().readRecalls, recallsBefore + 1, 'the write did not recall the lease');
-    assert.equal(globalThis.__nimbusProcessFs.readTrusted(), false);
+    assert.equal(globalThis.__nimbusProcessFs.client.stats().readRecalls, recallsBefore + 1, 'the write did not recall the lease');
+    assert.equal(globalThis.__nimbusProcessFs.client.readTrusted(), false);
     const before = asked(log);
     await probe.resume();
     assert.equal(asked(log), before + 1, 'the response after a recall did not ask');
@@ -128,9 +128,9 @@ await runScenarios(import.meta.path, {
     const { probe, log } = await boot();
     await probe.resume();
     await probe.resume();
-    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+    assert.ok(globalThis.__nimbusProcessFs.client.readTrusted(), 'the barrier took no lease');
     probe.fs.writeFileSync(F, 'mine');
-    assert.equal(globalThis.__nimbusProcessFs.readTrusted(), false, 'its own write left the lease trusted');
+    assert.equal(globalThis.__nimbusProcessFs.client.readTrusted(), false, 'its own write left the lease trusted');
     const before = asked(log);
     await probe.resume();
     assert.equal(asked(log), before + 1, 'the response after its own write asked nothing');
@@ -144,7 +144,7 @@ await runScenarios(import.meta.path, {
     await rawSleep(READ_LEASE_TRUST_MS + 20);
     await probe.resume();
     await probe.resume();
-    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+    assert.ok(globalThis.__nimbusProcessFs.client.readTrusted(), 'the barrier took no lease');
     const calls = () => Object.values(log.calls).reduce((sum, n) => sum + n, 0);
     const before = calls();
     const names = await probe.fs.promises.readdir('/home/user/app');
@@ -252,7 +252,7 @@ await runScenarios(import.meta.path, {
     }, undefined, `${PROGRAM}\nglobalThis.__probe.connect = () => require("tls").connect({ host: "127.0.0.1", port: 9 }).on("error", () => {});`);
     // Written often enough, the subtree is the process's: a write there is decided by the process itself.
     for (let i = 0; i < 16; i++) await probe.fs.promises.writeFile(`/home/user/app/out/warm${i}`, 'w');
-    await until(() => globalThis.__nimbusProcessFs.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
+    await until(() => globalThis.__nimbusProcessFs.client.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
     await globalThis.__nimbusProcessFs.flush();
     const reader = authority.files.bind({ pid: 99, cred: CRED });
     const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
@@ -299,6 +299,6 @@ await runScenarios(import.meta.path, {
     await rawSleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS);
     await probe.resume();
     assert.equal(asked(log), before + 1, 'a response past the lease\'s trust asked nothing');
-    assert.ok(globalThis.__nimbusProcessFs.stats().readConfirms >= 1, 'the barrier did not confirm the lease');
+    assert.ok(globalThis.__nimbusProcessFs.client.stats().readConfirms >= 1, 'the barrier did not confirm the lease');
   },
 });

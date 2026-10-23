@@ -47,7 +47,7 @@ await runScenarios(import.meta.path, {
 
     // Written often enough, the subtree is the process's.
     for (let i = 0; i < 16; i++) await fs.promises.writeFile(`/home/user/app/out/warm${i}`, 'w');
-    await until(() => globalThis.__nimbusProcessFs?.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
+    await until(() => globalThis.__nimbusProcessFs?.client?.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
 
     // The session stops answering: awaited writes are answered at once up to the bound, then wait.
     stalled = Promise.withResolvers();

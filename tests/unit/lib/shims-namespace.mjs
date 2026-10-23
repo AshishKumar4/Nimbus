@@ -201,11 +201,16 @@ export const SHIMS_STORE_PRELUDE = createShimsStorePrelude(RESIDENT_STORE);
 /**
  * Splice after generateShimsCode(): the process's filesystem made over the
  * seeded store and the factory's supervisor, as a launch makes it once its
- * store booted (node-shims __nimbusStartProcessFilesystem). The root's stat
- * is the seeded namespace's: its rows carry no device, so neither does it.
+ * store booted (node-shims __nimbusStartProcessFilesystem). The root is the
+ * listed authority's (listAuthority), taken once; else the seeded
+ * namespace's, whose rows carry no device, so neither does it.
  */
 export const SHIMS_STORE_START = `
-;__nimbusStartProcessFilesystem({ dev: 0, ino: 1, nlink: 2, type: "directory", size: 0, atime: 0, mtime: 0, ctime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0 });
+;__nimbusStartProcessFilesystem((() => {
+  const root = globalThis.__nimbusTestRoot;
+  delete globalThis.__nimbusTestRoot;
+  return root || { dev: 0, ino: 1, nlink: 2, type: "directory", size: 0, atime: 0, mtime: 0, ctime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0 };
+})());
 `;
 
 /**
@@ -218,21 +223,27 @@ export function listAuthority(rawVfs) {
   // may do what with it.
   const fs = rawVfs.as(CRED_KERNEL);
   const out = [];
+  const statOf = (k) => {
+    const st = fs.lstat(k);
+    return {
+      type: st.type, size: Number(st.size) || 0, mode: Number(st.mode) || 0,
+      uid: Number(st.uid) || 0, gid: Number(st.gid) || 0,
+      atime: Number(st.atime) || 0, mtime: Number(st.mtime) || 0, ctime: Number(st.ctime) || 0, ino: Number(st.ino) || 0,
+      dev: Number(st.dev) || 0, nlink: Number(st.nlink) || 1,
+    };
+  };
   const walk = (dir) => {
     for (const entry of fs.readdir(dir)) {
       const k = dir ? `${dir}/${entry.name}` : entry.name;
-      const st = fs.lstat(k);
-      const stat = {
-        type: st.type, size: Number(st.size) || 0, mode: Number(st.mode) || 0,
-        uid: Number(st.uid) || 0, gid: Number(st.gid) || 0,
-        atime: Number(st.atime) || 0, mtime: Number(st.mtime) || 0, ctime: Number(st.ctime) || 0, ino: Number(st.ino) || 0,
-      };
-      if (st.type === 'symlink') stat.linkTarget = fs.readlink(k);
+      const stat = statOf(k);
+      if (stat.type === 'symlink') stat.linkTarget = fs.readlink(k);
       out.push([k, stat]);
-      if (st.type === 'directory') walk(k);
+      if (stat.type === 'directory') walk(k);
     }
   };
   walk('');
   globalThis.__nimbusTestAuthorityListing = out;
+  // The session's root, as a launch carries it (FacetVfsState.root): its device is the one the process's view answers for.
+  globalThis.__nimbusTestRoot = { ...statOf(''), revision: Number(rawVfs.revision()) || 0 };
   return out;
 }

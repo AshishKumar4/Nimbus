@@ -24,7 +24,6 @@
 import assert from 'node:assert/strict';
 import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 
-import { VFS_CURSOR_SEED_SOURCE } from '../../packages/core/src/_shared/facet-vfs-cursor.ts';
 import {
   generateEntrypointCode,
   generateLongRunningNodeCode,
@@ -169,7 +168,7 @@ export async function nimbusMain() {
 `;
     const { runner } = await importOpencodeRunner({
       mode: 'oneshot', program, cwd: `/${DIR}`,
-      vfsBundle: JSON.stringify({ [`${DIR}/data.txt`]: 'staged' }), vfsCursor: JSON.stringify(cursor),
+      vfsBundle: JSON.stringify({ [`${DIR}/data.txt`]: 'staged' }), vfsCursor: JSON.stringify(cursor), vfsRoot: JSON.stringify(authority.root()),
     });
     const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: {} }) }), { SUPERVISOR: supervisor });
     const result = await response.json();
@@ -206,12 +205,6 @@ if (!process.env.NIMBUS_RESIDENT_BODY_SCENARIO) {
     (await generateLongRunningNodeCode('', at(other), { cred: CRED }, false, SOURCES)).code,
     'the resident body is addressed by its program, not by the cursor it runs at',
   );
-
-  // A facet built without a VFS has no state to be coherent with, and must not
-  // invent a cursor for one — the seed is a no-op, not a fabricated epoch.
-  const scope = { __nimbusVfsCursor: undefined };
-  new Function('globalThis', `const __MODULE_VFS_CURSOR = null;\n${VFS_CURSOR_SEED_SOURCE}`)(scope);
-  assert.equal(scope.__nimbusVfsCursor, undefined, 'a snapshot-less facet is left with no cursor rather than a fabricated one');
 }
 
 await runScenarios(import.meta.path, scenarios);

@@ -177,7 +177,7 @@ try {
   try {
     const response = await mod.default.fetch(new Request('http://facet/', {
       method: 'POST',
-      body: JSON.stringify({ argv: [], env: {}, cwd: ROOT, filename: ROOT + '/main.js', dirname: ROOT, stdin: '', captureOutput: true, cred, pid: process.pid }),
+      body: JSON.stringify({ vfsRoot: process.root(), argv: [], env: {}, cwd: ROOT, filename: ROOT + '/main.js', dirname: ROOT, stdin: '', captureOutput: true, cred, pid: process.pid }),
     }), { SUPERVISOR: process.supervisor });
     body = await response.json();
   } finally {

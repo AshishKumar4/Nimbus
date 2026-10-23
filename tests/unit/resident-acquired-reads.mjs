@@ -10,9 +10,9 @@
 // value, and before it throws when the read was refused.
 
 import assert from 'node:assert/strict';
-import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
+  appliedCursor,
   createAuthority,
   facetSupervisor,
   launchResident,
@@ -160,7 +160,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.unlink('home/user/app/g.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
-    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= deleted, 'the barrier applied the deletion');
+    await until(() => appliedCursor() >= deleted, 'the barrier applied the deletion');
     release.resolve();
     assert.equal(await reading, 'g1', 'the read is what was there when it was served');
     await resumed;
@@ -193,7 +193,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     const unrelated = authority.rawVfs.revision();
     const resumed = probe.resume();
-    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= unrelated, 'the barrier applied the unrelated write');
+    await until(() => appliedCursor() >= unrelated, 'the barrier applied the unrelated write');
     await authority.peer.writeFile('home/user/app/late.txt', 'late');
     release.resolve();
     assert.equal(await reading, 'late');

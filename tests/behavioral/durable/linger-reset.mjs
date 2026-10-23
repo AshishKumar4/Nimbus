@@ -36,8 +36,8 @@ const dir = '/home/user/lr';
 (async () => {
   fs.mkdirSync(dir, { recursive: true });
   for (let i = 0; i < 16; i++) await fsp.writeFile(dir + '/warm' + i, 'w');
-  for (let i = 0; i < 200 && !globalThis.__nimbusProcessFs?.held('home/user/lr/x'); i++) await new Promise((r) => setTimeout(r, 10));
-  console.log('LR' + '_READY held=' + !!globalThis.__nimbusProcessFs?.held('home/user/lr/x'));
+  for (let i = 0; i < 200 && !globalThis.__nimbusProcessFs?.client?.held('home/user/lr/x'); i++) await new Promise((r) => setTimeout(r, 10));
+  console.log('LR' + '_READY held=' + !!globalThis.__nimbusProcessFs?.client?.held('home/user/lr/x'));
   await new Promise((r) => setTimeout(r, 500));
   await fsp.chmod(dir + '/warm0', 0o600);
   await fsp.writeFile(dir + '/async.txt', 'ASYNC');

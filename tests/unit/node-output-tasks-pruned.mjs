@@ -125,7 +125,7 @@ await runScenarios(import.meta.filename, {
     const session = outputSession(authority);
     const request = new Request('http://facet/', {
       method: 'POST',
-      body: JSON.stringify({
+      body: JSON.stringify({ vfsRoot: authority.root(),
         argv: [], env: {}, cwd: '/home/user', filename: '/home/user/p.js', dirname: '/home/user',
         stdin: '', captureOutput: false, cred: CRED,
       }),

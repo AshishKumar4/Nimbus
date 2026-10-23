@@ -89,7 +89,7 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
 /** Take `out`: write there until the process holds it, then let what it wrote be answered. */
 async function takeOut(fs, dir = OUT) {
   for (let i = 0; i < 16; i++) await fs.promises.writeFile(`${dir}/warm${i}`, 'w');
-  await until(() => globalThis.__nimbusProcessFs?.held(`${dir.slice(1)}/x`) !== undefined, 'the subtree held', 5_000);
+  await until(() => globalThis.__nimbusProcessFs?.client?.held(`${dir.slice(1)}/x`) !== undefined, 'the subtree held', 5_000);
   await globalThis.__nimbusProcessFs.flush();
 }
 
@@ -235,9 +235,9 @@ await runScenarios(import.meta.path, {
   async 'a mount beneath the held subtree recalls it before the table moves, and the stat asks the session (T10)'() {
     const { authority, fs, asked } = await boot();
     await fs.promises.stat(`${OUT}/seeded.txt`);
-    const recalls = globalThis.__nimbusProcessFs.stats().recalls;
+    const recalls = globalThis.__nimbusProcessFs.client.stats().recalls;
     await withRecall(() => authority.files.vfs.mount('/home/user/app/out/m', new MemoryVFS()));
-    await until(() => globalThis.__nimbusProcessFs.stats().recalls > recalls, 'the recall', 5_000);
+    await until(() => globalThis.__nimbusProcessFs.client.stats().recalls > recalls, 'the recall', 5_000);
     const before = asked();
     await fs.promises.stat(`${OUT}/seeded.txt`);
     assert.equal(asked() - before, 1, 'the stat answered from a view a mount had moved');

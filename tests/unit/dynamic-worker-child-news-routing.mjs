@@ -61,7 +61,7 @@ child.on('close', (code, signal) => console.log('close:' + code + ':' + signal))
     const entry = await importModuleSet(generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
     const running = entry.default.fetch(new Request('http://facet/', {
       method: 'POST',
-      body: JSON.stringify({
+      body: JSON.stringify({ vfsRoot: authority.root(),
         argv: [], env: {}, cwd: '/home/user', filename: '/home/user/main.js', dirname: '/home/user',
         stdin: '', cred: CRED, pid: log.pid,
       }),

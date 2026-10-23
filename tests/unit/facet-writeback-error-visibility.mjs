@@ -18,14 +18,14 @@ try {
   `, { bundle: {} }, false, nodeFacetSources(generateShimsCode()));
   const file = writeModuleSet(work, generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
   const runner = await import(file);
-  const { supervisor } = withNamespace({
+  const { supervisor, authority } = withNamespace({
     async writeBatchStream() { waves++; exhausted = true; throw error; },
     async stderr() { if (exhausted) throw error; },
     async reportExit() { if (exhausted) throw error; },
   });
   const response = await runner.default.fetch(new Request('http://facet/', {
     method: 'POST', body: JSON.stringify({
-      argv: [], env: {}, cwd: '/home/user', filename: '/home/user/writer.js', dirname: '/home/user',
+      vfsRoot: authority.root(), argv: [], env: {}, cwd: '/home/user', filename: '/home/user/writer.js', dirname: '/home/user',
       stdin: '', captureOutput: false, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     }),
   }), { SUPERVISOR: supervisor });

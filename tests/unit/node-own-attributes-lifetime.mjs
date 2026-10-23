@@ -88,7 +88,7 @@ let body;
 try {
   const response = await mod.default.fetch(new Request('http://facet/', {
     method: 'POST',
-    body: JSON.stringify({
+    body: JSON.stringify({ vfsRoot: instance.root(),
       argv: [], env: {}, cwd: '/home/user', filename: '/home/user/main.js', dirname: '/home/user',
       stdin: '', captureOutput: true, cred, pid: instance.pid,
     }),

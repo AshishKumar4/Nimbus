@@ -9,9 +9,8 @@
 // for the write and the stat separately.
 
 import assert from 'node:assert/strict';
-import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
+import { appliedCursor, createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
 
@@ -107,7 +106,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.unlink('home/user/app/f.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
-    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= deleted, 'the barrier applied the deletion');
+    await until(() => appliedCursor() >= deleted, 'the barrier applied the deletion');
     release.resolve();
     await writing;
     await resumed;

@@ -82,7 +82,7 @@ async function boot({ program = PROGRAM, held = true } = {}) {
   if (!held) return { authority, log: handle.log };
   const { fs } = globalThis.__probe;
   for (let i = 0; i < 16; i++) await fs.promises.writeFile(`${OUT}/warm${i}`, 'w');
-  await until(() => globalThis.__nimbusProcessFs?.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
+  await until(() => globalThis.__nimbusProcessFs?.client?.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
   await globalThis.__nimbusProcessFs.flush();
   return {
     authority,
@@ -196,7 +196,7 @@ await runScenarios(import.meta.path, {
     // Listed in the process's view, as a tree is that was there when it started.
     assert.equal((await fs.promises.readdir('/home/user/app/modes')).length, 12);
     for (let i = 0; i < 12; i++) await fs.promises.chmod(`/home/user/app/modes/f${i}`, 0o600);
-    await until(() => globalThis.__nimbusProcessFs.held('home/user/app/modes/x') !== undefined, 'the chmods took their subtree', 5_000);
+    await until(() => globalThis.__nimbusProcessFs.client.held('home/user/app/modes/x') !== undefined, 'the chmods took their subtree', 5_000);
     stall();
     assert.equal(await answeredAtOnce(fs.promises.chmod('/home/user/app/modes/f0', 0o400)), 'answered');
     await release();
@@ -252,7 +252,7 @@ await runScenarios(import.meta.path, {
       fs.writeFileSync(`${CO}/s${i}`, `S${i}`);
       await fs.promises.copyFile(`${CO}/s${i}`, `${CO}/d${i}`);
     }
-    await until(() => globalThis.__nimbusProcessFs.held('home/user/app/co/x') !== undefined, 'the copies took their subtree', 5_000);
+    await until(() => globalThis.__nimbusProcessFs.client.held('home/user/app/co/x') !== undefined, 'the copies took their subtree', 5_000);
     stall();
     fs.writeFileSync(`${CO}/last`, 'LAST');
     assert.equal(await answeredAtOnce(fs.promises.copyFile(`${CO}/last`, `${CO}/last-copy`)), 'answered');
@@ -502,7 +502,7 @@ const fs = require("fs");
 const fsp = fs.promises;
 (async () => {
   for (let i = 0; i < 16; i++) await fsp.writeFile("${OUT}/warm" + i, "w");
-  while (globalThis.__nimbusProcessFs?.held("home/user/app/out/x") === undefined) await new Promise((r) => setTimeout(r, 5));
+  while (globalThis.__nimbusProcessFs?.client?.held("home/user/app/out/x") === undefined) await new Promise((r) => setTimeout(r, 5));
   await fsp.chmod("${OUT}/warm0", 0o600);
   fs.writeFileSync("${OUT}/last.txt", "LAST");
   process.exit(0);
