@@ -355,11 +355,6 @@ const GAPS = {
       + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
     shows: 'at rest, sync readFile top answered "c3219.3"',
   },
-  'an awaited read of a file a relist is on its way to is answered, not refused [node]': {
-    lacks: 'B2: node-shims refuses an awaited read under a directory its relist is on its way to (EAGAIN), where it should wait (the cutover\'s relist fence); '
-      + 'meanwhile fs.promises.readFile of such a file can reject EAGAIN',
-    shows: 'own readFile d/e/g answered EAGAIN',
-  },
   'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700) [node]': {
     lacks: 'S: what a write\'s answer installs outlives the removal the same wave carried, past every barrier since (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile a Node program\'s readdirSync can list a file it deleted with unlinkSync, which the session no longer holds',
@@ -379,10 +374,6 @@ const GAPS = {
     lacks: 'S gives a write in flight at a name the size of the file it renamed away from that name (closed by the cutover: RF keeps own state by identity); '
       + 'meanwhile statSync of the renamed file can report the size of the file being written at its old name',
     shows: 'sync stat d/n answered file 644 size 7',
-  },
-  'an awaited read of a directory a peer moved is answered, not refused (5786) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session answers it (closed by the cutover: RF waits for the session); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile d/e answered EAGAIN',
   },
   'a directory the process removed and made again lists no name before its write is made (5891) [node]': {
     lacks: 'S lists, in a directory the process removed and made again, a name the session does not hold there while the process\'s own write of it is in flight (closed by the cutover: one own state, RF\'s); '
