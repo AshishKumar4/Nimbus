@@ -116,6 +116,12 @@ export interface ResidentNamespace {
     /** Return what `reserve` charged. */
     release(bytes: number): void;
     /**
+     * Keep `bytes` as `key`'s content at `revision`, where its row is still at
+     * it and there is room, as a fill of it would: the bytes this process made
+     * of the file, which the session answered it holds at that revision.
+     */
+    keep?(key: string, revision: number, bytes: Uint8Array): void;
+    /**
      * `listener` is told of each row the view takes in (a barrier's or an
      * answer's delta, a listing, a lookup), by its key and its file's number
      * (`dev`, `ino`, as `entry` has them), synchronously within the admission:

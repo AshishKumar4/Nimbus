@@ -2830,6 +2830,11 @@ var __nimbusResidentModule = (() => {
           cursor: () => coherence.cursor(),
           reserve: (bytes) => admission.pin(bytes),
           release: (bytes) => admission.unpin(bytes),
+          keep(k, revision, bytes) {
+            const row = nsRowAt(coherence.require(), k);
+            if (row === void 0 || row.rev !== revision || view.content(k, revision) !== void 0) return;
+            cells.put(coherence.require(), k, new Uint8Array(bytes), revision);
+          },
           // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
           onAdmitted(listener) {
             namespace.onPut(listener);
@@ -5548,13 +5553,15 @@ var __nimbusResidentModule = (() => {
         return;
       inode.state = foldOps(inode.base, inode.records.map((record) => record.op));
     };
-    const settleRecords = (records, refused) => {
+    const settleRecords = (records, refused, after3) => {
       if (!refused) {
         for (const record of records) {
           if (record.gone)
             continue;
           record.answered = true;
           record.answeredAt = barriers;
+          if (after3 !== void 0)
+            record.after = after3;
         }
         return;
       }
@@ -5575,7 +5582,7 @@ var __nimbusResidentModule = (() => {
       }
     };
     const nameCost = (keys, target = "") => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
-    const loggedOn = (records, op, awaited = false) => logged(op, (refused) => settleRecords(records, refused), awaited);
+    const loggedOn = (records, op, awaited = false) => logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
     const extended2 = (record, data, at) => {
       const op = record.op;
       const before = op.data.byteLength;
@@ -5787,7 +5794,7 @@ var __nimbusResidentModule = (() => {
         sessions.delete(description);
       }
       closeRetained(inode);
-      settleRecords(records, refused);
+      settleRecords(records, refused, answer?.mutation?.after);
       fit(inode);
       release(inode);
     };
@@ -5882,7 +5889,7 @@ var __nimbusResidentModule = (() => {
       const record = recorded(desc.inode, op, desc.description);
       desc.lastRecord = record;
       desc.lastAnswer = answer;
-      settles(answer, (refused) => settleRecords([record], refused));
+      settles(answer, (refused, answered) => settleRecords([record], refused, answered?.mutation?.after));
     };
     const continued = (desc, start, bytes, at) => {
       const inode = desc.inode;
@@ -6007,8 +6014,8 @@ var __nimbusResidentModule = (() => {
       if (close && bytes !== null && chmod === void 0 && host2.mounted?.(key) === true) {
         const records = ops.map((op) => fold(target, op));
         const whole = { type: "call", call: { call: "writeFile", path: key, mode: asked, umask, data: bytes } };
-        const settled = (refused) => {
-          settleRecords(records, refused);
+        const settled = (refused, answer) => {
+          settleRecords(records, refused, answer?.mutation?.after);
           fit(target);
           release(target);
         };
@@ -6611,6 +6618,10 @@ var __nimbusResidentModule = (() => {
               inode.state = null;
             }
           } else if (inode.records.length === retired.length) {
+            const last = retired[retired.length - 1];
+            if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision === last.after && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
+              host2.keep?.(seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size));
+            }
             dropRecords(inode, new Set(retired));
             inode.row = (retired.length > 0 ? host2.absorb(seen.name, entryOf(inode)) : void 0) ?? seen.row;
             if (inode.descs > 0 && inode.state?.bytes)
@@ -7871,6 +7882,8 @@ var __nimbusResidentModule = (() => {
         failures.push({ op: entry.name, path, errno: errno2, message });
         entry.resolve({ failed: { errno: errno2, message, ...refused ? { refused: true } : {} } });
       } else {
+        if (!refused)
+          failures.push({ op: entry.name, path, errno: errno2, message });
         entry.reject(fsError3(errno2, message, path));
       }
     };
@@ -8917,6 +8930,7 @@ var __nimbusResidentModule = (() => {
       settled: (key, generation) => names.settled(key, generation),
       ...store.mounted === void 0 ? {} : { mounted: (key) => store.mounted(key) },
       ...store.unreported === void 0 ? {} : { unreported: (key) => store.unreported(key) },
+      ...store.keep === void 0 ? {} : { keep: (key, row, bytes) => store.keep(key, row.revision, bytes) },
       absorb: (key, file) => {
         const decision = decided.get(key);
         if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)
@@ -9768,6 +9782,7 @@ var __nimbusResidentModule = (() => {
   }
   var DELEGATE = /* @__PURE__ */ Symbol("delegate");
   var ROOT_FOR_WALK = { type: "directory", mode: 16877, uid: 0, gid: 0 };
+  var PASSED_THROUGH = { type: "directory", mode: 16749, uid: 0, gid: 0 };
   var NAME_OR_ACCESS_CHANGES = /* @__PURE__ */ new Set([
     "chmod",
     "chown",
@@ -9981,6 +9996,7 @@ var __nimbusResidentModule = (() => {
           content: (key, revision) => resident.content(key, revision),
           reserve: (bytes) => resident.reserve(bytes),
           release: (bytes) => resident.release(bytes),
+          ...resident.keep === void 0 ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) },
           mounted: (key) => mountedName(key),
           unreported: (key) => walkedMounts && unreportedName(key)
         },
@@ -10050,8 +10066,12 @@ var __nimbusResidentModule = (() => {
           continue;
         }
         const entry = store.entry(key);
-        if (entry === void 0)
-          return { missing: key };
+        if (entry === void 0) {
+          if (!walkedMounts)
+            return { missing: key };
+          step = walk.next(PASSED_THROUGH);
+          continue;
+        }
         if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
           return DELEGATE;
         step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });

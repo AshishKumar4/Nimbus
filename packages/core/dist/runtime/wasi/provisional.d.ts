@@ -81,6 +81,12 @@ export interface ProvisionalHost {
      * has none of that file.
      */
     absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
+    /**
+     * The bytes this process made of the file at `key`, which the session holds
+     * at `row`'s revision (the last change it made of them was answered at it):
+     * the view may keep them as its content there, as a fill of it would.
+     */
+    keep?(key: string, row: ResidentEntry, bytes: Uint8Array): void;
     /** Whether `key` is on a mount: what is decided there names no file of this filesystem it expects (a wave refuses an expectation there). */
     mounted?(key: string): boolean;
     /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
@@ -208,6 +214,8 @@ interface InodeRecord {
     answered: boolean;
     /** Barriers begun when it was answered: one begun after retires it. */
     answeredAt: number;
+    /** The session's revision right after it, where its answer says (ProcessFsAnswer.mutation): its file's, as it made it. */
+    after?: number;
     /** Gone from its inode's records (refused, retired or moved): its answer says nothing more. */
     gone?: true;
 }

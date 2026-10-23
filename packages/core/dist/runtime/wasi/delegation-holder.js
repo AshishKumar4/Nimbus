@@ -303,6 +303,7 @@ export function delegationHolder(options) {
         settled: (key, generation) => names.settled(key, generation),
         ...(store.mounted === undefined ? {} : { mounted: (key) => store.mounted(key) }),
         ...(store.unreported === undefined ? {} : { unreported: (key) => store.unreported(key) }),
+        ...(store.keep === undefined ? {} : { keep: (key, row, bytes) => store.keep(key, row.revision, bytes) }),
         absorb: (key, file) => {
             const decision = decided.get(key);
             if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)

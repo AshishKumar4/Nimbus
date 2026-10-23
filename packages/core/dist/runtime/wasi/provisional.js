@@ -523,13 +523,15 @@ export function provisional(host) {
      * inode folds again; an answered one is stamped, and stays until the view
      * has its outcome (retire).
      */
-    const settleRecords = (records, refused) => {
+    const settleRecords = (records, refused, after) => {
         if (!refused) {
             for (const record of records) {
                 if (record.gone)
                     continue;
                 record.answered = true;
                 record.answeredAt = barriers;
+                if (after !== undefined)
+                    record.after = after;
             }
             return;
         }
@@ -552,7 +554,7 @@ export function provisional(host) {
     /** What a name record keeps: itself and its names, and a link's target. */
     const nameCost = (keys, target = '') => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
     /** Log the op that made `records`, their fate its. */
-    const loggedOn = (records, op, awaited = false) => logged(op, (refused) => settleRecords(records, refused), awaited);
+    const loggedOn = (records, op, awaited = false) => logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
     /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
     const extended = (record, data, at) => {
         // The record's own op: changed where it is.
@@ -803,7 +805,7 @@ export function provisional(host) {
             sessions.delete(description);
         }
         closeRetained(inode);
-        settleRecords(records, refused);
+        settleRecords(records, refused, answer?.mutation?.after);
         fit(inode);
         release(inode);
     };
@@ -916,7 +918,7 @@ export function provisional(host) {
         const record = recorded(desc.inode, op, desc.description);
         desc.lastRecord = record;
         desc.lastAnswer = answer;
-        settles(answer, (refused) => settleRecords([record], refused));
+        settles(answer, (refused, answered) => settleRecords([record], refused, answered?.mutation?.after));
     };
     /**
      * A write `desc`'s last change continues, as the session answers each
@@ -1074,8 +1076,8 @@ export function provisional(host) {
         if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
             const records = ops.map((op) => fold(target, op));
             const whole = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
-            const settled = (refused) => {
-                settleRecords(records, refused);
+            const settled = (refused, answer) => {
+                settleRecords(records, refused, answer?.mutation?.after);
                 fit(target);
                 release(target);
             };
@@ -1728,6 +1730,13 @@ export function provisional(host) {
                     }
                 }
                 else if (inode.records.length === retired.length) {
+                    // What it made of the bytes, whole, is the session's at the revision its last change was answered at:
+                    // the view's still where its row is at that revision.
+                    const last = retired[retired.length - 1];
+                    if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision === last.after
+                        && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
+                        host.keep?.(seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size));
+                    }
                     dropRecords(inode, new Set(retired));
                     // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
                     inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;

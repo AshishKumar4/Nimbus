@@ -78,6 +78,8 @@ function extensionOf(name) {
 const DELEGATE = Symbol('delegate');
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
 const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 };
+/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.walkedMounts): searchable by anyone. */
+const PASSED_THROUGH = { type: 'directory', mode: 0o40555, uid: 0, gid: 0 };
 /**
  * The session's calls that can change a name or an access: before one, the
  * files this process holds open write through (DelegationHolder.changing),
@@ -287,6 +289,7 @@ export function residentFilesystem(session, resident, delegation) {
                 content: (key, revision) => resident.content(key, revision),
                 reserve: (bytes) => resident.reserve(bytes),
                 release: (bytes) => resident.release(bytes),
+                ...(resident.keep === undefined ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) }),
                 mounted: (key) => mountedName(key),
                 unreported: (key) => walkedMounts && unreportedName(key),
             },
@@ -366,8 +369,15 @@ export function residentFilesystem(session, resident, delegation) {
                 continue;
             }
             const entry = store.entry(key);
-            if (entry === undefined)
-                return { missing: key };
+            if (entry === undefined) {
+                // Node's walk passes a directory the launch's listing could not name (a device that resolves
+                // its own paths shows only what its user consented to, as the session hands it the whole
+                // name): a name beneath it is answered where the listing named it, else missing.
+                if (!walkedMounts)
+                    return { missing: key };
+                step = walk.next(PASSED_THROUGH);
+                continue;
+            }
             if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
                 return DELEGATE;
             step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
