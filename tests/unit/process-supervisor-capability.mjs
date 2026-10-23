@@ -230,7 +230,8 @@ function runnerHost(words, refuse, run) {
     async run(input, ended) {
       if (calls.refused < refuse) { calls.refused++; throw new Error(words); }
       calls.entered++;
-      await ended();
+      // As the runner's entry does: it asks how its call ends, and runs on.
+      ended().catch(() => {});
       return run(input);
     },
     [Symbol.dispose]() {},

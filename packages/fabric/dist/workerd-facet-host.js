@@ -842,7 +842,7 @@ async function callRunner(ctx, env, supervisor, params, consume) {
                 });
             }
             catch (error) {
-                if (entered || classifyError(error) !== 'dynamic_worker_cap')
+                if (entered || !refusedStart(error))
                     throw error;
                 // Refused before it was entered: the ledger learns it from the hold it ends (runOneShot).
                 endFetch(error);
