@@ -232,8 +232,8 @@ export function createAdmission(coherence: Coherence): Admission {
     setStorage(storage, given) {
       supervisor = given || null;
       const allowance = typeof storage === 'object' && storage !== null ? storage : null;
-      const given = allowance === null ? undefined : ownField(allowance, 'available');
-      available = typeof given === 'number' ? given : null;
+      const room = allowance === null ? undefined : ownField(allowance, 'available');
+      available = typeof room === 'number' ? room : null;
       const named = allowance === null ? undefined : ownField(allowance, 'facet');
       const grant = allowance === null ? undefined : ownField(allowance, 'grant');
       if (typeof named !== 'string' || typeof grant !== 'number') return;

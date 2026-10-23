@@ -317,7 +317,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     const cell = inode.cell;
     if (cell === undefined || cell.detached !== undefined) return;
     dirty.delete(inode);
-    delete cell.logged;
+    cell.logged = undefined;
     // A made file's cell keeps the mode its open asked, its umask beside it, until a chmod here decides it.
     const mode = cell.umask === undefined ? cell.mode : cell.mode & ~cell.umask;
     const entry = decided.get(inode.key) ?? store.entry(inode.key) ?? {
@@ -405,8 +405,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Its mode refuses its creating open what it writes: made by that open, and written through it.
       if (ino !== undefined && refusedByMode(inode)) {
         dirty.delete(inode);
-        delete file.changedFrom;
-        delete file.made;
+        file.changedFrom = undefined;
+        file.made = undefined;
         unhold(inode, ino);
         continue;
       }
@@ -419,8 +419,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Unlogged until the log took it: one that refused it (the session
       // ended the process) leaves it for the settle's (logHeld).
       dirty.delete(inode);
-      delete file.changedFrom;
-      delete file.made;
+      file.changedFrom = undefined;
+      file.made = undefined;
       file.logged = file.length;
     }
   };
@@ -587,7 +587,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const detach = (inode: Inode, entry: ResidentEntry): void => {
     const file = inode.cell!;
     file.detached = { ...entry, nlink: 0, size: file.length };
-    delete file.logged;
+    file.logged = undefined;
     dirty.delete(inode);
   };
 
@@ -1000,7 +1000,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const local = prov.inode(current.dev, current.ino)?.cell;
       if (local !== undefined) {
         local.mode = next.mode & 0o7777;
-        delete local.umask;
+        local.umask = undefined;
       }
       log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
       return true;

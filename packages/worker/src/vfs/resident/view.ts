@@ -410,7 +410,7 @@ export function createView(
           }
           const cell = cells.get(k);
           if (cell === undefined || (typeof cell === 'object' && objectHasOwn(cell, 'error'))) return undefined;
-          return typeof cell === 'string' ? encoder.encode(cell) : cell;
+          return typeof cell === 'string' ? encoder.encode(cell) : cell as Uint8Array;
         },
         async fill(k, entry) {
           const cursor = coherence.cursor();
