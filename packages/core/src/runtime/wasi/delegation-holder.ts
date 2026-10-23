@@ -48,8 +48,8 @@ import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import {
-  arrayJoin, bytesCopy, bytesView, dateNow, mathMax, mathMin, promiseThen, SafeSet, stringLastIndexOf, stringOf, stringSlice, stringStartsWith,
-  typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor,
+  arrayJoin, bytesCopy, bytesView, dateNow, mathMax, mathMin, ownValue, promiseThen, SafeSet, stringLastIndexOf, stringOf, stringSlice,
+  stringStartsWith, typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
 /** Descriptors this holder opens are numbered below every session descriptor. */
@@ -260,7 +260,7 @@ function within(key: string, root: string): boolean {
 
 export function delegationHolder(options: HolderOptions): DelegationHolder {
   const { store } = options;
-  const now = options.now ?? dateNow;
+  const now = ownValue(options, 'now') ?? dateNow;
   /** What it decided by name, until the view has it. */
   const names = ownNames({
     entry: (key) => store.entry(key),
@@ -293,7 +293,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    * made (Provisional), never for one it cannot make now.
    */
   const deciding = (key: string): ProcessFsGrant | undefined => {
-    if (options.cannotWait?.() === true && client.held(key) === undefined) return undefined;
+    if (ownValue(options, 'cannotWait')?.() === true && client.held(key) === undefined) return undefined;
     const grant = client.holder(key);
     return grant === undefined || (provisionalActive && prov.touches(key)) ? undefined : grant;
   };
@@ -332,7 +332,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const creating = made !== undefined && at === 0;
       const making = creating ? { create: true as const, exclusive: true as const, ino: made, ...(cell.umask === undefined ? {} : { umask: cell.umask }) } : {};
       const read = desc.read;
-      void promiseThen(acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, access: read ? 'readwrite' : 'write', description } }), (answered) => prov.anchored(description, answered.receipt?.handle, read), () => {});
+      void promiseThen(acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, access: read ? 'readwrite' : 'write', description } }), (answered) => prov.anchored(description, ownValue(answered, 'receipt')?.handle, read), () => {});
       if (creating && cell.length > 0) {
         acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
       }
@@ -440,19 +440,19 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     for (const inode of prov.cells()) if (within(inode.key, root)) unhold(inode);
     names.released(root);
     prov.answeredHeld(root);
-    options.sent?.();
+    ownValue(options, 'sent')?.();
   };
 
   const client = processFsClient({
     session: options.session,
     now,
-    ...(options.timers === undefined ? {} : { timers: options.timers }),
-    ...(options.umask === undefined ? {} : { umask: options.umask }),
-    ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
-    ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
-    ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
-    ...(options.journal === undefined ? {} : { journal: options.journal }),
-    ...(options.logged === undefined ? {} : { logged: options.logged }),
+    ...(ownValue(options, 'timers') === undefined ? {} : { timers: ownValue(options, 'timers') }),
+    ...(ownValue(options, 'umask') === undefined ? {} : { umask: ownValue(options, 'umask') }),
+    ...(ownValue(options, 'isHomeRoot') === undefined ? {} : { isHomeRoot: ownValue(options, 'isHomeRoot') }),
+    ...(ownValue(options, 'grantAfter') === undefined ? {} : { grantAfter: ownValue(options, 'grantAfter') }),
+    ...(ownValue(options, 'grantInos') === undefined ? {} : { grantInos: ownValue(options, 'grantInos') }),
+    ...(ownValue(options, 'journal') === undefined ? {} : { journal: ownValue(options, 'journal') }),
+    ...(ownValue(options, 'logged') === undefined ? {} : { logged: ownValue(options, 'logged') }),
     released: dropDecisions,
     // Closing starts (a recall, an idle or renewing give-back): nothing more
     // is decided under it, and its files' descriptions write through from now
@@ -478,18 +478,18 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     children: (key) => names.children(key, store.children(key)),
     content: (key, revision) => {
       const entry = decided.get(key);
-      return (entry ? heldContent(entry) : undefined) ?? store.content?.(key, revision);
+      return (entry ? heldContent(entry) : undefined) ?? ownValue(store, 'content')?.(key, revision);
     },
-    reserve: (bytes) => store.reserve?.(bytes) ?? true,
-    release: (bytes) => store.release?.(bytes),
+    reserve: (bytes) => ownValue(store, 'reserve')?.(bytes) ?? true,
+    release: (bytes) => ownValue(store, 'release')?.(bytes),
     client,
     drain,
-    sent: () => options.sent?.(),
+    sent: () => ownValue(options, 'sent')?.(),
     // Reads by name and by number consult them only while the process sees any.
     active: (on) => { provisionalActive = on; },
     held: (key) => client.held(key) !== undefined,
     count: (key) => { client.holder(key); },
-    umask: () => options.umask?.() ?? 0o022,
+    umask: () => ownValue(options, 'umask')?.() ?? 0o022,
     now,
     nextHandle: () => nextHandle--,
     unhold: (inode) => {
@@ -498,9 +498,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
     generation: (key) => names.generation(key),
     settled: (key, generation) => names.settled(key, generation),
-    ...(store.mounted === undefined ? {} : { mounted: (key: string) => store.mounted!(key) }),
-    ...(store.unreported === undefined ? {} : { unreported: (key: string) => store.unreported!(key) }),
-    ...(store.keep === undefined ? {} : { keep: (key: string, row: ResidentEntry, bytes: Uint8Array) => store.keep!(key, row.revision, bytes) }),
+    ...(ownValue(store, 'mounted') === undefined ? {} : { mounted: (key: string) => ownValue(store, 'mounted')!(key) }),
+    ...(ownValue(store, 'unreported') === undefined ? {} : { unreported: (key: string) => ownValue(store, 'unreported')!(key) }),
+    ...(ownValue(store, 'keep') === undefined ? {} : { keep: (key: string, row: ResidentEntry, bytes: Uint8Array) => ownValue(store, 'keep')!(key, row.revision, bytes) }),
     absorb: (key, file) => {
       const decision = decided.get(key);
       if (!decision || decision.dev !== file.dev || decision.ino !== file.ino) return undefined;
@@ -541,7 +541,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const sentSome = (covered: number): void => {
     if (covered <= sentAt) return;
     sentAt = covered;
-    options.sent?.();
+    ownValue(options, 'sent')?.();
   };
 
   const entryOf = (key: string): ResidentEntry | null | undefined => {
@@ -696,7 +696,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Held here as an emptied file's written bytes are: in its cell (an
       // O_TRUNC open keeps it), what more they take drawn from what the
       // grant reserved (room); else the session copies.
-      const file: HeldCell = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode };
+      const file: HeldCell = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode, made: undefined, umask: undefined, logged: undefined, changedFrom: undefined, detached: undefined };
       if (!room(file, to, typedArrayByteLength(bytes))) {
         if (inode.cell === undefined) prov.dropCell(inode);
         return false;
@@ -752,7 +752,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         };
         drain();
         // Its mode was decided under this umask: the session applies the same one, and its number.
-        const file: HeldCell = { bytes: new Uint8ArrayConstructor(0), length: 0, mode: asked, made: ino, umask };
+        const file: HeldCell = { bytes: new Uint8ArrayConstructor(0), length: 0, mode: asked, made: ino, umask, logged: undefined, changedFrom: undefined, detached: undefined };
         // Room for what it is opened to be written with, before anything is decided (its number unused if not).
         if (initial > 0 && !room(file, key, initial)) return undefined;
         inode = prov.inodeFor(key, { ...entry });
@@ -779,7 +779,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         if (inode !== undefined && inode.cell === undefined && (inode.state !== null || inode.records.length > 0)) return undefined;
         inode ??= prov.inodeFor(key, current);
         if (inode === undefined) return undefined;
-        const file: HeldCell = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode: current.mode & 0o7777 };
+        const file: HeldCell = inode.cell ?? { bytes: new Uint8ArrayConstructor(0), length: 0, mode: current.mode & 0o7777, made: undefined, umask: undefined, logged: undefined, changedFrom: undefined, detached: undefined };
         if (initial > 0 && !room(file, key, initial)) {
           if (inode.cell === undefined) prov.dropCell(inode);
           return undefined;

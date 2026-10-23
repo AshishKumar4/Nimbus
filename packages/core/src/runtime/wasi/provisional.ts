@@ -37,8 +37,8 @@ import type { W7Attrs, W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp, ProcessFsReceipt } from '../../_shared/process-fs-client.js';
 import { applyOp, copyState, foldOps, owned, type InodeOp, type InodeState } from './inode-fold.js';
 import {
-  arrayIncludes, arrayIndexOf, bytesView, Error, mathMax, mathMin, objectFreeze, objectKeys, promiseThen, SafeMap, SafeSet, stringLastIndexOf,
-  stringOf, stringSlice, stringStartsWith, SymbolConstructor, typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
+  arrayIncludes, arrayIndexOf, bytesView, Error, mathMax, mathMin, objectFreeze, objectKeys, ownValue, promiseThen, SafeMap, SafeSet,
+  stringLastIndexOf, stringOf, stringSlice, stringStartsWith, SymbolConstructor, typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
 /** Where a provisional file's own numbers start: past any the session gives. */
@@ -544,7 +544,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * directory or link made here: no description names those).
    */
   const expecting = (row: ResidentEntry | null, key: string): { expect?: W7Expected } => {
-    if (host.mounted?.(key) === true) return {};
+    if (ownValue(host, 'mounted')?.(key) === true) return {};
     if (row === null) return { expect: null };
     const inode = inodeAtNumber(row.dev, row.ino);
     if (inode?.local !== true) return { expect: row.ino };
@@ -562,7 +562,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const inodeAt = (key: string, row: ResidentEntry): Inode => {
     let inode = inodeAtNumber(row.dev, row.ino);
     if (inode === undefined) {
-      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0 };
+      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0, lost: undefined, merged: undefined, pin: undefined, cell: undefined, heldAt: undefined, made: undefined, over: undefined };
       addInode(inode);
     }
     return inode;
@@ -777,7 +777,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `op` recorded for `inode` (ready) and folded into its state. */
   const recorded = (inode: Inode, op: InodeOp, description?: string): InodeRecord => {
-    const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
+    const record: InodeRecord = { id: ++ids, op, owner: inode, description, answered: false, answeredAt: 0, room: undefined, after: undefined, gone: undefined };
     if (inode.records === NO_RECORDS) inode.records = [record];
     else inode.records[inode.records.length] = record;
     inode.recordsCost += recordCost(record);
@@ -834,7 +834,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `settle` told an acknowledged entry's answer once it comes: refused, or not. */
   const settles = (answer: Promise<ProcessFsAnswer>, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void): void => {
-    void promiseThen(promiseThen(answer, (answered) => { settle(answered.failed?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); }), undefined, endedOnly);
+    void promiseThen(promiseThen(answer, (answered) => { settle(ownValue(answered, 'failed')?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); }), undefined, endedOnly);
   };
 
   /** `inode`'s fold again from its baseline: what it is with the records it has now. */
@@ -930,7 +930,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const placed = layer.get(key);
       return placed ? [placed] : [];
     });
-    const record: NameRecord = { id: ++ids, keys, over, cost, places, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
+    const record: NameRecord = { id: ++ids, keys, over, cost, places, replay: apply, retired, answered: false, answeredAt: 0 };
     nameRecords[nameRecords.length] = record;
     for (let i = 0; i < keys.length; i++) { const key = keys[i]; host.count(key); }
     return logged(op, (refused, answer) => {
@@ -981,7 +981,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const writableParent = (key: string, path: string, syscall: string): ResidentEntry | undefined => {
     const parent = rowAt(parentKey(key));
     // On this filesystem, or on a mount the host decides on (ProvisionalHost.mounted).
-    if (parent === undefined || parent === null || (parent.dev !== host.device && host.mounted?.(key) !== true)) return undefined;
+    if (parent === undefined || parent === null || (parent.dev !== host.device && ownValue(host, 'mounted')?.(key) !== true)) return undefined;
     if (parent.type !== 'directory') throw fsError('ENOTDIR', syscall, path);
     if (!modeAllows(parent, 3, host.cred)) throw fsError('EACCES', syscall, path);
     return parent;
@@ -1000,7 +1000,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : typedArrayByteLength(new TextEncoder().encode(target)),
       atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0 };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, answers: 0, reserved: 0, lost: undefined, merged: undefined, pin: undefined, cell: undefined, heldAt: undefined, made: undefined, over: undefined };
     if (type === 'file') {
       inode.base = { bytes: new Uint8ArrayConstructor(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
@@ -1111,7 +1111,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     let inode = canonical(opened);
     inode.answers--;
     // The session's descriptor of the description: what reads its file once no name leads to it (sessionOf).
-    if (!refused && answer?.receipt?.handle !== undefined) sessions.set(description, { handle: answer.receipt.handle, read });
+    if (!refused && answer?.receipt?.handle !== undefined) sessions.set(description, { handle: ownValue(answer, 'receipt').handle, read });
     if (inode.made === description) inode.made = undefined;
     if (!refused) inode = reconcile(inode, answer, creating);
     // Numbered, or never made: its description names it no more, and goes once nothing holds it open; refused, the
@@ -1142,7 +1142,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const descriptor = (inode: Inode, path: string, flags: RuntimeOpenFlags, description: string | undefined): RuntimeFileHandle => {
     const id = host.nextHandle();
     const write = flags.write === true || flags.append === true;
-    descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, ...(description === undefined ? {} : { description }), lastRecord: null, lastAnswer: null });
+    descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, description, opening: undefined, lastRecord: null, lastAnswer: null });
     inode.descs++;
     return { id, path } as RuntimeFileHandle;
   };
@@ -1370,7 +1370,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       target = inode!;
     }
     // A whole file written on a mount goes as one write of it (a mount's backend is asked once, as by writeFile(2)'s callers).
-    if (close && bytes !== null && chmod === undefined && host.mounted?.(key) === true) {
+    if (close && bytes !== null && chmod === undefined && ownValue(host, 'mounted')?.(key) === true) {
       const records = ops.map((op) => fold(target, op));
       const whole: ProcessFsOp = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
       const settled = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
@@ -1429,7 +1429,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     heldDescriptor: (inode, path, read, append) => {
       const id = host.nextHandle();
-      descs.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
+      descs.set(id, { inode, read, write: true, append, position: 0, path, description: undefined, opening: undefined, lastRecord: null, lastAnswer: null });
       inode.descs++;
       return { id, path } as RuntimeFileHandle;
     },
@@ -1901,7 +1901,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     retire: (begun) => {
       // A name record answered before the barrier began is the view's now; one under a held subtree waits for it to be given back.
       const kept = nameRecords.filter((record) => {
-        if (!record.answered || record.answeredAt >= begun || record.keys.some((key) => host.unreported?.(key) === true)) return true;
+        if (!record.answered || record.answeredAt >= begun || record.keys.some((key) => ownValue(host, 'unreported')?.(key) === true)) return true;
         record.keys.forEach((key, at) => host.settled(key, record.over[at]));
         // What it kept goes back before what it leaves takes its share of it (a rename's names, grown beneath it).
         host.release(record.cost);
@@ -1916,7 +1916,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const keeping: [string, ResidentEntry, Uint8Array][] = [];
       // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
       for (const inode of [...loose]) {
-        if (host.unreported?.(inode.key) === true) continue;
+        if (ownValue(host, 'unreported')?.(inode.key) === true) continue;
         if (inode.heldAt !== undefined) {
           if (inode.heldAt >= begun) continue;
           inode.heldAt = undefined;
@@ -1989,7 +1989,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         fit(inode);
         release(inode);
       }
-      for (const [key, row, bytes] of keeping) host.keep?.(key, row, bytes);
+      for (const [key, row, bytes] of keeping) ownValue(host, 'keep')?.(key, row, bytes);
       activity();
     },
   };

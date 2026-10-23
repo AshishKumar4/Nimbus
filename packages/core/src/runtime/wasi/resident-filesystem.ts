@@ -58,7 +58,7 @@ import { isCharacterDevice } from '../../vfs/vfs.js';
 import {
   arrayCopy, arrayIncludes, arrayIndexOf, arrayJoin, bytesCopy, bytesView, dateNow, Error, mathFloor, mathMax, mathMin, NumberOf, objectCreate,
   ObjectPrototype, PromiseConstructor, promiseResolve, promiseThen, Proxy, reflectApply, reflectGet, reflectGetPrototypeOf, reflectOwnKeys,
-  reflectSet, SafeMap, SafeSet, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringStartsWith, SymbolConstructor,
+  reflectSet, SafeList, SafeMap, SafeSet, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringStartsWith, SymbolConstructor,
   typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
