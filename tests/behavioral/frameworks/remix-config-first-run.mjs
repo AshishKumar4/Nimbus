@@ -87,10 +87,13 @@ try {
       && first.externals.some((e) => e.includes('@react-router/dev')) && first.externals.some((e) => e.includes('@tailwindcss/vite')),
     JSON.stringify(first ?? loadOut.slice(-600)));
   // What the program then loads of the config's imports is its own first run:
-  // it loads, or it fails naming the reads it was refused, and the next run has them.
+  // it loads, or it fails naming what its launch did not carry (the reads it
+  // was refused; or, its reads served by a run again as a resident, a
+  // binding no module it staged names), and the next run has them.
   const refused = (out) => /Failing rather than reporting a result built on them:/.test(out);
-  a.check('the config loads on its first run, or the run fails naming what it was refused',
-    (load.exitCode === 0 && first?.loaded === true) || (load.exitCode !== 0 && refused(loadOut)),
+  const notCarried = (out) => refused(out) || /ERR_NIMBUS_BINDING_NOT_CARRIED/.test(out);
+  a.check('the config loads on its first run, or the run fails naming what its launch did not carry',
+    (load.exitCode === 0 && first?.loaded === true) || (load.exitCode !== 0 && notCarried(loadOut)),
     JSON.stringify({ exit: load.exitCode, out: loadOut.slice(-1500) }));
   if (load.exitCode !== 0) {
     const again = await t.run(`cd ${APP} && node --conditions=development config-load.mjs 2>&1`, 240_000);
