@@ -893,11 +893,24 @@ export declare const BASH_RUNNER_CONTRACTS: Readonly<Record<string, {
  * which an older runner does not give the module, so it is `@2`; 3.13.14-1
  * and before were published under `cpython-runner`. 3.13.14-3 asks again a
  * read or write its host gave up on (nimbus-libc's restart wrappers), which
- * a host may answer only to it, so it is `@3`. A rebuild that changes what
- * the module imports, exports or asks of its host takes the next number, as
- * BASH_RUNNER's do.
+ * a host may answer only to it, so it is `@3`. 3.13.14-4 takes the signals
+ * sent to its process (nimbus-libc's signal raiser, and CPython's periodic
+ * check, nimbus_proc.signal_check), which a host sends only to it, so it is
+ * `@4`. A rebuild that changes what the module imports, exports or asks of
+ * its host takes the next number, as BASH_RUNNER's do.
  */
-export declare const CPYTHON_RUNNER = "cpython-runner@3";
+export declare const CPYTHON_RUNNER = "cpython-runner@4";
+/** What a CPython build asks of its host (CPYTHON_RUNNER_CONTRACTS). */
+export interface CPythonRunnerContract {
+    /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */
+    readonly restartsWaits: boolean;
+    /**
+     * Its libc raises the signals the host sends it (NIMBUS_ESIGNAL), and its
+     * interpreter asks for them while it computes (nimbus_proc.signal_check):
+     * its process takes its own.
+     */
+    readonly takesSignals: boolean;
+}
 /**
  * The contracts this tree's CPython runner implements, the keys it is
  * registered under, and what each build asks of its host: each build's
@@ -905,9 +918,7 @@ export declare const CPYTHON_RUNNER = "cpython-runner@3";
  * and nimbus_proc since @2), and an instantiation ignores the ones a module
  * does not import.
  */
-export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, {
-    readonly restartsWaits: boolean;
-}>>;
+export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, CPythonRunnerContract>>;
 /** What a git build asks of its host (GIT_RUNNER_CONTRACTS). */
 export interface GitRunnerContract {
     /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */

@@ -146,7 +146,8 @@ const exited = await run({
   userCode: "import os\nf = open('/home/user/exited.txt', 'w')\nf.write('kept by the host')\nf.flush()\nos._exit(3)",
 });
 assert.equal(session.user.readFileString('home/user/exited.txt'), 'kept by the host', `${exited.error ?? ''} ${exited.stderr}`);
-console.log('  ok  a run ended by os._exit leaves what it wrote in the session');
+assert.deepEqual([exited.exitCode, exited.error], [3, undefined], 'and ends with the status it exited with');
+console.log('  ok  a run ended by os._exit leaves what it wrote in the session, and ends with its status');
 // os.abort() traps the guest: the VM may not even flush, and the host settles anyway.
 const aborted = await run({
   ...credentialed, pyArgv: ['-c'],

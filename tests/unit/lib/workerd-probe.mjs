@@ -30,7 +30,7 @@ const PROBE_APP = join(REPO, 'apps/probe');
 const WRANGLER = join(REPO, 'node_modules/.bin/wrangler');
 const BUNDLE_RUNTIME = join(REPO, 'packages/worker/scripts/bundle-runtime.mjs');
 /** The runtimes a local probe can stage, as the publisher names them. */
-const RUNTIME_VERSIONS = { bash: '5.2.37-7', git: '2.53.0-1', cpython: '3.13.14-3' };
+const RUNTIME_VERSIONS = { bash: '5.2.37-7', git: '2.53.0-1', cpython: '3.13.14-4' };
 const BUCKET = 'nimbus-runtime-cache';
 
 function run(command, args, options) {

@@ -802,13 +802,13 @@ function registerWasmRuntimes(deps) {
     // call, so a program that keeps serving is refused by name rather than run
     // as a one-shot that dies with it. Same for ruby, where a script is the
     // shape that may bind a port.
-    const cpython = (restartsWaits) => lazy(async () => (await import('../runtime/cpython-runner.js'))
-        .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network, restartsWaits, session }));
+    const cpython = (contract) => lazy(async () => (await import('../runtime/cpython-runner.js'))
+        .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network, contract, session }));
     const bash = lazy(async () => (await import('../runtime/bash-runner.js'))
         .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes }));
     const runners = {
         ...Object.fromEntries(Object.keys(BASH_RUNNER_CONTRACTS).map((key) => [key, bash])),
-        ...Object.fromEntries(Object.entries(CPYTHON_RUNNER_CONTRACTS).map(([key, { restartsWaits }]) => [key, cpython(restartsWaits)])),
+        ...Object.fromEntries(Object.entries(CPYTHON_RUNNER_CONTRACTS).map(([key, contract]) => [key, cpython(contract)])),
         'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
             .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network, session })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))

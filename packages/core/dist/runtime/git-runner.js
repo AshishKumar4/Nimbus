@@ -31,6 +31,7 @@
 import { installedPath } from './runtime-manifest.js';
 import { hostImage } from './process-files.js';
 import { nameDec } from '../_shared/bytes.js';
+import { takesOwnSignals } from './facet-host.js';
 import { warmFacetKeys } from './warm-facets.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
@@ -44,6 +45,7 @@ const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
 export function makeGitRunnerFactory(deps) {
     const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
     const warmKeys = warmFacetKeys(deps.session, 'git');
+    const takesSignals = takesOwnSignals(deps.facets, deps.takesSignals);
     return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
         if (binKind === 'fsmonitor')
             return async (ctx) => {
@@ -100,7 +102,7 @@ export function makeGitRunnerFactory(deps) {
             env[GIT_WASI_ENV] = '1';
             let stdio;
             try {
-                stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '), { takesSignals: deps.takesSignals });
+                stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '), { takesSignals });
             }
             catch (error) {
                 ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
@@ -121,7 +123,7 @@ export function makeGitRunnerFactory(deps) {
                 cred,
                 pid: stdio.pid,
                 restartsWaits: deps.restartsWaits,
-                takesSignals: deps.takesSignals,
+                takesSignals,
             };
             let outcome = 1;
             try {

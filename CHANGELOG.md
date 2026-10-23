@@ -27,6 +27,12 @@ published independently in the `@nimbus-sh` npm scope.
   - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
   - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
 
+- Fixed: Ctrl-C ends a python one-shot (`python -c`, `python -`, a pipe) as it ends CPython on Linux: the program gets a `KeyboardInterrupt`, which it may catch, and exits 130 with a traceback if it does not. This needs cpython 3.13.14-4 (`nimbus install cpython@3.13.14-4`; the catalog's default stays 3.13.14-1 until a release moves it).
+  - Before, Ctrl-C gave back the prompt with exit 130 but the program never saw it, so its `except KeyboardInterrupt:` and `finally:` blocks did not run. Now the interpreter asks the host for its signals every 1e4 of its breaker checks, which costs about 0.1% of a computing run. A computing run ends 0.4-0.8 s after Ctrl-C, in the session or on its peer; the abandoned one gave the prompt back after 0.07-0.23 s.
+  - A sleeping run (`time.sleep`) ended 9.5-10 s after Ctrl-C with `OSError: [Errno 58] Not supported`. Now it ends with a `KeyboardInterrupt`.
+  - While a python one-shot computes in the session, the session now answers between two of its asks: a request to the session waited up to 3.3-5.3 s during a 5 s loop, and now waits 0.1-1.8 s.
+  - A script (`python file.py`) and `python -m` still run as a resident process, which Ctrl-C ends without a `KeyboardInterrupt`.
+- Fixed: a python run that ends by `os._exit(n)` ends with status `n`. It ended with 1 and printed the error `[object Object]`. This holds for one-shots, the REPL and servers, with any cpython build.
 - Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 
 ## 2026-10-21 (second release): core 0.27.0, fabric 0.22.0, worker 0.25.0, sdk 0.21.0, react 0.4.3, cli 0.2.12, loom 0.3.5, create-nimbus-app 0.2.8 (platform 0.15.0, config 0.3.2 and the runtimes unchanged)
