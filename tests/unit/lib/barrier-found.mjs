@@ -461,8 +461,8 @@ const GAPS = {
     shows: 'own readFile x answered EAGAIN',
   },
   'a name on a mount with no feed answers as the session holds it now [node]': {
-    lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
-      + 'meanwhile readFileSync of a file on such a mount can serve bytes another process has since replaced',
+    lacks: 'a feedless mount\'s names answer from the launch\'s walk (as node\'s fs always answered them: Kinu\'s synchronous require from its Drive); '
+      + 'exact answers need the mount to declare a feed, so readFileSync of a file on such a mount can serve bytes another process has since replaced',
     shows: 'sync readFile x/h answered "u00"',
   },
   'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {

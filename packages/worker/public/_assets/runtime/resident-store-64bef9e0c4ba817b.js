@@ -5312,7 +5312,9 @@ var __nimbusResidentModule = (() => {
       const made2 = layer.get(dir);
       return made2 && made2.local && !added.get(dir)?.has(nameOf2(key)) ? null : void 0;
     };
-    const expecting = (row) => {
+    const expecting = (row, key) => {
+      if (host2.mounted?.(key) === true)
+        return {};
       if (row === null)
         return { expect: null };
       const inode = inodeAtNumber(row.dev, row.ino);
@@ -5990,7 +5992,7 @@ var __nimbusResidentModule = (() => {
           description,
           // The file it decided this on (none, for a file it makes): the session refuses it where the name leads elsewhere.
           // One made exclusively needs none: the session's EEXIST refuses it first.
-          ...flags.exclusive && row === null ? {} : expecting(row)
+          ...flags.exclusive && row === null ? {} : expecting(row, key)
         }
       };
       let target;
@@ -6280,7 +6282,7 @@ var __nimbusResidentModule = (() => {
         host2.drain();
         admitOps(inode, [op], syscall, desc.path);
         host2.count(inode.key);
-        loggedOn([fold(inode, op, described)], { type: "setattr", path: inode.key, attrs, ...described === void 0 ? expecting(entryOf(inode)) : { description: described } });
+        loggedOn([fold(inode, op, described)], { type: "setattr", path: inode.key, attrs, ...described === void 0 ? expecting(entryOf(inode), inode.key) : { description: described } });
         fit(inode);
       },
       abandon: (handleId) => {
@@ -6333,7 +6335,7 @@ var __nimbusResidentModule = (() => {
           if (!named(inode))
             throw fsError2("ESTALE", "open", desc.path);
           description = descriptionId();
-          const open = { type: "call", call: { call: "open", path: inode.key, mode: entryOf(inode).mode & 4095, ...flags.truncate ? { truncate: true } : {}, access: read ? "readwrite" : "write", description, ...expecting(entryOf(inode)) } };
+          const open = { type: "call", call: { call: "open", path: inode.key, mode: entryOf(inode).mode & 4095, ...flags.truncate ? { truncate: true } : {}, access: read ? "readwrite" : "write", description, ...expecting(entryOf(inode), inode.key) } };
           const records = flags.truncate ? [{ kind: "truncate", size: 0, at: host2.now() }] : [];
           host2.drain();
           admitOps(inode, records, "open", desc.path);
@@ -6382,7 +6384,7 @@ var __nimbusResidentModule = (() => {
           return false;
         host2.drain();
         keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), "unlink", path);
-        return loggedName({ type: "call", call: { call: "unlink", path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null), void 0, void 0, awaited) ?? true;
+        return loggedName({ type: "call", call: { call: "unlink", path: key, ...expecting(row, key) } }, [key], nameCost([key]), () => place(key, null), void 0, void 0, awaited) ?? true;
       },
       rmdir: (key, path, row, awaited) => {
         if (row === void 0)
@@ -6400,7 +6402,7 @@ var __nimbusResidentModule = (() => {
           return false;
         host2.drain();
         admit(nameCost([key]), "rmdir", path);
-        return loggedName({ type: "call", call: { call: "rmdir", path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
+        return loggedName({ type: "call", call: { call: "rmdir", path: key, ...expecting(row, key) } }, [key], nameCost([key]), () => {
           place(key, null);
           added.delete(key);
           removed2.delete(key);
@@ -6449,8 +6451,8 @@ var __nimbusResidentModule = (() => {
         moving.reserved += moves;
         for (const [inode, grows] of beneath)
           inode.reserved += grows;
-        const { expect: expectTo } = expecting(target);
-        const answer = loggedName({ type: "rename", from, to, ...expecting(source), ...expectTo === void 0 ? {} : { expectTo } }, [from, to], names, () => {
+        const { expect: expectTo } = expecting(target, to);
+        const answer = loggedName({ type: "rename", from, to, ...expecting(source, from), ...expectTo === void 0 ? {} : { expectTo } }, [from, to], names, () => {
           for (const [key, value] of [...layer]) {
             if (key === from || !within2(key, from))
               continue;
@@ -6500,7 +6502,7 @@ var __nimbusResidentModule = (() => {
           throw error;
         }
         host2.count(key);
-        const logged2 = !own ? { type: "setattr", path: key, attrs, ...expecting(row) } : "uid" in attrs ? { type: "call", call: { call: "lchown", path: key, uid: attrs.uid, gid: attrs.gid } } : { type: "call", call: { call: "lutimes", path: key, atime: attrs.atime, mtime: attrs.mtime } };
+        const logged2 = !own ? { type: "setattr", path: key, attrs, ...expecting(row, key) } : "uid" in attrs ? { type: "call", call: { call: "lchown", path: key, uid: attrs.uid, gid: attrs.gid } } : { type: "call", call: { call: "lutimes", path: key, atime: attrs.atime, mtime: attrs.mtime } };
         const answer = loggedOn([fold(inode, op)], logged2, awaited);
         fit(inode);
         return answer ?? true;
@@ -6538,7 +6540,7 @@ var __nimbusResidentModule = (() => {
       barrierBegun: () => ++barriers,
       retire: (begun) => {
         const kept = nameRecords.filter((record) => {
-          if (!record.answered || record.answeredAt >= begun)
+          if (!record.answered || record.answeredAt >= begun || record.keys.some((key) => host2.unreported?.(key) === true))
             return true;
           record.keys.forEach((key, at) => host2.settled(key, record.over[at]));
           host2.release(record.cost);
@@ -6550,6 +6552,8 @@ var __nimbusResidentModule = (() => {
           replay();
         }
         for (const inode of [...loose]) {
+          if (host2.unreported?.(inode.key) === true)
+            continue;
           if (inode.heldAt !== void 0) {
             if (inode.heldAt >= begun)
               continue;
@@ -8891,6 +8895,8 @@ var __nimbusResidentModule = (() => {
       },
       generation: (key) => names.generation(key),
       settled: (key, generation) => names.settled(key, generation),
+      ...store.mounted === void 0 ? {} : { mounted: (key) => store.mounted(key) },
+      ...store.unreported === void 0 ? {} : { unreported: (key) => store.unreported(key) },
       absorb: (key, file) => {
         const decision = decided.get(key);
         if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)
@@ -9954,7 +9960,9 @@ var __nimbusResidentModule = (() => {
           children: (key) => resident.children(key),
           content: (key, revision) => resident.content(key, revision),
           reserve: (bytes) => resident.reserve(bytes),
-          release: (bytes) => resident.release(bytes)
+          release: (bytes) => resident.release(bytes),
+          mounted: (key) => mountedName(key),
+          unreported: (key) => walkedMounts && unreportedName(key)
         },
         isHomeRoot: delegation.isHomeRoot,
         ...delegation.grantAfter === void 0 ? {} : { grantAfter: delegation.grantAfter },
@@ -10249,6 +10257,11 @@ var __nimbusResidentModule = (() => {
       return entry;
     };
     const answerable = (key, entry) => {
+      const fed = fedRow(key, entry);
+      return fed === true || fed === void 0 && walkedMounts;
+    };
+    const walkedMounts = delegation?.walkedMounts === true;
+    const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
         return false;
@@ -10256,12 +10269,37 @@ var __nimbusResidentModule = (() => {
         return true;
       const at = feedPointOf(cursor, key);
       if (at === ROOT_FEED)
-        return false;
-      if (feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true)
-        return false;
+        return void 0;
       const point = at.slice(1);
       const root = point === key ? entry : store.entry(point);
-      return root !== void 0 && root !== null && root.dev === entry.dev;
+      if (root === void 0 || root === null || root.dev !== entry.dev)
+        return void 0;
+      return !(feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true);
+    };
+    const nearestRow = (key) => {
+      const own = store.entry(key);
+      if (own)
+        return { key, row: own };
+      const parent = parentKey5(key);
+      const above = key === "" ? void 0 : store.entry(parent);
+      return above ? { key: parent, row: above } : void 0;
+    };
+    const mountedName = (key) => {
+      if (onMount(key))
+        return true;
+      const near = nearestRow(key);
+      return near !== void 0 && near.row.dev !== store.device && near.row.dev !== NAMESPACE_DEV;
+    };
+    const unreportedName = (key) => {
+      const near = nearestRow(key);
+      return near !== void 0 && near.row.dev !== store.device && near.row.dev !== NAMESPACE_DEV && fedRow(near.key, near.row) === void 0;
+    };
+    const onKernelMount = (key) => {
+      const cursor = store.cursor();
+      if (cursor === null)
+        return false;
+      const at = feedPointOf(cursor, key);
+      return at !== ROOT_FEED && feedOf(cursor, at)?.fixed === true;
     };
     const onMount = (key) => {
       const cursor = store.cursor();
@@ -10271,6 +10309,8 @@ var __nimbusResidentModule = (() => {
       const entry = entryAt(key);
       if (entry === void 0)
         return void 0;
+      if (walkedMounts)
+        return onKernelMount(key) ? void 0 : entry;
       return (entry === null ? onMount(key) : entry.dev !== store.device) ? void 0 : entry;
     };
     const volatileProc = (key, entry) => {
@@ -10681,7 +10721,12 @@ var __nimbusResidentModule = (() => {
         return void 0;
       }
       if (placed !== void 0 && keys.every((key) => !holder.holds(key) || holder.provisional.touches(key))) {
-        const answer2 = decided(placed, true);
+        let answer2;
+        try {
+          answer2 = decided(placed, true);
+        } catch {
+          return session2();
+        }
         if (answer2 !== false) {
           counts.local++;
           return after2(answer2, () => void 0);
