@@ -23,9 +23,10 @@ import { getCtxExports, stagedBootAssembler, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, launchWorkerKey, readmitRefused, refusedStart, withDynamicWorkerCapNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, RESIDENT_SETTLE_DEADLINE_MS, residentLoaderConfig, } from './process-fabric.js';
 import { bindingSupervisor, egressMarker, supervisorLoaderKey, workspaceOutbound } from './supervisor-props.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
-import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
+import { applyFacetLimits, effectiveFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun } from './one-shot-entry.js';
 import { holdThreadWatch } from './thread-stalls.js';
@@ -278,6 +279,14 @@ export class Processes {
      */
     run(supervisor, supervise, params, consume) {
         return runOneShot(this.ctx, this.env, supervisor, supervise, params, consume);
+    }
+    /**
+     * One call on a runner, a KEYED dynamic worker its owner calls again: see
+     * RunnerCallParams. `supervisor` mints its binding's props, asked for on
+     * the loader's miss, so a warm call opens no write epoch of its own.
+     */
+    callRunner(supervisor, params, consume) {
+        return callRunner(this.ctx, this.env, supervisor, params, consume);
     }
 }
 function spawnResident(ctx, env, disk, supervisor, params) {
@@ -779,6 +788,77 @@ async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
         disposeRpcResource(worker);
         disposeRpcResource(capability);
         disposeRpcResource(supervisorBinding);
+        watched();
+        endFetch();
+    }
+}
+/**
+ * One call on a runner (RunnerCallParams). The worker its key names is the
+ * loader's: loaded on a miss, from the owner's map, with the runner's own
+ * SUPERVISOR binding in its env, and kept warm by the loader between calls.
+ * The call holds the process's one Dynamic Worker on the ledger while it
+ * runs (an admitted launch's, for a generation's first call), and closes its
+ * RPC session as it ends, before the hold: the platform counts a worker in
+ * flight until then (runOneShot), so an idle runner counts as none. The
+ * call's CPU limit is on its entrypoint, lower than the worker's own.
+ */
+async function callRunner(ctx, env, supervisor, params, consume) {
+    const loader = env.LOADER;
+    if (!loader || typeof loader.get !== 'function') {
+        throw new Error('Nimbus: env.LOADER binding missing or invalid. A runner requires '
+            + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
+    }
+    let endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, launchWorkerKey(params.pid), {
+        signal: params.signal,
+        process: { pid: params.pid },
+    });
+    let entrypoint;
+    const watched = holdThreadWatch(ctx, `runner pid ${params.pid}`);
+    try {
+        // The binding's host instance names the key (supervisorLoaderKey): the next instance refuses its mutations.
+        const worker = loader.get(supervisorLoaderKey(facetLoaderKey('process', params.key), supervisorDeliveryProps(ctx)), async () => {
+            const code = await params.code();
+            assertModuleMapWithinCodeLimit(code.modules);
+            const props = supervisor();
+            return applyFacetLimits('process', workspaceOutbound({ ...code, env: { SUPERVISOR: bindingSupervisor(props), ...egressMarker(props) } }, props));
+        });
+        // The keyed stub is the loader's cache entry, kept (IsolatePool's); the call's entrypoint is disposed below.
+        const run = worker.getEntrypoint(undefined, { limits: effectiveFacetLimits('process', { cpuMs: params.cpuMs }) });
+        entrypoint = run;
+        if (typeof run.run !== 'function')
+            throw new Error('Nimbus: a runner worker has no run method');
+        let firstRefusal;
+        for (;;) {
+            let entered = false;
+            try {
+                return await untilEnded(params.signal, async (ended) => {
+                    params.onSent();
+                    return consume(await run.run(params.input, () => {
+                        if (!entered)
+                            params.onEntered();
+                        entered = true;
+                        return ended();
+                    }));
+                });
+            }
+            catch (error) {
+                if (entered || classifyError(error) !== 'dynamic_worker_cap')
+                    throw error;
+                // Refused before it was entered: the ledger learns it from the hold it ends (runOneShot).
+                endFetch(error);
+                firstRefusal ??= Date.now();
+                const readmitted = await readmitRefused(endFetch, { since: firstRefusal, signal: params.signal });
+                if (readmitted === undefined)
+                    throw error;
+                endFetch = readmitted;
+            }
+        }
+    }
+    catch (error) {
+        throw withDynamicWorkerCapNamed(ctx, error);
+    }
+    finally {
+        disposeRpcResource(entrypoint);
         watched();
         endFetch();
     }

@@ -50,6 +50,8 @@ import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '
 import { ProcessJournals } from '../session/process-journals.js';
 import { type ProcessEnvKeeping, type ResolveProcessEnv } from './process-env.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { SessionRunnerOptions, SessionRunnerResult, SessionRunnerRunOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type RunnerSpec } from './runners.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
 /**
  * The filesystem a launch's module map is built from: the process's bound
@@ -289,6 +291,21 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     /** Wasm images the generated main module imports and parks in the seam. */
     wasmImports?: readonly FacetWasmImport[];
 }, usesSqlite: boolean, sources: NodeFacetSources, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
+/**
+ * Generate a runner's main module (FacetManager.runnerRun): a node process
+ * that runs no entry. Its generation's first call starts it as a one-shot
+ * starts (its store in its heap, its output captured), and every call runs
+ * its code as a line typed at the node REPL (runtime/js-repl.ts): compiled
+ * by the runtime-code service's compileReplLine, with top-level `await`,
+ * its declarations kept on the global object, `require` from the working
+ * directory. A call takes an ACQUIRE first, so its code reads what the
+ * session holds now, and makes its writes durable before it answers, as a
+ * resident's request does (RUNNING_FLUSH_SOURCE). Nothing it leaves pending
+ * (a timer, a fetch) runs after it answers: the platform runs a worker's
+ * code only within a request. An isolate the platform starts again has no
+ * process; given no start, it answers `unstarted` and runs nothing.
+ */
+export declare function generateRunnerCode(vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports: readonly FacetWasmImport[]): Promise<GeneratedNodeFacetCode>;
 /**
  * Result of preparing facet VFS state.
  *   - bundle:   path → content for the complete static require closure
@@ -707,7 +724,9 @@ export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, reado
  * names by a relative literal, resolved against that module's directory —
  * the only way to find an image in a dependency the bin-package pass never
  * walks (lightningcss-wasm's 15.8 MiB `lightningcss_node.wasm`, which Vite 8
- * loads for CSS minification). A launch stages each as a module-map member
+ * loads for CSS minification); and a `.wasm` file an earlier run of the
+ * launch read synchronously (its learned reads), which a resident holds as
+ * data, not as a map cell. A launch stages each as a module-map member
  * the loader compiles, registered under both keys, so the program's own
  * `new WebAssembly.Module(bytes)` is answered from the map whether it read
  * the bytes by path or carried them inline. A file that cannot be read is
@@ -1229,6 +1248,12 @@ export declare class FacetManager {
     private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
+    /** The session's runners, by owner and id (runnerRun). */
+    private readonly runners;
+    /** Names this incarnation's runner workers: a later one never enters them, whose SUPERVISOR names this one. */
+    private readonly runnerIncarnation;
+    /** Runner generations this incarnation has made: each one's Loader key is its number, never another's. */
+    private runnerGenerations;
     private _pairedServeFacet;
     private readonly launchBundles;
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
@@ -1249,17 +1274,23 @@ export declare class FacetManager {
      * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
-     * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
-     * reads from paths that can lie anywhere in the VFS (STATIC_ABSOLUTE_LITERALS
-     * pulls absolute-path literals like /tmp/x),
-     * so a cwd-scoped subtree revision cannot guarantee invalidation. The
-     * global revision bumps on ANY write, so the cache invalidates on every
-     * mutation that could change any file the bundle reads — provably
-     * conservative. Bounded to a small LRU; the working set per session is a
-     * handful of bins (tsc/vite/eslint) plus repeated `node -e` shapes.
+     * Correctness watermark: what the build asked the filesystem
+     * (launch-reads.ts). buildPrefetchBundle reads from paths that can lie
+     * anywhere in the VFS (STATIC_ABSOLUTE_LITERALS pulls absolute-path
+     * literals like /tmp/x), so a cwd-scoped subtree revision cannot guarantee
+     * invalidation; each path it asked about, found or not, and each directory
+     * it listed, can. An entry at an older revision is checked against the
+     * barrier's report of what changed since its build (_takePrefetchEntry):
+     * it serves again unless a change names one of those. It used to be the
+     * global revision, which every write moves, so a write anywhere (a shell
+     * history line, an agent's file tool) rebuilt the next launch's map.
+     * Bounded to a small LRU; the working set per session is a handful of bins
+     * (tsc/vite/eslint) plus repeated `node -e` shapes.
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
+    /** With exec telemetry on: why each key's entry was last dropped as stale (its record's cacheDrop), until a record takes it. */
+    private readonly prefetchCacheDrops;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
     /**
@@ -1668,6 +1699,25 @@ export declare class FacetManager {
      * MANIFEST_COPIES_MAX_BYTES, is fetched as well.
      */
     private _installedManifests;
+    /** Reads of the manifest copies in flight, by credential and install revision: a launch joins the read a prewarm began. */
+    private readonly manifestReads;
+    /** `cred`'s manifest copies at the install revision now (_installedManifests), read through the view `view` makes. */
+    private _manifestCopiesFor;
+    private _readManifestCopies;
+    /**
+     * What a session's first `node` waits for, made as soon as the session has
+     * a filesystem rather than by that launch: the node runtime's sources
+     * (2.3 MB from the deployment's assets, by way of the colo cache, on an
+     * isolate that has not read them) and `cred`'s manifest copies (a listing
+     * of the whole namespace and a read of each package.json, which a new
+     * session object has not kept). Measured 2026-10-23 on a throwaway: the
+     * first `node -e 1` after a reset of an express project's session took
+     * 3.1 s, against 0.6 s warm. A launch that comes while this runs joins its
+     * reads (manifestReads, the sources' memo). It holds no process and no
+     * Dynamic Worker, and runs on the session's own turns, paced as a launch
+     * is, so a request that arrives meanwhile is answered between them.
+     */
+    prewarm(cred: Readonly<VfsCred>): Promise<void>;
     /**
      * Paths earlier launches of the same build missed in this session. Other
      * sessions' misses (the shared read profile) join the module map instead,
@@ -1703,12 +1753,14 @@ export declare class FacetManager {
      */
     private _staticRefsOf;
     /**
-     * The cache's entry for `key` at `revision`, if one is held. An entry built
-     * at an older revision can never be SERVED again — the lookup requires an
-     * exact match — so from the first write after it was admitted it is
-     * retained garbage, held in the isolate that is measurably
-     * memory-constrained. Dropped here, before the build that replaces it
-     * allocates, so the stale filesystem graph and the new one never co-reside.
+     * The entry for `key`, if what its build read is as it was. An entry at an
+     * older revision is checked against what changed since its build, as
+     * `vfs` names the changes (launch-reads.ts staleReason): unaffected, it
+     * is dated at `revision` and served; affected, or past the retained change
+     * log (poison), it is dropped before the build that replaces it allocates,
+     * so the stale graph and the new one never co-reside. The other entries of
+     * the same credential are checked the same way and dropped when stale, as
+     * they were when any write dropped them all.
      */
     private _takePrefetchEntry;
     private _buildProcessBundle;
@@ -1786,6 +1838,8 @@ export declare class FacetManager {
      * launch interprets it (core native-esm.ts).
      */
     private _stagedRuntimeCode;
+    /** Why `key`'s entry was last dropped as stale, for its launch's exec record, once. */
+    private _takeCacheDrop;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
     private _admitPrefetchCacheEntry;
     /**
@@ -1889,6 +1943,55 @@ export declare class FacetManager {
     private _launchStage;
     /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
     private _launchEnded;
+    /**
+     * Run `code` in runner `id` of `owner` (a hosted session's scope, or the
+     * workspace's, ''): a warm node process the session keeps under a Loader
+     * key of its own (session, runner, generation), which runs each call's
+     * code as a REPL line (generateRunnerCode) and holds no Dynamic Worker
+     * between calls. One runner runs its calls one at a time, in order, and
+     * keeps what each leaves for the next; nothing isolates them. It is made
+     * at its first call, from what `resolve` makes of the options it was asked
+     * for (`asked`); a later call that asks for other options is refused. A
+     * call that loses the runner's process or isolate (past its CPU or wall
+     * limit, a kill, a close, process.exit, any failure of its worker) ends
+     * that generation, and the next call makes a new one. An answer is `fresh`
+     * when it is its generation's first: nothing an earlier call left is there.
+     */
+    runnerRun(owner: string, id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+    /**
+     * End runner `id` of `owner`: whether there was one. A call it is running
+     * is ended as a kill ends one, and the calls still in its line are refused.
+     */
+    runnerClose(owner: string, id: string): boolean;
+    /**
+     * `runner`, under `name`, is gone: no call runs on it again, the one it
+     * runs is ended, and so is a generation being made for it.
+     */
+    private _runnerDiscard;
+    private _runnerCall;
+    /**
+     * A new generation of `runner`: its process, its bundle and map, prepared
+     * under its share of the credit before it holds a worker, and its writer.
+     */
+    private _runnerGeneration;
+    /**
+     * One call on `generation`'s worker. Until its process has started, a call
+     * carries its start, and its first load is a launch's: its map parked,
+     * under its share of the credit, until the launch is let in on the
+     * ledger, and made again if running work reclaims it meanwhile. A call
+     * after that holds only its worker.
+     */
+    private _runnerEnter;
+    /** `generation`'s process has started: what its first load and start took goes. */
+    private _runnerLaunched;
+    /**
+     * `generation` of `runner` is over: its process ends with `ending`, and
+     * what it held goes. Each step is a no-op the second time, so the call
+     * that lost it and a close may both retire it.
+     */
+    private _runnerRetire;
+    /** End every runner, and each call it runs: the session is closing (closeLaunches). */
+    private _closeRunners;
     /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
@@ -1915,6 +2018,12 @@ export declare class FacetManager {
      */
     private _stdinFileIdentity;
     private _promote;
+    /**
+     * `pid`'s exit status once it ends, or null once it has a routeable port
+     * first (it listened, and runs on as a server). `signal`'s abort kills it,
+     * as the foreground's interrupt kills a one-shot.
+     */
+    private _endOrListen;
     /**
      * A process stopped at a synchronous read of stdin that needs input not
      * there yet (runtime/stop-replay.ts): deliver what its record carries of
@@ -1979,7 +2088,20 @@ export declare class FacetManager {
      * for that load as it waits for any running work's credit.
      */
     private _parkOneShotMap;
-    /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
+    /**
+     * `entry`'s map, by `prepare`, from bundle `state`, under its launch's
+     * share of the credit, taken before it holds a worker; with the bundle it
+     * was made from. A map that needs more credit than its build took is made
+     * again from a bundle built under that much (OneShotAllocationNeeded), and
+     * one over the ceiling from a bundle built under it
+     * (ModuleMapOverCeilingError), each once.
+     */
+    private _prepareUnderCredit;
+    /**
+     * Generate before waiting for a worker, keeping only the map's retained
+     * share until the load takes it. `generate` makes its main module: by
+     * default a one-shot's run of `code`.
+     */
     private _prepareOneShotCode;
     private _execViaLoader;
     /**

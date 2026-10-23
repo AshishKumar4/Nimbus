@@ -143,7 +143,7 @@ function makeHandleStub(bodyText) {
     },
   };
   reg.bindFacetStub(17, stub);
-  const waiting = reg.waitForRouteablePortsByPid(17, 100);
+  const waiting = reg.waitForRouteablePortsByPid(17, AbortSignal.timeout(100));
   queueMicrotask(() => reg.register(4170, 17));
   assert.deepEqual(await waiting, [4170]);
   assert.equal(fetchReads, 1, 'the route target is normalized exactly once, at bind');

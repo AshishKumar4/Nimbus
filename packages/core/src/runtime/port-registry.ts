@@ -447,11 +447,13 @@ export class PortRegistry {
       .map((entry) => entry.port);
   }
 
-  async waitForRouteablePortsByPid(pid: number, timeoutMs: number): Promise<number[]> {
-    const immediate = this.getRouteablePortsByPid(pid);
-    if (immediate.length > 0) return immediate;
-    await this.waitForPidPortChange(pid, timeoutMs);
-    return this.getRouteablePortsByPid(pid);
+  /** `pid`'s routeable ports once it has one, or what it has (none) once `until` aborts. */
+  async waitForRouteablePortsByPid(pid: number, until: AbortSignal): Promise<number[]> {
+    for (;;) {
+      const ports = this.getRouteablePortsByPid(pid);
+      if (ports.length > 0 || until.aborted) return ports;
+      await this.waitForPidPortChange(pid, until);
+    }
   }
 
   /** Check if a port is registered. */
@@ -698,14 +700,13 @@ export class PortRegistry {
     };
   }
 
-  private waitForPidPortChange(pid: number, timeoutMs: number): Promise<void> {
+  private waitForPidPortChange(pid: number, until: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
       let done = false;
-      let timeout: ReturnType<typeof setTimeout>;
       const finish = () => {
         if (done) return;
         done = true;
-        clearTimeout(timeout);
+        until.removeEventListener('abort', finish);
         const waiters = this.portWaitersByPid.get(pid);
         if (waiters) {
           waiters.delete(finish);
@@ -713,7 +714,7 @@ export class PortRegistry {
         }
         resolve();
       };
-      timeout = setTimeout(finish, timeoutMs);
+      until.addEventListener('abort', finish, { once: true });
       const waiters = this.portWaitersByPid.get(pid) || new Set<() => void>();
       waiters.add(finish);
       this.portWaitersByPid.set(pid, waiters);

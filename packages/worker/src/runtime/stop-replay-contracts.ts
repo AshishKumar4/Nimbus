@@ -60,10 +60,11 @@ export interface StopRecord {
   v: 3;
   /**
    * `stdin`: a read needs input not there yet. `listen`: a one-shot's first
-   * listen, to be run again as a resident. `diverged`: a replay did not
-   * retrace the run before it.
+   * listen, to be run again as a resident. `miss`: a one-shot's synchronous
+   * read of a file its process did not hold, to be run again as a resident,
+   * which holds it. `diverged`: a replay did not retrace the run before it.
    */
-  kind: 'stdin' | 'listen' | 'diverged';
+  kind: 'stdin' | 'listen' | 'miss' | 'diverged';
   /** The run that stopped (1 for the first). */
   run: number;
   out: StoppedOutput[];
@@ -71,6 +72,8 @@ export interface StopRecord {
   until?: 'end' | 'data';
   /** `stdin`: how many synchronous reads of stdin completed before the one that stopped. */
   stopAt?: number;
+  /** `miss`: the file it read (its path without the leading slash). */
+  path?: string;
   tape?: ReplayTape;
   /** A run whose output is captured, not streamed: what it had printed. */
   captured?: { stdout: string; stderr: string };
@@ -92,6 +95,8 @@ export interface ReplayLaunch {
   stopAt?: number;
   /** The run before stopped at its first listen instead: the replay's boundary is there. */
   listen?: true;
+  /** The run before stopped at its first synchronous read of this file instead (StopRecord.path): the boundary is there. */
+  read?: string;
   /** What the session showed of each stream, base64: the replay prints it again first. Null when output is captured. */
   prefix: { stdout: string; stderr: string } | null;
   /** Completed supervisor/network observations the guest must receive again. */

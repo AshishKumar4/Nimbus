@@ -295,6 +295,40 @@ export declare const ExitStatusSchema: z.ZodUnion<readonly [z.ZodObject<{
     code: z.ZodNull;
     signal: z.ZodString;
 }, z.core.$strip>]>;
+/** `id` as a runner's: 1 to 64 of A-Z a-z 0-9 . _ - (a UUID fits); a TypeError otherwise. */
+export declare function parseRunnerId(id: string): string;
+/**
+ * What a runner call threw, or why it failed: an Error's name, message,
+ * stack and code; another thrown value as `util.inspect` shows it, in
+ * `message` alone. A runner's own failure has a code ERR_NIMBUS_RUNNER_*.
+ */
+export declare const SessionRunnerErrorSchema: z.ZodObject<{
+    message: z.ZodString;
+    name: z.ZodOptional<z.ZodString>;
+    stack: z.ZodOptional<z.ZodString>;
+    code: z.ZodOptional<z.ZodString>;
+}, z.core.$strip>;
+export type SessionRunnerError = z.infer<typeof SessionRunnerErrorSchema>;
+/**
+ * One runner call's answer: its value as `util.inspect` shows it (absent
+ * when it threw), what it wrote, what it threw, whether it ran in a new
+ * runner (`fresh`: nothing an earlier call left is there), and how long the
+ * call took in the session, in ms.
+ */
+export declare const SessionRunnerResultSchema: z.ZodObject<{
+    value: z.ZodOptional<z.ZodString>;
+    stdout: z.ZodString;
+    stderr: z.ZodString;
+    error: z.ZodOptional<z.ZodObject<{
+        message: z.ZodString;
+        name: z.ZodOptional<z.ZodString>;
+        stack: z.ZodOptional<z.ZodString>;
+        code: z.ZodOptional<z.ZodString>;
+    }, z.core.$strip>>;
+    fresh: z.ZodBoolean;
+    ms: z.ZodNumber;
+}, z.core.$strip>;
+export type SessionRunnerResult = z.infer<typeof SessionRunnerResultSchema>;
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
 declare const SessionResultSchemas: {
     ready: z.ZodObject<{
@@ -360,6 +394,22 @@ declare const SessionResultSchemas: {
         timestamp: z.ZodNumber;
         stdout: z.ZodString;
         stderr: z.ZodString;
+    }, z.core.$strip>;
+    runnerRun: z.ZodObject<{
+        value: z.ZodOptional<z.ZodString>;
+        stdout: z.ZodString;
+        stderr: z.ZodString;
+        error: z.ZodOptional<z.ZodObject<{
+            message: z.ZodString;
+            name: z.ZodOptional<z.ZodString>;
+            stack: z.ZodOptional<z.ZodString>;
+            code: z.ZodOptional<z.ZodString>;
+        }, z.core.$strip>>;
+        fresh: z.ZodBoolean;
+        ms: z.ZodNumber;
+    }, z.core.$strip>;
+    runnerClose: z.ZodObject<{
+        closed: z.ZodBoolean;
     }, z.core.$strip>;
     readFile: z.ZodNullable<z.ZodString>;
     readFileBytes: z.ZodNullable<z.ZodType<Uint8Array<ArrayBufferLike>, unknown, z.core.$ZodTypeInternals<Uint8Array<ArrayBufferLike>, unknown>>>;
@@ -695,6 +745,24 @@ export interface SessionRunCodeOptions extends SessionExecOptions {
     language?: string;
     install?: 'never' | 'ifMissing';
 }
+/** A runner's (sandbox.runner): where it runs and as whom, fixed for its life. */
+export interface SessionRunnerOptions {
+    /** Absolute: where `require` and relative paths resolve. Default: the session shell's, at the runner's first call. */
+    cwd?: string;
+    /** Its process's environment. Default: the session's exported one, at the runner's first call. */
+    env?: Record<string, string>;
+    /** Colocated callers only, as exec's. */
+    cred?: VfsCred;
+    /** A caller's tag for the runner's process (SessionExecOptions.execId). */
+    execId?: string;
+}
+/** One runner call's limits. */
+export interface SessionRunnerRunOptions {
+    /** Wall time the call may take, in ms; none by default. Past it the runner is ended (ERR_NIMBUS_RUNNER_TIMEOUT). */
+    timeoutMs?: number;
+    /** CPU time the call may use, in ms. Past it the platform ends the runner (ERR_NIMBUS_RUNNER_CPU_LIMIT). */
+    cpuMs?: number;
+}
 export type SessionTerminalSize = ProcessTerminalSize;
 export interface SessionDestroyOptions {
     reason?: string;
@@ -730,6 +798,14 @@ export interface SessionRpc {
     _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcDetachExec(detachId: string): Promise<SessionResult<'detachExec'>>;
     _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<SessionResult<'runCode'>>;
+    /**
+     * Run `code` in runner `id` as a line of the node REPL. The runner is made
+     * with `runner` at its first call, and made again after it was lost; a
+     * later call that names other options is refused.
+     */
+    _rpcRunnerRun(id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions): Promise<SessionResult<'runnerRun'>>;
+    /** End runner `id`: whether there was one. */
+    _rpcRunnerClose(id: string): Promise<SessionResult<'runnerClose'>>;
     _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFile'>>;
     _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFileBytes'>>;
     _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'writeFile'>>;
