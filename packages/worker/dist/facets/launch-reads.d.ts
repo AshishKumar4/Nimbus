@@ -16,9 +16,18 @@
  * through and notes those. A later change (the barrier's report since the
  * build's cursor, RuntimeFsBridge.acquire) leaves the build's answer as it
  * was unless it names one of them (readsAffectedBy):
- *   - a path the build asked about, or a directory above one (a rename or a
- *     removal of the directory moves what is under it);
- *   - a directory the build listed, or a new or removed name in it.
+ *   - a path the build asked about;
+ *   - a directory above one, removed, renamed or given another mode or owner
+ *     (a structural change, or a subtree's, moves what is under it);
+ *   - a directory the build listed, or a name in it.
+ * The barrier reports, beside each changed path, the directory it is in
+ * (SqliteVFS's publication records the parent). For a directory the build
+ * found there, that record says only that something in it changed, which
+ * the record of the child itself answers, so it does not count as a change
+ * to the directory the build stat'ed on its way down; otherwise every write
+ * in the home directory would invalidate every build that resolved a path
+ * under it. For a path the build did not find, it is the path being made,
+ * and counts (a package installed where resolution looked first).
  * A build that enumerated the namespace, or that wrote, or that named a path
  * by a descriptor rather than by name, depends on everything.
  */
@@ -29,6 +38,8 @@ export interface LaunchReads {
     readonly paths: ReadonlySet<string>;
     /** Each directory it listed. */
     readonly listed: ReadonlySet<string>;
+    /** The paths it asked about that were not there (an answer of null, or an error): a change that makes one counts. */
+    readonly absent: ReadonlySet<string>;
     /** It enumerated the namespace, wrote, or named a path it cannot name here: any change may matter. */
     readonly whole: boolean;
 }

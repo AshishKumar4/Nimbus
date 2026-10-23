@@ -4016,8 +4016,10 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     //    (verify/handoffs/ticket-launch-greedy-oversample-cost.md).
     const independentBeforeGroups = new Set(Object.keys(bundle));
     // Only code loads: a manifest or other data file the walk read is not run
-    // (an express checkout's package.json scripts say "mocha --require").
-    const opaque = hasOpaqueLoads(entryCode)
+    // (an express checkout's package.json scripts say "mocha --require"). A
+    // build with no program of its own (opencode's data-only staging, which
+    // runs its own code over the project's modules) has nothing to prove.
+    const opaque = dataOnly || (scriptPath === undefined && entryCode === '') || hasOpaqueLoads(entryCode)
         || [...closurePaths].some((path) => (isBundleModuleCandidate(path) || path.endsWith('.cjs')) && hasOpaqueLoads(prefetch.bundle[path]));
     const greedy = opaque
         ? await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions })

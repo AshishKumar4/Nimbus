@@ -3,12 +3,40 @@ const nameOf = (path) => path.replace(/^\/+/, '').replace(/\/+$/, '');
 export function recordLaunchReads(bridge) {
     const paths = new Set();
     const listed = new Set();
+    const absent = new Set();
     let whole = false;
     const read = (path) => {
         if (typeof path === 'string')
             paths.add(nameOf(path));
         else
             whole = true;
+    };
+    /** `answer` to a question about `path`, noting the path absent when it answers null or fails. */
+    const found = (path, answer) => {
+        read(path);
+        const missing = () => { if (typeof path === 'string')
+            absent.add(nameOf(path)); };
+        let value;
+        try {
+            value = answer();
+        }
+        catch (error) {
+            missing();
+            throw error;
+        }
+        if (!(value instanceof Promise)) {
+            if (value === null)
+                missing();
+            return value;
+        }
+        return value.then((settled) => {
+            if (settled === null)
+                missing();
+            return settled;
+        }, (error) => {
+            missing();
+            throw error;
+        });
     };
     const list = (path) => {
         if (typeof path === 'string') {
@@ -23,16 +51,16 @@ export function recordLaunchReads(bridge) {
     const everything = () => { whole = true; };
     const view = {
         ...(bridge.gateLaunch !== undefined ? { gateLaunch: (...args) => bridge.gateLaunch(...args) } : {}),
-        stat: (...args) => { read(args[0]); return bridge.stat(...args); },
-        readFile: (...args) => { read(args[0]); return bridge.readFile(...args); },
+        stat: (...args) => found(args[0], () => bridge.stat(...args)),
+        readFile: (...args) => found(args[0], () => bridge.readFile(...args)),
         writeFile: (...args) => { everything(); return bridge.writeFile(...args); },
         writeFileFrom: (...args) => { everything(); return bridge.writeFileFrom(...args); },
-        readRange: (...args) => { read(args[0]); return bridge.readRange(...args); },
+        readRange: (...args) => found(args[0], () => bridge.readRange(...args)),
         writeRange: (...args) => { everything(); return bridge.writeRange(...args); },
         truncate: (...args) => { everything(); return bridge.truncate(...args); },
         utimes: (...args) => { everything(); return bridge.utimes(...args); },
         chmod: (...args) => { everything(); return bridge.chmod(...args); },
-        access: (...args) => { read(args[0]); return bridge.access(...args); },
+        access: (...args) => found(args[0], () => bridge.access(...args)),
         chown: (...args) => { everything(); return bridge.chown(...args); },
         // A descriptor reads, or lists, what it was opened on.
         open: (...args) => { list(args[0]); return bridge.open(...args); },
@@ -40,12 +68,12 @@ export function recordLaunchReads(bridge) {
         read: (...args) => bridge.read(...args),
         write: (...args) => { everything(); return bridge.write(...args); },
         close: (...args) => bridge.close(...args),
-        readdir: (...args) => { list(args[0]); return bridge.readdir(...args); },
+        readdir: (...args) => { list(args[0]); return found(args[0], () => bridge.readdir(...args)); },
         mkdir: (...args) => { everything(); return bridge.mkdir(...args); },
         unlink: (...args) => { everything(); return bridge.unlink(...args); },
         rmdir: (...args) => { everything(); return bridge.rmdir(...args); },
         rename: (...args) => { everything(); return bridge.rename(...args); },
-        readlink: (...args) => { read(args[0]); return bridge.readlink(...args); },
+        readlink: (...args) => found(args[0], () => bridge.readlink(...args)),
         linkLeadsTo: (...args) => { read(args[0]); read(args[1]); return bridge.linkLeadsTo(...args); },
         symlink: (...args) => { everything(); return bridge.symlink(...args); },
         fsync: (...args) => bridge.fsync(...args),
@@ -58,7 +86,7 @@ export function recordLaunchReads(bridge) {
         list: (...args) => { everything(); return bridge.list(...args); },
         ...(bridge.subscribe !== undefined ? { subscribe: (...args) => { read(args[0]); return bridge.subscribe(...args); } } : {}),
         // Resolving a path reads each name on the way to it, which the ancestor rule covers.
-        realpath: (...args) => { read(args[0]); return bridge.realpath(...args); },
+        realpath: (...args) => found(args[0], () => bridge.realpath(...args)),
         remove: (...args) => { everything(); return bridge.remove(...args); },
         copyFile: (...args) => { everything(); return bridge.copyFile(...args); },
         copyTree: (...args) => { everything(); return bridge.copyTree(...args); },
@@ -79,7 +107,7 @@ export function recordLaunchReads(bridge) {
         recalled: (...args) => bridge.recalled(...args),
         published: (...args) => bridge.published(...args),
     };
-    return { view, reads: () => ({ paths: new Set(paths), listed: new Set(listed), whole }) };
+    return { view, reads: () => ({ paths: new Set(paths), listed: new Set(listed), absent: new Set(absent), whole }) };
 }
 /**
  * Whether the build asked about a name under one of `mountPoints` (a mount
@@ -102,24 +130,38 @@ function ancestorsOf(name) {
     out.push('');
     return out;
 }
+/** The directory `name` is in ('' for a name at the root). */
+function parentOf(name) {
+    const at = name.lastIndexOf('/');
+    return at === -1 ? '' : name.slice(0, at);
+}
 /** Whether any of `changes` (a barrier's report since the build's cursor) can change what a build that asked `reads` answers. */
 export function readsAffectedBy(reads, changes) {
     if (reads.whole)
         return changes.length > 0;
     if (changes.length === 0)
         return false;
-    // Every directory above a name the build asked about: a change there moves what is under it.
+    // Every directory above a name the build asked about: a structural change there moves what is under it.
     const above = new Set();
     for (const name of [...reads.paths, ...reads.listed])
         for (const ancestor of ancestorsOf(name))
             above.add(ancestor);
+    // The directories the report names as the parent of another of its changes.
+    const parents = new Set();
+    for (const change of changes)
+        parents.add(parentOf(nameOf(change.path)));
     for (const change of changes) {
         const name = nameOf(change.path);
-        if (reads.paths.has(name) || reads.listed.has(name) || above.has(name))
+        if (change.structural === true || change.subtree === true) {
+            if (reads.paths.has(name) || reads.listed.has(name) || above.has(name))
+                return true;
+            continue;
+        }
+        // A name made, removed or changed in a directory the build listed, or that directory's own record of it.
+        if (reads.listed.has(name) || reads.listed.has(parentOf(name)))
             return true;
-        // A name made or removed in a directory the build listed.
-        const parent = name.lastIndexOf('/') === -1 ? '' : name.slice(0, name.lastIndexOf('/'));
-        if (reads.listed.has(parent))
+        // A path the build asked about, unless it found a directory there and the record is only the parent of another change.
+        if (reads.paths.has(name) && (reads.absent.has(name) || !parents.has(name)))
             return true;
     }
     return false;
