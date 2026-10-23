@@ -1111,7 +1111,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * clears only what that count covers), so a lost call is re-sent.
      */
     async cpSignalsTaken(received: number): Promise<void> {
-      await this[CALL](this[RESENT]<void>(
+      return this[CALL](this[RESENT]<void>(
         { op: 'cpSignalsTaken', args: [received], pid: this[REPORTING_PID]() },
         { kind: 'open' },
         { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
