@@ -309,9 +309,9 @@ export async function residentDataPlan(authority, cwd, closure = []) {
   return plan.paths;
 }
 
-/** The program's live coherence counters (the shims publish them on globalThis). */
+/** The program's filesystem's counters (ResidentFilesystem.stats). */
 export function coherenceStats() {
-  return { ...globalThis.__nimbusVfsCoherence };
+  return globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.stats() : {};
 }
 
 /**
@@ -342,10 +342,10 @@ export async function runScenarios(file, scenarios, { barrierFailures = false, g
   if (selected) {
     try {
       await scenarios[selected]();
-      const stats = globalThis.__nimbusVfsCoherence;
-      if (!barrierFailures && stats && stats.barrierFailures > 0) {
+      const stats = coherenceStats();
+      if (!barrierFailures && stats.barrierFailures > 0) {
         throw new Error(
-          `${stats.barrierFailures} barrier(s) got no answer (last: ${stats.lastBarrierFailure}); `
+          `${stats.barrierFailures} barrier(s) did not land; `
           + 'the scenario ran on the failure path, not the delta',
         );
       }

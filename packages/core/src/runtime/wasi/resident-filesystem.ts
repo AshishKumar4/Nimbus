@@ -286,8 +286,9 @@ export interface ResidentFilesystemStats {
   /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
   pagedReads: number;
   pagesFetched: number;
-  /** ACQUIRE barriers taken. */
+  /** ACQUIRE barriers taken, and of those, ones that did not land (owed still). */
   barriers: number;
+  barrierFailures: number;
   /** Barriers owed by input a trusted read lease answered without asking. */
   leasedBarriers: number;
   /** Wall time the process spent waiting on the session for any of the above, in ms. */
@@ -542,7 +543,7 @@ export interface ResidentSpeculation {
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
   let directoryPool: ReadDirectoryPool | null = null;
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, barrierFailures: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
   /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
   let now = false;
   // Every session interaction begins here, given as what would begin it: the
@@ -646,6 +647,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const ask = client !== undefined && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
     const lease = ask === null ? undefined : { answered: (terms: ResidentReadLease) => client!.readLeaseAnswered(terms) };
     return store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }).then((result) => {
+      if (!result.landed) counts.barrierFailures++;
       if (!result.landed || !store.ready()) return false;
       if (ask !== null && result.readLease && !result.fromDelivery) client!.readLeased(result.readLease, ask);
       caught.input = Math.max(caught.input, at.input);

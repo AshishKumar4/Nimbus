@@ -910,8 +910,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     note('at rest: every name, both ways');
     const world = model.world;
     if (kind === 'node') {
-      await globalThis.__nimbusVfsResidencySettle?.();
-      const ledger = [...(globalThis.__nimbusVfsResidencyMisses ?? [])].sort();
+      const ledger = [...(await globalThis.__nimbusProcessFs.misses())].sort();
       const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file' && unreachable(world, rel) === null && (bits(world.get(rel)) & 4) !== 0
         && !(gaps.unfedMountSnapshot && underUnfed(world, rel))).map(key).sort();
       if (gaps.unfedMountSnapshot) for (let i = ledger.length - 1; i >= 0; i--) if (underUnfed(world, ledger[i].slice(key('').length + 1))) ledger.splice(i, 1);
