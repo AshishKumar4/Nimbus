@@ -773,12 +773,16 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     return true;
   };
 
-  /** `entry` failed: `refused` where the session never applied it (its verdict, or it was never sent); else its fate is unknown. */
-  const fail = (entry: Entry, errno: string, message: string, refused = false): void => {
+  /**
+   * `entry` failed: `refused` where the session never applied it (its
+   * verdict, or it was never sent); else its fate is unknown. `op`: what it
+   * logged, where the session's verdict names it.
+   */
+  const fail = (entry: Entry, errno: string, message: string, refused = false, op: ProcessFsOp | null = null): void => {
     settled(entry);
     const path = entry.paths[0] ?? '';
     if (entry.acknowledged) {
-      if (!(refused && orphanedRefusal(entry.op, errno))) failures.push({ op: entry.name, path, errno, message });
+      if (!(refused && orphanedRefusal(op, errno))) failures.push({ op: entry.name, path, errno, message });
       entry.resolve({ failed: { errno, message, ...(refused ? { refused: true as const } : {}) } });
     } else {
       entry.reject(fsError(errno, message, path));
@@ -969,7 +973,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     for (const [index, entry] of entries.entries()) {
       if (refused !== null && entry.seq === refused.seq) {
         counters.refused++;
-        fail(entry, refused.errno, refused.message, true);
+        fail(entry, refused.errno, refused.message, true, ops[index] ?? null);
         if (writer === null) ack = Math.max(ack, entry.seq);
         continue;
       }
