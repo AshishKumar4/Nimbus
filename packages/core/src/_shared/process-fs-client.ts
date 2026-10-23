@@ -127,7 +127,7 @@ export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
 
 /** An op committed: the stat of the file its data call published, when it published one. */
 /** What the session answers a change decided on a name that leads elsewhere now (sqlite-vfs expectAt, an O_NOFOLLOW open of a link). */
-const ORPHANED_ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EEXIST', 'ELOOP', 'ENOTDIR']);
+const ORPHANED_ERRNOS: SafeSet<string> = new SafeSet(['ENOENT', 'EEXIST', 'ELOOP', 'ENOTDIR']);
 
 export interface ProcessFsAnswer {
   receipt?: ProcessFsReceipt;
@@ -791,7 +791,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * The descriptions whose open the session refused as orphaned: what was
    * made through one went to a file no name leads to (orphanedRefusal).
    */
-  const orphanedDescriptions = new Set<string>();
+  const orphanedDescriptions = new SafeSet<string>();
   /**
    * Whether the session refused `op` only because the name it was decided
    * on leads elsewhere now (a peer removed, replaced or swapped a link in at
@@ -802,10 +802,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    */
   const orphanedRefusal = (op: ProcessFsOp | null, errno: string): boolean => {
     if (op === null || op.type !== 'call' && op.type !== 'rename' && op.type !== 'setattr') return false;
-    if (op.type === 'call' && 'description' in op.call && op.call.description !== undefined && orphanedDescriptions.has(op.call.description)) return true;
-    const decided = op.type === 'rename' ? op.expect !== undefined || op.expectTo !== undefined
-      : op.type === 'setattr' ? op.expect !== undefined
-      : ('expect' in op.call && op.call.expect !== undefined) || (op.call.call === 'open' && op.call.nofollow === true);
+    const through = op.type === 'call' ? descriptionOf(op.call) : undefined;
+    if (through !== undefined && orphanedDescriptions.has(through)) return true;
+    const decided = op.type === 'rename' ? ownValue(op, 'expect') !== undefined || ownValue(op, 'expectTo') !== undefined
+      : op.type === 'setattr' ? ownValue(op, 'expect') !== undefined
+      : ownField(op.call, 'expect') !== undefined || (op.call.call === 'open' && op.call.nofollow === true);
     if (!decided || !ORPHANED_ERRNOS.has(errno)) return false;
     if (op.type === 'call' && op.call.call === 'open' && op.call.description !== undefined) orphanedDescriptions.add(op.call.description);
     return true;

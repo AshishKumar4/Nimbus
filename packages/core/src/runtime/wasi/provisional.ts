@@ -1308,8 +1308,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       desc.lastRecord = record;
       const answer = host.client.submit(call);
       desc.lastAnswer = answer;
-      void answer.then((answered) => settleRecords([record], false, answered.mutation?.after), () => settleRecords([record], true))
-        .then(() => { fit(inode); host.sent(); }).catch(endedOnly);
+      void promiseThen(promiseThen(promiseThen(answer, (answered) => settleRecords([record], false, mutationAfter(answered)), () => settleRecords([record], true)),
+        () => { fit(inode); host.sent(); }), undefined, endedOnly);
       fit(inode);
       return answer;
     }
@@ -1741,7 +1741,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const desc = descOf(handleId);
       if (!desc.write) throw fsError('EINVAL', 'ftruncate', desc.path);
       const answer = contentOp(desc, { kind: 'truncate', size, at: host.now() }, { type: 'call', call: { call: 'ftruncate', path: desc.inode.key, ...by(desc), size } }, 0, 'ftruncate', awaited);
-      return answer === undefined ? undefined : answer.then(() => undefined);
+      return answer === undefined ? undefined : promiseThen(answer, () => undefined);
     },
 
     seek: (handleId, offset, whence) => {
