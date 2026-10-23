@@ -31,6 +31,8 @@ import {
   type SessionJsonOperation, type SessionOperation, type SessionResult,
   type SessionRpc as NimbusSessionSurface,
   type SessionExecOptions, type SessionRunCodeOptions,
+  RunnerIdSchema,
+  type SessionRunnerOptions, type SessionRunnerRunOptions, type SessionRunnerResult, type SessionRunnerError,
   type SessionRestartPolicy as NimbusRestartPolicy,
   type SessionAppVisibility as NimbusAppVisibility,
   type SessionAppTarget as NimbusAppTarget,
@@ -172,6 +174,38 @@ export type NimbusExecExit = ExecExit;
 export type NimbusExecStream = ExecStream;
 
 export type NimbusExecResult = ExecOutput;
+
+/**
+ * A runner's options (`sandbox.runner`): its id (a new UUID by default), and
+ * where its process runs, fixed for its life. `cwd` resolves against the
+ * sandbox root, as exec's does.
+ */
+export interface NimbusRunnerOptions extends SessionRunnerOptions {
+  id?: string;
+}
+/** One runner call's limits: `timeoutMs` (none by default) and `cpuMs` (5,000 by default). */
+export type NimbusRunnerRunOptions = SessionRunnerRunOptions;
+/** One runner call's answer; see `NimbusRunner.run`. */
+export type NimbusRunnerResult = SessionRunnerResult;
+export type NimbusRunnerError = SessionRunnerError;
+
+/**
+ * A warm node process in the sandbox that runs each call's code as a line
+ * of the node REPL (docs/sandbox-sdk.md, "Runners").
+ */
+export interface NimbusRunner {
+  readonly id: string;
+  /**
+   * Run `code`: its last expression's value, as `util.inspect` shows it, and
+   * what it wrote and threw. What a call declares or sets on `globalThis`
+   * stays for the next call; nothing isolates one call from another. A
+   * `fresh` answer ran in a new runner, where nothing an earlier call left
+   * is there.
+   */
+  run(code: string, options?: NimbusRunnerRunOptions): Promise<NimbusRunnerResult>;
+  /** End the runner: whether there was one. A call it is running is ended. */
+  close(): Promise<boolean>;
+}
 
 /** A session's terminal (`sandbox.terminals.list()`): its own is `name: null`. */
 export type NimbusTerminal = SessionTerminal;
@@ -378,6 +412,8 @@ export class NimbusSandbox {
       _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
       _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
       _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
+      _rpcRunnerRun: (id, code, runner, options) => this.remoteRpc('runnerRun', [id, code, runner, options]),
+      _rpcRunnerClose: (id) => this.remoteRpc('runnerClose', [id]),
       // A credential rides the wire as a trailing `{ cred }` options object
       // so the payload names it explicitly; the remote dispatcher decides
       // what to do with it (today: refuse, as it refuses `cred` on exec).
@@ -595,6 +631,27 @@ export class NimbusSandbox {
       language,
       install: options.install ?? 'never',
     }));
+  }
+
+  /**
+   * A runner: a warm node process that runs each call's code as a line of
+   * the node REPL, in about 10 ms when warm (docs/sandbox-sdk.md,
+   * "Runners"). It is made at its first call, and made again, fresh, after a
+   * call loses it. Calls that hold the same id share one runner.
+   */
+  runner(options: NimbusRunnerOptions = {}): NimbusRunner {
+    const { id = crypto.randomUUID(), ...asked } = options;
+    const parsed = RunnerIdSchema.safeParse(id);
+    if (!parsed.success) throw new TypeError(`runner: an id is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(id)}`);
+    const runner: SessionRunnerOptions = { ...asked, cwd: resolveSandboxCwd(this.root, asked.cwd ?? this.root) };
+    return {
+      id: parsed.data,
+      run: async (code, call = {}) => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcRunnerRun(parsed.data, code, runner, call));
+      },
+      close: async () => (await this.rpc(this.stub()._rpcRunnerClose(parsed.data))).closed,
+    };
   }
 
   async destroy(options: NimbusDestroyOptions = {}): Promise<NimbusDestroyResult> {

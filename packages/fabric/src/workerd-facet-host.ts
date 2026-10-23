@@ -54,14 +54,16 @@ import {
   type ResidentBootSpec,
   type ResidentDiskReader,
   type ResidentSupervisorProps,
+  type RunnerCallParams,
   type Supervise,
 } from './process-fabric.js';
 import { bindingSupervisor, egressMarker, supervisorLoaderKey, workspaceOutbound, type SupervisorBindingProps } from './supervisor-props.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import type { ProcessFsJournalSource, ProcessFsNumbering } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ProcessFsOp } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
-import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
+import { applyFacetLimits, effectiveFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
 import { holdThreadWatch } from './thread-stalls.js';
@@ -146,8 +148,19 @@ interface LoadedWorkerStub {
  * passes a string id and a promise callback.
  */
 interface WorkerLoaderBinding {
-  get(id: string | null, code: () => unknown): { getDurableObjectClass(name: string, opts?: { limits: FacetResourceLimits }): unknown };
+  get(id: string | null, code: () => unknown): KeyedWorkerStub;
   load(code: unknown): LoadedWorkerStub;
+}
+
+/** What a keyed `LOADER.get` hands back: a resident's class, or a runner's entrypoint. */
+interface KeyedWorkerStub {
+  getDurableObjectClass(name: string, opts?: { limits: FacetResourceLimits }): unknown;
+  getEntrypoint(name?: string, opts?: { limits: FacetResourceLimits }): RunnerEntrypointStub;
+}
+
+/** A runner's entrypoint (the guest's generated `run`): one call's input in, its answer out. */
+interface RunnerEntrypointStub {
+  run(input: object, ended: () => Promise<string | null>): Promise<object>;
 }
 
 /**
@@ -468,6 +481,19 @@ export class Processes {
     consume: (response: Response) => Promise<T>,
   ): Promise<T> {
     return runOneShot(this.ctx, this.env, supervisor, supervise, params, consume);
+  }
+
+  /**
+   * One call on a runner, a KEYED dynamic worker its owner calls again: see
+   * RunnerCallParams. `supervisor` mints its binding's props, asked for on
+   * the loader's miss, so a warm call opens no write epoch of its own.
+   */
+  callRunner<I extends object, T>(
+    supervisor: () => ResidentSupervisorProps,
+    params: RunnerCallParams<I>,
+    consume: (answer: object) => T,
+  ): Promise<T> {
+    return callRunner(this.ctx, this.env, supervisor, params, consume);
   }
 }
 
@@ -946,6 +972,76 @@ async function runOneShot<T>(
     disposeRpcResource(worker);
     disposeRpcResource(capability);
     disposeRpcResource(supervisorBinding);
+    watched();
+    endFetch();
+  }
+}
+
+/**
+ * One call on a runner (RunnerCallParams). The worker its key names is the
+ * loader's: loaded on a miss, from the owner's map, with the runner's own
+ * SUPERVISOR binding in its env, and kept warm by the loader between calls.
+ * The call holds the process's one Dynamic Worker on the ledger while it
+ * runs (an admitted launch's, for a generation's first call), and closes its
+ * RPC session as it ends, before the hold: the platform counts a worker in
+ * flight until then (runOneShot), so an idle runner counts as none. The
+ * call's CPU limit is on its entrypoint, lower than the worker's own.
+ */
+async function callRunner<I extends object, T>(
+  ctx: DurableObjectState,
+  env: ResidentFacetEnv,
+  supervisor: () => ResidentSupervisorProps,
+  params: RunnerCallParams<I>,
+  consume: (answer: object) => T,
+): Promise<T> {
+  const loader = env.LOADER;
+  if (!loader || typeof loader.get !== 'function') {
+    throw new Error(
+      'Nimbus: env.LOADER binding missing or invalid. A runner requires '
+        + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
+    );
+  }
+  let endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, launchWorkerKey(params.pid), {
+    signal: params.signal,
+    process: { pid: params.pid },
+  });
+  let entrypoint: RunnerEntrypointStub | undefined;
+  const watched = holdThreadWatch(ctx, `runner pid ${params.pid}`);
+  try {
+    // The binding's host instance names the key (supervisorLoaderKey): the next instance refuses its mutations.
+    const worker = loader.get(supervisorLoaderKey(facetLoaderKey('process', params.key), supervisorDeliveryProps(ctx)), async () => {
+      const code = await params.code();
+      assertModuleMapWithinCodeLimit(code.modules);
+      const props = supervisor();
+      return applyFacetLimits('process', workspaceOutbound({ ...code, env: { SUPERVISOR: bindingSupervisor(props), ...egressMarker(props) } }, props));
+    });
+    const run = worker.getEntrypoint(undefined, { limits: effectiveFacetLimits('process', { cpuMs: params.cpuMs }) });
+    entrypoint = run;
+    let firstRefusal: number | undefined;
+    for (;;) {
+      let entered = false;
+      try {
+        return await untilEnded(params.signal, async (ended) => {
+          params.onSent();
+          return consume(await run.run(params.input, () => {
+            entered = true;
+            return ended();
+          }));
+        });
+      } catch (error) {
+        if (entered || classifyError(error) !== 'dynamic_worker_cap') throw error;
+        // Refused before it was entered: the ledger learns it from the hold it ends (runOneShot).
+        endFetch(error);
+        firstRefusal ??= Date.now();
+        const readmitted = await readmitRefused(endFetch, { since: firstRefusal, signal: params.signal });
+        if (readmitted === undefined) throw error;
+        endFetch = readmitted;
+      }
+    }
+  } catch (error) {
+    throw withDynamicWorkerCapNamed(ctx, error);
+  } finally {
+    disposeRpcResource(entrypoint);
     watched();
     endFetch();
   }

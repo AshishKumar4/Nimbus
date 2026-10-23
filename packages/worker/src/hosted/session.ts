@@ -21,7 +21,7 @@
 import { RpcTarget } from 'cloudflare:workers';
 import { CRED_SESSION_USER, sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
-import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionRunnerOptions, SessionRunnerRunOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 
@@ -93,6 +93,12 @@ export class HostedSession extends RpcTarget implements SessionRpc, Pick<Session
     return operations.rpcDetachExec(this.#client(), detachId, this.scope?.shellId);
   }
   async _rpcRunCode(code: string, options?: SessionRunCodeOptions) { return operations.rpcRunCode(this.#client(), code, this.#exec(options)); }
+  // A runner runs in no shell: a scoped session's runs as its identity.
+  async _rpcRunnerRun(id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions) {
+    const cred = this.#cred(runner?.cred);
+    return operations.rpcRunnerRun(this.#client(), id, code, { ...runner, ...(cred === undefined ? {} : { cred }) }, options);
+  }
+  async _rpcRunnerClose(id: string) { return operations.rpcRunnerClose(this.#client(), id); }
 
   // The file methods keep the session's wire shape: the third slot is a
   // process claim no SDK caller makes, and is not accepted here either.

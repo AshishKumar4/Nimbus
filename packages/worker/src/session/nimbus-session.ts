@@ -26,7 +26,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
-import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionRunnerOptions, SessionRunnerRunOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -1087,6 +1087,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcRunCode(code: string, options?: SessionRunCodeOptions) {
     return _programmatic.rpcRunCode(this as any, code, options);
   }
+  async _rpcRunnerRun(id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions) {
+    return _programmatic.rpcRunnerRun(this, id, code, runner, options);
+  }
+  async _rpcRunnerClose(id: string) { return _programmatic.rpcRunnerClose(this, id); }
   async _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions) { return _programmatic.rpcInstallRuntime(this as any, spec, options); }
   async _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions) { return _programmatic.rpcEnsureRuntimes(this as any, specs, options); }
   async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this as any)); }

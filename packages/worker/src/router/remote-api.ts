@@ -328,6 +328,17 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       assertRuntimeForLanguage(ctx, language, options.install);
       return ctx.stub._rpcRunCode(stringArg(args[0], 'code'), options);
     }
+    case 'runnerRun': {
+      // A token authenticates a session, not a user in it: no identity, as on exec (execOptions).
+      if (objectArg(args[2]).cred !== undefined) throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+      const runner = RemoteRunnerOptionsSchema.safeParse(args[2] ?? {});
+      if (!runner.success) throw apiError(`runner options: ${runner.error.message}`, 'E_ARG_SHAPE', 400);
+      const options = RemoteRunnerRunOptionsSchema.safeParse(args[3] ?? {});
+      if (!options.success) throw apiError(`runner call options: ${options.error.message}`, 'E_ARG_SHAPE', 400);
+      return ctx.stub._rpcRunnerRun(stringArg(args[0], 'id'), stringArg(args[1], 'code'), { ...runner.data, cwd: runner.data.cwd ?? ctx.root }, options.data);
+    }
+    case 'runnerClose':
+      return ctx.stub._rpcRunnerClose(stringArg(args[0], 'id'));
     // The file plane. Each op's trailing argument is the SDK's file options
     // object; `fileOptions` reads it so a `cred` the client put on the wire
     // is refused loudly rather than dropped — the session-user default is
@@ -631,6 +642,14 @@ function argvArg(value: unknown): string[] {
   if (!Array.isArray(value) || value.length === 0) throw apiError('argv must be a non-empty array of strings', 'E_ARG_SHAPE', 400);
   return value.map((word, index) => stringArg(word, `argv[${index}]`));
 }
+
+/** A runner's options as a remote caller may give them: its cwd, environment and exec id. */
+const RemoteRunnerOptionsSchema = z.strictObject({
+  cwd: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  execId: z.string().optional(),
+});
+const RemoteRunnerRunOptionsSchema = z.strictObject({ timeoutMs: z.number().optional(), cpuMs: z.number().optional() });
 
 /** startProgram's options as a remote caller may give them: its cwd and environment, no stream. */
 function startProgramOptions(value: unknown): { cwd?: string; env?: Record<string, string>; stdin?: 'written' } {
