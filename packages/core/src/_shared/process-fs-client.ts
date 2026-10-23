@@ -188,6 +188,8 @@ export interface ProcessFsClientOptions {
    * still holds unlogged (a file's latest bytes), so the flush sends it.
    */
   readonly drain?: () => void;
+  /** Told of each change as it is logged, before it is sent (a run that can stop counts it: stop-replay's mutation). */
+  readonly logged?: (op: ProcessFsOp) => void;
   /**
    * A grant of `root` starts closing (recalled, given back idle or for a
    * renewal): called before the flush that sends what was decided under it,
@@ -1089,9 +1091,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (acknowledged) pendingSyncBytes += grown;
       counters.ops++;
       counters.folded++;
+      options.logged?.(op);
       return tail.answer!;
     }
     if (foldOnly) return undefined;
+    options.logged?.(op);
     const answers = parts.map((part) => {
       let entry: Entry | undefined;
       const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {

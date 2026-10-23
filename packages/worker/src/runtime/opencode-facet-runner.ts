@@ -38,7 +38,7 @@
  */
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
-import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { NODE_ROOT_STAT_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { createNodeFacetRuntime, nodeFacetSource, type NodeFacetSources } from './node-shims-artifact.js';
 import { NODE_SHIMS_IMPORTS } from './node-shims-imports.js';
@@ -729,14 +729,10 @@ ${SUPERVISOR_ANSWERING_SRC}
 // process boots on (vfs/resident), in this facet's heap and bounded there. An
 // opencode facet has no storage allowance of the session's ledger to grow a
 // SQLite store under. Bound and booted by __ocBootStore before the opencode
-// bundle is imported; the shims read it through its bundle.
+// bundle is imported; the shims' filesystem is made over it then.
 let __MODULE_VFS_BUNDLE = ${opts.vfsBundle};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
 const __resident = __nimbusResidentModule.createResidentStore();
-const __vfsBundle = __resident.bundle;
-${VFS_CURSOR_SEED_SOURCE}
-${nodeFacetSource(opts.sources, 'ledger')}
-const __vfsDirs = {};
 const __nimbusDeferProcessExitReport = true;
 // The in-flight facet I/O the teardown drain awaits (runtime/pending-io.ts).
 ${PENDING_IO_SOURCE}
@@ -972,7 +968,7 @@ async function __drainPendingIO(maxPasses = 12) {
 async function __ocDrainVfsWrites() {
   if (!__supervisor) return;
   try {
-    await __nimbusDrainVfsWrites(__supervisor);
+    await __nimbusSettleFilesystem();
   } catch (e) {
     const trace = (e && e.stack) || (e && e.message) || String(e);
     __ocLoadError = trace;
@@ -1098,12 +1094,13 @@ function __ocEmitMemDiag(tag) {
         __zact = Number(__dv.getBigUint64(8, true));
       }
     } catch {}
+    // What the process's filesystem holds that the session does not have yet: its decided bytes, and what its client logged unanswered.
     let __vfsB = 0, __vfsN = 0;
     try {
-      for (const __k in __vfsWrites) {
-        __vfsN += 1;
-        const __v = __vfsWrites[__k];
-        __vfsB += typeof __v === "string" ? __v.length : (__v && __v.byteLength) || 0;
+      const __fsStats = __nimbusProcessFilesystem === null ? null : __nimbusProcessFilesystem.stats();
+      if (__fsStats !== null) {
+        __vfsN = __fsStats.client ? __fsStats.client.ops : 0;
+        __vfsB = __fsStats.provisionalBytes + (globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.pendingBytes : 0);
       }
     } catch {}
     const __line =
@@ -1235,15 +1232,15 @@ async function __ocBootStore() {
   __resident.namespace.setCred(cred);
   __resident.sync.setPlan([]);
   __resident.sync.setPushRoots([cwd || "/home/user", "/tmp"]);
+${NODE_ROOT_STAT_SOURCE}
   const __booted = await __resident.sync.boot(
     () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
     __MODULE_VFS_CURSOR,
     __supervisor,
   );
-  if (__booted.cursor) {
-    globalThis.__nimbusVfsCursor = { position: __booted.cursor };
-  }
-  return __resident.sync.requireNamespace(__supervisor, __booted.failure);
+  const __failure = await __resident.sync.requireNamespace(__supervisor, __booted.failure) || await __nimbusRootFailure();
+  if (__failure === null) __nimbusStartProcessFilesystem(__nimbusRootStat);
+  return __failure;
 }
 
 export class NimbusProcess extends __NimbusDurableObject {

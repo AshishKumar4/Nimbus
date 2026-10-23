@@ -45,7 +45,7 @@ import { ownNames } from './own-names.js';
 import { provisional as provisionalDecisions, type Desc, type HeldCell, type Inode, type Provisional } from './provisional.js';
 import { owned } from './inode-fold.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
+import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 
 /** Descriptors this holder opens are numbered below every session descriptor. */
@@ -96,6 +96,8 @@ export interface HolderOptions {
    * each call logged that makes a name and does not name one.
    */
   readonly umask?: () => number;
+  /** Told of each change its client logs (ProcessFsClientOptions.logged). */
+  readonly logged?: ProcessFsClientOptions['logged'];
 }
 
 /** A file made or rewritten here: its bytes until they are sent. */
@@ -442,6 +444,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
     ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
     ...(options.journal === undefined ? {} : { journal: options.journal }),
+    ...(options.logged === undefined ? {} : { logged: options.logged }),
     released: dropDecisions,
     // Closing starts (a recall, an idle or renewing give-back): nothing more
     // is decided under it, and its files' descriptions write through from now

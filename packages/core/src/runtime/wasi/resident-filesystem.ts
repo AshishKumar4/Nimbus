@@ -45,7 +45,7 @@ import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
+import { delegationHolder, type DelegationHolder, type HolderOptions } from './delegation-holder.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
@@ -457,6 +457,8 @@ export interface ResidentDelegation {
   readonly readLeases?: () => boolean;
   /** The process's own store's write log (HolderOptions.journal). */
   readonly journal?: ProcessFsJournal;
+  /** Told of each change the process's client logs (HolderOptions.logged). */
+  readonly logged?: HolderOptions['logged'];
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
   /**
    * The directories the last process in this facet opened, in order (its
@@ -596,6 +598,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
       ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
       ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
+      ...(delegation.logged === undefined ? {} : { logged: delegation.logged }),
       ...(delegation.umask === undefined ? {} : { umask: delegation.umask }),
       ...(delegation.timers === undefined ? {} : { timers: delegation.timers }),
       ...(delegation.now === undefined ? {} : { now: delegation.now }),

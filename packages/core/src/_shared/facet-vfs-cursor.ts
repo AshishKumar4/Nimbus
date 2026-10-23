@@ -1,53 +1,30 @@
-/**
- * Seed the coherence cursor the facet's staged VFS snapshot was read at.
- *
- * A facet's resident set is a cache of the supervisor's VFS, and the cursor is
- * the only thing that says WHICH state it caches. Without one the first ACQUIRE
- * carries a null epoch, and a null epoch is not a stale cursor the authority can
- * compute a delta from — it can only answer poison, "drop everything". So the
- * first async fs call in the process throws away every staged cell, and the next
- * synchronous read of any of them raises EAGAIN for content that was staged
- * correctly and never changed. Measured: pi, launched as a bin, lost all 3210
- * cells of its bundle to one `fs.promises` call and then failed reading its own
- * `dist/modes/interactive/theme/dark.json`.
- *
- * Shared source rather than a line per body: the long-running node body and the
- * staged-artifact body each hold a hand-written copy of the snapshot preamble,
- * and neither gained this seed when the one-shot body did. That drift is the
- * defect, and one definition every generator splices is what makes it
- * unrepeatable.
- *
- * Splice it AFTER `__MODULE_VFS_CURSOR` is defined and BEFORE the shims: the
- * shims read the cursor into a closure const as they evaluate, so an assignment
- * that lands later replaces an object nothing still points at.
- *
- * Where `__MODULE_VFS_CURSOR` comes from is the generator's business, and for
- * the two node bodies there is only one right answer: the invocation. Their
- * generated text is content-addressed — the one-shot body is cached on
- * hash(code + bundle + manifest), the resident body is stored as a facet image
- * named by its own digest — and a cursor carries a revision that advances on
- * every spawn and an epoch that belongs to one supervisor incarnation. Baked
- * in, it gives the same program a new image each time and hands a shared body
- * another session's epoch. So it rides the request body and the start payload
- * respectively, the same channel argv and env want. The staged-artifact body
- * is generated from a per-invocation spec that is not addressed by its bytes,
- * so there it is simply one more field of that spec.
- */
 import type { FeedPosition } from '../runtime/feed-position.js';
 
-export const VFS_CURSOR_SEED_SOURCE = `
-if (__MODULE_VFS_CURSOR) {
-  globalThis.__nimbusVfsCursor = { position: __MODULE_VFS_CURSOR };
-}
+/**
+ * The session's root, asked beside the store's boot (spliced just before it,
+ * after `__supervisor`, in every node body): the process's filesystem is the
+ * store's view of the session's filesystem, whose device the root's stat
+ * names (node-shims __nimbusStartProcessFilesystem). Asked after the
+ * launch's cursor, so it is as of the store's cursor or after it; a delta
+ * that names the root later moves it (vfs/resident view.ts namespaceView).
+ */
+export const NODE_ROOT_STAT_SOURCE = `
+    const __nimbusRootAsked = __supervisor ? Promise.resolve(__supervisor.stat("/")).catch(() => null) : Promise.resolve(null);
+    let __nimbusRootStat = null;
+    // Null, or the launch's failure: the root could not be read.
+    const __nimbusRootFailure = async () => {
+      __nimbusRootStat = await __nimbusRootAsked;
+      return __supervisor && !__nimbusRootStat ? "node: the process was not started: the session's root could not be read" : null;
+    };
 `;
 
 /** The cursor a facet snapshot travels with (the namespace's position it was read at), or `null` when it has none. */
 export type FacetVfsCursor = FeedPosition;
 
 /**
- * The `__MODULE_VFS_CURSOR` literal for a generated facet body. `null` is a
- * real answer — a facet built without a VFS has no state to be coherent with —
- * and the seed above is a no-op for it.
+ * The `__MODULE_VFS_CURSOR` literal for a generated facet body (the cursor its
+ * store boots at). `null` is a real answer: a facet built without a VFS has no
+ * state to be coherent with.
  */
 export function serializeFacetVfsCursor(cursor: FacetVfsCursor | undefined): string {
   return JSON.stringify(cursor ?? null);
