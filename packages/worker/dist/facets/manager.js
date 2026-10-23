@@ -26,7 +26,7 @@ import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { InterpreterEnvFactsSchema, interpreterProcessEnv } from '@nimbus-sh/core/runtime/interpreter-env.js';
-import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReasonOf } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -6856,7 +6856,12 @@ export class FacetManager {
                             result = outcome;
                             break;
                         }
-                        if (outcome.stop.kind === 'listen') {
+                        if (outcome.stop.kind === 'listen' || outcome.stop.kind === 'miss') {
+                            // The file it missed: its resident's data plan holds it, and the next launch stages it.
+                            const missed = outcome.stop.kind === 'miss' ? outcome.stop.path : undefined;
+                            if (missed !== undefined) {
+                                await this._recordLaunchLearning(vfsState.bundleKey, { dataReads: [missed] }).catch((error) => this._learningLost(entry.pid, error));
+                            }
                             const promotion = await this._promote(entry, code, opts, outcome.stop, { inputChannel, held, signal: abortController.signal, stdinFile: stdinFileIdentity });
                             promoted = promotion.promotedPid !== undefined;
                             return promotion;
@@ -7068,9 +7073,14 @@ export class FacetManager {
      */
     run) {
         const pid = entry.pid;
+        // It stopped at its first listen, or at a synchronous read of a file its one-shot did not hold (`read`).
+        const read = stop.kind === 'miss' ? stop.path : undefined;
+        const why = read === undefined
+            ? { rerun: 'listens as a server, so Nimbus runs it again as one', before: 'before it listened' }
+            : { rerun: `read /${read} synchronously, which its one-shot process did not hold, so Nimbus runs it again as a resident process`, before: 'before that read' };
         // `killed`: its resident is running, and is stopped.
         const fail = async (message, killed = false) => {
-            const text = `node: this program listens as a server, so Nimbus runs it again as one, but ${message}\n`;
+            const text = `node: this program ${why.rerun}, but ${message}\n`;
             await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(text));
             this._end(pid, { code: 1, cause: text.trimEnd(), killed });
             return { exitCode: 1, stdout: '', stderr: '' };
@@ -7085,7 +7095,7 @@ export class FacetManager {
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         if (stopped.prefix === null) {
-            return fail(`it printed more than ${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB before it listened, more than a second run is checked against.`);
+            return fail(`it printed more than ${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB ${why.before}, more than a second run is checked against.`);
         }
         // The stdin it took goes back in front of its channel, and the resident
         // takes at least as much before it replays the reads that took it.
@@ -7093,11 +7103,11 @@ export class FacetManager {
         taken?.retire();
         const before = taken ? taken.take() : { chunks: [], bytes: 0 };
         if (before === null)
-            return fail(`it read more than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB of stdin before it listened, more than a second run is handed back.`);
+            return fail(`it read more than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB of stdin ${why.before}, more than a second run is handed back.`);
         if (before.bytes > 0) {
             const channel = this._stdinChannel(run.inputChannel);
             if (channel === null)
-                return fail('the stdin it read before it listened has no channel to be handed back on.');
+                return fail(`the stdin it read ${why.before} has no channel to be handed back on.`);
             channel.unread(before.chunks.map((data) => ({ data, ended: false })));
             run.held.give(before.bytes);
         }
@@ -7115,7 +7125,7 @@ export class FacetManager {
         await openSupervisorDeliveries(this.ctx).retireWaveWriters(pid);
         const restored = this.vfs?.restoreRun(pid) ?? { refused: 'what it changed was not kept' };
         if ('refused' in restored) {
-            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`));
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`node: this program ${why.rerun} from its start, over the files as they are: ${restored.refused}. What it printed ${why.before} is printed again.\n`));
             // Its run from the start is the next run, unchecked: all it prints is
             // shown, and the stopped run's late chunks still are not.
             gate?.restart(stop.run + 1);
@@ -7124,7 +7134,7 @@ export class FacetManager {
             replay: {
                 run: stop.run + 1,
                 tape: stop.tape,
-                listen: true,
+                ...(read === undefined ? { listen: true } : { read }),
                 prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
             },
             ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
@@ -7168,6 +7178,13 @@ export class FacetManager {
         if (changed) {
             return fail(`its stdin, ${opts.stdinFile.path}, changed while it was run again, so the two runs did not read the same input.`, true);
         }
+        // Run again after a read, it is still the command's run: the terminal is
+        // its until it ends, or until it listens and runs on as a server does.
+        if (read !== undefined) {
+            const exit = await this._endOrListen(pid, opts.signal);
+            if (exit !== null)
+                return { exitCode: exit, stdout: '', stderr: '' };
+        }
         // Said as any resident's start is: it runs on, and serves.
         try {
             this.hooks.onSpawn?.(pid, entry.command, true);
@@ -7177,6 +7194,28 @@ export class FacetManager {
         if (opts.server)
             await this.learnedServers.learn(opts.server).catch((error) => this._learningLost(pid, error));
         return { exitCode: 0, stdout: '', stderr: '', promotedPid: pid };
+    }
+    /**
+     * `pid`'s exit status once it ends, or null once it has a routeable port
+     * first (it listened, and runs on as a server). The command's interrupt
+     * (`signal`) sends it the signal the terminal sent, as a foreground job's.
+     */
+    async _endOrListen(pid, signal) {
+        const settled = new AbortController();
+        const interrupt = () => { this.kill(pid, signal === undefined ? undefined : signalAbortReasonOf(signal)?.signal); };
+        if (signal?.aborted)
+            interrupt();
+        signal?.addEventListener('abort', interrupt, { once: true });
+        try {
+            return await Promise.race([
+                this.processes.whenEnded(pid),
+                this.portRegistry.waitForRouteablePortsByPid(pid, settled.signal).then((ports) => (ports.length > 0 ? null : this.processes.whenEnded(pid))),
+            ]);
+        }
+        finally {
+            settled.abort();
+            signal?.removeEventListener('abort', interrupt);
+        }
     }
     /**
      * A process stopped at a synchronous read of stdin that needs input not
@@ -9450,7 +9489,7 @@ export class FacetManager {
         }
     }
     waitForRouteablePorts(pid, timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS) {
-        return this.portRegistry.waitForRouteablePortsByPid(pid, timeoutMs);
+        return this.portRegistry.waitForRouteablePortsByPid(pid, AbortSignal.timeout(timeoutMs));
     }
     finishProcess(pid, exitCode, reason = 'exited') {
         this._end(pid, { code: exitCode, ...(exitCode !== 0 ? { cause: reason } : {}) });

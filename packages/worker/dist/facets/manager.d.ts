@@ -1910,6 +1910,12 @@ export declare class FacetManager {
     private _stdinFileIdentity;
     private _promote;
     /**
+     * `pid`'s exit status once it ends, or null once it has a routeable port
+     * first (it listened, and runs on as a server). The command's interrupt
+     * (`signal`) sends it the signal the terminal sent, as a foreground job's.
+     */
+    private _endOrListen;
+    /**
      * A process stopped at a synchronous read of stdin that needs input not
      * there yet (runtime/stop-replay.ts): deliver what its record carries of
      * its output, wait for the input the read needs (the end of stdin, or any of
