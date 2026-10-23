@@ -294,15 +294,17 @@ assert.throws(() => fs.readFileSync('/home/user/live-only.bin'), (e) => {
   assert.match(e.message, /not resident/);
   return true;
 });
-// Writing onto a non-resident, non-empty file would silently destroy the
-// bytes we cannot see, so it must refuse too.
-assert.throws(() => fs.writeSync(lfd, 'x', 0), (e) => e.code === 'EAGAIN');
+// A positional write onto a file whose content is only in the session does not rewrite it: the session applies
+// the one byte at offset 0 and keeps the rest and the size.
+assert.equal(fs.writeSync(lfd, 'x', 0), 1);
+await globalThis.__nimbusProcessFs.flush();
+assert.equal(await vfs.readFileString('home/user/live-only.bin'), 'xIVEDATA-0123456789');
 
 // The async form on the SAME fd CAN do live I/O and must succeed.
 const liveRead = await new Promise((res, rej) =>
   fs.read(lfd, Buffer.alloc(8), 0, 8, 0, (e, n, b) => (e ? rej(e) : res({ n, b }))));
 assert.equal(liveRead.n, 8);
-assert.equal(dec.decode(liveRead.b.subarray(0, 8)), 'LIVEDATA');
+assert.equal(dec.decode(liveRead.b.subarray(0, 8)), 'xIVEDATA');
 fs.closeSync(lfd);
 
 // ── async callback surface: open → write → fstat → read → ftruncate → close ──

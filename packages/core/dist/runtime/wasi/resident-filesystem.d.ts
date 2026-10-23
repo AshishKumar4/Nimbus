@@ -341,24 +341,19 @@ export interface ResidentDelegation {
     /** Told of each change the process's client logs (HolderOptions.logged). */
     readonly logged?: HolderOptions['logged'];
     /**
-     * A mount's rows are answered as the store's walk of it left it (its launch
-     * named it, and a fed mount's deltas since), a feedless mount's whatever
-     * its feed would say, and what this process changes on a mount (but the
-     * kernel's /dev and /proc) is decided here, staying its own where the view
-     * never hears of it: node's, as its fs always answered. Without it a
-     * feedless mount, or a moving feed's rows under a trusted read lease, are
-     * the session's to answer, and every mount's changes the session's to
-     * decide.
+     * Node's fs over this filesystem, answering as it always has (a WASI
+     * guest's, without it, answers as its syscalls do):
+     * - a mount's rows answer a call that cannot wait as the store's walk of
+     *   it left it (its launch named it, a fed mount's deltas since), and what
+     *   this process changes on a mount (but the kernel's /dev and /proc) is
+     *   decided here, staying its own where the view never hears of it;
+     * - a descriptor's write or truncate outside a held subtree, by a caller
+     *   that may wait, is answered once the session has it, its refusal the
+     *   call's;
+     * - a read-only descriptor's fstat answers from its name's entry while the
+     *   name leads to its file (node opens no /dev/fd reopen behind it).
      */
-    readonly walkedMounts?: boolean;
-    /**
-     * A descriptor's write or truncate outside a held subtree, by a caller
-     * that may wait, is answered once the session has it, its refusal the
-     * call's: node's fs, as it always answered an awaited write. Without it
-     * such a write is answered once logged (a WASI guest's write(2)), the
-     * session's refusal its next close's, sync's or settle's.
-     */
-    readonly answeredWrites?: boolean;
+    readonly nodeFs?: boolean;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
     /**
      * The directories the last process in this facet opened, in order (its

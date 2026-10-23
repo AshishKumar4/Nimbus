@@ -255,10 +255,8 @@ function __nimbusStartProcessFilesystem(root) {
     // Nor does a runner, which runs only while a call holds it: it could not answer a lease's recall, nor a grant's.
     readLeases: () => typeof __nimbusAnswersNoRecall === "undefined" && (!__nimbusReplay || __nimbusReplay.final),
     ...(typeof __nimbusAnswersNoRecall === "undefined" ? {} : { holdsGrants: false }),
-    // A mount without a change feed as its launch walked it, and changes on mounts its own (as node's fs answers them).
-    walkedMounts: true,
-    // An awaited write answered once the session has it (as node's fs answers it).
-    answeredWrites: true,
+    // Node's fs, as it always answered (ResidentDelegation.nodeFs).
+    nodeFs: true,
     residency: {
       // An import()'s prefetch (__nimbusHydrated): its misses are its own, charged to its quota.
       speculation: () => globalThis.__nimbusVfsSpeculation || null,
@@ -1457,7 +1455,7 @@ const __fsMod = (() => {
    * \`p\`: an operation in flight from its start to its answer, as Node's
    * libuv request is, so the program is not taken for finished between the
    * session calls it makes. A change outside a held subtree is answered once
-   * the session has it, its refusal the call's (answeredWrites).
+   * the session has it, its refusal the call's (ResidentDelegation.nodeFs).
    */
   function _async(syscall, p, run, dest) {
     return __nimbusTrackOp(_inCallOrder(p, () => _awaited(syscall, p, run, dest)));
@@ -1513,6 +1511,17 @@ const __fsMod = (() => {
    */
   function _asyncRead(syscall, p, run) {
     return __nimbusTrackOp(_awaited(syscall, p, run));
+  }
+  /**
+   * An awaited change through an open descriptor, decided in the caller's own turn: its place in the process's log
+   * is the call's place, so a synchronous change made after it is logged after it. Answered once the session has it;
+   * its refusal is the call's. Not queued behind the path's pending awaited calls (_inCallOrder).
+   */
+  function _asyncDecided(syscall, p, run) {
+    return __nimbusTrackOp((async () => {
+      try { return await run(_rf()); }
+      catch (error) { throw _rfError(error, syscall, p); }
+    })());
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -1955,9 +1964,12 @@ const __fsMod = (() => {
     if (p instanceof __FileHandle) return p.truncate(len);
     const absPath = _at(p);
     const size = Math.max(0, Math.trunc(Number(len) || 0));
-    // Node's own: an open of it 'r+', its ftruncate, its close (decided and sent in order, as truncateSync's).
+    // Node's own: an open of it 'r+', its ftruncate, its close, decided in the call's turn where the view can (its place
+    // in the log is the call's, before a change made after it), else once the session opens it.
     await _async("truncate", p, async (fs) => {
-      const opened = await fs.open(absPath, _openFlags("r+"));
+      let opened;
+      try { opened = fs.synchronous.open(absPath, _openFlags("r+")); }
+      catch (error) { if (error === null || typeof error !== "object" || error.code !== "EAGAIN") throw error; opened = await fs.open(absPath, _openFlags("r+")); }
       let done = false;
       try { await fs.ftruncate(opened.id, size); done = true; }
       finally { try { await fs.close(opened.id); } catch (error) { if (done) throw error; } }
@@ -2081,7 +2093,7 @@ const __fsMod = (() => {
       // offset, length, position }).
       const norm = _normWriteArgs(buffer, offset, length, position);
       const pos = _isCurrentPos(norm.pos) ? null : Math.max(0, Number(norm.pos));
-      const written = await _async("write", this._path, async (fs) => {
+      const written = await _asyncDecided("write", this._path, async (fs) => {
         const n = await fs.write(this._id, pos, norm.bytes);
         if (this._flags.sync) await fs.fsync(this._id);
         return n;

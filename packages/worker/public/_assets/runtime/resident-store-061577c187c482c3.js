@@ -10578,9 +10578,15 @@ var __nimbusResidentModule = (() => {
           content: (key, revision) => resident.content(key, revision),
           reserve: (bytes) => resident.reserve(bytes),
           release: (bytes) => resident.release(bytes),
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
           ...ownValue(resident, "keep") === void 0 ? {} : { keep: (key, revision, bytes) => ownValue(resident, "keep")(key, revision, bytes) },
           mounted: (key) => walkedMounts && mountedName(key),
           unreported: (key) => walkedMounts && unreportedName(key)
+========
+          ...resident.keep === void 0 ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) },
+          mounted: (key) => nodeFs && mountedName(key),
+          unreported: (key) => nodeFs && unreportedName(key)
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
         },
         isHomeRoot: ownValue(delegation, "isHomeRoot"),
         ...ownValue(delegation, "grantAfter") === void 0 ? {} : { grantAfter: ownValue(delegation, "grantAfter") },
@@ -10620,12 +10626,22 @@ var __nimbusResidentModule = (() => {
           }
         });
     }
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
     const readers = new SafeSet();
     const readerKeys = new SafeMap();
     const unwritten = new SafeSet();
     const directories = new SafeMap();
     const paged = new SafeMap();
     const pins = new SafeMap();
+========
+    const readers = /* @__PURE__ */ new Set();
+    const readerKeys = /* @__PURE__ */ new Map();
+    const readerFiles = /* @__PURE__ */ new Map();
+    const unwritten = /* @__PURE__ */ new Set();
+    const directories = /* @__PURE__ */ new Map();
+    const paged = /* @__PURE__ */ new Map();
+    const pins = /* @__PURE__ */ new Map();
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
     const walkOnce = (root, name, follow, crossed) => {
       const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
       if (crossed !== void 0)
@@ -10651,7 +10667,7 @@ var __nimbusResidentModule = (() => {
         }
         const entry = store.entry(key);
         if (entry === void 0) {
-          if (!walkedMounts || !(passing || mountedName(key)))
+          if (!nodeFs || !(passing || mountedName(key)))
             return { missing: key };
           passing = true;
           step = walk.next(PASSED_THROUGH);
@@ -10926,9 +10942,14 @@ var __nimbusResidentModule = (() => {
         return void 0;
       return entry;
     };
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
     const answerable = (key, entry) => fedRow(key, entry) === true || walkedMounts && now;
     const walkedMounts = (delegation === void 0 ? void 0 : ownValue(delegation, "walkedMounts")) === true;
     const answeredWrites = (delegation === void 0 ? void 0 : ownValue(delegation, "answeredWrites")) === true;
+========
+    const answerable = (key, entry) => fedRow(key, entry) === true || nodeFs && now;
+    const nodeFs = delegation?.nodeFs === true;
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
@@ -10979,7 +11000,7 @@ var __nimbusResidentModule = (() => {
       const entry = entryAt(key);
       if (entry === void 0)
         return void 0;
-      if (walkedMounts)
+      if (nodeFs)
         return onKernelMount(key) ? void 0 : entry;
       return (entry === null ? onMount(key) : entry.dev !== store.device) ? void 0 : entry;
     };
@@ -11165,8 +11186,25 @@ var __nimbusResidentModule = (() => {
       directoryPool?.cancelPending();
     };
     fs.holding = () => holder?.pending() ?? false;
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-35bae11978f580ba.js
     fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
     reflectDefineProperty(fs, "client", dataDescriptor(holder?.client ?? null, false, true, false));
+========
+    fs.decidedAt = (path) => {
+      if (holder === null)
+        return false;
+      if (holder.provisional.touches(keyOf(path)))
+        return true;
+      let followed;
+      try {
+        followed = walkOnce("", keyOf(path), true);
+      } catch {
+        return false;
+      }
+      return typeof followed === "string" && followed !== "" && holder.provisional.touches(followed);
+    };
+    Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
+>>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-061577c187c482c3.js
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
       await holder?.flush();
@@ -11431,6 +11469,12 @@ var __nimbusResidentModule = (() => {
         const local = decide(() => after2(walkFor(path, openFollows(openFlags(flags))), (walk) => walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE : after2(holder.open(walk.key, typeof path === "string" ? path : path.path, flags), (handle) => handle === void 0 ? DELEGATE : heldOpen(handle))));
         return after2(local, (handle) => handle === DELEGATE ? openOnSession(path, flags) : handle);
       }
+      if (readOnly && flags.directory === true)
+        return after2(resolve(path, flags.followSymlinks !== false), (key) => {
+          if (typeof key === "string" && key !== "" && entryAt(key)?.type === "file")
+            throw fsError2("ENOTDIR", "open", pathOf(path));
+          return openOnSession(path, flags);
+        });
       return openOnSession(path, flags);
     };
     const provisionally = (path, follow, decided) => {
@@ -11603,6 +11647,8 @@ var __nimbusResidentModule = (() => {
         const { type, dev, ino, size } = handle.stat;
         if (dev === store.device) {
           const key = keyOf(handle.path);
+          if (type === "file")
+            readerFiles.set(handle.id, { key, dev, ino });
           if (type === "directory")
             directories.set(handle.id, { key, dev, ino });
           else if (type === "file" && size > WASI_RESIDENT_FILE_CAP_BYTES)
@@ -11625,6 +11671,12 @@ var __nimbusResidentModule = (() => {
           counts.local++;
           return statOf(entry);
         });
+      const file = nodeFs ? readerFiles.get(handleId) : void 0;
+      if (file !== void 0)
+        return answer("fstat", () => {
+          const entry = entryAt(file.key);
+          return entry !== void 0 && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
+        }, () => authority.fstat(handleId));
       delegated("fstat");
       return authority.fstat(handleId);
     };
@@ -11680,7 +11732,7 @@ var __nimbusResidentModule = (() => {
     fs.write = (handleId, offset, bytes) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        return holder.write(handleId, offset, bytes, !now && answeredWrites);
+        return holder.write(handleId, offset, bytes, !now && nodeFs);
       }
       if (now)
         throw NOT_NOW;
@@ -11690,7 +11742,7 @@ var __nimbusResidentModule = (() => {
     fs.ftruncate = (handleId, size) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        return holder.ftruncate(handleId, size, !now && answeredWrites);
+        return holder.ftruncate(handleId, size, !now && nodeFs);
       }
       if (now)
         throw NOT_NOW;
@@ -11713,6 +11765,7 @@ var __nimbusResidentModule = (() => {
         directories.delete(handleId);
         paged.delete(handleId);
         readerKeys.delete(handleId);
+        readerFiles.delete(handleId);
         delegated("close");
         return authority.close(handleId);
       }

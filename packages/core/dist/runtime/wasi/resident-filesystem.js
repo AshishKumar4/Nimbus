@@ -47,7 +47,6 @@ import { readDirectoryPool } from './read-directory-pool.js';
 import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
 import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
-import { arrayCopy, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, mathFloor, mathMax, mathMin, NumberOf, objectCreate, objectHasOwn, ObjectPrototype, ownField, ownValue, promiseAll, PromiseConstructor, promiseFinally, promiseResolve, promiseThen, Proxy, reflectApply, reflectDefineProperty, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeList, SafeMap, SafeSet, setList, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor, typedArraySet, Uint8ArrayConstructor, } from '../../_shared/primordials.js';
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
 /** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
@@ -71,38 +70,38 @@ const READ_AHEAD_FILE_BYTES = 256 * 1024;
 const READ_AHEAD_PROCESS_BYTES = 32 * 1024 * 1024;
 /** A name's extension, with its dot ('.mjs'), or '' when it has none. */
 function extensionOf(name) {
-    const base = stringSlice(name, stringLastIndexOf(name, '/') + 1);
-    const dot = stringLastIndexOf(base, '.');
-    return dot > 0 ? stringSlice(base, dot) : '';
+    const base = name.slice(name.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(dot) : '';
 }
 /** What this adapter answers itself is decided here: anything else is the authority's. */
-const DELEGATE = SymbolConstructor('delegate');
+const DELEGATE = Symbol('delegate');
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
 const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 };
-/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.walkedMounts): searchable by anyone. */
+/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.nodeFs): searchable by anyone. */
 const PASSED_THROUGH = { type: 'directory', mode: 0o40555, uid: 0, gid: 0 };
 /**
  * The session's calls that can change a name or an access: before one, the
  * files this process holds open write through (DelegationHolder.changing),
  * so their opens are decided as they were.
  */
-const NAME_OR_ACCESS_CHANGES = new SafeSet([
+const NAME_OR_ACCESS_CHANGES = new Set([
     'chmod', 'chown', 'fchmod', 'fchown', 'rename', 'unlink', 'rmdir', 'remove', 'copyFile', 'copyTree', 'writeBatch', 'writeStream',
 ]);
 /** The calls that can change the namespace or bytes: after one, the barrier is owed. */
-const MUTATIONS = new SafeSet([
+const MUTATIONS = new Set([
     'writeFile', 'writeFileFrom', 'writeRange', 'truncate', 'utimes', 'chmod', 'chown', 'write', 'close', 'mkdir',
     'unlink', 'rmdir', 'rename', 'symlink', 'remove', 'copyFile', 'copyTree', 'ftruncate', 'fchmod', 'fchown',
     'futimes', 'writeBatch', 'writeStream',
 ]);
-const DESCRIPTOR_CALLS = new SafeSet(['read', 'write', 'close', 'fstat', 'dup', 'seek', 'setStatus', 'readdirHandle', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync']);
+const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'seek', 'setStatus', 'readdirHandle', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync']);
 /**
  * Thrown where a call that must answer now (ResidentFilesystem.synchronous)
  * would begin waiting on the session, before anything it would have done.
  */
-const NOT_NOW = SymbolConstructor('not now');
+const NOT_NOW = Symbol('not now');
 /** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
-const REFUSED_ON_A_DIRECTORY = new SafeSet(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
+const REFUSED_ON_A_DIRECTORY = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
 /** The device of a directory the namespace makes that no backend holds (CompositeVFS: no backend's, the root mount's none). */
 const NAMESPACE_DEV = 0;
 /** Whether the session refuses `syscall` with `args` on a directory: an open as the session's open judges one (refusesDirectory). */
@@ -118,63 +117,34 @@ const notNow = () => { throw NOT_NOW; };
  * name is (a stat, a listing) is answered or refused as it stands, and is
  * no miss. An awaited one answers a refused one of its name.
  */
-const CONTENT_READS = new SafeSet(['readFile', 'read', 'readRange']);
+const CONTENT_READS = new Set(['readFile', 'read', 'readRange']);
 /** What an awaited read may be refused with that answers it all the same: the name's own state. */
-const ANSWERED_REFUSALS = new SafeSet(['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR', 'ELOOP', 'EPERM']);
+const ANSWERED_REFUSALS = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR', 'ELOOP', 'EPERM']);
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
-const NO_SYNCHRONOUS_FORM = new SafeSet(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
+const NO_SYNCHRONOUS_FORM = new Set(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
 function after(value, next) {
-    return value instanceof PromiseConstructor ? promiseThen(value, next) : next(value);
+    return value instanceof Promise ? value.then(next) : next(value);
 }
-/** Whether `path` has a `..` segment. */
-function climbs(path) {
-    for (let at = 0; at + 1 < path.length; at++) {
-        if (path[at] === '.' && path[at + 1] === '.' && (at === 0 || path[at - 1] === '/') && (at + 2 === path.length || path[at + 2] === '/'))
-            return true;
-    }
-    return false;
-}
-/** Each path's key, by path: the same paths are looked up again and again. A bound on what is kept, then forgotten all at once. */
-const KEYS = new SafeMap();
-const KEYS_KEPT = 4096;
 function keyOf(path) {
-    let key = KEYS.get(path);
-    if (key !== undefined)
-        return key;
-    // Its segments but '' and '.', joined by '/'.
-    key = '';
-    for (let from = 0, at = 0; at <= path.length; at++) {
-        if (at < path.length && path[at] !== '/')
-            continue;
-        if (at > from && !(at === from + 1 && path[from] === '.'))
-            key = key === '' ? stringSlice(path, from, at) : key + '/' + stringSlice(path, from, at);
-        from = at + 1;
-    }
-    if (KEYS.size >= KEYS_KEPT)
-        KEYS.clear();
-    KEYS.set(path, key);
-    return key;
+    return path.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
 }
 /** Every name on the way to `name` beneath `root`, as spelled: the root's own ancestors first, up to the first `..`. */
 function prefixes(root, name) {
-    const parts = new SafeList();
-    const keys = new SafeList();
-    const rooted = stringSplit(root, '/');
-    const named = stringSplit(name, '/');
-    for (let i = 0; i < rooted.length + named.length; i++) {
-        const segment = i < rooted.length ? rooted[i] : named[i - rooted.length];
+    const parts = [];
+    const keys = [];
+    for (const segment of [...root.split('/'), ...name.split('/')]) {
         if (segment === '' || segment === '.')
             continue;
         if (segment === '..')
             break;
-        parts[parts.length] = segment;
-        keys[keys.length] = arrayJoin(parts, '/');
+        parts.push(segment);
+        keys.push(parts.join('/'));
     }
     return keys;
 }
 function parentKey(key) {
-    const at = stringLastIndexOf(key, '/');
-    return at < 0 ? '' : stringSlice(key, 0, at);
+    const at = key.lastIndexOf('/');
+    return at < 0 ? '' : key.slice(0, at);
 }
 function statOf(entry) {
     return {
@@ -199,18 +169,18 @@ export function residentFilesystem(session, resident, delegation) {
             throw NOT_NOW;
         counts.sessionCalls++;
         const value = io();
-        if (!(value instanceof PromiseConstructor))
+        if (!(value instanceof Promise))
             return value;
-        const started = dateNow();
-        return promiseFinally(value, () => { counts.waitMs += dateNow() - started; directoryPool?.io(); });
+        const started = Date.now();
+        return value.finally(() => { counts.waitMs += Date.now() - started; directoryPool?.io(); });
     };
     // The subtrees this process holds, when it may hold any (it waits in its
     // syscalls): what it decided there is answered here and sent later.
     let holder = null;
-    const residency = delegation === undefined ? undefined : ownValue(delegation, 'residency');
+    const residency = delegation?.residency;
     const authority = new Proxy(session, {
         get(target, name, receiver) {
-            const value = reflectGet(target, name, receiver);
+            const value = Reflect.get(target, name, receiver);
             if (typeof value !== 'function')
                 return value;
             // Whatever the session is asked, it has what this process decided first.
@@ -219,22 +189,19 @@ export function residentFilesystem(session, resident, delegation) {
                 if (now)
                     throw NOT_NOW;
                 if (typeof name === 'string' && DESCRIPTOR_CALLS.has(name) && typeof args[0] === 'number' && directoryPool?.closed(args[0])) {
-                    throw fsError('EBADF', name, stringOf(args[0]));
+                    throw fsError('EBADF', name, String(args[0]));
                 }
-                for (let i = 0; i < args.length; i++) {
-                    const arg = args[i];
-                    if (!arg || typeof arg !== 'object' || !objectHasOwn(arg, 'directory') || !objectHasOwn(arg, 'path'))
-                        continue;
-                    const named = arg;
-                    if (typeof named.directory === 'number' && typeof named.path === 'string' && directoryPool?.closed(named.directory)) {
-                        throw fsError('EBADF', stringOf(name), stringOf(named.directory));
+                for (const arg of args) {
+                    if (arg && typeof arg === 'object' && 'directory' in arg && 'path' in arg
+                        && typeof arg.directory === 'number' && typeof arg.path === 'string' && directoryPool?.closed(arg.directory)) {
+                        throw fsError('EBADF', String(name), String(arg.directory));
                     }
                 }
                 if (holder !== null && typeof name === 'string' && NAME_OR_ACCESS_CHANGES.has(name))
                     holder.changing();
                 return holder !== null && holder.pending()
-                    ? begin(() => promiseThen(holder.send(), () => reflectApply(value, target, args)))
-                    : begin(() => reflectApply(value, target, args));
+                    ? begin(() => holder.send().then(() => Reflect.apply(value, target, args)))
+                    : begin(() => Reflect.apply(value, target, args));
             };
         },
     });
@@ -256,18 +223,16 @@ export function residentFilesystem(session, resident, delegation) {
         // a delivered answer's, when its arguments were built (acquireArgs); one this process did not build vouches for nothing.
         barrier: (options) => {
             const begun = holder?.barrierBegun();
-            return promiseThen(begin(() => resident.barrier(options)), (result) => {
+            return begin(() => resident.barrier(options)).then((result) => {
                 // A given answer was asked when its caller asked, not now: it retires nothing.
-                const answered = options === undefined ? undefined : ownValue(options, 'answer');
-                const carried = options === undefined ? undefined : ownValue(options, 'delivered');
-                const from = answered ? undefined : ownValue(result, 'fromDelivery') ? (carried === undefined || carried === null ? undefined : ownValue(carried.args, 'begin')) : begun;
+                const from = options?.answer ? undefined : result.fromDelivery ? options?.delivered?.args.begin : begun;
                 if (result.landed && typeof from === 'number')
                     holder?.retire(from);
                 return result;
             });
         },
         acquireArgs: () => resident.acquireArgs(),
-        ...(ownValue(resident, 'repairOwed') === undefined ? {} : { repairOwed: () => ownValue(resident, 'repairOwed')() }),
+        ...(resident.repairOwed === undefined ? {} : { repairOwed: () => resident.repairOwed() }),
         cursor: () => resident.cursor(),
         reserve: (bytes) => resident.reserve(bytes),
         release: (bytes) => resident.release(bytes),
@@ -297,22 +262,21 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const catchUp = (given) => {
         const at = { input: owed.input, own: owed.own };
-        const own = given === undefined || given === null ? undefined : ownValue(given.args, 'own');
+        const own = given?.args.own;
         const delivered = given && (typeof own === 'number' ? owed.own <= own : owed.own <= caught.own) ? given : undefined;
         counts.barriers++;
         const client = holder?.client;
-        const ask = client !== undefined && (delegation === undefined ? undefined : ownValue(delegation, 'readLeases'))?.() === true ? client.readLeaseAsk() : null;
+        const ask = client !== undefined && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
         const lease = ask === null ? undefined : { answered: (terms) => client.readLeaseAnswered(terms) };
-        return promiseThen(store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }), (result) => {
-            if (!result.landed || ownValue(result, 'dropped') === true)
+        return store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }).then((result) => {
+            if (!result.landed || result.dropped === true)
                 counts.barrierFailures++;
             if (!result.landed || !store.ready())
                 return false;
-            const readLease = ownValue(result, 'readLease');
-            if (ask !== null && readLease && !ownValue(result, 'fromDelivery'))
-                client.readLeased(readLease, ask);
-            caught.input = mathMax(caught.input, at.input);
-            caught.own = mathMax(caught.own, ownValue(result, 'fromDelivery') && typeof own === 'number' ? own : at.own);
+            if (ask !== null && result.readLease && !result.fromDelivery)
+                client.readLeased(result.readLease, ask);
+            caught.input = Math.max(caught.input, at.input);
+            caught.own = Math.max(caught.own, result.fromDelivery && typeof own === 'number' ? own : at.own);
             return true;
         });
     };
@@ -328,18 +292,18 @@ export function residentFilesystem(session, resident, delegation) {
                 content: (key, revision) => resident.content(key, revision),
                 reserve: (bytes) => resident.reserve(bytes),
                 release: (bytes) => resident.release(bytes),
-                ...(ownValue(resident, 'keep') === undefined ? {} : { keep: (key, revision, bytes) => ownValue(resident, 'keep')(key, revision, bytes) }),
-                mounted: (key) => walkedMounts && mountedName(key),
-                unreported: (key) => walkedMounts && unreportedName(key),
+                ...(resident.keep === undefined ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) }),
+                mounted: (key) => nodeFs && mountedName(key),
+                unreported: (key) => nodeFs && unreportedName(key),
             },
-            isHomeRoot: ownValue(delegation, 'isHomeRoot'),
-            ...(ownValue(delegation, 'grantAfter') === undefined ? {} : { grantAfter: ownValue(delegation, 'grantAfter') }),
-            ...(ownValue(delegation, 'grantInos') === undefined ? {} : { grantInos: ownValue(delegation, 'grantInos') }),
-            ...(ownValue(delegation, 'journal') === undefined ? {} : { journal: ownValue(delegation, 'journal') }),
-            ...(ownValue(delegation, 'logged') === undefined ? {} : { logged: ownValue(delegation, 'logged') }),
-            ...(ownValue(delegation, 'umask') === undefined ? {} : { umask: ownValue(delegation, 'umask') }),
-            ...(ownValue(delegation, 'timers') === undefined ? {} : { timers: ownValue(delegation, 'timers') }),
-            ...(ownValue(delegation, 'now') === undefined ? {} : { now: ownValue(delegation, 'now') }),
+            isHomeRoot: delegation.isHomeRoot,
+            ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
+            ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
+            ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
+            ...(delegation.logged === undefined ? {} : { logged: delegation.logged }),
+            ...(delegation.umask === undefined ? {} : { umask: delegation.umask }),
+            ...(delegation.timers === undefined ? {} : { timers: delegation.timers }),
+            ...(delegation.now === undefined ? {} : { now: delegation.now }),
             // A call of the synchronous view decides what no held subtree does, provisionally.
             cannotWait: () => now,
             // What it sent changed the session: the store catches up before it answers next.
@@ -347,28 +311,30 @@ export function residentFilesystem(session, resident, delegation) {
         });
         // Each row the view takes in reaches the file the process holds by that number, in the same turn.
         const decisions = holder.provisional;
-        ownValue(resident, 'onAdmitted')?.((key, dev, ino) => {
+        resident.onAdmitted?.((key, dev, ino) => {
             if (decisions.inode(dev, ino) === undefined)
                 return;
             const entry = resident.entry(key);
             if (entry)
                 decisions.admitted(key, entry);
         });
-        if (ownValue(delegation, 'readDirectories'))
+        if (delegation.readDirectories)
             directoryPool = readDirectoryPool({
-                call: (request) => { delegated('readDirectories'); return begin(() => ownValue(delegation, 'readDirectories')(request)); }, store, client: holder.client,
+                call: (request) => { delegated('readDirectories'); return begin(() => delegation.readDirectories(request)); }, store, client: holder.client,
                 before: async () => { if (holder?.pending())
                     await holder.send(); },
             });
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
-    const readers = new SafeSet();
+    const readers = new Set();
     /** Of those, the names they were opened by, whose reads answer the program's misses (ProgramResidency). */
-    const readerKeys = new SafeMap();
+    const readerKeys = new Map();
+    /** Of the read-only ones that are files: the names and the file's identity (dev, ino); its entry answers their fstat while the name leads to it. */
+    const readerFiles = new Map();
     /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
-    const unwritten = new SafeSet();
+    const unwritten = new Set();
     /** Of the read-only ones, the directories, and where their listing is. */
-    const directories = new SafeMap();
+    const directories = new Map();
     /**
      * The session's read-only descriptors of files too big to hold whole (a
      * pack, a deep history's .idx), by the name and file (dev, ino) each
@@ -377,9 +343,9 @@ export function residentFilesystem(session, resident, delegation) {
      * and kept for the next reader. Once the name leads elsewhere, or a read
      * cannot be answered, the descriptor reads through the session.
      */
-    const paged = new SafeMap();
+    const paged = new Map();
     /** Bytes pinned for the codec's own descriptors (pinContent). */
-    const pins = new SafeMap();
+    const pins = new Map();
     /**
      * One walk over what the store knows: the resolved key, ELOOP (null), a
      * directory to list first, or DELEGATE when the walk reaches what this
@@ -390,13 +356,13 @@ export function residentFilesystem(session, resident, delegation) {
         const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
         if (crossed !== undefined)
             crossed.length = 0;
-        // Beneath a directory on a mount the walk passed (walkedMounts).
+        // Beneath a directory on a mount the walk passed (nodeFs).
         let passing = false;
         for (let step = walk.next();;) {
             if (step.done)
                 return step.value === null ? null : step.value.reached;
             const lookup = step.value;
-            if (objectHasOwn(lookup, 'readlink')) {
+            if ('readlink' in lookup) {
                 const entry = store.entry(keyOf(lookup.readlink));
                 if (!entry || entry.type !== 'symlink' || entry.target === null)
                     return DELEGATE;
@@ -404,8 +370,7 @@ export function residentFilesystem(session, resident, delegation) {
                 continue;
             }
             const key = keyOf(lookup.stat);
-            if (crossed !== undefined)
-                crossed[crossed.length] = key;
+            crossed?.push(key);
             if (key === '') {
                 step = walk.next(ROOT_FOR_WALK);
                 continue;
@@ -415,7 +380,7 @@ export function residentFilesystem(session, resident, delegation) {
                 // Node's walk passes a directory on a mount the launch's listing could not name (a device that
                 // resolves its own paths shows only what its user consented to, as the session hands it the
                 // whole name), and what is beneath it: a name there is answered where the listing named it.
-                if (!walkedMounts || !(passing || mountedName(key)))
+                if (!nodeFs || !(passing || mountedName(key)))
                     return { missing: key };
                 passing = true;
                 step = walk.next(PASSED_THROUGH);
@@ -443,39 +408,25 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const walkAfter = (key, within, limit) => {
         const out = [];
-        const subdirectories = (dir) => {
-            const children = store.children(dir) ?? [];
-            const directories = new SafeList();
-            for (let i = 0; i < children.length; i++)
-                if (children[i].type === 'directory')
-                    directories[directories.length] = children[i];
-            const ordered = byCodeUnit(directories);
-            const names = new SafeList();
-            for (let i = 0; i < ordered.length; i++)
-                names[i] = dir === '' ? ordered[i].name : `${dir}/${ordered[i].name}`;
-            return names;
-        };
+        const subdirectories = (dir) => byCodeUnit((store.children(dir) ?? []).filter((child) => child.type === 'directory'))
+            .map((child) => (dir === '' ? child.name : `${dir}/${child.name}`));
         const descend = (dir) => {
-            const children = subdirectories(dir);
-            for (let i = 0; i < children.length; i++) {
-                const child = children[i];
+            for (const child of subdirectories(dir)) {
                 if (out.length >= limit)
                     return;
-                out[out.length] = child;
+                out.push(child);
                 descend(child);
             }
         };
         descend(key);
         for (let at = key; at !== within && out.length < limit; at = parentKey(at)) {
-            const name = stringSlice(at, stringLastIndexOf(at, '/') + 1);
-            const siblings = subdirectories(parentKey(at));
-            for (let i = 0; i < siblings.length; i++) {
-                const sibling = siblings[i];
+            const name = at.slice(at.lastIndexOf('/') + 1);
+            for (const sibling of subdirectories(parentKey(at))) {
                 if (out.length >= limit)
                     break;
-                if (stringSlice(sibling, stringLastIndexOf(sibling, '/') + 1) <= name)
+                if (sibling.slice(sibling.lastIndexOf('/') + 1) <= name)
                     continue;
-                out[out.length] = sibling;
+                out.push(sibling);
                 descend(sibling);
             }
         }
@@ -485,21 +436,18 @@ export function residentFilesystem(session, resident, delegation) {
     let walkRoot = null;
     /** The directories opened so far, in order; and the last run's, as its walk goes on. */
     const opening = [];
-    const previous = (delegation === undefined ? undefined : ownValue(delegation, 'walked')) ?? [];
+    const previous = delegation?.walked ?? [];
     let along = 0;
     /**
      * The directories the last run opened after `key`, from where this run has
      * got to in its walk: what it opens next, if it repeats it.
      */
     const repeated = (key, limit) => {
-        const at = arrayIndexOf(previous, key, along);
+        const at = previous.indexOf(key, along);
         if (at < 0)
             return [];
         along = at + 1;
-        const next = new SafeList();
-        for (let i = at + 1; i < previous.length && i < at + 1 + limit; i++)
-            next[next.length] = previous[i];
-        return next;
+        return previous.slice(at + 1, at + 1 + limit);
     };
     /**
      * Misses by directory: names the store did not know there, and bytes it
@@ -508,17 +456,17 @@ export function residentFilesystem(session, resident, delegation) {
      * listing's bound), else itself (a probe for names that are not there);
      * and its files are fetched ahead (READ_AHEAD_*).
      */
-    const missesIn = new SafeMap();
+    const missesIn = new Map();
     const miss = (dir) => {
         const misses = (missesIn.get(dir) ?? 0) + 1;
         missesIn.set(dir, misses);
         return misses;
     };
-    const unlistable = new SafeSet();
+    const unlistable = new Set();
     /** Whether the name a directory's last miss looked up was there: its misses are a walk of what is there, not a probe. */
-    const foundIn = new SafeMap();
+    const foundIn = new Map();
     /** Files a batch is fetching (read ahead, or faulted in), and the batch, which a read of one joins; and the bytes read ahead so far. */
-    const fetchingAhead = new SafeMap();
+    const fetchingAhead = new Map();
     let readAheadBytes = 0;
     /**
      * A fill of `key` (`entry`), with the files of its directory read ahead
@@ -532,25 +480,13 @@ export function residentFilesystem(session, resident, delegation) {
         const children = store.children(dir);
         if (misses < 2 || ext === '' || children === undefined)
             return undefined;
-        const window = READ_AHEAD_FIRST * 2 ** mathMin(misses - 2, 7);
-        const name = stringSlice(key, stringLastIndexOf(key, '/') + 1);
+        const window = READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7);
+        const name = key.slice(key.lastIndexOf('/') + 1);
         const batch = [[key, entry]];
         let bytes = entry.size;
-        const files = new SafeList();
-        for (let i = 0; i < children.length; i++) {
-            const child = children[i];
-            if (child.type === 'file' && child.name !== name && extensionOf(child.name) === ext)
-                files[files.length] = child;
-        }
-        const ordered = byCodeUnit(files);
-        // From the first after it, round to the directory's first.
-        let at = 0;
-        while (at < ordered.length && !(ordered[at].name > name))
-            at++;
-        if (at === ordered.length)
-            at = 0;
-        for (let n = 0; n < ordered.length; n++) {
-            const child = ordered[(at + n) % ordered.length];
+        const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== name && extensionOf(child.name) === ext));
+        const at = ordered.findIndex((child) => child.name > name);
+        for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
             if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT)
                 break;
             const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
@@ -564,7 +500,7 @@ export function residentFilesystem(session, resident, delegation) {
                 continue;
             if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES)
                 break;
-            batch[batch.length] = [sibling, found];
+            batch.push([sibling, found]);
             bytes += found.size;
         }
         if (batch.length === 1)
@@ -573,12 +509,12 @@ export function residentFilesystem(session, resident, delegation) {
         counts.fills += batch.length;
         counts.filledBytes += bytes;
         counts.readAhead += batch.length - 1;
-        const fetched = promiseThen(store.fillMany(batch), undefined, () => { });
-        for (let i = 0; i < batch.length; i++)
-            fetchingAhead.set(batch[i][0], fetched);
-        void promiseThen(fetched, () => { for (let i = 0; i < batch.length; i++)
-            if (fetchingAhead.get(batch[i][0]) === fetched)
-                fetchingAhead.delete(batch[i][0]); });
+        const fetched = store.fillMany(batch).catch(() => { });
+        for (const [path] of batch)
+            fetchingAhead.set(path, fetched);
+        void fetched.then(() => { for (const [path] of batch)
+            if (fetchingAhead.get(path) === fetched)
+                fetchingAhead.delete(path); });
         return fetched;
     };
     /**
@@ -588,16 +524,16 @@ export function residentFilesystem(session, resident, delegation) {
      * refusal issued or joined, until it ends (misses, settle).
      */
     let faults = null;
-    let faulted = promiseResolve();
-    const faulting = new SafeSet();
+    let faulted = Promise.resolve();
+    const faulting = new Set();
     const outstanding = (fetch) => {
         faulting.add(fetch);
-        void promiseThen(fetch, () => { faulting.delete(fetch); });
+        void fetch.then(() => { faulting.delete(fetch); });
         return fetch;
     };
     const faultsEnded = async () => {
         while (faulting.size > 0)
-            await promiseAll(setList(faulting));
+            await Promise.all(faulting);
     };
     /** The fetch the refusal of the synchronous call running now issued or joined. */
     let refusedFetch = null;
@@ -610,13 +546,10 @@ export function residentFilesystem(session, resident, delegation) {
     const faultIn = (key, entry) => {
         if (residency === undefined)
             return null;
-        const held = () => {
-            const bytes = store.content(key, entry.revision);
-            return bytes !== undefined && bytes.length === entry.size;
-        };
+        const held = () => store.content(key, entry.revision)?.byteLength === entry.size;
         const out = fetchingAhead.get(key);
         if (out !== undefined)
-            return outstanding(promiseThen(out, held));
+            return outstanding(out.then(held));
         const speculation = residency.speculation();
         if (speculation !== null && !speculation.charge(entry.size))
             return null;
@@ -624,29 +557,29 @@ export function residentFilesystem(session, resident, delegation) {
         if (files === null) {
             const named = [];
             files = faults = named;
-            faulted = outstanding(promiseThen(promiseThen(promiseResolve(), () => { faults = null; return store.fillMany(named); }), undefined, () => { }));
+            faulted = outstanding(Promise.resolve().then(() => { faults = null; return store.fillMany(named); }).catch(() => { }));
         }
         const batch = faulted;
-        files[files.length] = [key, entry];
+        files.push([key, entry]);
         counts.fills++;
         counts.faultIns++;
         counts.filledBytes += entry.size;
         fetchingAhead.set(key, batch);
-        void promiseThen(batch, () => { if (fetchingAhead.get(key) === batch)
+        void batch.then(() => { if (fetchingAhead.get(key) === batch)
             fetchingAhead.delete(key); });
-        return outstanding(promiseThen(batch, held));
+        return outstanding(batch.then(held));
     };
     /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up. */
     const resolve = (path, follow, content = false, crossed) => {
         let root;
         let name;
         if (typeof path === 'string') {
-            if (climbs(path))
+            if (path.split('/').includes('..'))
                 return DELEGATE;
             root = '';
             name = keyOf(path);
         }
-        else if (objectHasOwn(path, 'root')) {
+        else if ('root' in path) {
             root = keyOf(path.root);
             name = path.path;
         }
@@ -666,15 +599,14 @@ export function residentFilesystem(session, resident, delegation) {
         // what this process sent (the barrier first when one is owed): a grant
         // given back while the walk waited on the session drops what was decided
         // under it, and the store has it only once the barrier lands.
-        // Made at the first name looked up: most walks look up none.
-        let looked;
+        const looked = new Set();
         let caughtUps = 0;
         const attempt = (asked) => {
             if (!store.ready())
                 return DELEGATE;
             // A debt that keeps coming while it catches up: the session walks it.
             if (owes() && !now)
-                return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : promiseThen(catchUp(), (ok) => (ok ? attempt(asked) : DELEGATE));
+                return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => (ok ? attempt(asked) : DELEGATE));
             const walked = walkOnce(root, name, follow, crossed);
             if (walked === null || walked === DELEGATE || typeof walked === 'string')
                 return walked;
@@ -690,45 +622,35 @@ export function residentFilesystem(session, resident, delegation) {
                 // alone. A probe for what is not (an interpreter's import path): the
                 // directory alone.
                 const walking = foundIn.get(parent) === true && !unlistable.has(parent);
-                const whole = walking ? (counts.treeListings++, store.listTree(parent)) : promiseResolve(false);
-                return promiseThen(promiseThen(whole, (listed) => {
+                const whole = walking ? (counts.treeListings++, store.listTree(parent)) : Promise.resolve(false);
+                return whole
+                    .then((listed) => {
                     if (listed)
                         return true;
                     if (walking)
                         unlistable.add(parent);
                     counts.listings++;
                     return store.list(parent);
-                }), (listed) => (listed ? attempt(asked + 1) : DELEGATE));
+                })
+                    .then((listed) => (listed ? attempt(asked + 1) : DELEGATE));
             }
-            if (looked === undefined || !looked.has(walked.missing)) {
-                looked ??= new SafeSet();
-                const named = prefixes(root, name);
-                const spelled = new SafeList();
-                for (let i = 0; i < named.length; i++)
-                    if (!looked.has(named[i]) && store.entry(named[i]) === undefined)
-                        spelled[spelled.length] = named[i];
-                const keys = new SafeList();
-                const from = arrayIndexOf(spelled, walked.missing);
-                if (from < 0)
-                    keys[0] = walked.missing;
-                else
-                    for (let i = from; i < spelled.length; i++)
-                        keys[keys.length] = spelled[i];
-                for (let i = 0; i < keys.length; i++) {
-                    const key = keys[i];
+            if (!looked.has(walked.missing)) {
+                const spelled = prefixes(root, name).filter((key) => !looked.has(key) && store.entry(key) === undefined);
+                const keys = spelled.includes(walked.missing) ? spelled.slice(spelled.indexOf(walked.missing)) : [walked.missing];
+                for (const key of keys)
                     looked.add(key);
-                }
                 counts.lookups++;
                 // The bytes of what the call names, when it is a small file: a stat is followed by an open.
                 const target = spelled[spelled.length - 1];
-                return promiseThen(store.lookup(arrayCopy(keys), content && keys[keys.length - 1] === target), (known) => {
+                return store.lookup(keys, content && keys[keys.length - 1] === target)
+                    .then((known) => {
                     if (known)
-                        foundIn.set(parent, !!store.entry(walked.missing));
+                        foundIn.set(parent, Boolean(store.entry(walked.missing)));
                     return known ? attempt(asked + 1) : DELEGATE;
                 });
             }
             counts.listings++;
-            return promiseThen(store.list(parentKey(walked.missing)), (listed) => (listed ? attempt(asked + 1) : DELEGATE));
+            return store.list(parentKey(walked.missing)).then((listed) => (listed ? attempt(asked + 1) : DELEGATE));
         };
         return attempt(0);
     };
@@ -754,9 +676,8 @@ export function residentFilesystem(session, resident, delegation) {
      * feed's (not fixed) not while a read lease is trusted.
      */
     // Node's walked mounts answer its calls that cannot wait; one that may is the session's, as a fed mount's moving rows under a trusted lease are.
-    const answerable = (key, entry) => fedRow(key, entry) === true || (walkedMounts && now);
-    const walkedMounts = (delegation === undefined ? undefined : ownValue(delegation, 'walkedMounts')) === true;
-    const answeredWrites = (delegation === undefined ? undefined : ownValue(delegation, 'answeredWrites')) === true;
+    const answerable = (key, entry) => fedRow(key, entry) === true || (nodeFs && now);
+    const nodeFs = delegation?.nodeFs === true;
     /**
      * Whether `entry` at `key`, a row off the session's own device, is a fed
      * mount's (true), one a feed answers for but not now (false: a moving feed
@@ -774,14 +695,13 @@ export function residentFilesystem(session, resident, delegation) {
         const at = feedPointOf(cursor, key);
         if (at === ROOT_FEED)
             return undefined;
-        const point = stringSlice(at, 1);
+        const point = at.slice(1);
         const root = point === key ? entry : store.entry(point);
         if (root === undefined || root === null || root.dev !== entry.dev)
             return undefined;
         // A read lease vouches for the engine alone, whose writes recall it (a table change too): while one is
         // trusted, the view has not asked since it was granted, so a row of a feed that moves is the session's.
-        const feed = feedOf(cursor, at);
-        return !((feed === undefined ? undefined : ownValue(feed, 'fixed')) !== true && holder?.client.readTrusted() === true);
+        return !(feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true);
     };
     /** The row nearest `key` the view has: its own, else its directory's. */
     const nearestRow = (key) => {
@@ -810,8 +730,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (cursor === null)
             return false;
         const at = feedPointOf(cursor, key);
-        const feed = at === ROOT_FEED ? undefined : feedOf(cursor, at);
-        return feed !== undefined && ownValue(feed, 'fixed') === true;
+        return at !== ROOT_FEED && feedOf(cursor, at)?.fixed === true;
     };
     /** Whether `key` is on a mount (its deepest fed mount point is not the root): the session's to change, never this process's to decide. */
     const onMount = (key) => {
@@ -828,7 +747,7 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = entryAt(key);
         if (entry === undefined)
             return undefined;
-        if (walkedMounts)
+        if (nodeFs)
             return onKernelMount(key) ? undefined : entry;
         return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
     };
@@ -845,11 +764,11 @@ export function residentFilesystem(session, resident, delegation) {
      * session makes it (/proc/mounts).
      */
     const generated = (key) => {
-        const generate = procFileGenerator(stringSlice(('/' + key), PROC_MOUNT_POINT.length + 1));
+        const generate = procFileGenerator(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
         if (generate === undefined)
             return undefined;
         const content = generate({ ...store.cred, umask: 0 });
-        return typeof content === 'string' ? new TextEncoder().encode(content) : bytesCopy(content);
+        return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
     };
     /**
      * A file's bytes: what this process decided for it, else the store's,
@@ -863,9 +782,9 @@ export function residentFilesystem(session, resident, delegation) {
             return decided;
         if (holder?.provisional.pending(entry.dev, entry.ino))
             return undefined;
-        const keep = (bytes) => (bytes === null || bytes === undefined || bytes.length !== entry.size ? undefined : bytes);
+        const keep = (bytes) => (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
         const held = store.content(key, entry.revision);
-        if (held !== undefined && held.length === entry.size)
+        if (held !== undefined && held.byteLength === entry.size)
             return held;
         if (now) {
             refusedFetch = faultIn(key, entry);
@@ -874,15 +793,15 @@ export function residentFilesystem(session, resident, delegation) {
         const fill = () => {
             counts.fills++;
             counts.filledBytes += entry.size;
-            return promiseThen(store.fill(key, entry), keep);
+            return store.fill(key, entry).then(keep);
         };
         // A batch fetching it (read-ahead) is waited on, not repeated.
         const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
         if (batch === undefined)
             return fill();
-        return promiseThen(batch, () => {
+        return batch.then(() => {
             const fetched = store.content(key, entry.revision);
-            return fetched !== undefined && fetched.length === entry.size ? fetched : fill();
+            return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
         });
     };
     /**
@@ -900,14 +819,13 @@ export function residentFilesystem(session, resident, delegation) {
     const wholeByPages = (key, entry) => {
         if (entry.size <= FS_READ_BATCH_REQUEST_BYTES)
             return DELEGATE;
-        return promiseThen(store.pages(key, entry.revision, entry.size, 0, mathFloor((entry.size - 1) / RESIDENT_PAGE_BYTES)), (found) => {
+        return store.pages(key, entry.revision, entry.size, 0, Math.floor((entry.size - 1) / RESIDENT_PAGE_BYTES)).then((found) => {
             if (found === null)
                 return DELEGATE;
             counts.pagedReads++;
             counts.pagesFetched += found.fetched;
-            const whole = new Uint8ArrayConstructor(entry.size);
-            for (let at = 0; at < found.pages.length; at++)
-                typedArraySet(whole, found.pages[at], at * RESIDENT_PAGE_BYTES);
+            const whole = new Uint8Array(entry.size);
+            found.pages.forEach((page, at) => whole.set(page, at * RESIDENT_PAGE_BYTES));
             return whole;
         });
     };
@@ -937,7 +855,7 @@ export function residentFilesystem(session, resident, delegation) {
                 delegated(name);
                 return remote();
             }
-            return promiseThen(catchUp(), (ok) => {
+            return catchUp().then((ok) => {
                 if (ok)
                     return answer(name, local, remote, caughtUps + 1);
                 delegated(name);
@@ -954,8 +872,8 @@ export function residentFilesystem(session, resident, delegation) {
     const caughtUpFor = (then, caughtUps = 0) => {
         if (now || !owes() || caughtUps >= MAX_CATCH_UPS_PER_CALL)
             return then();
-        return new PromiseConstructor((resolve, reject) => {
-            promiseThen(catchUp(), (ok) => resolve(ok ? caughtUpFor(then, caughtUps + 1) : then()), reject);
+        return new Promise((resolve, reject) => {
+            catchUp().then((ok) => resolve(ok ? caughtUpFor(then, caughtUps + 1) : then()), reject);
         });
     };
     /**
@@ -998,15 +916,8 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder.client.held(key) === undefined)
             return true;
         const cursor = store.cursor();
-        for (let i = 0; i < walks.length; i++) {
-            const crossed = walks[i].crossed;
-            for (let j = 0; j < crossed.length; j++) {
-                const name = crossed[j];
-                if (holder.entry(name) === undefined && (cursor === null || holder.client.certifies(name, rootOf(cursor)) === undefined))
-                    return false;
-            }
-        }
-        return true;
+        return walks.every((walk) => walk.crossed.every((name) => holder.entry(name) !== undefined
+            || (cursor !== null && holder.client.certifies(name, rootOf(cursor)) !== undefined)));
     };
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
@@ -1029,35 +940,32 @@ export function residentFilesystem(session, resident, delegation) {
      * goes on (a call that cannot wait reads it next).
      */
     const shown = (change) => (holder === null ? change
-        : after(change, (value) => (store.ready() ? promiseThen(catchUp(), () => value, () => value) : value)));
-    const fs = objectCreate(null);
+        : after(change, (value) => (store.ready() ? catchUp().then(() => value, () => value) : value)));
+    const fs = Object.create(null);
     // Every call this adapter does not answer goes to the authority as it came,
     // whether the bridge carries its calls itself or on its class.
-    const names = new SafeSet();
-    for (let at = session; at !== null && at !== ObjectPrototype; at = reflectGetPrototypeOf(at)) {
-        const keys = reflectOwnKeys(at);
-        for (let i = 0; i < keys.length; i++) {
-            const name = keys[i];
+    const names = new Set();
+    for (let at = session; at !== null && at !== Object.prototype; at = Reflect.getPrototypeOf(at)) {
+        for (const name of Reflect.ownKeys(at))
             if (typeof name === 'string' && name !== 'constructor')
                 names.add(name);
-        }
     }
-    names.forEach((name) => {
-        const value = reflectGet(authority, name);
+    for (const name of names) {
+        const value = Reflect.get(authority, name);
         if (typeof value !== 'function')
-            return;
-        const call = (args) => reflectApply(value, authority, args);
+            continue;
+        const call = (...args) => Reflect.apply(value, authority, args);
         // The authority has what this process logged before it (its proxy flushes first).
         const mutates = MUTATIONS.has(name);
-        reflectSet(fs, name, mutates
-            ? DESCRIPTOR_CALLS.has(name) ? (...args) => changing(name, () => call(args)) : (...args) => shown(changing(name, () => call(args)))
+        Reflect.set(fs, name, mutates
+            ? DESCRIPTOR_CALLS.has(name) ? (...args) => changing(name, () => call(...args)) : (...args) => shown(changing(name, () => call(...args)))
             : (...args) => {
                 if (now)
                     throw NOT_NOW;
                 delegated(name);
-                return call(args);
+                return call(...args);
             });
-    });
+    }
     fs.inbound = () => { owed.input++; directoryPool?.invalidate(); };
     fs.catchUp = async (options = {}) => {
         fs.inbound();
@@ -1067,13 +975,12 @@ export function residentFilesystem(session, resident, delegation) {
         // lease trusts only what its client logged, and a change it made at the
         // session by name is not there. A delivery's answer, or a store owed a
         // repair, asks.
-        const delivered = ownValue(options, 'delivered');
-        if (ownValue(options, 'viaIo') === true && !delivered && owed.own <= caught.own && holder?.client.readTrusted() === true
-            && store.ready() && ownValue(store, 'repairOwed')?.() !== true) {
+        if (options.viaIo === true && !options.delivered && owed.own <= caught.own && holder?.client.readTrusted() === true
+            && store.ready() && store.repairOwed?.() !== true) {
             counts.leasedBarriers++;
             return;
         }
-        await catchUp(delivered);
+        await catchUp(options.delivered);
     };
     fs.acquireArgs = () => {
         const args = store.acquireArgs();
@@ -1081,8 +988,23 @@ export function residentFilesystem(session, resident, delegation) {
     };
     fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
     fs.holding = () => holder?.pending() ?? false;
-    fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
-    reflectDefineProperty(fs, 'client', dataDescriptor(holder?.client ?? null, false, true, false));
+    fs.decidedAt = (path) => {
+        if (holder === null)
+            return false;
+        if (holder.provisional.touches(keyOf(path)))
+            return true;
+        // A change made through a link is decided at the file the link names (chmod follows it): that file's key counts
+        // too, as this view resolves it now (a name it cannot resolve here has nothing decided beneath it).
+        let followed;
+        try {
+            followed = walkOnce('', keyOf(path), true);
+        }
+        catch {
+            return false;
+        }
+        return typeof followed === 'string' && followed !== '' && holder.provisional.touches(followed);
+    };
+    Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
     fs.logHeld = () => holder?.logHeld();
     // What leaves the process is preceded by everything it logged.
     fs.flush = async () => { await holder?.flush(); };
@@ -1092,32 +1014,20 @@ export function residentFilesystem(session, resident, delegation) {
         await faultsEnded();
         // The run's end, both at once: the directory descriptions it holds are
         // retired, what it logged is answered, and what it held is given back.
-        const endings = new SafeList();
-        endings[0] = directoryPool?.dispose();
-        endings[1] = holder?.settle();
-        const ended = new SafeList();
-        for (let i = 0; i < endings.length; i++) {
-            ended[i] = promiseThen(promiseResolve(endings[i]), undefined, (error) => {
-                failures[failures.length] = { path: '/', dev: 0, ino: 0, error };
-            });
-        }
-        await promiseAll(ended);
+        await Promise.all([directoryPool?.dispose(), holder?.settle()].map((ending) => Promise.resolve(ending).catch((error) => {
+            failures.push({ path: '/', dev: 0, ino: 0, error });
+        })));
         return failures;
     };
     // A sync of a file through any descriptor: everything this process logged
     // is answered first, and a refusal it recorded is this sync's answer.
     fs.syncInode = () => holder?.flush();
     fs.walked = () => opening;
-    const pinnedTotal = () => {
-        let total = 0;
-        pins.forEach((pin) => { total += pin.bytes.length; });
-        return total;
-    };
     fs.stats = () => ({
         ...counts,
         delegated: { ...counts.delegated },
         pins: pins.size,
-        pinnedBytes: pinnedTotal(),
+        pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
         provisionalBytes: holder?.provisional.kept() ?? 0,
         ...(holder === null ? {} : { client: holder.client.stats() }),
     });
@@ -1135,13 +1045,13 @@ export function residentFilesystem(session, resident, delegation) {
         };
         // A component missing on the way is "not there", as the authority's stat says.
         const absent = (error) => {
-            if (typeof error === 'object' && error !== null && ownField(error, 'code') === 'ENOENT')
+            if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
                 return null;
             throw error;
         };
         try {
             const resolved = resolve(path, follow, true);
-            return resolved instanceof PromiseConstructor ? promiseThen(resolved, finish, absent) : finish(resolved);
+            return resolved instanceof Promise ? resolved.then(finish, absent) : finish(resolved);
         }
         catch (error) {
             return absent(error);
@@ -1176,7 +1086,7 @@ export function residentFilesystem(session, resident, delegation) {
                     if (--pin.holders > 0)
                         return;
                     pins.delete(pinKey);
-                    store.release(pin.bytes.length);
+                    store.release(pin.bytes.byteLength);
                 },
             };
         };
@@ -1184,7 +1094,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (existing !== undefined)
             return pinned(existing);
         return after(contentOf(key, entry), (bytes) => {
-            if (bytes === undefined || !store.reserve(bytes.length))
+            if (bytes === undefined || !store.reserve(bytes.byteLength))
                 return null;
             const pin = { bytes, holders: 0 };
             pins.set(pinKey, pin);
@@ -1223,7 +1133,7 @@ export function residentFilesystem(session, resident, delegation) {
             return DELEGATE;
         if (!modeAllows(entry, 4, store.cred))
             return DELEGATE;
-        return after(listingOf(key), (entries) => (entries === DELEGATE ? DELEGATE : arrayCopy(byLocale(entries))));
+        return after(listingOf(key), (entries) => (entries === DELEGATE ? DELEGATE : byLocale(entries)));
     }), () => authority.readdir(path, options));
     /** The names in directory `key`; a tree walker gets the whole tree listed at once. */
     const listingOf = (key) => {
@@ -1233,7 +1143,9 @@ export function residentFilesystem(session, resident, delegation) {
         if (now)
             notNow();
         counts.treeListings++;
-        return promiseThen(promiseThen(store.listTree(key), (whole) => (whole ? true : store.list(key))), (listed) => {
+        return store.listTree(key)
+            .then((whole) => (whole ? true : store.list(key)))
+            .then((listed) => {
             // Owed while it listed (a grant given back with what it decided here): the session lists it.
             const children = listed && !owes() ? store.children(key) : undefined;
             return children === undefined ? DELEGATE : children;
@@ -1241,14 +1153,8 @@ export function residentFilesystem(session, resident, delegation) {
     };
     // The session lists a directory by name in locale order, and through a
     // descriptor in the filesystem's own (code unit) order: each is kept.
-    const listCopy = (entries) => {
-        const copy = new SafeList();
-        for (let i = 0; i < entries.length; i++)
-            copy[i] = entries[i];
-        return copy;
-    };
-    const byLocale = (entries) => arraySort(listCopy(entries), (a, b) => stringLocaleCompare(a.name, b.name));
-    const byCodeUnit = (entries) => arraySort(listCopy(entries), (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const byLocale = (entries) => [...entries].sort((a, b) => a.name.localeCompare(b.name));
+    const byCodeUnit = (entries) => [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     fs.readlink = (path) => answer('readlink', () => after(resolve(path, false), (key) => {
         if (key === DELEGATE)
             return DELEGATE;
@@ -1302,7 +1208,7 @@ export function residentFilesystem(session, resident, delegation) {
             return answer('open', () => after(resolve(path, true), async (key) => {
                 if (key === DELEGATE || key === null || key === '' || entryAt(key)?.type !== 'directory')
                     return DELEGATE;
-                if (walkRoot === null || (key !== walkRoot && !stringStartsWith(key, walkRoot + '/')))
+                if (walkRoot === null || (key !== walkRoot && !key.startsWith(walkRoot + '/')))
                     walkRoot = key;
                 const within = walkRoot;
                 // A walk is earned: the run's first directory open (an interpreter
@@ -1310,7 +1216,7 @@ export function residentFilesystem(session, resident, delegation) {
                 // last run in this facet walked from it.
                 const walking = opening.length > 0;
                 if (opening.length < WALKED_DIRECTORIES)
-                    opening[opening.length] = key;
+                    opening.push(key);
                 const handle = await directoryPool.open(path, key, async () => {
                     const guessed = repeated(key, DIRECTORY_BATCH_LIMIT - 1);
                     if (!walking && guessed.length === 0)
@@ -1319,46 +1225,21 @@ export function residentFilesystem(session, resident, delegation) {
                     // only directories it actually reported; no invented path/prefix.
                     await listingOf(key);
                     // What the last run opened next comes first; then the walk on from here.
-                    const named = new SafeSet();
-                    const ordered = new SafeList();
-                    const after = walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1);
-                    for (let i = 0; i < guessed.length + after.length; i++) {
-                        const candidate = i < guessed.length ? guessed[i] : after[i - guessed.length];
-                        if (!named.has(candidate)) {
-                            named.add(candidate);
-                            ordered[ordered.length] = candidate;
-                        }
-                    }
-                    const limit = DIRECTORY_BATCH_LIMIT - 1;
+                    const next = [...new Set([...guessed, ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)])];
                     // Carry the caller's confinement/descriptor root to the authority;
                     // never replace a beneath lookup with an absolute one. A
                     // descriptor-relative open names only what is beneath its directory.
-                    const beneath = (base) => {
-                        const under = new SafeList();
-                        for (let i = 0; i < ordered.length && under.length < limit; i++)
-                            if (base === '' || stringStartsWith(ordered[i], base + '/'))
-                                under[under.length] = ordered[i];
-                        return under;
-                    };
-                    const candidates = new SafeList();
-                    if (typeof path === 'string') {
-                        for (let i = 0; i < ordered.length && i < limit; i++)
-                            candidates[i] = '/' + ordered[i];
-                        return candidates;
-                    }
-                    if (objectHasOwn(path, 'directory')) {
-                        // Its own name less one trailing slash (/\/$/).
-                        const base = path.path !== '' && path.path[path.path.length - 1] === '/' ? stringSlice(path.path, 0, path.path.length - 1) : path.path;
-                        const under = beneath(key);
-                        for (let i = 0; i < under.length; i++)
-                            candidates[i] = { ...path, path: (base === '' ? '' : base + '/') + stringSlice(under[i], key.length + 1) };
-                        return candidates;
+                    const beneath = (base) => next.filter((candidate) => base === '' || candidate.startsWith(base + '/'));
+                    if (typeof path === 'string')
+                        return next.slice(0, DIRECTORY_BATCH_LIMIT - 1).map((candidate) => '/' + candidate);
+                    if ('directory' in path) {
+                        const base = path.path.replace(/\/$/, '');
+                        return beneath(key).slice(0, DIRECTORY_BATCH_LIMIT - 1)
+                            .map((candidate) => ({ ...path, path: (base === '' ? '' : base + '/') + candidate.slice(key.length + 1) }));
                     }
                     const root = keyOf(path.root);
-                    const under = beneath(root);
-                    for (let i = 0; i < under.length; i++)
-                        candidates[i] = { ...path, path: root === '' ? under[i] : stringSlice(under[i], root.length + 1) };
-                    return candidates;
+                    return beneath(root).slice(0, DIRECTORY_BATCH_LIMIT - 1)
+                        .map((candidate) => ({ ...path, path: root === '' ? candidate : candidate.slice(root.length + 1) }));
                 });
                 if (handle === null)
                     return DELEGATE;
@@ -1373,6 +1254,13 @@ export function residentFilesystem(session, resident, delegation) {
                 : after(holder.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
             return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
         }
+        // open(2) with O_DIRECTORY on a name the view knows as a file: ENOTDIR, answered here (a sync caller cannot ask the session).
+        if (readOnly && flags.directory === true)
+            return after(resolve(path, flags.followSymlinks !== false), (key) => {
+                if (typeof key === 'string' && key !== '' && entryAt(key)?.type === 'file')
+                    throw fsError('ENOTDIR', 'open', pathOf(path));
+                return openOnSession(path, flags);
+            });
         return openOnSession(path, flags);
     };
     /**
@@ -1385,7 +1273,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null || !store.ready())
             throw NOT_NOW;
         const walk = walkFor(path, follow);
-        if (walk === DELEGATE || walk instanceof PromiseConstructor)
+        if (walk === DELEGATE || walk instanceof Promise)
             throw NOT_NOW;
         const row = ownEntryAt(walk.key);
         if (row === undefined)
@@ -1416,7 +1304,7 @@ export function residentFilesystem(session, resident, delegation) {
         catch {
             return session();
         }
-        return shown(promiseThen(holder.flush(), () => value));
+        return shown(holder.flush().then(() => value));
     };
     /**
      * A change by name no held subtree decided, at `keys` (where each name's
@@ -1431,34 +1319,21 @@ export function residentFilesystem(session, resident, delegation) {
      * a grant decides a name or the view cannot place one, by the session.
      */
     const ownChange = (keys, decided, session) => {
-        const rows = new SafeList();
-        let known = true;
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            rows[i] = key === undefined || !store.ready() ? undefined : ownEntryAt(key);
-            if (rows[i] === undefined)
-                known = false;
-        }
-        const placed = known ? rows : undefined;
+        const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : ownEntryAt(key)));
+        const placed = rows.every((row) => row !== undefined) ? rows : undefined;
         if (now) {
             if (placed === undefined || decided(placed, false) === false)
                 throw NOT_NOW;
             counts.local++;
             return undefined;
         }
-        let undecided = placed !== undefined;
-        for (let i = 0; undecided && i < keys.length; i++)
-            undecided = !holder.holds(keys[i]) || holder.provisional.touches(keys[i]);
-        if (undecided && placed !== undefined) {
+        if (placed !== undefined && keys.every((key) => !holder.holds(key) || holder.provisional.touches(key))) {
             // What the view refuses (a name it says is not there, a mode it says forbids it) the session says, which
             // may hold what the view has not seen yet: a caller that may wait is answered by it, as one decided here is.
             let answer;
             // A name a held subtree holds is answered once logged, as its other changes there are: awaited only where none holds it.
             try {
-                let holds = false;
-                for (let i = 0; !holds && i < keys.length; i++)
-                    holds = holder.holds(keys[i]);
-                answer = decided(placed, !holds);
+                answer = decided(placed, !keys.some((key) => holder.holds(key)));
             }
             catch {
                 return session();
@@ -1494,8 +1369,8 @@ export function residentFilesystem(session, resident, delegation) {
         // A grant's cell answers here. Its own description reads the live file;
         // a borrowed anchor is only needed once no name leads to this reader's file.
         const desc = holder.provisional.descriptor(handleId);
-        if (!now && ownValue(desc.inode, 'cell') === undefined && holder.provisional.sessionOf(handleId, 'read') !== undefined
-            && (ownValue(desc, 'description') !== undefined || holder.provisional.inodeOf(handleId) === undefined))
+        if (!now && desc.inode.cell === undefined && holder.provisional.sessionOf(handleId, 'read') !== undefined
+            && (desc.description !== undefined || holder.provisional.inodeOf(handleId) === undefined))
             return readByAnchor(handleId, offset, length);
         const read = () => holder.read(handleId, offset, length);
         let done;
@@ -1503,7 +1378,7 @@ export function residentFilesystem(session, resident, delegation) {
             done = read();
         }
         catch (error) {
-            if (now || (typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined) !== 'ESTALE')
+            if (now || error.code !== 'ESTALE')
                 throw error;
             return readByAnchor(handleId, offset, length);
         }
@@ -1519,7 +1394,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (at === undefined)
             return readByAnchor(handleId, offset, length);
         // Fetched by the name, while its access lets the process read it; else through its anchor, whose access was its open's.
-        return promiseThen(promiseResolve(contentOf(at.key, at.entry)), () => read() ?? readByAnchor(handleId, offset, length), (error) => {
+        return Promise.resolve(contentOf(at.key, at.entry)).then(() => read() ?? readByAnchor(handleId, offset, length), (error) => {
             if (holder.provisional.sessionOf(handleId, 'read') === undefined)
                 throw error;
             return readByAnchor(handleId, offset, length);
@@ -1549,7 +1424,7 @@ export function residentFilesystem(session, resident, delegation) {
         delegated('read');
         const chunk = await authority.read(session, start, length);
         if (offset === null)
-            holder.seek(handleId, start + chunk.length, 'set');
+            holder.seek(handleId, start + chunk.byteLength, 'set');
         return chunk;
     };
     const openOnSession = (path, flags) => {
@@ -1576,11 +1451,10 @@ export function residentFilesystem(session, resident, delegation) {
                         return DELEGATE;
                     counts.local++;
                     // Its access is the session's to judge at the open, as open(2) judges it: answered before it returns.
-                    const desc = holder.provisional.descriptor(opened.id);
-                    const opening = desc === undefined ? undefined : ownValue(desc, 'opening');
+                    const opening = holder.provisional.descriptor(opened.id)?.opening;
                     if (opening === undefined)
                         return heldOpen(opened);
-                    return promiseThen(opening, () => heldOpen(opened), (error) => {
+                    return opening.then(() => heldOpen(opened), (error) => {
                         holder.provisional.abandon(opened.id);
                         throw error;
                     });
@@ -1606,6 +1480,8 @@ export function residentFilesystem(session, resident, delegation) {
             const { type, dev, ino, size } = handle.stat;
             if (dev === store.device) {
                 const key = keyOf(handle.path);
+                if (type === 'file')
+                    readerFiles.set(handle.id, { key, dev, ino });
                 if (type === 'directory')
                     directories.set(handle.id, { key, dev, ino });
                 else if (type === 'file' && size > WASI_RESIDENT_FILE_CAP_BYTES)
@@ -1623,12 +1499,19 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder?.owns(handleId))
             return caughtUpFor(() => {
                 // As its open description at the session has it (its names, its size), as its reads are.
-                if (!now && ownValue(holder.provisional.descriptor(handleId).inode, 'cell') === undefined && holder.provisional.sessionOf(handleId) !== undefined)
+                if (!now && holder.provisional.descriptor(handleId).inode.cell === undefined && holder.provisional.sessionOf(handleId) !== undefined)
                     return statByAnchor(handleId);
                 const entry = identified(handleId, 'fstat');
                 counts.local++;
                 return statOf(entry);
             });
+        // Node's read-only descriptor of a file: as its name has the file now, while the name still leads to that same file.
+        const file = nodeFs ? readerFiles.get(handleId) : undefined;
+        if (file !== undefined)
+            return answer('fstat', () => {
+                const entry = entryAt(file.key);
+                return entry !== undefined && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
+            }, () => authority.fstat(handleId));
         delegated('fstat');
         return authority.fstat(handleId);
     };
@@ -1651,10 +1534,10 @@ export function residentFilesystem(session, resident, delegation) {
                     return DELEGATE;
                 }
                 if (offset >= now.size)
-                    return new Uint8ArrayConstructor(0);
-                const end = mathMin(now.size, offset + length);
-                const first = mathFloor(offset / RESIDENT_PAGE_BYTES);
-                const last = mathFloor((end - 1) / RESIDENT_PAGE_BYTES);
+                    return new Uint8Array(0);
+                const end = Math.min(now.size, offset + length);
+                const first = Math.floor(offset / RESIDENT_PAGE_BYTES);
+                const last = Math.floor((end - 1) / RESIDENT_PAGE_BYTES);
                 return after(store.pages(file.key, now.revision, now.size, first, last), (found) => {
                     if (found === null) {
                         paged.delete(handleId);
@@ -1662,14 +1545,13 @@ export function residentFilesystem(session, resident, delegation) {
                     }
                     counts.pagedReads++;
                     counts.pagesFetched += found.fetched;
-                    const out = new Uint8ArrayConstructor(end - offset);
-                    for (let i = 0; i < found.pages.length; i++) {
-                        const page = found.pages[i];
+                    const out = new Uint8Array(end - offset);
+                    found.pages.forEach((page, i) => {
                         const start = (first + i) * RESIDENT_PAGE_BYTES;
-                        const from = mathMax(offset, start);
-                        const to = mathMin(end, start + page.length);
-                        typedArraySet(out, bytesView(page, from - start, to - start), from - offset);
-                    }
+                        const from = Math.max(offset, start);
+                        const to = Math.min(end, start + page.byteLength);
+                        out.set(page.subarray(from - start, to - start), from - offset);
+                    });
                     return out;
                 });
             }), () => authority.read(handleId, offset, length));
@@ -1688,7 +1570,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.write = (handleId, offset, bytes) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            return holder.write(handleId, offset, bytes, !now && answeredWrites);
+            return holder.write(handleId, offset, bytes, !now && nodeFs);
         }
         if (now)
             throw NOT_NOW;
@@ -1698,7 +1580,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.ftruncate = (handleId, size) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            return holder.ftruncate(handleId, size, !now && answeredWrites);
+            return holder.ftruncate(handleId, size, !now && nodeFs);
         }
         if (now)
             throw NOT_NOW;
@@ -1725,6 +1607,7 @@ export function residentFilesystem(session, resident, delegation) {
             directories.delete(handleId);
             paged.delete(handleId);
             readerKeys.delete(handleId);
+            readerFiles.delete(handleId);
             delegated('close');
             return authority.close(handleId);
         }
@@ -1738,7 +1621,7 @@ export function residentFilesystem(session, resident, delegation) {
         const key = directoryKey(handleId);
         if (key === undefined)
             return DELEGATE;
-        return after(listingOf(key), (entries) => (entries === DELEGATE ? DELEGATE : arrayCopy(byCodeUnit(entries))));
+        return after(listingOf(key), (entries) => (entries === DELEGATE ? DELEGATE : byCodeUnit(entries)));
     }, () => authority.readdirHandle(handleId));
     fs.fsync = (handleId) => {
         // A call that answers now cannot wait for the session: what it refused of
@@ -1748,7 +1631,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (now) {
             if (handleId !== undefined && !holder?.owns(handleId)) {
                 if (handleId < 0)
-                    throw fsError('EBADF', 'fsync', stringOf(handleId));
+                    throw fsError('EBADF', 'fsync', String(handleId));
                 throw NOT_NOW;
             }
             holder?.reportRecorded();
@@ -1765,28 +1648,28 @@ export function residentFilesystem(session, resident, delegation) {
         return synced();
     };
     // O_APPEND of one of the holder's descriptors is its writes' to keep (an append call or a write call).
-    const bySessionStatus = reflectGet(fs, 'setStatus');
+    const bySessionStatus = Reflect.get(fs, 'setStatus');
     if (typeof bySessionStatus === 'function') {
-        reflectSet(fs, 'setStatus', (handleId, status) => {
+        Reflect.set(fs, 'setStatus', (handleId, status) => {
             if (holder?.owns(handleId)) {
                 counts.local++;
                 holder.setStatus(handleId, status);
                 return;
             }
-            return reflectApply(bySessionStatus, fs, [handleId, status]);
+            return Reflect.apply(bySessionStatus, fs, [handleId, status]);
         });
     }
     // A descriptor of the holder's is reopened here where the holder decides it,
     // else once what was decided is sent: through the session's open
     // description of its file, any other by its file's name while that name has it.
-    const bySessionReopen = reflectGet(fs, 'reopen');
+    const bySessionReopen = Reflect.get(fs, 'reopen');
     if (typeof bySessionReopen === 'function') {
-        reflectSet(fs, 'reopen', (target, flags, options) => {
+        Reflect.set(fs, 'reopen', (target, flags, options) => {
             const held = holder;
             if (!held?.owns(target.handle))
-                return reflectApply(bySessionReopen, fs, [target, flags, options]);
+                return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
             const desc = held.provisional.descriptor(target.handle);
-            const described = ownValue(desc.inode, 'cell') === undefined && (ownValue(desc, 'description') !== undefined || held.provisional.sessionOf(target.handle) !== undefined);
+            const described = desc.inode.cell === undefined && (desc.description !== undefined || held.provisional.sessionOf(target.handle) !== undefined);
             const local = !now && described ? undefined : held.reopen(target.handle, flags);
             if (local !== undefined) {
                 counts.local++;
@@ -1797,28 +1680,18 @@ export function residentFilesystem(session, resident, delegation) {
             // Its file by its identity, not by what a stat would say of it now.
             const identity = { dev: desc.inode.dev, ino: desc.inode.ino };
             const name = '/' + held.keyOf(target.handle);
-            return promiseThen(promiseThen(held.flush(), () => held.provisional.sessionOf(target.handle)), (session) => (session === undefined
+            return held.flush().then(() => held.provisional.sessionOf(target.handle)).then((session) => (session === undefined
                 ? openIdentified(fs, name, false, flags, identity)
-                : reflectApply(bySessionReopen, fs, [{ handle: session }, flags, options])));
+                : Reflect.apply(bySessionReopen, fs, [{ handle: session }, flags, options])));
         });
     }
-    /** `first`, then `rest`: a call's arguments. */
-    const argumentsOf = (first, rest) => {
-        const args = new SafeList();
-        args[0] = first;
-        for (let i = 0; i < rest.length; i++)
-            args[i + 1] = rest[i];
-        return args;
-    };
-    const byHandle = ['fchmod', 'fchown', 'futimes', 'dup'];
-    for (let i = 0; i < byHandle.length; i++) {
-        const name = byHandle[i];
-        const passed = reflectGet(fs, name);
+    for (const name of ['fchmod', 'fchown', 'futimes', 'dup']) {
+        const passed = Reflect.get(fs, name);
         if (typeof passed !== 'function')
             continue;
-        reflectSet(fs, name, (handleId, ...rest) => {
+        Reflect.set(fs, name, (handleId, ...rest) => {
             if (!holder?.owns(handleId))
-                return reflectApply(passed, fs, argumentsOf(handleId, rest));
+                return Reflect.apply(passed, fs, [handleId, ...rest]);
             if (name === 'dup')
                 return holder.dup(handleId);
             return holderAttrs(name, handleId, rest);
@@ -1835,7 +1708,7 @@ export function residentFilesystem(session, resident, delegation) {
      * refusal the call's.
      */
     const holderAttrs = (name, handleId, rest) => {
-        const change = name === 'fchmod' ? { mode: NumberOf(rest[0]) }
+        const change = name === 'fchmod' ? { mode: Number(rest[0]) }
             : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
                 : { atime: rest[0], mtime: rest[1] };
         if (holder.fsetattr(handleId, change) || now)
@@ -1903,7 +1776,7 @@ export function residentFilesystem(session, resident, delegation) {
         };
         try {
             const walk = walkFor(path, true);
-            return walk instanceof PromiseConstructor ? promiseThen(walk, undefined, missing) : walk;
+            return walk instanceof Promise ? walk.catch(missing) : walk;
         }
         catch (error) {
             return missing(error);
@@ -1947,7 +1820,7 @@ export function residentFilesystem(session, resident, delegation) {
             return after(holder.mkdir(walk.key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
         }));
         return after(local, (done) => (done !== DELEGATE ? undefined
-            : ownChange([named], (rows, awaited) => holder.provisional.mkdir(named, pathOf(path), mode, rows[0], options?.umask, awaited), () => (named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)))));
+            : ownChange([named], ([row], awaited) => holder.provisional.mkdir(named, pathOf(path), mode, row, options?.umask, awaited), () => (named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)))));
     };
     /**
      * mkdir -p for a caller that cannot wait: planned whole against the view
@@ -1957,15 +1830,9 @@ export function residentFilesystem(session, resident, delegation) {
      * before it makes anything; then each directory planned made in order.
      */
     const mkdirParents = (path, options) => {
-        const segments = stringSplit(path, '/');
-        const parts = new SafeList();
-        for (let i = 0; i < segments.length; i++)
-            if (segments[i] !== '' && segments[i] !== '.')
-                parts[parts.length] = segments[i];
-        const askedMode = ownValue(options, 'mode');
-        const askedUmask = ownValue(options, 'umask');
+        const parts = path.split('/').filter((part) => part !== '' && part !== '.');
         const planned = [];
-        const making = new SafeSet();
+        const making = new Set();
         let current = '';
         for (let at = 0; at < parts.length; at++) {
             const part = parts[at];
@@ -1977,7 +1844,7 @@ export function residentFilesystem(session, resident, delegation) {
             const next = current === '' ? part : `${current}/${part}`;
             // Beneath a directory it is to make: nothing is there yet.
             if (making.has(current)) {
-                planned[planned.length] = next;
+                planned.push(next);
                 making.add(next);
                 current = next;
                 continue;
@@ -1995,9 +1862,9 @@ export function residentFilesystem(session, resident, delegation) {
                     throw NOT_NOW;
                 if (!modeAllows(parent, 3, store.cred))
                     throw fsError('EACCES', 'mkdir', path);
-                if (((askedMode ?? 0o777) & 0o7000) !== 0)
+                if (((options.mode ?? 0o777) & 0o7000) !== 0)
                     throw NOT_NOW;
-                planned[planned.length] = walked;
+                planned.push(walked);
                 making.add(walked);
                 current = walked;
                 continue;
@@ -2006,10 +1873,8 @@ export function residentFilesystem(session, resident, delegation) {
                 throw fsError(last ? 'EEXIST' : 'ENOTDIR', 'mkdir', path);
             current = walked;
         }
-        for (let i = 0; i < planned.length; i++) {
-            const key = planned[i];
-            fs.mkdir('/' + key, { ...(askedMode === undefined ? {} : { mode: askedMode }), ...(askedUmask === undefined ? {} : { umask: askedUmask }) });
-        }
+        for (const key of planned)
+            fs.mkdir('/' + key, { ...(options.mode === undefined ? {} : { mode: options.mode }), ...(options.umask === undefined ? {} : { umask: options.umask }) });
         return undefined;
     };
     const bySessionUnlink = fs.unlink;
@@ -2026,7 +1891,7 @@ export function residentFilesystem(session, resident, delegation) {
             return after(holder.unlink(walk.key, pathOf(path)), (done) => (done ? undefined : DELEGATE));
         }));
         return after(local, (done) => (done !== DELEGATE ? undefined
-            : ownChange([named], (rows, awaited) => holder.provisional.unlink(named, pathOf(path), rows[0], awaited), () => (named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)))));
+            : ownChange([named], ([row], awaited) => holder.provisional.unlink(named, pathOf(path), row, awaited), () => (named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)))));
     };
     /**
      * The store's bytes of the file `walk` reaches (a decidable walk), where
@@ -2052,9 +1917,9 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const copyOnSession = (from, to, options) => {
         const key = keyOf(pathOf(to));
-        const answered = promiseResolve(bySessionCopy(from, to, options));
+        const answered = Promise.resolve(bySessionCopy(from, to, options));
         holder.copying(key, answered);
-        return promiseThen(answered, () => { holder.superseded(key); });
+        return answered.then(() => { holder.superseded(key); });
     };
     fs.copyFile = (from, to, options) => {
         if (holder === null || options?.preserve === true)
@@ -2089,7 +1954,7 @@ export function residentFilesystem(session, resident, delegation) {
                 return after(holder.rename(source.key, target.key, pathOf(from)), (done) => (done ? undefined : DELEGATE));
             }))));
         return after(local, (done) => (done !== DELEGATE ? undefined
-            : ownChange(names ?? [undefined], (rows, awaited) => holder.provisional.rename(names[0], names[1], pathOf(from), rows[0], rows[1], awaited), () => (names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)))));
+            : ownChange(names ?? [undefined], ([source, target], awaited) => holder.provisional.rename(names[0], names[1], pathOf(from), source, target, awaited), () => (names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)))));
     };
     // An attribute change by name: decided here where a held subtree holds the
     // name (counted toward taking it either way), else by the provisional
@@ -2097,27 +1962,17 @@ export function residentFilesystem(session, resident, delegation) {
     // one it holds but did not decide (another's file, a grant the session
     // judges) is the session's in its view after. A link's own (lchown,
     // lutimes) only by the provisional decisions, which log it as its call.
-    const byPath = ['chmod', 'chown', 'utimes'];
-    for (let i = 0; i < byPath.length; i++) {
-        const name = byPath[i];
-        const passed = reflectGet(fs, name);
-        reflectSet(fs, name, (path, ...given) => {
+    for (const name of ['chmod', 'chown', 'utimes']) {
+        const passed = Reflect.get(fs, name);
+        Reflect.set(fs, name, (path, ...given) => {
             // chown(2)'s -1 keeps a side, which the bridge takes as null (RuntimeFsBridge.chown); the session refuses -1 as an id.
-            let rest = given;
-            if (name === 'chown') {
-                rest = new SafeList();
-                rest[0] = ownerSide(given[0]);
-                rest[1] = ownerSide(given[1]);
-                for (let j = 2; j < given.length; j++)
-                    rest[j] = given[j];
-            }
-            const linkOptions = rest[2];
-            const link = name !== 'chmod' && linkOptions !== undefined && linkOptions !== null && ownValue(linkOptions, 'followSymlinks') === false;
-            const attrs = name === 'chmod' ? { mode: NumberOf(rest[0]) }
+            const rest = name === 'chown' ? [ownerSide(given[0]), ownerSide(given[1]), ...given.slice(2)] : given;
+            const link = name !== 'chmod' && rest[2]?.followSymlinks === false;
+            const attrs = name === 'chmod' ? { mode: Number(rest[0]) }
                 : name === 'chown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
                     : { atime: rest[0], mtime: rest[1] };
             if (holder === null)
-                return reflectApply(passed, fs, argumentsOf(path, rest));
+                return passed.call(fs, path, ...rest);
             let named;
             const local = decide(() => after(walkFor(path, !link), (walk) => {
                 if (walk === DELEGATE)
@@ -2131,9 +1986,9 @@ export function residentFilesystem(session, resident, delegation) {
                 if (done !== DELEGATE)
                     return undefined;
                 const key = named;
-                return ownChange([key], (rows, awaited) => holder.provisional.setattr(key, pathOf(path), attrs, rows[0], awaited, link), () => (key === undefined || !holder.holds(key)
-                    ? reflectApply(passed, fs, argumentsOf(path, rest))
-                    : after(reflectApply(passed, fs, argumentsOf(path, rest)), (receipt) => { holder.undecided(key); return receipt; })));
+                return ownChange([key], ([row], awaited) => holder.provisional.setattr(key, pathOf(path), attrs, row, awaited, link), () => (key === undefined || !holder.holds(key)
+                    ? passed.call(fs, path, ...rest)
+                    : after(passed.call(fs, path, ...rest), (receipt) => { holder.undecided(key); return receipt; })));
             });
         });
     }
@@ -2141,16 +1996,16 @@ export function residentFilesystem(session, resident, delegation) {
     // decisions, else by the client when the store places the name.
     const byName = (name, passed, pathAt, op, decided) => (...args) => {
         if (holder === null)
-            return reflectApply(passed, undefined, args);
+            return passed(...args);
         return after(walkFor(args[pathAt], false), (walk) => {
             const key = walk === DELEGATE ? undefined : walk.key;
-            return ownChange([key], (rows, awaited) => decided(key, rows[0], args, awaited), () => (key === undefined ? reflectApply(passed, undefined, args) : byClient(name, op(key, args))));
+            return ownChange([key], ([row], awaited) => decided(key, row, args, awaited), () => (key === undefined ? passed(...args) : byClient(name, op(key, args))));
         });
     };
     const bySessionRmdir = fs.rmdir;
-    fs.rmdir = byName('rmdir', (path) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }), (key, row, args, awaited) => holder.provisional.rmdir(key, pathOf(args[0]), row, awaited));
+    fs.rmdir = byName('rmdir', (path) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }), (key, row, [path], awaited) => holder.provisional.rmdir(key, pathOf(path), row, awaited));
     const bySessionSymlink = fs.symlink;
-    fs.symlink = byName('symlink', (target, path) => bySessionSymlink(target, path), 1, (key, args) => ({ type: 'call', call: { call: 'symlink', path: key, target: args[0] } }), (key, row, args, awaited) => holder.provisional.symlink(key, pathOf(args[1]), args[0], row, awaited));
+    fs.symlink = byName('symlink', (target, path) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: 'call', call: { call: 'symlink', path: key, target } }), (key, row, [target, path], awaited) => holder.provisional.symlink(key, pathOf(path), target, row, awaited));
     /**
      * What a call that needed the session is told when it must answer now:
      * the name's own state where this view knows it, as the session would say
@@ -2190,14 +2045,14 @@ export function residentFilesystem(session, resident, delegation) {
         counts.notResident++;
         const target = args[0];
         const path = typeof target === 'number'
-            ? (holder?.owns(target) ? '/' + holder.keyOf(target) : stringOf(target))
-            : typeof target === 'string' || (typeof target === 'object' && target !== null && objectHasOwn(target, 'path')) ? pathOf(target) : '';
-        if (syscall === 'open' && typeof target === 'string' && !climbs(target)) {
+            ? (holder?.owns(target) ? '/' + holder.keyOf(target) : String(target))
+            : typeof target === 'string' || (typeof target === 'object' && target !== null && 'path' in target) ? pathOf(target) : '';
+        if (syscall === 'open' && typeof target === 'string' && !target.split('/').includes('..')) {
             const refusal = openRefusal(target, args[1]);
             if (refusal !== null)
                 return refusal;
         }
-        if (typeof target === 'string' && !climbs(target)) {
+        if (typeof target === 'string' && !target.split('/').includes('..')) {
             const walked = walkOnce('', keyOf(target), true);
             const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
             if (entry?.type === 'directory' && refusesADirectory(syscall, args))
@@ -2210,14 +2065,14 @@ export function residentFilesystem(session, resident, delegation) {
         });
     };
     /** The program's refused reads nothing has answered since (misses), by key, in the order first refused. */
-    const missed = new SafeSet();
+    const missed = new Set();
     /** The key a read names: as spelled, no link followed; a descriptor, its file's name. */
     const keyFor = (target) => {
         if (typeof target === 'number')
             return holder?.owns(target) ? holder.keyOf(target) : readerKeys.get(target);
         if (typeof target === 'string')
             return keyOf(target);
-        if (typeof target === 'object' && target !== null && objectHasOwn(target, 'root'))
+        if (typeof target === 'object' && target !== null && 'root' in target)
             return keyOf(`${target.root}/${pathOf(target)}`);
         return undefined;
     };
@@ -2234,7 +2089,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (missed.has(key))
             return;
         missed.add(key);
-        ownValue(residency, 'missed')?.(key);
+        residency.missed?.(key);
     };
     /** The program's awaited read of `args[0]` answered: the miss of that name goes, as spelled and as it resolves. */
     const answered = (args) => {
@@ -2250,14 +2105,14 @@ export function residentFilesystem(session, resident, delegation) {
         catch { /* the name as spelled */ }
     };
     if (residency !== undefined) {
-        CONTENT_READS.forEach((name) => {
-            const passed = reflectGet(fs, name);
+        for (const name of CONTENT_READS) {
+            const passed = Reflect.get(fs, name);
             if (typeof passed !== 'function')
-                return;
-            reflectSet(fs, name, (...args) => {
+                continue;
+            Reflect.set(fs, name, (...args) => {
                 // A miss is answered by the program's own read, which may wait, asked once it was refused.
                 if (now || missed.size === 0)
-                    return reflectApply(passed, fs, args);
+                    return Reflect.apply(passed, fs, args);
                 const refusal = (error) => {
                     if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? ''))
                         answered(args);
@@ -2265,18 +2120,18 @@ export function residentFilesystem(session, resident, delegation) {
                 };
                 let answer;
                 try {
-                    answer = reflectApply(passed, fs, args);
+                    answer = Reflect.apply(passed, fs, args);
                 }
                 catch (error) {
                     return refusal(error);
                 }
-                if (!(answer instanceof PromiseConstructor)) {
+                if (!(answer instanceof Promise)) {
                     answered(args);
                     return answer;
                 }
-                return promiseThen(answer, (value) => { answered(args); return value; }, refusal);
+                return answer.then((value) => { answered(args); return value; }, refusal);
             });
-        });
+        }
     }
     /** Whether the view knows nothing is at `key`, links followed: the session proved it absent. */
     const knownAbsent = (key) => {
@@ -2293,23 +2148,22 @@ export function residentFilesystem(session, resident, delegation) {
     };
     fs.misses = async () => {
         await faultsEnded();
-        const keys = setList(missed);
-        for (let i = 0; i < keys.length; i++)
-            if (knownAbsent(keys[i]))
-                missed.delete(keys[i]);
-        return arrayCopy(setList(missed));
+        for (const key of [...missed])
+            if (knownAbsent(key))
+                missed.delete(key);
+        return [...missed];
     };
-    const synchronous = objectCreate(null);
-    names.forEach((name) => {
-        if (NO_SYNCHRONOUS_FORM.has(name) || typeof reflectGet(fs, name) !== 'function')
-            return;
-        reflectSet(synchronous, name, (...args) => {
+    const synchronous = Object.create(null);
+    for (const name of names) {
+        if (NO_SYNCHRONOUS_FORM.has(name) || typeof Reflect.get(fs, name) !== 'function')
+            continue;
+        Reflect.set(synchronous, name, (...args) => {
             const was = now;
             now = true;
             try {
-                const value = reflectApply(reflectGet(fs, name), fs, args);
-                if (value instanceof PromiseConstructor) {
-                    promiseThen(value, undefined, () => { });
+                const value = Reflect.apply(Reflect.get(fs, name), fs, args);
+                if (value instanceof Promise) {
+                    value.catch(() => { });
                     throw new Error(`${name}: the synchronous filesystem began a wait`);
                 }
                 return value;
@@ -2327,7 +2181,7 @@ export function residentFilesystem(session, resident, delegation) {
                 now = was;
             }
         });
-    });
-    reflectSet(fs, 'synchronous', synchronous);
+    }
+    Reflect.set(fs, 'synchronous', synchronous);
     return fs;
 }

@@ -382,7 +382,7 @@ export function generate(seed, steps = 40) {
  *     is refused (EAGAIN) where it should wait (B2, seed 2209);
  *   - unfedMountSnapshot: a name on a mount with no change feed answers
  *     as its launch's listing walked it (node's, as its fs always answered
- *     one: ResidentDelegation.walkedMounts), where the session's is what it
+ *     one: ResidentDelegation.nodeFs), where the session's is what it
  *     holds now; exact answers need the mount to declare a feed.
  */
 export const KNOWN_GAPS = Object.freeze({

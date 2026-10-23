@@ -386,7 +386,7 @@ interface OpenDirectory {
 
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
 const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 } as const;
-/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.walkedMounts): searchable by anyone. */
+/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.nodeFs): searchable by anyone. */
 const PASSED_THROUGH = { type: 'directory', mode: 0o40555, uid: 0, gid: 0 } as const;
 
 /**
@@ -529,24 +529,19 @@ export interface ResidentDelegation {
   /** Told of each change the process's client logs (HolderOptions.logged). */
   readonly logged?: HolderOptions['logged'];
   /**
-   * A mount's rows are answered as the store's walk of it left it (its launch
-   * named it, and a fed mount's deltas since), a feedless mount's whatever
-   * its feed would say, and what this process changes on a mount (but the
-   * kernel's /dev and /proc) is decided here, staying its own where the view
-   * never hears of it: node's, as its fs always answered. Without it a
-   * feedless mount, or a moving feed's rows under a trusted read lease, are
-   * the session's to answer, and every mount's changes the session's to
-   * decide.
+   * Node's fs over this filesystem, answering as it always has (a WASI
+   * guest's, without it, answers as its syscalls do):
+   * - a mount's rows answer a call that cannot wait as the store's walk of
+   *   it left it (its launch named it, a fed mount's deltas since), and what
+   *   this process changes on a mount (but the kernel's /dev and /proc) is
+   *   decided here, staying its own where the view never hears of it;
+   * - a descriptor's write or truncate outside a held subtree, by a caller
+   *   that may wait, is answered once the session has it, its refusal the
+   *   call's;
+   * - a read-only descriptor's fstat answers from its name's entry while the
+   *   name leads to its file (node opens no /dev/fd reopen behind it).
    */
-  readonly walkedMounts?: boolean;
-  /**
-   * A descriptor's write or truncate outside a held subtree, by a caller
-   * that may wait, is answered once the session has it, its refusal the
-   * call's: node's fs, as it always answered an awaited write. Without it
-   * such a write is answered once logged (a WASI guest's write(2)), the
-   * session's refusal its next close's, sync's or settle's.
-   */
-  readonly answeredWrites?: boolean;
+  readonly nodeFs?: boolean;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
   /**
    * The directories the last process in this facet opened, in order (its
@@ -738,8 +733,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         reserve: (bytes) => resident.reserve(bytes),
         release: (bytes) => resident.release(bytes),
         ...(ownValue(resident, 'keep') === undefined ? {} : { keep: (key: string, revision: number, bytes: Uint8Array) => ownValue(resident, 'keep')!(key, revision, bytes) }),
-        mounted: (key) => walkedMounts && mountedName(key),
-        unreported: (key) => walkedMounts && unreportedName(key),
+        mounted: (key) => nodeFs && mountedName(key),
+        unreported: (key) => nodeFs && unreportedName(key),
       },
       isHomeRoot: ownValue(delegation, 'isHomeRoot'),
       ...(ownValue(delegation, 'grantAfter') === undefined ? {} : { grantAfter: ownValue(delegation, 'grantAfter') }),
@@ -770,6 +765,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const readers = new SafeSet<number>();
   /** Of those, the names they were opened by, whose reads answer the program's misses (ProgramResidency). */
   const readerKeys = new SafeMap<number, string>();
+  /** Of the read-only ones that are files: the names and the file's identity (dev, ino); its entry answers their fstat while the name leads to it. */
+  const readerFiles = new SafeMap<number, { key: string; dev: number; ino: number }>();
   /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
   const unwritten = new SafeSet<number>();
   /** Of the read-only ones, the directories, and where their listing is. */
@@ -795,7 +792,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const walkOnce = (root: string, name: string, follow: boolean, crossed?: string[]): string | null | Unknown | Delegate => {
     const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
     if (crossed !== undefined) crossed.length = 0;
-    // Beneath a directory on a mount the walk passed (walkedMounts).
+    // Beneath a directory on a mount the walk passed (nodeFs).
     let passing = false;
     for (let step = walk.next(); ;) {
       if (step.done) return step.value === null ? null : step.value.reached;
@@ -814,7 +811,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         // Node's walk passes a directory on a mount the launch's listing could not name (a device that
         // resolves its own paths shows only what its user consented to, as the session hands it the
         // whole name), and what is beneath it: a name there is answered where the listing named it.
-        if (!walkedMounts || !(passing || mountedName(key))) return { missing: key };
+        if (!nodeFs || !(passing || mountedName(key))) return { missing: key };
         passing = true;
         step = walk.next(PASSED_THROUGH);
         continue;
@@ -1109,9 +1106,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * feed's (not fixed) not while a read lease is trusted.
    */
   // Node's walked mounts answer its calls that cannot wait; one that may is the session's, as a fed mount's moving rows under a trusted lease are.
-  const answerable = (key: string, entry: ResidentEntry): boolean => fedRow(key, entry) === true || (walkedMounts && now);
-  const walkedMounts = (delegation === undefined ? undefined : ownValue(delegation, 'walkedMounts')) === true;
-  const answeredWrites = (delegation === undefined ? undefined : ownValue(delegation, 'answeredWrites')) === true;
+  const answerable = (key: string, entry: ResidentEntry): boolean => fedRow(key, entry) === true || (nodeFs && now);
+  const nodeFs = (delegation === undefined ? undefined : ownValue(delegation, 'nodeFs')) === true;
 
   /**
    * Whether `entry` at `key`, a row off the session's own device, is a fed
@@ -1179,7 +1175,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const ownEntryAt = (key: string): ResidentEntry | null | undefined => {
     const entry = entryAt(key);
     if (entry === undefined) return undefined;
-    if (walkedMounts) return onKernelMount(key) ? undefined : entry;
+    if (nodeFs) return onKernelMount(key) ? undefined : entry;
     return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
   };
 
@@ -1412,7 +1408,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
-  fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
+  fs.decidedAt = (path) => {
+    if (holder === null) return false;
+    if (holder.provisional.touches(keyOf(path))) return true;
+    // A change made through a link is decided at the file the link names (chmod follows it): that file's key counts
+    // too, as this view resolves it now (a name it cannot resolve here has nothing decided beneath it).
+    let followed: ReturnType<typeof walkOnce>;
+    try { followed = walkOnce('', keyOf(path), true); } catch { return false; }
+    return typeof followed === 'string' && followed !== '' && holder.provisional.touches(followed);
+  };
   reflectDefineProperty(fs, 'client', dataDescriptor(holder?.client ?? null, false, true, false));
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
@@ -1659,6 +1663,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         : after(holder!.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
       return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
     }
+    // open(2) with O_DIRECTORY on a name the view knows as a file: ENOTDIR, answered here (a sync caller cannot ask the session).
+    if (readOnly && flags.directory === true) return after(resolve(path, flags.followSymlinks !== false), (key) => {
+      if (typeof key === 'string' && key !== '' && entryAt(key)?.type === 'file') throw fsError('ENOTDIR', 'open', pathOf(path));
+      return openOnSession(path, flags);
+    });
     return openOnSession(path, flags);
   };
 
@@ -1862,6 +1871,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const { type, dev, ino, size } = handle.stat;
       if (dev === store.device) {
         const key = keyOf(handle.path);
+        if (type === 'file') readerFiles.set(handle.id, { key, dev, ino });
         if (type === 'directory') directories.set(handle.id, { key, dev, ino });
         else if (type === 'file' && size > WASI_RESIDENT_FILE_CAP_BYTES) paged.set(handle.id, { key, dev, ino });
       }
@@ -1881,6 +1891,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       counts.local++;
       return statOf(entry);
     });
+    // Node's read-only descriptor of a file: as its name has the file now, while the name still leads to that same file.
+    const file = nodeFs ? readerFiles.get(handleId) : undefined;
+    if (file !== undefined) return answer<RuntimeVfsStat>('fstat', () => {
+      const entry = entryAt(file.key);
+      return entry !== undefined && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
+    }, () => authority.fstat(handleId));
     delegated('fstat');
     return authority.fstat(handleId);
   };
@@ -1933,14 +1949,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes, !now && answeredWrites); }
+    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes, !now && nodeFs); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
   };
 
   fs.ftruncate = (handleId, size) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.ftruncate(handleId, size, !now && answeredWrites); }
+    if (holder?.owns(handleId)) { counts.local++; return holder.ftruncate(handleId, size, !now && nodeFs); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('ftruncate', () => authority.ftruncate(handleId, size));
@@ -1965,6 +1981,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       directories.delete(handleId);
       paged.delete(handleId);
       readerKeys.delete(handleId);
+      readerFiles.delete(handleId);
       delegated('close');
       return authority.close(handleId);
     }
