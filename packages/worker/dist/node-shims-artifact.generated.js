@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-b2af2c4967dcbff4.js";
-export const NODE_SHIMS_BUILD_ID = "b2af2c4967dcbff4";
-export const NODE_SHIMS_SHA256 = "b2af2c4967dcbff4801b5bacf1e644121677b9d781270a42de80fd0c25b4fa5c";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-5460da2f64032b9b.js";
+export const NODE_SHIMS_BUILD_ID = "5460da2f64032b9b";
+export const NODE_SHIMS_SHA256 = "5460da2f64032b9b2017ff813cf1d95f7b348db885f3c5e5dc0c460608cb1993";
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
 export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-439cdcbc2660fb37.js";
 export const RESIDENT_STORE_BUILD_ID = "439cdcbc2660fb37";

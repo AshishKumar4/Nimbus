@@ -4866,13 +4866,18 @@ const __fsMod = (() => {
   }
   /** The directory entries the filesystem lists, as readdir answers them: names in code-unit order, or Dirents. */
   function _listed(entries, absPath, opts, lstat) {
-    const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    // On the launch's captures: a program may have replaced Array.prototype.sort or map, which Node's readdir never asks.
+    const sorted = new __PathList();
+    for (let i = 0; i < entries.length; i++) sorted[i] = entries[i];
+    __nimbusSort(sorted, (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const encoding = _encodingOf(opts);
-    if (!opts?.withFileTypes) return sorted.map((entry) => (encoding === "buffer" ? __BufferMod.from(entry.name) : entry.name));
-    return sorted.map((entry) => {
-      const type = entry.type === "unknown" ? _direntTypeOfStats(lstat(absPath + "/" + entry.name)) : entry.type;
-      return _direntObject(entry.name, type, absPath);
-    });
+    const out = new __PathList();
+    for (let i = 0; i < sorted.length; i++) {
+      const entry = sorted[i];
+      if (!opts?.withFileTypes) out[i] = encoding === "buffer" ? __BufferMod.from(entry.name) : entry.name;
+      else out[i] = _direntObject(entry.name, entry.type === "unknown" ? _direntTypeOfStats(lstat(absPath + "/" + entry.name)) : entry.type, absPath);
+    }
+    return __nimbusArrayCopy(out);
   }
   /** The first directory a recursive mkdir of `absPath` makes, or undefined: what Node's answers. */
   function _firstMissing(absPath, stat) {
@@ -4928,7 +4933,7 @@ const __fsMod = (() => {
     // the way out, so the WebAssembly seam below can answer the package's own
     // new WebAssembly.Module(readFileSync(...)) with the compiled module —
     // request-time compilation from bytes is refused by the runtime.
-    const precompiled = __nimbusPrecompiledWasm.get(_strip(absPath));
+    const precompiled = __nimbusMapGet(__nimbusPrecompiledWasm, _strip(absPath));
     if (precompiled !== undefined) bytes[__nimbusWasmModuleTag] = precompiled;
     return bytes;
   }

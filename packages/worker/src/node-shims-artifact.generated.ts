@@ -10,9 +10,9 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-b2af2c4967dcbff4.js";
-export const NODE_SHIMS_BUILD_ID: string = "b2af2c4967dcbff4";
-export const NODE_SHIMS_SHA256: string = "b2af2c4967dcbff4801b5bacf1e644121677b9d781270a42de80fd0c25b4fa5c";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-5460da2f64032b9b.js";
+export const NODE_SHIMS_BUILD_ID: string = "5460da2f64032b9b";
+export const NODE_SHIMS_SHA256: string = "5460da2f64032b9b2017ff813cf1d95f7b348db885f3c5e5dc0c460608cb1993";
 
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
 export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-439cdcbc2660fb37.js";
