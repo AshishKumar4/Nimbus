@@ -5,7 +5,8 @@
 // printed before that read once, and ends with its own status after its
 // asynchronous work. Its next launch stages the file and runs as a one-shot.
 // The read is readFileSync after an accessSync of the file, a require() of a
-// JSON file, or a readSync of a descriptor.
+// JSON file, a readSync of a descriptor, or readFileSync of a wasm module the
+// program then compiles, which a Worker compiles only from its launch's map.
 //
 // Each file lies outside the working tree and is named only on the command
 // line, so no launch rule stages it before a run has read it.
@@ -19,6 +20,8 @@ const a = makeAsserter('node/new/sync-miss-reruns');
 
 const PAYLOAD = Object.fromEntries(['x', 'y', 'w'].map((name) => [name, `${name}-${crypto.randomUUID()}`]));
 const JSON_VALUE = `z-${crypto.randomUUID()}`;
+// (module (func (export "answer") (result i32) i32.const 42))
+const WASM_BYTES = [0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 127, 3, 2, 1, 0, 7, 10, 1, 6, 97, 110, 115, 119, 101, 114, 0, 0, 10, 6, 1, 4, 0, 65, 42, 11];
 // Each prints BEFORE, reads its file synchronously, and after its asynchronous
 // work prints what it read and ends with its second argument as its status.
 const PROGRAMS = {
@@ -33,6 +36,13 @@ setTimeout(() => { console.log('READ=' + text); process.exitCode = Number(proces
 console.log('BEFORE');
 const value = require(process.argv[2]).value;
 setTimeout(() => { console.log('READ=' + value); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
+`,
+  'wasm.js': `
+const fs = require('fs');
+console.log('BEFORE');
+const bytes = fs.readFileSync(process.argv[2]);
+const module = new WebAssembly.Module(bytes);
+setTimeout(() => { console.log('READ=' + WebAssembly.Module.exports(module).map((e) => e.name).join(',')); process.exitCode = Number(process.argv[3] ?? 0); }, 200);
 `,
   'descriptor.js': `
 const fs = require('fs');
@@ -55,6 +65,8 @@ try {
   for (const line of ['mkdir -p /home/user/d21/app /home/user/d21-data',
     ...Object.entries(PAYLOAD).map(([name, text]) => heredocCommand(`/home/user/d21-data/${name}.txt`, text)),
     heredocCommand('/home/user/d21-data/z.json', JSON.stringify({ value: JSON_VALUE })),
+    // A module exporting a function named \`answer\`, compiled from the bytes the program reads.
+    `node -e 'require("fs").writeFileSync("/home/user/d21-data/m.wasm", Buffer.from([${WASM_BYTES.join(',')}]))'`,
     ...Object.entries(PROGRAMS).map(([name, code]) => heredocCommand(`/home/user/d21/app/${name}`, code)), 'cd /home/user/d21/app']) {
     const r = await t.run(line, 30_000);
     if (r.exitCode !== 0) throw new Error(`setup failed: ${line.slice(0, 60)}: ${r.output.slice(-300)}`);
@@ -66,6 +78,7 @@ try {
     ['another file, status 3', 'read.js', 'y.txt', PAYLOAD.y, 3],
     ['a require', 'require.js', 'z.json', JSON_VALUE, 0],
     ['a descriptor', 'descriptor.js', 'w.txt', PAYLOAD.w, 0],
+    ['a wasm module it compiles', 'wasm.js', 'm.wasm', 'answer', 0],
   ]) {
     const r = await t.run(`node ${program} /home/user/d21-data/${file} ${status}`, 120_000);
     const said = lines(r.output);
