@@ -1513,14 +1513,15 @@ const __fsMod = (() => {
     return __nimbusTrackOp(_awaited(syscall, p, run));
   }
   /**
-   * An awaited change through an open descriptor, decided in the caller's own turn: its place in the process's log
-   * is the call's place, so a synchronous change made after it is logged after it. Answered once the session has it;
-   * its refusal is the call's. Not queued behind the path's pending awaited calls (_inCallOrder).
+   * An awaited change decided in the caller's own turn: through an open descriptor, or by name where the view answers the
+   * name's walk (a structural change Node decides as it is called). Its place in the process's log is the call's place, so a
+   * synchronous change made after it is logged after it. Answered once the session has it; its refusal is the call's. Not
+   * queued behind the path's pending awaited calls (_inCallOrder).
    */
-  function _asyncDecided(syscall, p, run) {
+  function _asyncDecided(syscall, p, run, dest) {
     return __nimbusTrackOp((async () => {
       try { return await run(_rf()); }
-      catch (error) { throw _rfError(error, syscall, p); }
+      catch (error) { throw _rfError(error, syscall, p, dest); }
     })());
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
@@ -1922,7 +1923,7 @@ const __fsMod = (() => {
     const options = typeof opts === "object" && opts !== null ? opts : { mode: opts };
     const recursive = !!options.recursive;
     const mode = options.mode === undefined ? 0o777 : _coerceMode(options.mode);
-    return _async("mkdir", p, async (fs) => {
+    return _asyncDecided("mkdir", p, async (fs) => {
       const first = recursive ? await _firstMissingAsync(absPath, fs) : undefined;
       await fs.mkdir(absPath, { recursive, mode, umask: __processUmask });
       return first;
@@ -1939,16 +1940,16 @@ const __fsMod = (() => {
   }
   async function _unlinkAsync(p) {
     const absPath = _at(p);
-    await _async("unlink", p, (fs) => fs.unlink(absPath));
+    await _asyncDecided("unlink", p, (fs) => fs.unlink(absPath));
   }
   async function _rmdirAsync(p) {
     const absPath = _at(p);
-    await _async("rmdir", p, (fs) => fs.rmdir(absPath));
+    await _asyncDecided("rmdir", p, (fs) => fs.rmdir(absPath));
   }
   async function _renameAsync(oldP, newP) {
     const from = _at(oldP);
     const to = _at(newP);
-    await _async("rename", oldP, (fs) => fs.rename(from, to), newP);
+    await _asyncDecided("rename", oldP, (fs) => fs.rename(from, to), newP);
   }
   async function _symlinkAsync(target, path) {
     const absPath = _at(path);
@@ -1988,7 +1989,7 @@ const __fsMod = (() => {
   async function _chmodAsync(p, mode) {
     const absPath = _at(p);
     const bits = _coerceMode(mode);
-    await _async("chmod", p, (fs) => fs.chmod(absPath, bits));
+    await _asyncDecided("chmod", p, (fs) => fs.chmod(absPath, bits));
   }
   async function _chownAsync(p, uid, gid, opts, syscallOverride) {
     const follow = !(opts && opts.followSymlinks === false);

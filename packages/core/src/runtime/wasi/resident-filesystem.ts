@@ -946,8 +946,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return outstanding(batch.then(held));
   };
 
-  /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up. */
-  const resolve = (path: RuntimeFsPath, follow: boolean, content = false, crossed?: string[]): Resolution | Promise<Resolution> => {
+  /**
+   * Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up.
+   * `viewFirst`: a change node decides as it is called (nodeFs) takes the walk the view answers as it stands, before any barrier it owes.
+   */
+  const resolve = (path: RuntimeFsPath, follow: boolean, content = false, crossed?: string[], viewFirst = false): Resolution | Promise<Resolution> => {
     let root: string;
     let name: string;
     if (typeof path === 'string') {
@@ -976,6 +979,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     let caughtUps = 0;
     const attempt = (asked: number): Resolution | Promise<Resolution> => {
       if (!store.ready()) return DELEGATE;
+      // Node decides a change as it is called: a walk the view answers is decided over the view as it stands, not behind the barrier owed.
+      if (viewFirst && nodeFs && !now) {
+        const first = walkOnce(root, name, follow, crossed);
+        if (first === null || first === DELEGATE || typeof first === 'string') return first;
+      }
       // A debt that keeps coming while it catches up: the session walks it.
       if (owes() && !now) return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => (ok ? attempt(asked) : DELEGATE));
       const walked = walkOnce(root, name, follow, crossed);
@@ -1238,10 +1246,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     });
   };
 
-  /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. */
-  const walkFor = (path: RuntimeFsPath, follow: boolean): Walk | Delegate | Promise<Walk | Delegate> => {
+  /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. `viewFirst`: as resolve's. */
+  const walkFor = (path: RuntimeFsPath, follow: boolean, viewFirst = false): Walk | Delegate | Promise<Walk | Delegate> => {
     const crossed: string[] = [];
-    return after(resolve(path, follow, false, crossed), (key) => {
+    return after(resolve(path, follow, false, crossed, viewFirst), (key) => {
       // Links that do not end (more than the walk follows): open(2)'s ELOOP.
       if (key === null) throw fsError('ELOOP', 'open', pathOf(path));
       return typeof key === 'string' && key !== '' ? { key, crossed } : DELEGATE;
@@ -1445,8 +1453,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.readdir = (path, options = {}) => answer<RuntimeVfsDirEntry[]>('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
     if (key === DELEGATE || key === null) return DELEGATE;
     const entry = entryAt(key);
-    if (entry === undefined || entry === null) return DELEGATE;
-    if (entry.type !== 'directory') return DELEGATE;
+    if (entry === undefined) return DELEGATE;
+    // Node's readdir of a name the view knows is absent, or is a file: the session's answer (readdirIn's order: EACCES
+    // before ENOTDIR), which a call that cannot wait cannot ask for.
+    if (nodeFs && (entry === null || entry.type === 'file')) {
+      if (entry !== null && !modeAllows(entry, 4, store.cred)) throw fsError('EACCES', 'scandir', path);
+      throw fsError(entry === null ? 'ENOENT' : 'ENOTDIR', 'scandir', path);
+    }
+    if (entry === null || entry.type !== 'directory') return DELEGATE;
     if (!modeAllows(entry, 4, store.cred)) return DELEGATE;
     return after(listingOf(key), (entries) => (entries === DELEGATE ? DELEGATE : byLocale(entries)));
   }), () => authority.readdir(path, options));
@@ -2037,7 +2051,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
     const mode = options?.mode ?? 0o777;
     let named: string | undefined;
-    const local = decide<void>(() => after(walkFor(path, false), (walk) => {
+    const local = decide<void>(() => after(walkFor(path, false, true), (walk) => {
       if (walk === DELEGATE) return DELEGATE;
       named = walk.key;
       if (!decidable(walk.key, walk)) return DELEGATE;
@@ -2099,7 +2113,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.unlink = (path) => {
     if (holder === null) return bySessionUnlink(path);
     let named: string | undefined;
-    const local = decide<void>(() => after(walkFor(path, false), (walk) => {
+    const local = decide<void>(() => after(walkFor(path, false, true), (walk) => {
       if (walk === DELEGATE) return DELEGATE;
       named = walk.key;
       if (!decidable(walk.key, walk)) return DELEGATE;
@@ -2155,8 +2169,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.rename = (from, to) => {
     if (holder === null) return bySessionRename(from, to);
     let names: [string, string] | undefined;
-    const local = decide<void>(() => after(walkFor(from, false), (source) => (source === DELEGATE ? DELEGATE
-      : after(walkFor(to, false), (target) => {
+    const local = decide<void>(() => after(walkFor(from, false, true), (source) => (source === DELEGATE ? DELEGATE
+      : after(walkFor(to, false, true), (target) => {
         if (target === DELEGATE) return DELEGATE;
         names = [source.key, target.key];
         if (!decidable(source.key, source, target)) return DELEGATE;
@@ -2183,7 +2197,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         : { atime: rest[0] as FsTime, mtime: rest[1] as FsTime };
       if (holder === null) return passed.call(fs, path, ...rest);
       let named: string | undefined;
-      const local = decide<void>(() => after(walkFor(path, !link), (walk) => {
+      const local = decide<void>(() => after(walkFor(path, !link, name === 'chmod'), (walk) => {
         if (walk === DELEGATE) return DELEGATE;
         named = walk.key;
         if (link || !decidable(walk.key, walk)) return DELEGATE;
@@ -2204,7 +2218,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     decided: (key: string, row: ResidentEntry | null, args: A, awaited: boolean) => boolean | Promise<unknown>) =>
     (...args: A): Awaitable<void> => {
       if (holder === null) return passed(...args);
-      return after(walkFor(args[pathAt] as RuntimeFsPath, false), (walk) => {
+      return after(walkFor(args[pathAt] as RuntimeFsPath, false, name === 'rmdir'), (walk) => {
         const key = walk === DELEGATE ? undefined : walk.key;
         return ownChange([key], ([row], awaited) => decided(key!, row, args, awaited), () => (key === undefined ? passed(...args) : byClient(name, op(key, args))));
       });
