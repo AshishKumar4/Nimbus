@@ -351,7 +351,7 @@ function extensionOf(name: string): string {
 }
 
 /** What this adapter answers itself is decided here: anything else is the authority's. */
-const DELEGATE = SymbolConstructor('delegate');
+const DELEGATE: unique symbol = SymbolConstructor('delegate');
 type Delegate = typeof DELEGATE;
 
 /** A walk that met a name the store does not know. */
