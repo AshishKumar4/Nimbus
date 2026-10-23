@@ -414,7 +414,7 @@ const GAPS = {
   'a directory the process made beside a mount with no feed is listed at rest (7078) [node]': {
     lacks: 'S lists the directory the process made as its relist after the mount table changed saw it, without the name (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile readdirSync can leave out a directory the program made after a mount appeared',
-    shows: 'sync stat z/g answered EAGAIN',
+    shows: 'parked by seed 7078',
   },
   'a directory root shut and took is refused to a read that cannot wait (7451) [node]': {
     lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (main does too; closed by the cutover: RF answers it as the session does)',
