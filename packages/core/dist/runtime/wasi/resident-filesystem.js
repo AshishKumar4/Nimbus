@@ -981,7 +981,8 @@ export function residentFilesystem(session, resident, delegation) {
     Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
     fs.logHeld = () => holder?.logHeld();
     // What leaves the process is preceded by everything it logged.
-    fs.flush = async () => { await holder?.send(); };
+    fs.flush = async () => { await holder?.flush(); };
+    fs.send = async () => { await holder?.send(); };
     fs.settle = async () => {
         const failures = [];
         await faultsEnded();

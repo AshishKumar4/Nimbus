@@ -356,6 +356,7 @@ var __nimbusResidentModule = (() => {
     let namespaceOverlayBytes = 0;
     let namespaceReserveBytes = 0;
     let pinnedBytes = 0;
+    let shedHeld = null;
     let available = null;
     const reservations = new SafeMap();
     let reservedBytes = 0;
@@ -468,9 +469,13 @@ var __nimbusResidentModule = (() => {
         return available;
       },
       pin(bytes) {
+        if (!inHeap && pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) shedHeld?.(pinnedBytes + heldBytes + bytes - FACET_OWN_WRITE_MEMORY_BYTES);
         if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
         pinnedBytes += bytes;
         return true;
+      },
+      setHeldShedder(shed) {
+        shedHeld = shed;
       },
       unpin(bytes) {
         pinnedBytes = mathMax(0, pinnedBytes - bytes);
@@ -1945,6 +1950,15 @@ var __nimbusResidentModule = (() => {
       }
       unheld.delete(path);
     };
+    const shedTo = (under) => {
+      held.forEach((old, oldest) => {
+        if (admission.heldBytes <= under) return;
+        held.delete(oldest);
+        admission.addHeld(-cellSize(old.cell));
+        unheld.add(oldest);
+      });
+    };
+    admission.setHeldShedder((bytes) => shedTo(admission.heldBytes - bytes));
     const hold = (path, cell, rev = RK_OWN_WRITE) => {
       forgetHeld(path);
       const size = cellSize(cell);
@@ -1953,14 +1967,7 @@ var __nimbusResidentModule = (() => {
         unheld.add(path);
         return;
       }
-      if (admission.heldBytes + size > limit) {
-        held.forEach((old, oldest) => {
-          if (admission.heldBytes + size <= limit) return;
-          held.delete(oldest);
-          admission.addHeld(-cellSize(old.cell));
-          unheld.add(oldest);
-        });
-      }
+      if (admission.heldBytes + size > limit) shedTo(limit - size);
       held.set(path, { cell, rev });
       admission.addHeld(size);
     };
@@ -10595,6 +10602,9 @@ var __nimbusResidentModule = (() => {
     Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
+      await holder?.flush();
+    };
+    fs.send = async () => {
       await holder?.send();
     };
     fs.settle = async () => {
