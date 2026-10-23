@@ -1105,16 +1105,22 @@ let __nimbusCodeSending = Promise.resolve();
 function __nimbusFlushRuntimeCode(supervisor) {
   if (!supervisor || typeof supervisor.reportRuntimeCode !== 'function') return Promise.resolve();
   const send = __nimbusCodeSending.then(async () => {
-    // Let outstanding repairs land and retire the misses they proved absent
-    // first: a path the authority does not have was the program's not-found
-    // branch, not something the next launch should stage.
-    if (typeof globalThis.__nimbusVfsResidencySettle === "function") {
-      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
+    // The program's misses as they stand once their fetches ended
+    // (ResidentFilesystem.misses): a path the authority does not have is
+    // retired there, the program's not-found branch, nothing the next
+    // launch should stage.
+    let missed = null;
+    if (typeof globalThis.__nimbusProgramMisses === "function") {
+      try {
+        const keys = await globalThis.__nimbusProgramMisses();
+        missed = new __NimbusCellSet();
+        for (let i = 0; i < keys.length; i++) missed.add(keys[i]);
+      } catch {}
     }
     // The ledger and both miss sets are SafeMap and SafeSets: their own forEach.
     const code = __nimbusUnacknowledged(__nimbusRuntimeLedger, __nimbusCodeAcknowledged);
     const modules = __nimbusUnacknowledged(globalThis.__nimbusModuleMisses, __nimbusModulesAcknowledged).keys;
-    const reads = __nimbusUnacknowledged(globalThis.__nimbusVfsResidencyMisses, __nimbusReadsAcknowledged).keys;
+    const reads = __nimbusUnacknowledged(missed, __nimbusReadsAcknowledged).keys;
     const batches = Math.max(Math.ceil(code.keys.length / 32), Math.ceil(modules.length / 128), Math.ceil(reads.length / 128));
     for (let i = 0; i < batches; i++) {
       const keys = __nimbusReportBatch(code.keys, i * 32, 32);

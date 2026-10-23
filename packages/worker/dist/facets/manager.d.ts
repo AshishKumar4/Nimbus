@@ -27,7 +27,7 @@ import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { type FacetVfsCursor } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
@@ -352,6 +352,12 @@ interface FacetVfsState {
      * delta, which is what it always was.
      */
     cursor?: FacetVfsCursor;
+    /**
+     * The session's root, read just after `cursor`, so as of it or after it:
+     * the process's view of the session's filesystem answers for the device it
+     * names (node-shims __nimbusStartProcessFilesystem).
+     */
+    root?: RuntimeVfsStat;
     /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
     reachableCount: number;
     /** Diagnostics: did the snapshot's raw-byte bound evict optional files? */

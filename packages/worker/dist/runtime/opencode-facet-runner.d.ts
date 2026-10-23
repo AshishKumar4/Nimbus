@@ -94,6 +94,8 @@ export interface OpencodeRunnerOptions {
     vfsBundle: string;
     /** The coherence cursor the snapshot above was read at, as a JSON literal. */
     vfsCursor: string;
+    /** The session's root as of that cursor, as a JSON literal. */
+    vfsRoot: string;
     /**
      * Runtime disposition of this opencode invocation:
      *   - 'oneshot'  buffer stdout/stderr into the JSON response and return

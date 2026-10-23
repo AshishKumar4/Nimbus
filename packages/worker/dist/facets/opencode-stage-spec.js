@@ -30,4 +30,6 @@ export const OpencodeStageSpecSchema = z.object({
      * ACQUIRE poisons and drops the whole snapshot — see _shared/facet-vfs-cursor.
      */
     vfsCursor: z.string(),
+    /** The session's root as of that cursor, as a JSON literal (`null` with no VFS): the device the facet's view answers for. */
+    vfsRoot: z.string(),
 });

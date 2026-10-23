@@ -145,6 +145,7 @@ async function assemble(assets, spec) {
         sources,
         vfsBundle: spec.vfsBundle,
         vfsCursor: spec.vfsCursor,
+        vfsRoot: spec.vfsRoot,
         mode: spec.mode,
     });
     return {

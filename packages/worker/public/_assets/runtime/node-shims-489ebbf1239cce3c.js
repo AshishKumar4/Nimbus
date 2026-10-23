@@ -1524,6 +1524,11 @@ function __nimbusResidentFs() {
   if (__nimbusProcessFilesystem === null) throw Object.assign(new Error("EIO: this process has no filesystem to call"), { code: "EIO" });
   return __nimbusProcessFilesystem;
 }
+// Why a launch with a supervisor cannot make its filesystem, or null: it was
+// handed no stat of the session's root (the device its view answers for).
+function __nimbusRootRefusal(supervisor, root) {
+  return supervisor && !root ? "node: the process was not started: its launch did not carry the session's root" : null;
+}
 // Made once the launch's store has booted, over the session's root (`root`,
 // its stat as of the store's cursor or after it): its client is the one the
 // runtime's effect and exit boundaries gate on (globalThis.__nimbusProcessFs),
@@ -4418,6 +4423,8 @@ const __fsMod = (() => {
     catch { return null; }
   }
 
+  // The errors this fs made itself, as Node words them: a call's refusal passes them on as they are (_rfError).
+  const _madeHere = new __NimbusSafeWeakSet();
   function _fsErr(code, syscall, p, dest) {
     const described = Object.prototype.hasOwnProperty.call(__nimbusErrnoDescription, code) ? __nimbusErrnoDescription[code] + ", " : "";
     const second = dest === undefined ? "" : " -> '" + dest + "'";
@@ -4429,6 +4436,7 @@ const __fsMod = (() => {
     err.syscall = syscall;
     err.path = String(p);
     if (dest !== undefined) err.dest = String(dest);
+    _madeHere.add(err);
     return err;
   }
 
@@ -4625,6 +4633,8 @@ const __fsMod = (() => {
    * now names its async remedy (`asyncForm`): the program's way to the bytes.
    */
   function _rfError(error, syscall, p, dest, asyncForm) {
+    // What this fs judged itself (an fs error it made, a Node error such as ERR_FS_EISDIR) is already Node's.
+    if (_madeHere.has(error) || (error !== null && typeof error === "object" && typeof error.code === "string" && __pathStartsWith(error.code, "ERR_"))) return error;
     const mapped = _mapSupervisorError(error, syscall, p, dest);
     if (mapped.code === "EAGAIN") {
       mapped.message = _fsErr("EAGAIN", syscall, p, dest).message + " — '" + String(p) + "' exists but its content is not " +
@@ -4645,6 +4655,8 @@ const __fsMod = (() => {
     try { return await run(_rf()); }
     catch (error) { throw _rfError(error, syscall, p, dest); }
   }
+  /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
+  const _absent = {};
   /** A path's string as the filesystem takes it, from Node's argument forms. */
   function _at(p) { return _resolve(p); }
   /** A stat answer as Node's Stats (BigIntStats where `bigint`), undefined for none. */
@@ -4817,7 +4829,9 @@ const __fsMod = (() => {
   realpathSync.native = realpathSync;
   function readlinkSync(p, opts) {
     const absPath = _at(p);
-    const target = _sync("readlink", p, "fs.promises.readlink", (fs) => fs.readlink(absPath));
+    // No link there: nothing at all (ENOENT), or a name that is not a link (EINVAL).
+    const target = _sync("readlink", p, "fs.promises.readlink", (fs) => fs.readlink(absPath) ?? (fs.stat(absPath, { followSymlinks: false }) === null ? _absent : null));
+    if (target === _absent) throw _fsErr("ENOENT", "readlink", p);
     if (target === null) throw _fsErr("EINVAL", "readlink", p);
     return _encodingOf(opts) === "buffer" ? __BufferMod.from(target) : target;
   }
@@ -4852,11 +4866,6 @@ const __fsMod = (() => {
     _sync("symlink", text, "fs.promises.symlink", (fs) => fs.symlink(text, absPath), path);
   }
   function linkSync(existingPath, newPath) { throw _fsErr("ENOSYS", "link", existingPath, newPath); }
-  function truncateSync(p, len) {
-    const absPath = _at(p);
-    const size = Math.max(0, Math.trunc(Number(len) || 0));
-    _sync("open", p, "fs.promises.truncate", (fs) => fs.truncate(absPath, size));
-  }
   function copyFileSync(src, dest, mode) {
     const from = _at(src);
     const to = _at(dest);
@@ -4876,11 +4885,39 @@ const __fsMod = (() => {
     }
     return true;
   }
+  /**
+   * rm -r's removal of what `type` names at `absPath`, for a caller that
+   * cannot wait: a directory's names first, each unlinked or removed in turn
+   * (Node's rimraf), so each is a removal the filesystem decides now. A name
+   * gone meanwhile is not there to remove.
+   */
+  function _removeTreeSync(fs, absPath, type) {
+    if (type !== "directory") { fs.unlink(absPath); return; }
+    const entries = fs.readdir(absPath);
+    for (let i = 0; i < entries.length; i++) {
+      const child = absPath + "/" + entries[i].name;
+      const childType = entries[i].type === "unknown" ? fs.stat(child, { followSymlinks: false })?.type : entries[i].type;
+      if (childType !== undefined) _removeTreeSync(fs, child, childType === "dir" ? "directory" : childType);
+    }
+    fs.rmdir(absPath);
+  }
+  function truncateSync(p, len) {
+    const absPath = _at(p);
+    const size = Math.max(0, Math.trunc(Number(len) || 0));
+    // Node's own: an open of it 'r+', its ftruncate, its close.
+    _sync("open", p, "fs.promises.truncate", (fs) => {
+      const opened = fs.open(absPath, _openFlags("r+"));
+      let done = false;
+      try { fs.ftruncate(opened.id, size); done = true; }
+      finally { try { fs.close(opened.id); } catch (error) { if (done) throw error; } }
+    });
+  }
   function rmSync(p, opts) {
     const absPath = _at(p);
     const o = opts || {};
     _sync("rm", p, "fs.promises.rm", (fs) => {
-      if (_rmJudged(fs.stat(absPath, { followSymlinks: false }), p, o)) fs.remove(absPath, { recursive: !!o.recursive, force: !!o.force });
+      const stat = fs.stat(absPath, { followSymlinks: false });
+      if (_rmJudged(stat, p, o)) _removeTreeSync(fs, absPath, stat.type);
     });
   }
   function chmodSync(p, mode) {
@@ -4992,7 +5029,8 @@ const __fsMod = (() => {
   }
   async function _readlinkAsync(p, opts) {
     const absPath = _at(p);
-    const target = await _async("readlink", p, (fs) => fs.readlink(absPath));
+    const target = await _async("readlink", p, async (fs) => (await fs.readlink(absPath)) ?? ((await fs.stat(absPath, { followSymlinks: false })) === null ? _absent : null));
+    if (target === _absent) throw _fsErr("ENOENT", "readlink", p);
     if (target === null) throw _fsErr("EINVAL", "readlink", p);
     return _encodingOf(opts) === "buffer" ? __BufferMod.from(target) : target;
   }

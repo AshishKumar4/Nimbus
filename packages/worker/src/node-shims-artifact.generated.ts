@@ -10,14 +10,14 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-3a91835c74dd6bf4.js";
-export const NODE_SHIMS_BUILD_ID: string = "3a91835c74dd6bf4";
-export const NODE_SHIMS_SHA256: string = "3a91835c74dd6bf4f3bd206038e8dfc9a0caf6b40d31d3d6f280f124af091c64";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-489ebbf1239cce3c.js";
+export const NODE_SHIMS_BUILD_ID: string = "489ebbf1239cce3c";
+export const NODE_SHIMS_SHA256: string = "489ebbf1239cce3c60ed88f5dfa65046d62a552ed2b90a1816203a7e63627a3c";
 
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-33b653db2da0cd3c.js";
-export const RESIDENT_STORE_BUILD_ID: string = "33b653db2da0cd3c";
-export const RESIDENT_STORE_SHA256: string = "33b653db2da0cd3c1c5ca1ab3e51bbc99ff68a9c91e72609591e88e6a3cbaaf1";
+export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-88d8ba1ddbb54304.js";
+export const RESIDENT_STORE_BUILD_ID: string = "88d8ba1ddbb54304";
+export const RESIDENT_STORE_SHA256: string = "88d8ba1ddbb5430472d755041a3cb070352ac7723d4c99284881fcb0bad399dc";
 
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-eb58a6d5234006d4.js";
@@ -65,6 +65,6 @@ export const ESM_LATE_BUILD_ID: string = "21985debec0cb82b";
 export const ESM_LATE_SHA256: string = "21985debec0cb82b2775a971abd5dcfcec24f69bf6379444d8bfe2d1de7193cc";
 
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-396fc2bc26a5f590.js";
-export const NODE_REGISTRY_BUILD_ID: string = "396fc2bc26a5f590";
-export const NODE_REGISTRY_SHA256: string = "396fc2bc26a5f590370cd7e0f370856a6535da9435a9d24d318a5c987f293be5";
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-4e7b36860becd2c2.js";
+export const NODE_REGISTRY_BUILD_ID: string = "4e7b36860becd2c2";
+export const NODE_REGISTRY_SHA256: string = "4e7b36860becd2c2121918511bfd449af6f9cca16e5e1674ce75ff1a981bfb54";

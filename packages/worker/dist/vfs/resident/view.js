@@ -17,9 +17,24 @@
  * One barrier for both: it asks (or takes the answer a delivery carried),
  * applies, and differs only in how it repairs what it could not apply.
  */
+import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
+import { S_IFMT } from '@nimbus-sh/core/vfs/vfs.js';
 import { floorFor, isFeedPosition, notAfter, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsKey, nsRowAt } from './namespace.js';
+import { NumberOf } from '@nimbus-sh/core/_shared/primordials.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE } from './tables.js';
+/** A row's exact type, as readdir's d_type names it: a file's by its mode's format bits (a device's, a FIFO's, a socket's). */
+function direntTypeOfRow(kind, mode) {
+    if (kind === NS_DIR)
+        return 'directory';
+    if (kind === NS_LINK)
+        return 'symlink';
+    const format = NumberOf(mode) & S_IFMT;
+    for (const type in DIRENT_TYPES)
+        if (DIRENT_TYPES[type].format === format)
+            return type;
+    return 'file';
+}
 /** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
 const LOOKUP_CONTENT_BYTES = 256 * 1024;
 /**
@@ -112,7 +127,10 @@ export function createView(coherence, admission, namespace, cells, transport, sy
          */
         namespaceView(supervisor, root, cred) {
             const device = root.dev;
-            namespace.setRoot(root, root.revision);
+            // The root as the launch read it, unless a delta the boot applied named it since.
+            const known = namespace.root();
+            if (known === undefined || known.rev < (NumberOf(root.revision) || 0))
+                namespace.setRoot(root, root.revision);
             namespace.setCred(cred);
             const encoder = new TextEncoder();
             const typeOf = (kind) => (kind === NS_DIR ? 'directory' : kind === NS_LINK ? 'symlink' : 'file');
@@ -370,7 +388,11 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 children(k) {
                     if (!namespace.isListed(k))
                         return undefined;
-                    return namespace.children(k).map((child) => ({ name: child.name, type: typeOf(child.kind) }));
+                    const listed = namespace.children(k);
+                    const entries = [];
+                    for (let i = 0; i < listed.length; i++)
+                        entries[entries.length] = { name: listed[i].name, type: direntTypeOfRow(listed[i].kind, listed[i].mode) };
+                    return entries;
                 },
                 list: (k) => transport.listDirectory(supervisor, k),
                 lookup: (keys, content) => transport.lookupKeys(supervisor, keys, content ? LOOKUP_CONTENT_BYTES : 0),

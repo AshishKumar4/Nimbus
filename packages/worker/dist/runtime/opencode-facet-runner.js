@@ -37,7 +37,6 @@
  * DB at ~/.local/share/opencode/*.db.
  */
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
-import { NODE_ROOT_STAT_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { createNodeFacetRuntime, nodeFacetSource } from './node-shims-artifact.js';
 import { NODE_SHIMS_IMPORTS } from './node-shims-imports.js';
@@ -643,6 +642,7 @@ ${SUPERVISOR_ANSWERING_SRC}
 // bundle is imported; the shims' filesystem is made over it then.
 let __MODULE_VFS_BUNDLE = ${opts.vfsBundle};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
+const __MODULE_VFS_ROOT = ${opts.vfsRoot};
 const __resident = __nimbusResidentModule.createResidentStore();
 const __nimbusDeferProcessExitReport = true;
 // The in-flight facet I/O the teardown drain awaits (runtime/pending-io.ts).
@@ -1143,14 +1143,13 @@ async function __ocBootStore() {
   __resident.namespace.setCred(cred);
   __resident.sync.setPlan([]);
   __resident.sync.setPushRoots([cwd || "/home/user", "/tmp"]);
-${NODE_ROOT_STAT_SOURCE}
   const __booted = await __resident.sync.boot(
     () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
     __MODULE_VFS_CURSOR,
     __supervisor,
   );
-  const __failure = await __resident.sync.requireNamespace(__supervisor, __booted.failure) || await __nimbusRootFailure();
-  if (__failure === null) __nimbusStartProcessFilesystem(__nimbusRootStat);
+  const __failure = await __resident.sync.requireNamespace(__supervisor, __booted.failure) || __nimbusRootRefusal(__supervisor, __MODULE_VFS_ROOT);
+  if (__failure === null) __nimbusStartProcessFilesystem(__MODULE_VFS_ROOT);
   return __failure;
 }
 

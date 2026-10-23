@@ -36,7 +36,7 @@ import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
-import { NODE_ROOT_STAT_SOURCE, serializeFacetVfsCursor } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { serializeFacetVfsCursor } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { base64, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
@@ -654,7 +654,11 @@ const RESIDENCY_MISS_REPORT = `
 // modules the program tried to execute that the map lacked (graph roots).
 // The data reads wait for the fetches their misses started (ResidentFilesystem.misses).
 async function __nimbusDataReadMisses() {
-  return typeof globalThis.__nimbusProgramMisses === "function" ? [...await globalThis.__nimbusProgramMisses()] : [];
+  const out = [];
+  if (typeof globalThis.__nimbusProgramMisses !== "function") return out;
+  const keys = await globalThis.__nimbusProgramMisses();
+  for (let i = 0; i < keys.length; i++) out[i] = keys[i];
+  return out;
 }
 function __nimbusExecutedModuleMisses() {
   return [...(globalThis.__nimbusModuleMisses || [])];
@@ -1014,7 +1018,7 @@ ${PENDING_IO_SOURCE}
 
 ${ENTRYPOINT_TIMER_TRACKER}
 ${nodeFacetSource(sources, "shims")}
-    __nimbusStartProcessFilesystem(__nimbusRootStat);
+    __nimbusStartProcessFilesystem(__MODULE_VFS_ROOT);
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -1082,7 +1086,7 @@ export default {
       if (error instanceof Error) error[${JSON.stringify(TASK_BODY_FAILED)}] = true;
       throw error;
     });
-    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan, manifests } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, vfsRoot, dataPlan, manifests } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
@@ -1121,6 +1125,7 @@ export default {
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
     const __MODULE_VFS_CURSOR = vfsCursor || null;
+    const __MODULE_VFS_ROOT = vfsRoot || null;
     // A user-invoked program has no wall-clock lifetime: the drain runs the
     // entrypoint's event loop until Node would exit, and only a kill (Ctrl-C)
     // ends it early.
@@ -1149,13 +1154,12 @@ export default {
     __resident.sync.setPlan(dataPlan);
     __resident.sync.setManifests(manifests);
     __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
-${NODE_ROOT_STAT_SOURCE}
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
     const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || await __nimbusRootFailure();
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || __nimbusRootRefusal(__supervisor, __MODULE_VFS_ROOT);
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
@@ -1498,6 +1502,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // advances on every spawn would give the same program a new image each
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
+    const __MODULE_VFS_ROOT = (__startArgs && __startArgs.vfsRoot) || null;
     const __nimbusStdinAtLeast = Number((__startArgs && __startArgs.stdinAtLeast) || 0);
     // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
     const __nimbusStdinFile = __startArgs && __startArgs.stdinFile && typeof __startArgs.stdinFile.path === "string" ? __startArgs.stdinFile : null;
@@ -1560,7 +1565,6 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
     const __residentBootStarted = ${REAL_NOW_SOURCE}();
-${NODE_ROOT_STAT_SOURCE}
     const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
@@ -1580,7 +1584,7 @@ ${NODE_ROOT_STAT_SOURCE}
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
     // namespace cannot be listed fails here, naming why.
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || await __nimbusRootFailure();
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || __nimbusRootRefusal(__supervisor, __MODULE_VFS_ROOT);
     if (__namespaceFailure) throw new Error(__namespaceFailure);
 ${nodeProgramRuntime(sources, entry.esModule)}
     if (attachedTty) {
@@ -3907,6 +3911,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const cursor = (await vfs.acquire(null)).position;
+    const root = await vfs.stat('/');
     // Where the build's time went, by phase (ms; the clock moves across its turns): its exec telemetry.
     const phases = {};
     let phaseFrom = Date.now();
@@ -4344,6 +4349,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         ...(dataModules.size > 0 ? { dataModules } : {}),
         ...(codeOnly.size > 0 ? { codeOnly } : {}),
         cursor,
+        ...(root ? { root } : {}),
         reachableCount: fileCount,
         truncated,
         rawBytes: rawTotal,
@@ -7572,6 +7578,7 @@ export class FacetManager {
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
             vfsCursor: vfsState.cursor,
+            vfsRoot: vfsState.root ?? null,
             dataPlan,
             ...(diagSink ? { diag: true } : {}),
         });
@@ -7770,6 +7777,7 @@ export class FacetManager {
                 stdin: opts.stdin ?? '',
                 vfsBundle,
                 vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
+                vfsRoot: JSON.stringify(vfsState.root ?? null),
             },
         };
     }
@@ -8674,6 +8682,7 @@ export class FacetManager {
         }
         const cacheHit = vfsState.cacheHit ?? false;
         const vfsCursor = vfsState.cursor;
+        const vfsRoot = vfsState.root ?? null;
         if (vfsState.bundleKey)
             this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
         const profileOffer = vfsState.profileOffer;
@@ -8768,7 +8777,7 @@ export class FacetManager {
                                 },
                             } : {}),
                             startArgs: {
-                                pid: entry.pid, vfsCursor, dataPlan,
+                                pid: entry.pid, vfsCursor, vfsRoot, dataPlan,
                                 env: processEnv ?? {},
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
                                 ...(sourceRoots.length > 0 ? { sourceRoots } : {}),

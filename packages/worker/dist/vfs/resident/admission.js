@@ -13,6 +13,7 @@
  */
 import { residentBytes, residentCellCost } from './cell-cost.js';
 import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 export function createAdmission(coherence) {
     let cap = null;
     let facet = null;
@@ -192,7 +193,7 @@ export function createAdmission(coherence) {
         storageCap() { return cap; },
         get available() { return available; },
         pin(bytes) {
-            if (!inHeap || !fits(bytes, false))
+            if (inHeap ? !fits(bytes, false) : pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES)
                 return false;
             pinnedBytes += bytes;
             return true;

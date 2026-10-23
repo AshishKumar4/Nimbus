@@ -464,7 +464,7 @@ var __nimbusResidentModule = (() => {
         return available;
       },
       pin(bytes) {
-        if (!inHeap || !fits(bytes, false)) return false;
+        if (inHeap ? !fits(bytes, false) : pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
         pinnedBytes += bytes;
         return true;
       },
@@ -2535,7 +2535,46 @@ var __nimbusResidentModule = (() => {
     };
   }
 
+  // ../core/dist/vfs/vfs.js
+  var encoder3 = new TextEncoder();
+  var decoder = new TextDecoder();
+  var S_IFMT = 61440;
+  var S_IFREG = 32768;
+  var S_IFDIR = 16384;
+  var S_IFCHR = 8192;
+  var S_IFLNK = 40960;
+  function copiedPermissions(mode, directory) {
+    return mode & (directory ? 1023 : 511);
+  }
+  function copyfileMode(mode, size, uid) {
+    const bits = mode & 4095;
+    if (uid === 0 || size === 0)
+      return bits;
+    return bits & ~(2048 | (bits & 8 ? 1024 : 0));
+  }
+  function isCharacterDevice(mode) {
+    return mode !== void 0 && (mode & S_IFMT) === S_IFCHR;
+  }
+
+  // ../core/dist/vfs/dirent-type.js
+  var DIRENT_TYPES = {
+    file: { format: S_IFREG, node: "isFile" },
+    directory: { format: S_IFDIR, node: "isDirectory" },
+    symlink: { format: S_IFLNK, node: "isSymbolicLink" },
+    character: { format: S_IFCHR, node: "isCharacterDevice" },
+    block: { format: 24576, node: "isBlockDevice" },
+    fifo: { format: 4096, node: "isFIFO" },
+    socket: { format: 49152, node: "isSocket" }
+  };
+
   // src/vfs/resident/view.ts
+  function direntTypeOfRow(kind, mode) {
+    if (kind === NS_DIR) return "directory";
+    if (kind === NS_LINK) return "symlink";
+    const format = NumberOf(mode) & S_IFMT;
+    for (const type in DIRENT_TYPES) if (DIRENT_TYPES[type].format === format) return type;
+    return "file";
+  }
   var LOOKUP_CONTENT_BYTES = 256 * 1024;
   var REPAIR_JOINS_MAX = 4;
   function createView(coherence, admission, namespace, cells, transport, sync, pages) {
@@ -2587,7 +2626,8 @@ var __nimbusResidentModule = (() => {
        */
       namespaceView(supervisor, root, cred) {
         const device = root.dev;
-        namespace.setRoot(root, root.revision);
+        const known = namespace.root();
+        if (known === void 0 || known.rev < (NumberOf(root.revision) || 0)) namespace.setRoot(root, root.revision);
         namespace.setCred(cred);
         const encoder6 = new TextEncoder();
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
@@ -2748,7 +2788,10 @@ var __nimbusResidentModule = (() => {
           },
           children(k) {
             if (!namespace.isListed(k)) return void 0;
-            return namespace.children(k).map((child) => ({ name: child.name, type: typeOf(child.kind) }));
+            const listed = namespace.children(k);
+            const entries = [];
+            for (let i = 0; i < listed.length; i++) entries[entries.length] = { name: listed[i].name, type: direntTypeOfRow(listed[i].kind, listed[i].mode) };
+            return entries;
           },
           list: (k) => transport.listDirectory(supervisor, k),
           lookup: (keys, content) => transport.lookupKeys(supervisor, keys, content ? LOOKUP_CONTENT_BYTES : 0),
@@ -4155,24 +4198,6 @@ var __nimbusResidentModule = (() => {
   function parentKey(key) {
     const at = key.lastIndexOf("/");
     return at < 0 ? "" : key.slice(0, at);
-  }
-
-  // ../core/dist/vfs/vfs.js
-  var encoder3 = new TextEncoder();
-  var decoder = new TextDecoder();
-  var S_IFMT = 61440;
-  var S_IFCHR = 8192;
-  function copiedPermissions(mode, directory) {
-    return mode & (directory ? 1023 : 511);
-  }
-  function copyfileMode(mode, size, uid) {
-    const bits = mode & 4095;
-    if (uid === 0 || size === 0)
-      return bits;
-    return bits & ~(2048 | (bits & 8 ? 1024 : 0));
-  }
-  function isCharacterDevice(mode) {
-    return mode !== void 0 && (mode & S_IFMT) === S_IFCHR;
   }
 
   // ../core/dist/vfs/composite.js

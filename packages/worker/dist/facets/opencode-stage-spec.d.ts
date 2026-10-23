@@ -22,6 +22,7 @@ export declare const OpencodeStageSpecSchema: z.ZodObject<{
     stdin: z.ZodString;
     vfsBundle: z.ZodString;
     vfsCursor: z.ZodString;
+    vfsRoot: z.ZodString;
 }, z.core.$strip>;
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 //# sourceMappingURL=opencode-stage-spec.d.ts.map
