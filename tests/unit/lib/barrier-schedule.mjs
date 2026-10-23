@@ -831,11 +831,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
    * The session's database starts a new incarnation (rotateIncarnation):
    * its files and their revisions stay; every cursor held against the last
    * epoch poisons, and the process learns of it with its next barrier.
-   * Node's own engine (node-shims) is not run across one: it goes with the
-   * cutover.
    */
   const restart = (at) => {
-    if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
     engine.authority.rawVfs.rotateIncarnation();
     restarts.push(seq());
     note(`  (step ${at}: the session's database started a new incarnation, epoch ${engine.authority.rawVfs.epoch})`);
