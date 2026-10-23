@@ -58,6 +58,11 @@ export declare function recordLaunchReads(bridge: RuntimeFsBridge): RecordedLaun
  * while nothing at all has changed, as every build did before this module.
  */
 export declare function readsUnderMounts(reads: LaunchReads, mountPoints: readonly string[]): boolean;
+/**
+ * What `reads` costs held, in UTF-16 bytes with a flat allowance for each
+ * entry: the prefetch cache's bound prices an entry with it.
+ */
+export declare function launchReadsBytes(reads: LaunchReads): number;
 /** The kind a name has now, as a listing names it, or null when nothing is there. */
 export type KindNow = (name: string) => Promise<RuntimeDirentType | null>;
 /**
