@@ -4851,6 +4851,12 @@ var __nimbusResidentModule = (() => {
   }
 
   // ../core/dist/vfs/open-rules.js
+  function openFollows(flags) {
+    return flags.followSymlinks && !(flags.create && flags.exclusive);
+  }
+  function flagsRefusal(flags) {
+    return flags.create && flags.directory ? "EINVAL" : null;
+  }
   function refusesDirectory(flags, describes = true) {
     return flags.create === true || flags.truncate === true || flags.append === true || flags.write === true && !describes;
   }
@@ -5242,12 +5248,30 @@ var __nimbusResidentModule = (() => {
       const nlink = inode.unnamed ? 0 : row.nlink;
       return s === null ? nlink === row.nlink ? row : { ...row, nlink } : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
     };
+    const viewNameBeneathMoved = (key) => {
+      for (let at = key.lastIndexOf("/"); at > 0; at = key.lastIndexOf("/", at - 1)) {
+        const dir = key.slice(0, at);
+        if (!layer.has(dir))
+          continue;
+        const inode = layer.get(dir);
+        if (inode === null || inode.local)
+          return void 0;
+        if (inode.origin !== dir)
+          return inode.origin + key.slice(at);
+      }
+      return void 0;
+    };
     const provisionalEntry = (key, known) => {
       if (layer.size === 0 && touched.size === 0)
         return void 0;
       if (layer.has(key)) {
         const inode = layer.get(key);
         return inode === null ? null : entryOf(inode);
+      }
+      if (layer.size > 0) {
+        const viewed2 = viewNameBeneathMoved(key);
+        if (viewed2 !== void 0)
+          return host2.row(viewed2);
       }
       if (touched.size > 0) {
         const row = known !== void 0 ? known : host2.row(key);
@@ -6108,12 +6132,14 @@ var __nimbusResidentModule = (() => {
       children: (key, base) => {
         if (layer.size === 0)
           return base;
+        const dir = layer.get(key);
+        const origin = dir === void 0 ? viewNameBeneathMoved(key) : dir === null || dir.local || dir.origin === key ? void 0 : dir.origin;
+        const viewed2 = origin === void 0 ? base : host2.children(origin);
         const made2 = added.get(key);
         const gone = removed2.get(key);
         if (made2 === void 0 && gone === void 0)
-          return base;
-        const dir = layer.get(key);
-        const listed = dir && dir.local ? [] : base;
+          return viewed2;
+        const listed = dir && dir.local ? [] : viewed2;
         if (listed === void 0)
           return void 0;
         const out = /* @__PURE__ */ new Map();
@@ -6436,10 +6462,13 @@ var __nimbusResidentModule = (() => {
           fit(inode);
         return answer ?? true;
       },
-      setattr: (key, path, attrs, row, awaited) => {
+      setattr: (key, path, attrs, row, awaited, link = false) => {
         if (row === void 0)
           return false;
-        const syscall = "mode" in attrs ? "chmod" : "uid" in attrs ? "chown" : "utime";
+        const own = link && row !== null && row.type === "symlink";
+        if (own && ("mode" in attrs || "atime" in attrs && (typeof attrs.atime !== "number" || typeof attrs.mtime !== "number")))
+          return false;
+        const syscall = "mode" in attrs ? "chmod" : "uid" in attrs ? link ? "lchown" : "chown" : link ? "lutime" : "utime";
         if (row === null)
           throw fsError2("ENOENT", syscall, path);
         judgeAttrs(row, attrs, syscall, path);
@@ -6453,7 +6482,8 @@ var __nimbusResidentModule = (() => {
           throw error;
         }
         host2.count(key);
-        const answer = loggedOn([fold(inode, op)], { type: "setattr", path: key, attrs, ...expecting(row) }, awaited);
+        const logged2 = !own ? { type: "setattr", path: key, attrs, ...expecting(row) } : "uid" in attrs ? { type: "call", call: { call: "lchown", path: key, uid: attrs.uid, gid: attrs.gid } } : { type: "call", call: { call: "lutimes", path: key, atime: attrs.atime, mtime: attrs.mtime } };
+        const answer = loggedOn([fold(inode, op)], logged2, awaited);
         fit(inode);
         return answer ?? true;
       },
@@ -9746,19 +9776,7 @@ var __nimbusResidentModule = (() => {
   var notNow = () => {
     throw NOT_NOW;
   };
-  var READS = /* @__PURE__ */ new Map([
-    ["readFile", "content"],
-    ["read", "content"],
-    ["readRange", "content"],
-    ["stat", "metadata"],
-    ["access", "metadata"],
-    ["readdir", "metadata"],
-    ["readlink", "metadata"],
-    ["realpath", "metadata"],
-    ["open", "metadata"],
-    ["fstat", "metadata"],
-    ["readdirHandle", "metadata"]
-  ]);
+  var CONTENT_READS = /* @__PURE__ */ new Set(["readFile", "read", "readRange"]);
   var ANSWERED_REFUSALS = /* @__PURE__ */ new Set(["ENOENT", "ENOTDIR", "EACCES", "EISDIR", "ELOOP", "EPERM"]);
   var NO_SYNCHRONOUS_FORM = /* @__PURE__ */ new Set(["synchronous", "subscribe", "writeStream", "writeBatch", "writeFileFrom", "acquire", "copyTree", "gateLaunch", "awaitRecall"]);
   function after2(value, next) {
@@ -11130,16 +11148,16 @@ var __nimbusResidentModule = (() => {
     for (const name of ["chmod", "chown", "utimes"]) {
       const passed = Reflect.get(fs, name);
       Reflect.set(fs, name, (path, ...rest) => {
-        const options = rest[2];
-        const attrs = name === "chmod" ? { mode: Number(rest[0]) } : options?.followSymlinks === false ? null : name === "chown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
-        if (holder === null || attrs === null)
+        const link = name !== "chmod" && rest[2]?.followSymlinks === false;
+        const attrs = name === "chmod" ? { mode: Number(rest[0]) } : name === "chown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
+        if (holder === null)
           return passed.call(fs, path, ...rest);
         let named;
-        const local = decide(() => after2(walkFor(path, true), (walk) => {
+        const local = decide(() => after2(walkFor(path, !link), (walk) => {
           if (walk === DELEGATE)
             return DELEGATE;
           named = walk.key;
-          if (!decidable(walk.key, walk))
+          if (link || !decidable(walk.key, walk))
             return DELEGATE;
           return holder.setattr(walk.key, attrs) ? void 0 : DELEGATE;
         }));
@@ -11147,7 +11165,7 @@ var __nimbusResidentModule = (() => {
           if (done !== DELEGATE)
             return void 0;
           const key = named;
-          return ownChange([key], ([row], awaited) => holder.provisional.setattr(key, pathOf(path), attrs, row, awaited), () => key === void 0 || !holder.holds(key) ? passed.call(fs, path, ...rest) : after2(passed.call(fs, path, ...rest), (receipt) => {
+          return ownChange([key], ([row], awaited) => holder.provisional.setattr(key, pathOf(path), attrs, row, awaited, link), () => key === void 0 || !holder.holds(key) ? passed.call(fs, path, ...rest) : after2(passed.call(fs, path, ...rest), (receipt) => {
             holder.undecided(key);
             return receipt;
           }));
@@ -11166,10 +11184,34 @@ var __nimbusResidentModule = (() => {
     fs.rmdir = byName("rmdir", (path) => bySessionRmdir(path), 0, (key) => ({ type: "call", call: { call: "rmdir", path: key } }), (key, row, [path], awaited) => holder.provisional.rmdir(key, pathOf(path), row, awaited));
     const bySessionSymlink = fs.symlink;
     fs.symlink = byName("symlink", (target, path) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: "call", call: { call: "symlink", path: key, target } }), (key, row, [target, path], awaited) => holder.provisional.symlink(key, pathOf(path), target, row, awaited));
+    const openRefusal = (path, flags) => {
+      const flagged = flagsRefusal(flags);
+      if (flagged !== null)
+        return fsError2(flagged, "open", path);
+      let walked;
+      try {
+        walked = walkOnce("", keyOf(path), openFollows(flags));
+      } catch {
+        return null;
+      }
+      const entry = typeof walked === "string" ? entryAt(walked) : void 0;
+      if (!entry)
+        return null;
+      if (flags.exclusive && flags.create)
+        return fsError2("EEXIST", "open", path);
+      if (entry.type === "symlink" && !flags.followSymlinks)
+        return fsError2(flags.directory ? "ENOTDIR" : "ELOOP", "open", path);
+      return null;
+    };
     const notResident = (syscall, args) => {
       counts.notResident++;
       const target = args[0];
       const path = typeof target === "number" ? holder?.owns(target) ? "/" + holder.keyOf(target) : String(target) : typeof target === "string" || typeof target === "object" && target !== null && "path" in target ? pathOf(target) : "";
+      if (syscall === "open" && typeof target === "string" && !target.split("/").includes("..")) {
+        const refusal = openRefusal(target, args[1]);
+        if (refusal !== null)
+          return refusal;
+      }
       if (typeof target === "string" && !target.split("/").includes("..")) {
         const walked = walkOnce("", keyOf(target), true);
         const entry = typeof walked === "string" ? entryAt(walked) : void 0;
@@ -11182,7 +11224,7 @@ var __nimbusResidentModule = (() => {
         detail: `resource temporarily unavailable, ${syscall} '${path}' \u2014 '${path}' exists but its content is not resident in this process, and a synchronous call cannot wait to fetch it`
       });
     };
-    const missed = /* @__PURE__ */ new Map();
+    const missed = /* @__PURE__ */ new Set();
     const keyFor = (target) => {
       if (typeof target === "number")
         return holder?.owns(target) ? holder.keyOf(target) : readerKeys.get(target);
@@ -11192,56 +11234,43 @@ var __nimbusResidentModule = (() => {
         return keyOf(`${target.root}/${pathOf(target)}`);
       return void 0;
     };
-    const readOf = (syscall, args) => {
-      if (syscall !== "open")
-        return READS.get(syscall);
-      const flags = args[1];
-      return flags && !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive ? "metadata" : void 0;
-    };
     const refused = (syscall, args, fetch) => {
-      const kind = readOf(syscall, args);
-      const key = kind === void 0 ? void 0 : keyFor(args[0]);
-      if (kind === void 0 || key === void 0)
+      const key = CONTENT_READS.has(syscall) ? keyFor(args[0]) : void 0;
+      if (key === void 0)
         return;
       const speculation = residency.speculation();
       if (speculation !== null) {
         speculation.missed(key, fetch);
         return;
       }
-      const was = missed.get(key);
-      if (was === "content" || was === kind)
+      if (missed.has(key))
         return;
-      missed.set(key, kind);
-      if (was === void 0)
-        residency.missed?.(key);
+      missed.add(key);
+      residency.missed?.(key);
     };
-    const answered = (kind, args) => {
+    const answered = (args) => {
       const key = keyFor(args[0]);
       if (key === void 0)
         return;
-      const keys = [key];
+      missed.delete(key);
       try {
         const at = walkOnce("", key, true);
-        if (typeof at === "string" && at !== key)
-          keys.push(at);
+        if (typeof at === "string")
+          missed.delete(at);
       } catch {
       }
-      for (const at of keys)
-        if (kind === "content" || missed.get(at) === "metadata")
-          missed.delete(at);
     };
     if (residency !== void 0) {
-      for (const name of READS.keys()) {
+      for (const name of CONTENT_READS) {
         const passed = Reflect.get(fs, name);
         if (typeof passed !== "function")
           continue;
         Reflect.set(fs, name, (...args) => {
-          const kind = now || missed.size === 0 ? void 0 : readOf(name, args);
-          if (kind === void 0)
+          if (now || missed.size === 0)
             return Reflect.apply(passed, fs, args);
           const refusal = (error) => {
             if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? ""))
-              answered(kind, args);
+              answered(args);
             throw error;
           };
           let answer2;
@@ -11251,11 +11280,11 @@ var __nimbusResidentModule = (() => {
             return refusal(error);
           }
           if (!(answer2 instanceof Promise)) {
-            answered(kind, args);
+            answered(args);
             return answer2;
           }
           return answer2.then((value) => {
-            answered(kind, args);
+            answered(args);
             return value;
           }, refusal);
         });
@@ -11274,10 +11303,10 @@ var __nimbusResidentModule = (() => {
     };
     fs.misses = async () => {
       await faultsEnded();
-      for (const key of [...missed.keys()])
+      for (const key of [...missed])
         if (knownAbsent(key))
           missed.delete(key);
-      return [...missed.keys()];
+      return [...missed];
     };
     const synchronous = /* @__PURE__ */ Object.create(null);
     for (const name of names) {

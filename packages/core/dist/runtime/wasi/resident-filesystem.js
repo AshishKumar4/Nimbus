@@ -36,7 +36,7 @@
  */
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
-import { refusesDirectory } from '../../vfs/open-rules.js';
+import { flagsRefusal, openFollows, refusesDirectory } from '../../vfs/open-rules.js';
 import { errnoCodeOf } from '../../vfs/vfs-error.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
@@ -110,16 +110,11 @@ function refusesADirectory(syscall, args) {
 }
 const notNow = () => { throw NOT_NOW; };
 /**
- * The reads a program can be refused (ProgramResidency), by what they ask:
- * a file's bytes, or what a name is (an open for reading, which reads
- * nothing, among them). An awaited one answers a refused read of its name
- * of its own kind, and one of a file's bytes either kind.
+ * The reads a program's miss is (ProgramResidency): a file's bytes. What a
+ * name is (a stat, a listing) is answered or refused as it stands, and is
+ * no miss. An awaited one answers a refused one of its name.
  */
-const READS = new Map([
-    ['readFile', 'content'], ['read', 'content'], ['readRange', 'content'],
-    ['stat', 'metadata'], ['access', 'metadata'], ['readdir', 'metadata'], ['readlink', 'metadata'], ['realpath', 'metadata'],
-    ['open', 'metadata'], ['fstat', 'metadata'], ['readdirHandle', 'metadata'],
-]);
+const CONTENT_READS = new Set(['readFile', 'read', 'readRange']);
 /** What an awaited read may be refused with that answers it all the same: the name's own state. */
 const ANSWERED_REFUSALS = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR', 'ELOOP', 'EPERM']);
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
@@ -1818,24 +1813,23 @@ export function residentFilesystem(session, resident, delegation) {
     // name (counted toward taking it either way), else by the provisional
     // decisions (ownChange), else the session's, after what the holder has;
     // one it holds but did not decide (another's file, a grant the session
-    // judges) is the session's in its view after. Not a link's own (lchown,
-    // lutimes), nor times now: the session's alone.
+    // judges) is the session's in its view after. A link's own (lchown,
+    // lutimes) only by the provisional decisions, which log it as its call.
     for (const name of ['chmod', 'chown', 'utimes']) {
         const passed = Reflect.get(fs, name);
         Reflect.set(fs, name, (path, ...rest) => {
-            const options = rest[2];
+            const link = name !== 'chmod' && rest[2]?.followSymlinks === false;
             const attrs = name === 'chmod' ? { mode: Number(rest[0]) }
-                : options?.followSymlinks === false ? null
-                    : name === 'chown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
-                        : { atime: rest[0], mtime: rest[1] };
-            if (holder === null || attrs === null)
+                : name === 'chown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
+                    : { atime: rest[0], mtime: rest[1] };
+            if (holder === null)
                 return passed.call(fs, path, ...rest);
             let named;
-            const local = decide(() => after(walkFor(path, true), (walk) => {
+            const local = decide(() => after(walkFor(path, !link), (walk) => {
                 if (walk === DELEGATE)
                     return DELEGATE;
                 named = walk.key;
-                if (!decidable(walk.key, walk))
+                if (link || !decidable(walk.key, walk))
                     return DELEGATE;
                 return holder.setattr(walk.key, attrs) ? undefined : DELEGATE;
             }));
@@ -1843,7 +1837,7 @@ export function residentFilesystem(session, resident, delegation) {
                 if (done !== DELEGATE)
                     return undefined;
                 const key = named;
-                return ownChange([key], ([row], awaited) => holder.provisional.setattr(key, pathOf(path), attrs, row, awaited), () => (key === undefined || !holder.holds(key)
+                return ownChange([key], ([row], awaited) => holder.provisional.setattr(key, pathOf(path), attrs, row, awaited, link), () => (key === undefined || !holder.holds(key)
                     ? passed.call(fs, path, ...rest)
                     : after(passed.call(fs, path, ...rest), (receipt) => { holder.undecided(key); return receipt; })));
             });
@@ -1870,12 +1864,44 @@ export function residentFilesystem(session, resident, delegation) {
      * one, a name the process may not read); else EAGAIN, naming what is not
      * resident here.
      */
+    /**
+     * What the session's open says of `flags` at `path` before it opens
+     * anything, where this view knows the name (SqliteRuntimeFsBridge.open, in
+     * Linux's order): the flags alone (flagsRefusal), a name there under
+     * O_CREAT|O_EXCL, a link the open declined to follow. Null where it would
+     * go on to open.
+     */
+    const openRefusal = (path, flags) => {
+        const flagged = flagsRefusal(flags);
+        if (flagged !== null)
+            return fsError(flagged, 'open', path);
+        let walked;
+        try {
+            walked = walkOnce('', keyOf(path), openFollows(flags));
+        }
+        catch {
+            return null;
+        }
+        const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
+        if (!entry)
+            return null;
+        if (flags.exclusive && flags.create)
+            return fsError('EEXIST', 'open', path);
+        if (entry.type === 'symlink' && !flags.followSymlinks)
+            return fsError(flags.directory ? 'ENOTDIR' : 'ELOOP', 'open', path);
+        return null;
+    };
     const notResident = (syscall, args) => {
         counts.notResident++;
         const target = args[0];
         const path = typeof target === 'number'
             ? (holder?.owns(target) ? '/' + holder.keyOf(target) : String(target))
             : typeof target === 'string' || (typeof target === 'object' && target !== null && 'path' in target) ? pathOf(target) : '';
+        if (syscall === 'open' && typeof target === 'string' && !target.split('/').includes('..')) {
+            const refusal = openRefusal(target, args[1]);
+            if (refusal !== null)
+                return refusal;
+        }
         if (typeof target === 'string' && !target.split('/').includes('..')) {
             const walked = walkOnce('', keyOf(target), true);
             const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
@@ -1888,8 +1914,8 @@ export function residentFilesystem(session, resident, delegation) {
             detail: `resource temporarily unavailable, ${syscall} '${path}' — '${path}' exists but its content is not resident in this process, and a synchronous call cannot wait to fetch it`,
         });
     };
-    /** The program's refused reads nothing has answered since (misses), by key, in the order first refused: what each asked. */
-    const missed = new Map();
+    /** The program's refused reads nothing has answered since (misses), by key, in the order first refused. */
+    const missed = new Set();
     /** The key a read names: as spelled, no link followed; a descriptor, its file's name. */
     const keyFor = (target) => {
         if (typeof target === 'number')
@@ -1900,60 +1926,46 @@ export function residentFilesystem(session, resident, delegation) {
             return keyOf(`${target.root}/${pathOf(target)}`);
         return undefined;
     };
-    /** What `syscall` with `args` reads (READS): an open only when it opens for reading alone. */
-    const readOf = (syscall, args) => {
-        if (syscall !== 'open')
-            return READS.get(syscall);
-        const flags = args[1];
-        return flags && !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive ? 'metadata' : undefined;
-    };
     /** A synchronous read refused as not resident: its speculation's, or the program's miss. `fetch`: the fault-in it issued or joined. */
     const refused = (syscall, args, fetch) => {
-        const kind = readOf(syscall, args);
-        const key = kind === undefined ? undefined : keyFor(args[0]);
-        if (kind === undefined || key === undefined)
+        const key = CONTENT_READS.has(syscall) ? keyFor(args[0]) : undefined;
+        if (key === undefined)
             return;
         const speculation = residency.speculation();
         if (speculation !== null) {
             speculation.missed(key, fetch);
             return;
         }
-        const was = missed.get(key);
-        if (was === 'content' || was === kind)
+        if (missed.has(key))
             return;
-        missed.set(key, kind);
-        if (was === undefined)
-            residency.missed?.(key);
+        missed.add(key);
+        residency.missed?.(key);
     };
-    /** The program's awaited read of `args[0]` answered: what it answers of the misses of that name goes, as spelled and as it resolves. */
-    const answered = (kind, args) => {
+    /** The program's awaited read of `args[0]` answered: the miss of that name goes, as spelled and as it resolves. */
+    const answered = (args) => {
         const key = keyFor(args[0]);
         if (key === undefined)
             return;
-        const keys = [key];
+        missed.delete(key);
         try {
             const at = walkOnce('', key, true);
-            if (typeof at === 'string' && at !== key)
-                keys.push(at);
+            if (typeof at === 'string')
+                missed.delete(at);
         }
         catch { /* the name as spelled */ }
-        for (const at of keys)
-            if (kind === 'content' || missed.get(at) === 'metadata')
-                missed.delete(at);
     };
     if (residency !== undefined) {
-        for (const name of READS.keys()) {
+        for (const name of CONTENT_READS) {
             const passed = Reflect.get(fs, name);
             if (typeof passed !== 'function')
                 continue;
             Reflect.set(fs, name, (...args) => {
                 // A miss is answered by the program's own read, which may wait, asked once it was refused.
-                const kind = now || missed.size === 0 ? undefined : readOf(name, args);
-                if (kind === undefined)
+                if (now || missed.size === 0)
                     return Reflect.apply(passed, fs, args);
                 const refusal = (error) => {
                     if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? ''))
-                        answered(kind, args);
+                        answered(args);
                     throw error;
                 };
                 let answer;
@@ -1964,10 +1976,10 @@ export function residentFilesystem(session, resident, delegation) {
                     return refusal(error);
                 }
                 if (!(answer instanceof Promise)) {
-                    answered(kind, args);
+                    answered(args);
                     return answer;
                 }
-                return answer.then((value) => { answered(kind, args); return value; }, refusal);
+                return answer.then((value) => { answered(args); return value; }, refusal);
             });
         }
     }
@@ -1986,10 +1998,10 @@ export function residentFilesystem(session, resident, delegation) {
     };
     fs.misses = async () => {
         await faultsEnded();
-        for (const key of [...missed.keys()])
+        for (const key of [...missed])
             if (knownAbsent(key))
                 missed.delete(key);
-        return [...missed.keys()];
+        return [...missed];
     };
     const synchronous = Object.create(null);
     for (const name of names) {

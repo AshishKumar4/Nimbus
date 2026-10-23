@@ -10516,21 +10516,28 @@ function __nimbusPrefetchQuota(specifier, limits) {
 // miss with no fetch behind it (the filesystem gave the file up) fails the
 // import(), named: the step's answer would rest on a read that did not
 // happen (a resolver falling back past an unread manifest).
-// A speculation as the filesystem's residency takes one: its misses and the
-// ones it fetched, SafeSets, the fetches to wait on, a SafeList, and its
-// quota's charge for each fetch, before it is issued.
+// A speculation as the filesystem's residency takes one: its misses, a
+// SafeSet, the fetches to wait on and the key each brings, SafeLists, and
+// its quota's charge for each fetch, before it is issued.
 function __nimbusSpeculation(quota) {
   const speculation = {
-    misses: new __NimbusSafeSet(), fetches: new __PathList(), issued: new __NimbusSafeSet(),
+    misses: new __NimbusSafeSet(), fetches: new __PathList(), fetched: new __PathList(),
     missed(key, fetch) {
       speculation.misses.add(key);
       if (fetch === null) return;
-      speculation.issued.add(key);
+      speculation.fetched[speculation.fetched.length] = key;
       speculation.fetches[speculation.fetches.length] = fetch;
     },
     charge: (size) => quota.file() && quota.bytes(size),
   };
   return speculation;
+}
+/** The keys of \`speculation\` whose fetch landed (each tells whether its bytes are held), once every one has ended. */
+async function __nimbusLanded(speculation) {
+  const held = await __nimbusAll(speculation.fetches);
+  const landed = new __NimbusSafeSet();
+  for (let i = 0; i < held.length; i++) if (held[i]) landed.add(speculation.fetched[i]);
+  return landed;
 }
 /** The first \`count\` of \`list\`, each through \`each\`, joined by ", ". */
 function __nimbusFirstJoined(list, count, each) {
@@ -10547,7 +10554,7 @@ async function __nimbusHydrated(step, quota) {
     let error;
     let threw = false;
     try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
-    await __nimbusSettled(speculation.fetches);
+    const landed = await __nimbusLanded(speculation);
     if (quota.error) throw quota.error;
     if (speculation.misses.size === 0) {
       if (threw) throw error;
@@ -10555,7 +10562,7 @@ async function __nimbusHydrated(step, quota) {
     }
     const misses = __nimbusListOf(speculation.misses);
     const given = new __PathList();
-    for (let i = 0; i < misses.length; i++) if (!speculation.issued.has(misses[i])) given[given.length] = misses[i];
+    for (let i = 0; i < misses.length; i++) if (!landed.has(misses[i])) given[given.length] = misses[i];
     if (given.length > 0) {
       const unread = nodeError(Error, "ERR_NIMBUS_PREFETCH_UNREADABLE", "import() prefetch: could not fetch " + __nimbusFirstJoined(given, 3, (k) => "/" + k)
         + (given.length > 3 ? " and " + (given.length - 3) + " more" : "") + "; its fetches did not land");

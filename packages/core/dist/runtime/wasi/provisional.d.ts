@@ -318,7 +318,8 @@ export interface Provisional {
     rmdir(key: string, path: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
     symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
     rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
-    setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+    /** `link`: the link at `key` itself (lchown, lutimes), its own attributes, not what it names. */
+    setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined, awaited?: boolean, link?: boolean): boolean | Promise<unknown>;
     /**
      * Copy the file `source` names at `from` to `to`, its bytes read only as
      * these decisions read any (bytesOf for a file they hold, else the store's

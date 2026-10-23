@@ -148,12 +148,36 @@ export function provisional(host) {
             ? (nlink === row.nlink ? row : { ...row, nlink })
             : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
     };
+    /**
+     * The view's name for what `key` names beneath a directory this process
+     * moved (its Inode's origin, until the view has the move), or undefined
+     * where no directory above `key` was moved here.
+     */
+    const viewNameBeneathMoved = (key) => {
+        for (let at = key.lastIndexOf('/'); at > 0; at = key.lastIndexOf('/', at - 1)) {
+            const dir = key.slice(0, at);
+            if (!layer.has(dir))
+                continue;
+            const inode = layer.get(dir);
+            if (inode === null || inode.local)
+                return undefined;
+            if (inode.origin !== dir)
+                return inode.origin + key.slice(at);
+        }
+        return undefined;
+    };
     const provisionalEntry = (key, known) => {
         if (layer.size === 0 && touched.size === 0)
             return undefined;
         if (layer.has(key)) {
             const inode = layer.get(key);
             return inode === null ? null : entryOf(inode);
+        }
+        // Beneath a directory moved here: what the view has beneath it where it was.
+        if (layer.size > 0) {
+            const viewed = viewNameBeneathMoved(key);
+            if (viewed !== undefined)
+                return host.row(viewed);
         }
         // A file whose content this process changed, at any name the view has it at.
         if (touched.size > 0) {
@@ -1199,13 +1223,16 @@ export function provisional(host) {
         children: (key, base) => {
             if (layer.size === 0)
                 return base;
+            // A directory moved here lists what the view lists where it was, until the view has the move.
+            const dir = layer.get(key);
+            const origin = dir === undefined ? viewNameBeneathMoved(key) : dir === null || dir.local || dir.origin === key ? undefined : dir.origin;
+            const viewed = origin === undefined ? base : host.children(origin);
             const made = added.get(key);
             const gone = removed.get(key);
             if (made === undefined && gone === undefined)
-                return base;
+                return viewed;
             // A directory made here has no names but the ones made in it: what the view lists at its name is another's.
-            const dir = layer.get(key);
-            const listed = dir && dir.local ? [] : base;
+            const listed = dir && dir.local ? [] : viewed;
             if (listed === undefined)
                 return undefined;
             const out = new Map();
@@ -1548,10 +1575,14 @@ export function provisional(host) {
                 fit(inode);
             return answer ?? true;
         },
-        setattr: (key, path, attrs, row, awaited) => {
+        setattr: (key, path, attrs, row, awaited, link = false) => {
             if (row === undefined)
                 return false;
-            const syscall = 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime';
+            // A link's own: its owner (lchown), or times it names (lutimes, which has no "now"); no mode (there is no lchmod).
+            const own = link && row !== null && row.type === 'symlink';
+            if (own && ('mode' in attrs || ('atime' in attrs && (typeof attrs.atime !== 'number' || typeof attrs.mtime !== 'number'))))
+                return false;
+            const syscall = 'mode' in attrs ? 'chmod' : 'uid' in attrs ? (link ? 'lchown' : 'chown') : (link ? 'lutime' : 'utime');
             if (row === null)
                 throw fsError('ENOENT', syscall, path);
             judgeAttrs(row, attrs, syscall, path);
@@ -1566,7 +1597,10 @@ export function provisional(host) {
                 throw error;
             }
             host.count(key);
-            const answer = loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) }, awaited);
+            const logged = !own ? { type: 'setattr', path: key, attrs, ...expecting(row) }
+                : 'uid' in attrs ? { type: 'call', call: { call: 'lchown', path: key, uid: attrs.uid, gid: attrs.gid } }
+                    : { type: 'call', call: { call: 'lutimes', path: key, atime: attrs.atime, mtime: attrs.mtime } };
+            const answer = loggedOn([fold(inode, op)], logged, awaited);
             fit(inode);
             return answer ?? true;
         },
