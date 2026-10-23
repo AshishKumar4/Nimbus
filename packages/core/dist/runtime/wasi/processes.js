@@ -93,6 +93,13 @@ export function processHost(opts) {
     let watching = false;
     /** The guest checks for its signals while it computes (signal_check): they are watched for the rest of its run. */
     let checking = false;
+    /**
+     * Session operations in progress that take the process's signals
+     * themselves and answer one (a stdin read, a write to a child's stdin):
+     * the session keeps one taker of them per process, so while one runs the
+     * host does not wait for them as well.
+     */
+    let delegated = 0;
     /** A signal arrived: every wait in progress ends, for the guest to take it. */
     const signalled = (name) => {
         const errno = name ? SIGNAL_ERRNOS.get(name) : undefined;
@@ -112,7 +119,7 @@ export function processHost(opts) {
         watching = true;
         void (async () => {
             try {
-                while ((interruptible.size > 0 || checking) && pendingSignal === null && !disposed)
+                while ((interruptible.size > 0 || checking) && delegated === 0 && pendingSignal === null && !disposed)
                     signalled(await sup.cpNextSignal?.(LONG_POLL_MS));
             }
             catch {
@@ -122,6 +129,15 @@ export function processHost(opts) {
                 watching = false;
             }
         })();
+    };
+    /**
+     * `answer`, of a session operation just sent that takes the process's
+     * signals itself (`delegated`): the watch it displaced resumes after it.
+     */
+    const delegate = (answer) => {
+        delegated++;
+        return answer.finally(() => { if (--delegated === 0)
+            watchSignals(); });
     };
     /** The answer of a wait that ended without one: the signal that ended it, taken, else `gaveUp`. */
     const unanswered = (gaveUp) => {
@@ -637,7 +653,7 @@ export function processHost(opts) {
             try {
                 const packet = opts.input(room);
                 return packet && typeof packet.then === 'function'
-                    ? opts.park(Promise.resolve(packet).then(finish, () => E.IO)) : finish(packet);
+                    ? opts.park(delegate(Promise.resolve(packet)).then(finish, () => E.IO)) : finish(packet);
             }
             catch {
                 return E.IO;
@@ -701,7 +717,7 @@ export function processHost(opts) {
         if (pipe.readers === 0)
             return E.PIPE;
         if (pipe.forward) {
-            return opts.park(pipe.forward(bytes).then((answer) => {
+            return opts.park(delegate(pipe.forward(bytes)).then((answer) => {
                 // A signal interrupted it (the session withdrew it): nothing was written.
                 if (answer.signal !== undefined) {
                     if (opts.takesSignals)

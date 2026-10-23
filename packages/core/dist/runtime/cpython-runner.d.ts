@@ -42,7 +42,7 @@
  */
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { FacetHost } from './facet-host.js';
+import { type FacetHost } from './facet-host.js';
 import { type PythonMarkerEnvironment } from './python-pip.js';
 import { type RuntimeManifest } from './runtime-manifest.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';

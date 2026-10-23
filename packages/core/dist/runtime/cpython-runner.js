@@ -48,6 +48,7 @@ import { hostImage } from './process-files.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
+import { takesOwnSignals } from './facet-host.js';
 import { CPYTHON_RUNNER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { buildPipInvocation, pythonSitePackages, sessionUsesSciVariant, } from './python-pip.js';
 import { DEFAULT_HOME } from '../constants.js';
@@ -195,6 +196,7 @@ export function makeCPythonRunnerFactory(deps) {
         plain: warmFacetKeys(deps.session, CPYTHON_RUNNER),
         sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`),
     };
+    const takesSignals = takesOwnSignals(deps.facets, deps.contract.takesSignals);
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => installedPath(manifest, installRoot, rel);
         const baseWasmVfs = findFile(CPYTHON_WASM_REL);
@@ -358,7 +360,7 @@ export function makeCPythonRunnerFactory(deps) {
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's write credential.
-            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin', takesSignals: deps.contract.takesSignals });
+            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin', takesSignals });
             facetArgs.supervisorPid = stdio.pid;
             let exitCode = 1;
             let facet = null;
@@ -391,7 +393,7 @@ export function makeCPythonRunnerFactory(deps) {
                 stdio.signal.throwIfAborted();
                 // A one-shot's process takes its own signals (its stdio's takesSignals); a
                 // resident's is ended by the session, and its image asks for none.
-                const result = await facet.submit(CPYTHON_RUN_TASK, { ...facetArgs, takesSignals: deps.contract.takesSignals }, {
+                const result = await facet.submit(CPYTHON_RUN_TASK, { ...facetArgs, takesSignals }, {
                     signal: stdio.signal,
                 });
                 keys.give(warm, { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted });
