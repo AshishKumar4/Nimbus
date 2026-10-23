@@ -399,6 +399,12 @@ export const promiseResolve: {
 } = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
 /** `Promise.reject(reason)`, of the launch's Promise. */
 export const promiseReject: <T = never>(reason?: unknown) => Promise<T> = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+/** Settled as the first of `list` to settle: Promise.race, without the list's iterator or the program's Promise.resolve and then. */
+export function promiseRace<T>(list: ArrayLike<T>): Promise<Awaited<T>> {
+  return new PromiseConstructor<Awaited<T>>((resolve, reject) => {
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [resolve, reject]);
+  });
+}
 /** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
 export function promiseFinally<T>(promise: Promise<T>, onFinally: () => unknown): Promise<T> {
   return promiseThen(

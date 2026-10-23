@@ -6,7 +6,8 @@ import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult, ReadDirectory
 import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry } from './resident-filesystem.js';
 import { notAfter, sameEpochs, type FeedPosition } from '../feed-position.js';
 import {
-  arrayCopy, arrayJoin, Error, mathMin, objectAssign, PromiseConstructor, promiseResolve, promiseThen, SafeMap, SafeSet,
+  arrayCopy, arrayJoin, Error, mathMin, objectAssign, objectHasOwn, ownField, ownValue, PromiseConstructor, promiseRace, promiseResolve, promiseThen, SafeList,
+  SafeMap, SafeSet, setList, stringSplit,
 } from '../../_shared/primordials.js';
 
 export interface DirectoryPoolStore {
@@ -59,11 +60,17 @@ function asOpened(entry: ReadDirectoryDescription, current: ResidentEntry): bool
 
 /** A candidate's key as the batch reports it (no leading or trailing `/`), for one already prefetched; a descriptor-relative one never matches. */
 function keyOfPath(path: RuntimeFsPath): string {
-  const named = typeof path === 'string' ? path : 'root' in path ? `${path.root}/${path.path}` : '';
-  return arrayJoin(named.split('/').filter((segment) => segment !== '' && segment !== '.'), '/');
+  const named = typeof path === 'string' ? path : objectHasOwn(path, 'root') ? `${(path as { readonly root: string }).root}/${path.path}` : '';
+  const segments = stringSplit(named, '/');
+  const kept = new SafeList<string>();
+  for (let i = 0; i < segments.length; i++) if (segments[i] !== '' && segments[i] !== '.') kept[kept.length] = segments[i];
+  return arrayJoin(kept, '/');
 }
 
-export function readDirectoryPool({ call, store, client, before, endWaitMs = DIRECTORY_END_WAIT_MS }: Options): ReadDirectoryPool {
+export function readDirectoryPool(options: Options): ReadDirectoryPool {
+  const { call, store, client, before } = options;
+  const waitMs = ownValue(options, 'endWaitMs');
+  const endWaitMs = waitMs === undefined ? DIRECTORY_END_WAIT_MS : waitMs;
   const channel = crypto.randomUUID();
   let sequence = 0, generation = 0, cancelled = 0;
   /** The lease's owner, and the store's incarnation it was applied at (sameEpochs). */
@@ -83,7 +90,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
   };
   const outstanding = (): number => unused.size + owned.size + retiring.size + uncertain + reserved;
   const discardUnused = (): void => {
-    for (const entry of unused.values()) { claiming.delete(entry.handle.id); retiring.add(entry.handle.id); }
+    unused.forEach((entry) => { claiming.delete(entry.handle.id); retiring.add(entry.handle.id); });
     unused.clear();
   };
   /**
@@ -130,8 +137,8 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     const ask = wantLease && cursor !== null ? client.readLeaseAsk() : null;
     const stamp = generation;
     const cancelAt = cancelled;
-    const sentRetire = [...retiring];
-    const sentClaim = [...claiming];
+    const sentRetire = arrayCopy(setList(retiring));
+    const sentClaim = arrayCopy(setList(claiming));
     const sentSequence = ++sequence;
     reserved += open.length;
     let result: ReadDirectoryBatchResult;
@@ -161,7 +168,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
       ? notAfter(current, result.acquire.position)
       : cursor !== null && sameEpochs(current, cursor) && generation === stamp);
     let admitted: boolean;
-    try { admitted = applies && (await store.barrier({ answer: result.acquire })).applied === true; }
+    try { admitted = applies && ownValue(await store.barrier({ answer: result.acquire }), 'applied') === true; }
     catch (error) { invalidate(); throw error; }
     trustedAtIo = false;
     if (lease && ask && admitted && !result.acquire.poison && generation === stamp && cancelled === cancelAt) {
@@ -198,18 +205,23 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
         // the next exchange claims it there (still unused here, and retired
         // at the run's end or when the store moves, as any).
         if (hit) { unused.delete(key); claiming.delete(hit.handle.id); retiring.add(hit.handle.id); }
-        for (const entry of unused.values()) claiming.add(entry.handle.id);
-        const candidates = (await prefetch()).filter((candidate) => !unused.has(keyOfPath(candidate)));
+        unused.forEach((entry) => { claiming.add(entry.handle.id); });
+        const guessed = await prefetch();
+        const candidates = new SafeList<RuntimeFsPath>();
+        for (let i = 0; i < guessed.length; i++) if (!unused.has(keyOfPath(guessed[i]))) candidates[candidates.length] = guessed[i];
         if (began !== cancelled) throw failure('EAGAIN', 'directory open was cancelled while preparing');
         // At capacity, ACK retirement first. Do not spend credits merely
         // because a close was sent or a previous answer never arrived.
         if (uncertain || outstanding() >= DIRECTORY_PREFETCH_LIMIT) await drain();
         const credit = mathMin(DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT - outstanding());
         if (credit <= 0) return null;
-        const opened = await exchange([path, ...candidates].slice(0, credit), true);
+        const open = new SafeList<RuntimeFsPath>();
+        for (let i = -1; i < candidates.length && open.length < credit; i++) open[open.length] = i < 0 ? path : candidates[i];
+        const opened = await exchange(open, true);
         const required = opened[0];
         if (!required) return null;
-        for (const entry of opened.slice(1)) {
+        for (let i = 1; i < opened.length; i++) {
+          const entry = opened[i];
           const current = local(entry);
           if (entry.key !== null && entry.key !== required.key && current && asOpened(entry, current.entry) && !unused.has(entry.key)) {
             retiring.delete(entry.handle.id);
@@ -224,7 +236,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
         // An optimization the session cannot account for: the directory is
         // opened as any is (null), now and from now on. The open's own
         // refusal (ENOENT, EACCES) and a park given up on stay the caller's.
-        const code = (error as { code?: unknown } | null)?.code;
+        const code = typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined;
         if (!ended && (code === 'ENOSPC' || code === 'ESTALE')) { unavailable = true; return null; }
         throw error;
       });
@@ -246,7 +258,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     async dispose() {
       ended = true;
       cancelled++;
-      for (const id of owned.keys()) retiring.add(id);
+      owned.forEach((_entry, id) => { retiring.add(id); });
       owned.clear(); claiming.clear();
       invalidate();
       if (sequence === 0) return;
@@ -255,10 +267,10 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
       // park the watchdog gave up on): its later sequence supersedes that
       // one. The run waits for it at most endWaitMs.
       let timer: ReturnType<typeof setTimeout> | null = null;
-      await Promise.race([
-        promiseThen(exchange([], false, true), () => {}, () => {}),
-        new PromiseConstructor<void>((resolve) => { timer = setTimeout(resolve, endWaitMs); }),
-      ]);
+      const ends = new SafeList<Promise<void>>();
+      ends[0] = promiseThen(exchange([], false, true), () => {}, () => {});
+      ends[1] = new PromiseConstructor<void>((resolve) => { timer = setTimeout(resolve, endWaitMs); });
+      await promiseRace(ends);
       clearTimeout(timer);
     },
   };
