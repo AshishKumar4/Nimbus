@@ -29,7 +29,7 @@ const { fs } = shimsOnSession({
 const fsp = fs.promises;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const live = (p) => authority.kfs.readFileString(p);
+const live = (p) => authority.peer.readFileString(p);
 
 await fsp.symlink('live.bin', '/home/user/live-link');
 assert.equal((await fsp.stat('/home/user/live-link')).isFile(), true);
@@ -37,7 +37,7 @@ const liveLink = await fsp.lstat('/home/user/live-link');
 assert.equal(liveLink.isSymbolicLink(), true);
 assert.equal(liveLink.mode, 0o120777);
 await assert.rejects(fsp.symlink('live.bin', '/home/user/live.bin'), /EEXIST/);
-assert.equal(live('home/user/live.bin'), '0123456789abcdef');
+assert.equal(await live('home/user/live.bin'), '0123456789abcdef');
 
 // open 'r' + positional FileHandle.read over live ranges
 {
@@ -62,7 +62,7 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   const w = await fh.write(enc.encode('XY'), 0, 2, 3);
   assert.equal(w.bytesWritten, 2);
   await fh.close();
-  assert.equal(live('home/user/live.bin'), '012XY56789abcdef');
+  assert.equal(await live('home/user/live.bin'), '012XY56789abcdef');
 }
 
 // open 'w' truncates; writes land live; size tracked
@@ -71,7 +71,7 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   await fh.write(enc.encode('fresh'));
   await fh.write(enc.encode('!'), 0, 1, 5);
   await fh.close();
-  assert.equal(live('home/user/live.bin'), 'fresh!');
+  assert.equal(await live('home/user/live.bin'), 'fresh!');
 }
 
 // open 'a' appends at live EOF
@@ -79,7 +79,7 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   const fh = await fsp.open('/home/user/live.bin', 'a');
   await fh.write(enc.encode('+more'));
   await fh.close();
-  assert.equal(live('home/user/live.bin'), 'fresh!+more');
+  assert.equal(await live('home/user/live.bin'), 'fresh!+more');
 }
 
 // FileHandle.truncate + fs.promises.truncate hit the live boundary chunk
@@ -87,9 +87,9 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   const fh = await fsp.open('/home/user/live.bin', 'r+');
   await fh.truncate(5);
   await fh.close();
-  assert.equal(live('home/user/live.bin'), 'fresh');
+  assert.equal(await live('home/user/live.bin'), 'fresh');
   await fsp.truncate('/home/user/live.bin', 2);
-  assert.equal(live('home/user/live.bin'), 'fr');
+  assert.equal(await live('home/user/live.bin'), 'fr');
   await assert.rejects(fsp.truncate('/home/user/never.bin', 1), /ENOENT/);
 }
 
@@ -97,12 +97,12 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
 // startup, appendFile must preserve the live prefix rather than publish the
 // stale bundle cell as a complete replacement.
 {
-  authority.kfs.writeFile('home/user/log.txt', 'line1\n');
+  await authority.peer.writeFile('home/user/log.txt', 'line1\n');
   await fsp.appendFile('/home/user/log.txt', 'line2\n');
-  assert.equal(live('home/user/log.txt'), 'line1\nline2\n');
+  assert.equal(await live('home/user/log.txt'), 'line1\nline2\n');
   await fsp.appendFile('/home/user/log.txt', 'line3\n');
   assert.equal(
-    live('home/user/log.txt'),
+    await live('home/user/log.txt'),
     'line1\nline2\nline3\n',
     'later append chains remain deltas after the stale snapshot is discarded',
   );
@@ -113,17 +113,17 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
 // A real pending full rewrite does own its prefix. Appending before that
 // rewrite flushes must publish replacement + suffix, not preserve old authority.
 {
-  authority.kfs.writeFile('home/user/pending-full.txt', 'external\n');
+  await authority.peer.writeFile('home/user/pending-full.txt', 'external\n');
   fs.writeFileSync('/home/user/pending-full.txt', 'replacement\n');
   await fsp.appendFile('/home/user/pending-full.txt', 'tail\n');
-  assert.equal(live('home/user/pending-full.txt'), 'replacement\ntail\n');
+  assert.equal(await live('home/user/pending-full.txt'), 'replacement\ntail\n');
 }
 
 // writeFile + appendFile flow (probe parity: WRITE=ok path)
 {
   await fsp.writeFile('/home/user/out.txt', 'live-write-ok\n');
   await fsp.appendFile('/home/user/out.txt', 'append-ok\n');
-  assert.equal(live('home/user/out.txt'), 'live-write-ok\nappend-ok\n');
+  assert.equal(await live('home/user/out.txt'), 'live-write-ok\nappend-ok\n');
 }
 
 // exclusive create
@@ -134,7 +134,7 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
   const fh = await fsp.open('/home/user/made.txt', 'w');
   await fh.writeFile('content');
   await fh.close();
-  assert.equal(live('home/user/made.txt'), 'content');
+  assert.equal(await live('home/user/made.txt'), 'content');
 }
 
 // Range writes through a FileHandle reach the session as positional writes at
@@ -142,7 +142,7 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
 // one positional record at its offset, and the file keeps its size.
 {
   const CHUNK = 65536;
-  authority.kfs.writeFile('home/user/huge.bin', new Uint8Array(CHUNK * 2).fill(7));
+  await authority.peer.writeFile('home/user/huge.bin', new Uint8Array(CHUNK * 2).fill(7));
   const before = positional.length;
   const fh = await fsp.open('/home/user/huge.bin', 'r+');
   await fh.write(enc.encode('!!'), 0, 2, CHUNK + 1); // inside chunk 1 only
@@ -151,7 +151,7 @@ await assert.rejects(fsp.open('/home/user/out.txt', 'wx'), /EEXIST/);
   assert.equal(sent.length, 1, 'a small FileHandle positional write is one positional record');
   assert.equal(sent[0].offset, CHUNK + 1, 'at its offset');
   assert.equal(sent[0].data.byteLength, 2, 'and carries only its own bytes');
-  assert.equal(authority.kfs.stat('home/user/huge.bin').size, CHUNK * 2, 'and it leaves the file its size');
+  assert.equal((await authority.peer.stat('home/user/huge.bin')).size, CHUNK * 2, 'and it leaves the file its size');
 }
 
 console.log('node-shims-live-fs-range: all assertions passed');

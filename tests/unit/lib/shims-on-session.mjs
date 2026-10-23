@@ -2,8 +2,10 @@
 // session: the process's supervisor is the session's own (facetSupervisor),
 // every call it makes is counted in handle.log.calls, and `overrides` replaces
 // or intercepts one. The namespace is the session's listing as a launch takes
-// it (listAuthority), so seed the tree in `authority` before calling this; a
-// peer's later writes go through authority.peer. One factory per process.
+// it (listAuthority), so seed the tree in `authority` before calling this. A
+// peer is `authority.peer`: its calls wait for the process's read leases and
+// grants to be recalled, as a shell command's do; `authority.kfs` cannot wait,
+// so it is for what is done before the process starts. One factory per process.
 
 import { decodeWriteBatchStream } from '../../../packages/platform/src/w7-frame.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
@@ -29,8 +31,9 @@ export function shimsOnSession({ authority = createAuthority(), overrides = {}, 
   globalThis.__nimbusVfsCursor = { position: authority.cursor() };
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
-      + '\n;return { fs: __fsMod, os: __osMod, process: __processMod, setTimeout: globalThis.setTimeout, WebSocket: globalThis.WebSocket, fetch: globalThis.fetch };',
+    '"use strict"; let stdout = ""; let stderr = ""; let exitCode = 0; const __pendingIO = [];'
+      + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
+      + '\n;return { fs: __fsMod, os: __osMod, process: __processMod, pendingIO: __pendingIO, setTimeout: globalThis.setTimeout, WebSocket: globalThis.WebSocket, fetch: globalThis.fetch };',
   );
   const shims = factory(bundle, {}, handle.supervisor, cred, cwd, [], {}, `${cwd}/main.mjs`, cwd);
   return { authority, handle, log: handle.log, ...shims, stats: () => globalThis.__nimbusProcessFs.stats() };

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// A sync chmod reaches the authority on the next flush of its path, once.
-// It used to be re-sent on EVERY flush, and every async read flushes first, so
+// A sync chmod reaches the session on the next flush of its path, once. It
+// used to be re-sent on EVERY flush, and every async read flushed first, so
 // each read of the file was a chmod: a real mutation that bumped the path's
 // revision, made the next ACQUIRE evict the process's own cell, and made the
 // refetch chmod again. create-astro's readFileSync(README.md) landed in one of
@@ -26,16 +26,19 @@ const { fs } = shimsOnSession({
     }),
   }),
 });
+const flush = () => globalThis.__nimbusProcessFs.flush();
 
 fs.chmodSync(file, 0o600);
 assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'the mode is visible to the process at once');
 
 await fs.promises.readFile(file, 'utf8');
-assert.deepEqual(modes, [0o600], 'the first flush delivers the mode');
-assert.equal(authority.kfs.stat(file).mode & 0o777, 0o600, 'and the authority has it');
+await flush();
+assert.deepEqual(modes, [0o600], 'the next flush delivers the mode');
+assert.equal((await authority.peer.stat(file)).mode & 0o777, 0o600, 'and the session has it');
 const revisionAfterDelivery = authority.rawVfs.revision(file);
 
 for (let i = 0; i < 5; i++) assert.equal(await fs.promises.readFile(file, 'utf8'), '# app');
+await flush();
 assert.deepEqual(modes, [0o600], `reads must not re-send the mode (sent ${modes.length})`);
 assert.equal(authority.rawVfs.revision(file), revisionAfterDelivery, 'reads must not mutate the file');
 assert.equal(fs.readFileSync(file, 'utf8'), '# app', 'the sync view still serves the file');
@@ -43,7 +46,8 @@ assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'and still shows the mode');
 
 fs.chmodSync(file, 0o640);
 await fs.promises.readFile(file, 'utf8');
+await flush();
 assert.deepEqual(modes, [0o600, 0o640], 'a later chmod is delivered too');
-assert.equal(authority.kfs.stat(file).mode & 0o777, 0o640);
+assert.equal((await authority.peer.stat(file)).mode & 0o777, 0o640);
 
 console.log('node-shims-chmod-delivered-once: ok');

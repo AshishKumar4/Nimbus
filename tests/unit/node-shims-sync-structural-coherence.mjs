@@ -65,8 +65,8 @@ const { fs } = shimsOnSession({
 });
 const drain = () => globalThis.__nimbusProcessFs.flush();
 const indexOf = (op, path) => received.findIndex((c) => c.op === op && c.path === path);
-const at = (p) => (authority.kfs.exists(p) ? authority.kfs.readFileString(p) : null);
-const kindAt = (p) => (authority.kfs.exists(p) ? authority.kfs.stat(p).type : null);
+const at = (p) => authority.peer.readFileString(p).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+const kindAt = async (p) => ((await authority.peer.exists(p)) ? (await authority.peer.stat(p)).type : null);
 const rejectsWith = async (promise, code) => {
   let got = null;
   try { await promise; } catch (error) { got = error.code; }
@@ -84,7 +84,7 @@ const rejectsWith = async (promise, code) => {
   const firstTouch = received.findIndex((c) => c.path === `${home}/d/f`);
   assert.ok(mkdirAt >= 0, 'the authority received the mkdir');
   assert.ok(firstTouch > mkdirAt, `mkdir(d) at ${mkdirAt} must precede the first touch of d/f at ${firstTouch}`);
-  assert.equal(at(`${home}/d/f`), 'hello', 'the file content reached the authority');
+  assert.equal(await at(`${home}/d/f`), 'hello', 'the file content reached the authority');
 }
 
 // 2. Nested mkdirSync lands parent before child at the authority.
@@ -97,7 +97,7 @@ const rejectsWith = async (promise, code) => {
   const child = indexOf('mkdir', `${home}/a/b`);
   assert.ok(parent >= 0 && child >= 0, 'both directories reached the authority');
   assert.ok(parent < child, `mkdir(a) at ${parent} must precede mkdir(a/b) at ${child}`);
-  assert.equal(kindAt(`${home}/a/b`), 'directory');
+  assert.equal(await kindAt(`${home}/a/b`), 'directory');
 }
 
 // 3. mkdirSync then an async readdir of it answers [] rather than ENOENT.
@@ -113,14 +113,14 @@ const rejectsWith = async (promise, code) => {
   fs.writeFileSync(`${home}/g`, '1');
   fs.unlinkSync(`${home}/g`);
   await rejectsWith(fs.promises.access(`${home}/g`), 'ENOENT');
-  assert.equal(at(`${home}/g`), null, 'the authority does not hold g');
-  await sleep(50);
-  assert.equal(at(`${home}/g`), null, 'and no later write-back resurrects it');
+  assert.equal(await at(`${home}/g`), null, 'the authority does not hold g');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(await at(`${home}/g`), null, 'and no later write-back resurrects it');
 
-  authority.kfs.writeFile(`${home}/h`, 'held');
+  await authority.peer.writeFile(`${home}/h`, 'held');
   fs.unlinkSync(`${home}/h`);
   await rejectsWith(fs.promises.access(`${home}/h`), 'ENOENT');
-  assert.equal(at(`${home}/h`), null, 'a sync unlink of an authority-held file lands');
+  assert.equal(await at(`${home}/h`), null, 'a sync unlink of an authority-held file lands');
   await drain();
   assert.ok(indexOf('unlink', `${home}/h`) >= 0, 'the authority received the unlink');
 }
@@ -153,9 +153,9 @@ for (const rename of [
   assert.equal(await fs.promises.readFile(`${to}/package.json`, 'utf8'), '{"type":"module"}', 'it reads back from the authority');
   await drain();
   assert.throws(() => fs.readFileSync(`${from}/package.json`), { code: 'ENOENT' }, 'the old name stays gone once its write lands');
-  assert.equal(at(`${to}/package.json`), '{"type":"module"}', 'the authority holds the file under the new name');
-  assert.equal(at(`${to}/chunks/react.js`), 'export default 1;', 'and the nested one');
-  assert.equal(at(from), null, 'the old name is gone at the authority');
+  assert.equal(await at(`${to}/package.json`), '{"type":"module"}', 'the authority holds the file under the new name');
+  assert.equal(await at(`${to}/chunks/react.js`), 'export default 1;', 'and the nested one');
+  assert.equal(await at(from), null, 'the old name is gone at the authority');
 }
 
 // 8. An append to a file inside a renamed directory stays an append. The
@@ -178,8 +178,8 @@ for (const inFlight of [false, true]) {
   if (writeGate !== null) { writeGate.resolve(); writeGate = null; }
   await drain();
   const expected = inFlight ? 'prefix\nfirst\nsecond\n' : 'prefix\nfirst\n';
-  assert.equal(at(`${to}/app.log`), expected, `the authority keeps the prefix and every append (in flight: ${inFlight})`);
-  assert.equal(at(from), null, 'the old name is gone at the authority');
+  assert.equal(await at(`${to}/app.log`), expected, `the authority keeps the prefix and every append (in flight: ${inFlight})`);
+  assert.equal(await at(from), null, 'the old name is gone at the authority');
 }
 
 // 9. A rename rename(2) refuses changes nothing, and the writes pending
@@ -200,26 +200,26 @@ for (const inFlight of [false, true]) {
   assert.throws(() => fs.renameSync(`${dir}/known`, `${dir}/full`), { code: 'ENOTEMPTY' }, 'onto a listed non-empty directory is ENOTEMPTY');
   await drain();
   // A destination only the authority holds: the authority refuses the move.
-  authority.kfs.mkdir(`${dir}/theirs`);
-  authority.kfs.writeFile(`${dir}/theirs/keep.txt`, 'theirs');
+  await authority.peer.mkdir(`${dir}/theirs`);
+  await authority.peer.writeFile(`${dir}/theirs/keep.txt`, 'theirs');
   pending('unknown');
   await rejectsWith(fs.promises.rename(`${dir}/unknown`, `${dir}/theirs`), 'ENOTEMPTY');
   await drain();
   // A destination listed empty that only the authority has filled since:
   // the move it refuses leaves nothing of the source's under its name.
-  authority.kfs.writeFile(`${home}/listed_dest/f.txt`, 'theirs');
+  await authority.peer.writeFile(`${home}/listed_dest/f.txt`, 'theirs');
   // Bytes, which a resident store holds as a copy of the pending cell.
   fs.writeFileSync(`${home}/listed_src/f.txt`, 'new pending source');
   await rejectsWith(fs.promises.rename(`${home}/listed_src`, `${home}/listed_dest`), 'ENOTEMPTY');
   await drain();
-  assert.equal(at(`${home}/listed_dest/f.txt`), 'theirs', 'the destination keeps its file');
-  assert.equal(at(`${home}/listed_src/f.txt`), 'new pending source', 'the source gets its pending write');
+  assert.equal(await at(`${home}/listed_dest/f.txt`), 'theirs', 'the destination keeps its file');
+  assert.equal(await at(`${home}/listed_src/f.txt`), 'new pending source', 'the source gets its pending write');
   let destRead;
   try { destRead = fs.readFileSync(`${home}/listed_dest/f.txt`, 'utf8'); } catch (error) { destRead = error.code; }
   assert.notEqual(destRead, 'new pending source', 'the sync view does not show the source under the destination');
   // A write to the moved name while the refused move is in flight is its
   // own: the refusal leaves its bytes and its record alone.
-  authority.kfs.writeFile(`${home}/later_dest/f.txt`, 'theirs');
+  await authority.peer.writeFile(`${home}/later_dest/f.txt`, 'theirs');
   fs.writeFileSync(`${home}/later_src/f.txt`, 'source');
   writeGate = Promise.withResolvers();
   const refusedLater = fs.promises.rename(`${home}/later_src`, `${home}/later_dest`).then(() => 'moved', (error) => error.code);
@@ -230,15 +230,15 @@ for (const inFlight of [false, true]) {
   assert.equal(fs.readFileSync(`${home}/later_dest/f.txt`, 'utf8'), 'later', 'the later write reads back while it is held');
   assert.equal(fs.statSync(`${home}/later_dest/f.txt`).size, 'later'.length, 'and stats');
   await drain();
-  assert.equal(at(`${home}/later_dest/f.txt`), 'later', 'and lands');
+  assert.equal(await at(`${home}/later_dest/f.txt`), 'later', 'and lands');
   for (const name of ['self', 'sub', 'known', 'unknown']) {
-    assert.equal(at(`${dir}/${name}/f.txt`), name, `a refused rename's source keeps its pending write (${name})`);
+    assert.equal(await at(`${dir}/${name}/f.txt`), name, `a refused rename's source keeps its pending write (${name})`);
   }
-  assert.equal(at(`${dir}/sub/inner`), null, 'nothing was moved into the subtree');
-  assert.equal(at(`${dir}/full/f.txt`), null, 'nothing was written into the listed destination');
-  assert.equal(at(`${dir}/full/keep.txt`), 'keep', 'which keeps its own file');
-  assert.equal(at(`${dir}/theirs/f.txt`), null, 'nothing was written into the authority\'s destination');
-  assert.equal(at(`${dir}/theirs/keep.txt`), 'theirs', 'which keeps its own file');
+  assert.equal(await at(`${dir}/sub/inner`), null, 'nothing was moved into the subtree');
+  assert.equal(await at(`${dir}/full/f.txt`), null, 'nothing was written into the listed destination');
+  assert.equal(await at(`${dir}/full/keep.txt`), 'keep', 'which keeps its own file');
+  assert.equal(await at(`${dir}/theirs/f.txt`), null, 'nothing was written into the authority\'s destination');
+  assert.equal(await at(`${dir}/theirs/keep.txt`), 'theirs', 'which keeps its own file');
 }
 
 // 10. An asynchronous write still in progress when its directory is renamed
@@ -251,9 +251,9 @@ for (const inFlight of [false, true]) {
   const writing = fs.promises.writeFile(`${from}/f.txt`, 'streamed in');
   fs.renameSync(from, to);
   await writing;
-  assert.equal(at(`${from}/f.txt`) ?? at(`${to}/f.txt`), 'streamed in', 'the awaited write is at the authority');
+  assert.equal((await at(`${from}/f.txt`)) ?? (await at(`${to}/f.txt`)), 'streamed in', 'the awaited write is at the authority');
   await drain();
-  assert.equal(at(`${to}/f.txt`), 'streamed in', 'and moves with the directory');
+  assert.equal(await at(`${to}/f.txt`), 'streamed in', 'and moves with the directory');
   assert.equal(fs.statSync(`${to}/f.txt`).size, 'streamed in'.length, 'the sync view stats it at its size');
 }
 
@@ -261,7 +261,7 @@ for (const inFlight of [false, true]) {
 {
   fs.mkdirSync(`${home}/only`);
   await drain();
-  assert.equal(kindAt(`${home}/only`), 'directory', 'the exit drain carried the directory across');
+  assert.equal(await kindAt(`${home}/only`), 'directory', 'the exit drain carried the directory across');
 }
 
 console.log('node-shims-sync-structural-coherence: all assertions passed');

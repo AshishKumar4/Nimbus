@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createAuthority, runScenarios, until } from './lib/resident-body.mjs';
+import { createAuthority, runScenarios } from './lib/resident-body.mjs';
 import { USER, shimsOnSession } from './lib/shims-on-session.mjs';
 
 const ROOT = Object.freeze({ uid: 0, gid: 0, groups: Object.freeze([0]), umask: 0o022 });
@@ -25,16 +25,10 @@ function sessionFor(cred, { seed = () => {}, overrides = {}, bundle = {} } = {})
   return { authority, ...shimsOnSession({ authority, cred, overrides, bundle }) };
 }
 
-/** The owner and group the session holds for `path` (lstat: a link's own). */
-const ownerOf = (authority, path) => {
-  const st = authority.kfs.lstat(path);
-  return [st.uid, st.gid];
-};
-
 const scenarios = {
   async 'the identity a process runs as, and its umask, are the program\'s'() {
     const umasks = [];
-    const { process: proc, os } = sessionFor({ uid: 0, gid: 0, groups: [0, 44], umask: 0o027 }, {
+    const { process: proc, os, pendingIO } = sessionFor({ uid: 0, gid: 0, groups: [0, 44], umask: 0o027 }, {
       overrides: { setUmask: async (mask) => { umasks.push(mask); } },
     });
     assert.equal(proc.getuid(), 0);
@@ -53,7 +47,7 @@ const scenarios = {
     assert.equal(proc.umask(), 0o027);
     assert.equal(proc.umask(0o077), 0o027);
     assert.equal(proc.umask(), 0o077);
-    await until(() => umasks.length === 1, 'the umask reached the session');
+    await Promise.allSettled(pendingIO);
     assert.deepEqual(umasks, [0o077]);
   },
 
@@ -72,9 +66,11 @@ const scenarios = {
     await callbackResult((done) => fs.fchown(handle.fd, 13, 14, done));
     await handle.close();
     // The file's last owner and group are fchown's; the link's are lchown's own.
-    assert.deepEqual(ownerOf(authority, '/home/user/file'), [13, 14]);
-    assert.deepEqual(ownerOf(authority, '/home/user/link'), [9, 10]);
-    assert.equal(authority.kfs.lstat('/home/user/link').type, 'symlink');
+    const file = await authority.peer.lstat('/home/user/file');
+    assert.deepEqual([file.uid, file.gid], [13, 14]);
+    const link = await authority.peer.lstat('/home/user/link');
+    assert.deepEqual([link.uid, link.gid], [9, 10]);
+    assert.equal(link.type, 'symlink');
   },
 
   async 'an access the session denies is EACCES in the program'() {
@@ -143,14 +139,13 @@ const scenarios = {
   },
 
   async 'a write needs the file\'s permission, and its directory\'s for a new file'() {
-    const seed = (kernel) => {
-      kernel.writeFile('home/user/root-owned', 'root');
-      kernel.writeFile('home/user/user-owned', 'user');
-      kernel.chown('home/user/user-owned', 1000, 1000);
-      kernel.mkdir('home/user/locked', { mode: 0o555 });
-    };
     const { fs } = sessionFor(USER, {
-      seed,
+      seed: (kernel) => {
+        kernel.writeFile('home/user/root-owned', 'root');
+        kernel.writeFile('home/user/user-owned', 'user');
+        kernel.chown('home/user/user-owned', 1000, 1000);
+        kernel.mkdir('home/user/locked', { mode: 0o555 });
+      },
       bundle: { 'home/user/root-owned': 'root', 'home/user/user-owned': 'user' },
     });
 

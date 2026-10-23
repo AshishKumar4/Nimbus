@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Behavior test: a directory this facet created with mkdirSync must exist at
-// the authority before anything is written into it.
+// the session before anything is written into it.
 //
 // mkdirSync is a sync syscall, so it cannot make an RPC; it records the
 // directory in the facet's sync view and nothing more. The write-back path
@@ -55,14 +55,14 @@ const scenarios = {
     await handle.close();
 
     assert.equal(
-      authority.kfs.kind(dir),
+      await authority.peer.kind(dir),
       'directory',
-      'every mkdirSync ancestor reached the authority',
+      'every mkdirSync ancestor reached the session',
     );
     assert.equal(
-      authority.kfs.readFileString(log),
+      await authority.peer.readFileString(log),
       '',
-      "opening 'w' truncated the appended log at the authority",
+      "opening 'w' truncated the appended log at the session",
     );
   },
 
@@ -75,9 +75,9 @@ const scenarios = {
     await fs.promises.appendFile('/home/user/logdir/a.log', ' world');
 
     assert.equal(
-      authority.kfs.readFileString('/home/user/logdir/a.log'),
+      await authority.peer.readFileString('/home/user/logdir/a.log'),
       'hello world',
-      'the append ledger reached the authority through a mkdirSync-only parent',
+      'the append reached the session through a mkdirSync-only parent',
     );
   },
 
@@ -90,24 +90,24 @@ const scenarios = {
     await fs.promises.truncate('/home/user/deep/nested/tree/x.log', 4);
 
     assert.equal(
-      authority.kfs.readFileString('/home/user/deep/nested/tree/x.log'),
+      await authority.peer.readFileString('/home/user/deep/nested/tree/x.log'),
       'abcd',
-      'fsTruncate found the file the append ledger created',
+      'the truncate found the file the append created',
     );
   },
 
   // ── the directory keeps the mode mkdirSync asked for, not an implicit one ──
-  // The authority creating parents on the caller's behalf is what masked this
+  // The session creating parents on the caller's behalf is what masked this
   // bug; a directory the facet declared must arrive as the facet declared it.
   async 'a directory declared with mkdirSync arrives as declared'() {
     const authority = createAuthority();
     const { fs } = shimsOnSession({ authority });
     fs.mkdirSync('/home/user/moded', { recursive: true, mode: 0o700 });
     await fs.promises.writeFile('/home/user/moded/f.txt', 'x');
-    assert.equal(authority.kfs.kind('/home/user/moded'), 'directory', 'the declared directory exists at the authority');
+    assert.equal(await authority.peer.kind('/home/user/moded'), 'directory', 'the declared directory exists at the session');
   },
 
-  // ── a directory already known to the authority costs no extra mkdir ────────
+  // ── a directory already known to the session costs no extra mkdir ─────────
   // The write-back must not turn every flush into an mkdir round trip.
   async 'a live parent directory is never re-announced'() {
     const mkdirs = [];
@@ -127,7 +127,7 @@ const scenarios = {
     await globalThis.__nimbusProcessFs.flush();
     assert.equal(mkdirs.filter((path) => path === 'home/user/chatty').length, 1, 'the local-only parent is announced once, not once per write');
     assert.equal(
-      authority.kfs.readFileString('/home/user/chatty/a.log'),
+      await authority.peer.readFileString('/home/user/chatty/a.log'),
       'line 0\nline 1\nline 2\nline 3\nline 4\n',
       'every append landed in order',
     );

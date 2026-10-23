@@ -13,7 +13,7 @@
 // relay that writes as a peer between frames.
 
 import assert from 'node:assert/strict';
-import { createAuthority } from './lib/resident-body.mjs';
+import { createAuthority, sleep } from './lib/resident-body.mjs';
 import { shimsOnSession } from './lib/shims-on-session.mjs';
 
 const enc = new TextEncoder();
@@ -28,13 +28,13 @@ const authority = createAuthority();
 authority.kfs.mkdir(dir, { recursive: true });
 authority.kfs.writeFile(peerPath, 'V1');
 
-// What the relay saw at each supervisor call, as the parked writes stood.
+// What the relay saw at each supervisor call, as the pending writes stood.
 let sawAtSend = null;
 let sawAtOpen = null;
 let sawAtClose = null;
 const sentFrames = [];
 let closedWith = null;
-const parked = (path) => (authority.kfs.exists(path) ? authority.kfs.readFileString(path) : null);
+const parked = async (path) => ((await authority.peer.exists(path)) ? authority.peer.readFileString(path) : null);
 
 // The relay queue, as the session would hold it. Each poll hands back one
 // batch; the third party writes to the filesystem just before the frame is
@@ -54,7 +54,7 @@ const { fs, WebSocket } = shimsOnSession({
     wsOpen: async (url, protocols) => {
       assert.equal(url, 'wss://third-party.invalid/socket');
       assert.deepEqual(protocols, ['chat']);
-      sawAtOpen = parked(openingPath);
+      sawAtOpen = await parked(openingPath);
       return { id: 42, protocol: 'chat' };
     },
     wsPoll: async (id) => {
@@ -62,17 +62,17 @@ const { fs, WebSocket } = shimsOnSession({
       if (pollIndex === 1) {
         // The peer writes while the facet is parked on the poll. Nothing else
         // will tell the facet, which is the whole point of witness 3.
-        authority.kfs.writeFile(peerPath, 'REWRITTEN_BY_PEER');
+        await authority.peer.writeFile(peerPath, 'REWRITTEN_BY_PEER');
       }
       if (pollIndex >= frames.length) return new Promise(() => {});
       return frames[pollIndex++];
     },
     wsSend: async (id, text, bytes) => {
-      sawAtSend = parked(minePath);
+      sawAtSend = await parked(minePath);
       sentFrames.push(text !== null ? text : dec.decode(bytes));
     },
     wsClose: async (id, code, reason) => {
-      sawAtClose = parked(closingPath);
+      sawAtClose = await parked(closingPath);
       closedWith = { id, code, reason };
     },
   },
@@ -100,7 +100,8 @@ const gotBoth = new Promise((resolve) => {
   });
 });
 
-await gotBoth;
+// A frame handler that throws never resolves the frames above: fail in seconds, not at the file's timeout.
+await Promise.race([gotBoth, sleep(5_000).then(() => { throw new Error('the relayed frames never reached the handler'); })]);
 
 assert.deepEqual(opened, ['chat'], 'the open event carried the negotiated subprotocol');
 assert.equal(socket.readyState, WebSocket.OPEN);
@@ -117,17 +118,17 @@ assert.equal(
 // session does not have.
 fs.writeFileSync(minePath, 'MY_WORK');
 socket.send('notify');
-await new Promise((resolve) => setTimeout(resolve, 40));
+await sleep(40);
 assert.deepEqual(sentFrames, ['notify'], 'the frame reached the relay');
 assert.equal(
   sawAtSend,
   'MY_WORK',
-  'pending writes reached the authority before the frame left the facet',
+  'pending writes reached the session before the frame left the facet',
 );
 assert.equal(socket.bufferedAmount, 0, 'bufferedAmount settles back after the send');
 
 socket.send(new Uint8Array([0x68, 0x69]));
-await new Promise((resolve) => setTimeout(resolve, 40));
+await sleep(40);
 assert.deepEqual(sentFrames, ['notify', 'hi'], 'a binary send crosses as bytes');
 
 // So is its close (its code and reason), and another socket's handshake (its URL and headers).
@@ -139,11 +140,11 @@ assert.equal(closeEvent.code, 1000);
 assert.equal(closeEvent.wasClean, true);
 assert.equal(socket.readyState, WebSocket.CLOSED);
 assert.deepEqual(closedWith, { id: 42, code: 1000, reason: 'done' });
-assert.equal(sawAtClose, 'CLOSING', 'pending writes reached the authority before the close left the facet');
+assert.equal(sawAtClose, 'CLOSING', 'pending writes reached the session before the close left the facet');
 fs.writeFileSync(openingPath, 'OPENING');
 const second = new WebSocket('wss://third-party.invalid/socket', ['chat']);
-await new Promise((resolve) => setTimeout(resolve, 40));
-assert.equal(sawAtOpen, 'OPENING', 'pending writes reached the authority before the handshake left the facet');
+await sleep(40);
+assert.equal(sawAtOpen, 'OPENING', 'pending writes reached the session before the handshake left the facet');
 second.close(1000, 'done');
 
 console.log('node-shims-socket-coherence: all assertions passed');

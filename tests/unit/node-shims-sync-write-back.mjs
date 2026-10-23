@@ -7,24 +7,33 @@
 //
 // This drives the REAL shim against the REAL session and asserts three
 // things the fix has to hold together:
-//   1. writeFileSync / appendFileSync reach the authority while the process
-//      is still running.
+//   1. writeFileSync / appendFileSync reach the session while the process
+//      is still running (what the session receives, and when).
 //   2. The batching survives: a burst of sync writes to one path costs one
 //      round trip, not one per write.
 //   3. The process's log is drained, so the exit drain has nothing left.
 
 import assert from 'node:assert/strict';
-import { createAuthority } from './lib/resident-body.mjs';
-import { shimsOnSession } from './lib/shims-on-session.mjs';
+import { createAuthority, sleep } from './lib/resident-body.mjs';
+import { observeWaves, shimsOnSession } from './lib/shims-on-session.mjs';
 
 const authority = createAuthority();
 const dir = '/home/user/t';
 authority.kfs.mkdir(dir, { recursive: true });
-const { fs, handle } = shimsOnSession({ authority });
-const waves = () => handle.log.calls.writeBatchStream ?? 0;
 
-const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const onAuthority = (p) => (authority.kfs.exists(p) ? authority.kfs.readFileString(p) : null);
+// The paths the session has received writes for, in the order it received them.
+const received = [];
+const { fs, handle } = shimsOnSession({
+  authority,
+  overrides: (forward) => ({
+    writeBatchStream: observeWaves(forward, (record) => {
+      if (record.type === 'file-end') received.push(record.path);
+      else if (record.type === 'call' && 'path' in record.call) received.push(record.call.path);
+    }),
+  }),
+});
+const waves = () => handle.log.calls.writeBatchStream ?? 0;
+const key = (path) => path.replace(/^\/+/, '');
 
 // Warm the coherence cursor first. A facet's very first ACQUIRE reports a
 // poison — it holds no epoch yet — which evicts the whole resident set and
@@ -33,32 +42,32 @@ const onAuthority = (p) => (authority.kfs.exists(p) ? authority.kfs.readFileStri
 // spend it before measuring anything.
 await fs.promises.readFile(`${dir}/.warm`, 'utf8').catch(() => {});
 
-// ── 1. a plain sync write reaches the authority while the process runs ──
+// ── 1. a plain sync write reaches the session while the process runs ──
 fs.writeFileSync(`${dir}/w.txt`, 'SYNC_WRITTEN');
-assert.equal(onAuthority(`${dir}/w.txt`), null, 'not written through synchronously');
-await settle(60);
-assert.equal(
-  onAuthority(`${dir}/w.txt`),
-  'SYNC_WRITTEN',
-  'writeFileSync reached the authority without waiting for process exit',
+assert.equal(received.includes(key(`${dir}/w.txt`)), false, 'not written through synchronously');
+await sleep(60);
+assert.ok(
+  received.includes(key(`${dir}/w.txt`)),
+  'writeFileSync reached the session without waiting for process exit',
 );
+assert.equal(await authority.peer.readFileString(`${dir}/w.txt`), 'SYNC_WRITTEN', 'and the session holds its bytes');
 assert.equal(globalThis.__nimbusProcessFs.client.pendingBytes, 0, 'the log drained what it wrote');
 
 // ── 2. appendFileSync too ──
 fs.appendFileSync(`${dir}/a.txt`, 'A1');
 fs.appendFileSync(`${dir}/a.txt`, 'A2');
-await settle(60);
-assert.equal(
-  onAuthority(`${dir}/a.txt`),
-  'A1A2',
-  'appendFileSync reached the authority without waiting for process exit',
+await sleep(60);
+assert.ok(
+  received.includes(key(`${dir}/a.txt`)),
+  'appendFileSync reached the session without waiting for process exit',
 );
+assert.equal(await authority.peer.readFileString(`${dir}/a.txt`), 'A1A2');
 
 // ── 3. the batching survives: a burst is one round trip, not N ──
 const before = waves();
 for (let i = 0; i < 500; i++) fs.writeFileSync(`${dir}/burst.txt`, `v${i}`);
-await settle(80);
-assert.equal(onAuthority(`${dir}/burst.txt`), 'v499', 'the last value won');
+await sleep(80);
+assert.equal(await authority.peer.readFileString(`${dir}/burst.txt`), 'v499', 'the last value won');
 const spent = waves() - before;
 assert.ok(
   spent > 0 && spent <= 3,

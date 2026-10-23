@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { createAuthority } from './lib/resident-body.mjs';
-import { shimsOnSession } from './lib/shims-on-session.mjs';
+import { observeWaves, shimsOnSession } from './lib/shims-on-session.mjs';
 
 const authority = createAuthority();
 const dir = '/home/user/t';
@@ -26,30 +26,40 @@ const minePath = `${dir}/mine.txt`;
 authority.kfs.mkdir(dir, { recursive: true });
 authority.kfs.writeFile(peerPath, 'V1');
 
+// The paths the session has received writes for, in the order it received them.
+const received = [];
+
 // The stub stands in for the external network AND for the third party that
 // observes this facet's effects. It is installed before the shims evaluate,
 // so it is what the dispatcher's __origFetch resolves to.
 let sawAtEgress = null;
 let egressCalls = 0;
 let network = async () => {
-  sawAtEgress = authority.kfs.exists(minePath) ? authority.kfs.readFileString(minePath) : null;
+  sawAtEgress = (await authority.peer.exists(minePath)) ? await authority.peer.readFileString(minePath) : null;
   // A peer writes while the request is in flight. Nothing tells the facet.
-  authority.kfs.writeFile(peerPath, 'REWRITTEN_DURING_FETCH');
+  await authority.peer.writeFile(peerPath, 'REWRITTEN_DURING_FETCH');
   return new Response('ok');
 };
 // The dispatcher binds __origFetch once, at shim-eval time, so the stub has
 // to stay the same function and vary behind it.
 globalThis.fetch = async (...args) => { egressCalls++; return network(...args); };
 
-const { fs, fetch: out } = shimsOnSession({ authority, cwd: dir, bundle: { 'home/user/t/peer.txt': 'V1' } });
+const { fs, fetch: out } = shimsOnSession({
+  authority,
+  cwd: dir,
+  bundle: { 'home/user/t/peer.txt': 'V1' },
+  overrides: (forward) => ({
+    writeBatchStream: observeWaves(forward, (record) => { if (record.type === 'file-end') received.push(record.path); }),
+  }),
+});
 
 // Warm the cursor: a facet's first ACQUIRE reports a poison, which evicts and
 // refetches the whole resident set. Spend that before measuring.
 assert.equal(await fs.promises.readFile(peerPath, 'utf8'), 'V1');
 
-// A synchronous write parks. Nothing has carried it to the authority yet.
+// A synchronous write parks. Nothing has carried it to the session yet.
 fs.writeFileSync(minePath, 'MY_WORK');
-assert.equal(authority.kfs.exists(minePath), false, 'parked, not written through');
+assert.equal(received.includes('home/user/t/mine.txt'), false, 'parked, not written through');
 
 const response = await out('https://third-party.invalid/notify');
 assert.equal(response.status, 200, 'the dispatcher still returns the real response');
@@ -60,7 +70,7 @@ assert.equal(egressCalls, 1, 'exactly one request left the facet');
 assert.equal(
   sawAtEgress,
   'MY_WORK',
-  'parked writes reached the authority before the request left the facet',
+  'parked writes reached the session before the request left the facet',
 );
 
 // ACQUIRE: the response resumed user code, and a synchronous read now sees
@@ -90,7 +100,7 @@ network = async () => new Response(
   }),
 );
 const streamed = await out('https://third-party.invalid/slow');
-authority.kfs.writeFile(peerPath, 'REWRITTEN_DURING_BODY');
+await authority.peer.writeFile(peerPath, 'REWRITTEN_DURING_BODY');
 bodyGate();
 assert.equal(await streamed.text(), 'late-body');
 assert.equal(

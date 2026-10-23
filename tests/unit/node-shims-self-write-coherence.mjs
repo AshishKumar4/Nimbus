@@ -12,14 +12,15 @@
 // the barrier (no refetch), and a peer write to the same path still evicts.
 
 import assert from 'node:assert/strict';
-import { createAuthority, sleep } from './lib/resident-body.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
 import { shimsOnSession } from './lib/shims-on-session.mjs';
 
 const authority = createAuthority();
 const dir = '/home/user/p';
 authority.kfs.mkdir(dir, { recursive: true });
 
-// The process's session: its write waves, held when a test says so (`hold`).
+// The session's answer to one write wave, held when a test says so: `applied`
+// settles once the session has the wave, and the answer waits for `release`.
 let holdNext = false;
 let release = null;
 let applied = null;
@@ -31,7 +32,6 @@ const { fs, setTimeout: shimSetTimeout } = shimsOnSession({
       const hold = holdNext;
       holdNext = false;
       const answer = await forward('writeBatchStream', [stream, fence, owner]);
-      // The session applied the wave and holds its answer: nothing it wrote is acknowledged yet.
       if (hold) { applied.resolve(); await release.promise; }
       return answer;
     },
@@ -39,7 +39,7 @@ const { fs, setTimeout: shimSetTimeout } = shimsOnSession({
 });
 const stats = () => globalThis.__nimbusProcessFs.stats();
 const out = { setTimeout: shimSetTimeout };
-const readAuthority = (p) => authority.kfs.readFileString(p);
+const read = (p) => authority.peer.readFileString(p);
 
 const FILES = 40;
 const written = [];
@@ -60,7 +60,7 @@ await new Promise((resolve) => setTimeout(resolve, 200));
 await new Promise((resolve) => setTimeout(resolve, 100));
 
 for (let i = 0; i < FILES; i++) {
-  assert.equal(readAuthority(written[i]), `MINE_${i}`, 'the write reached authority');
+  assert.equal(await read(written[i]), `MINE_${i}`, 'the write reached authority');
 }
 const seen = await new Promise((resolve) => {
   out.setTimeout(() => resolve(written.map((p) => fs.readFileSync(p, 'utf8'))), 5);
@@ -73,7 +73,7 @@ assert.equal(stats().fills, 0, `no cell was refetched (was ${stats().fills})`);
 // The other direction, and the reason a name-only rule is unsound: a peer
 // writes a path this facet also wrote. That invalidation is real and must
 // still land, so the next sync read serves the peer bytes.
-authority.kfs.writeFile(written[0], 'PEER');
+await authority.peer.writeFile(written[0], 'PEER');
 const afterPeer = await new Promise((resolve) => {
   out.setTimeout(() => resolve(fs.readFileSync(written[0], 'utf8')), 5);
 });
@@ -131,13 +131,12 @@ assert.equal(stats().fills, quiet, 'a re-written path is self-authored again');
 }
 
 // A peer writes a path while this facet's own write of it is still being
-// acknowledged: the authority applied the write at r1 and holds the response,
-// then the peer wrote the path at r2 and another path after it. The facet
-// cannot tell until the response lands whether the r2 a barrier reports was
-// its own write or a later one, so a resumption behind that barrier must not
-// run on the parked bytes — it would read the peer's second path new and the
-// first one from before the peer (lean/Nimbus/Coherence/StoreBugs.lean,
-// own_committed_write_is_served_past_a_peer).
+// acknowledged: the session applied the write and holds the response, then the
+// peer wrote the path and another path after it. The peer's change waits for
+// the facet's read lease to be recalled, which waits for that response, so the
+// peer's writes land once the response is released, and the facet's next
+// resumption reads the peer's bytes, the second path new and the first one
+// from the peer too.
 {
   const P = `${dir}/race.txt`;
   const Q = `${dir}/q.txt`;
@@ -149,16 +148,14 @@ assert.equal(stats().fills, quiet, 'a re-written path is self-authored again');
   holdNext = true;
   fs.writeFileSync(P, 'MINE');
   await applied.promise;
-  authority.kfs.writeFile(P, 'PEER');
-  authority.kfs.writeFile(Q, 'q1');
+  const peerWrites = Promise.all([authority.peer.writeFile(P, 'PEER'), authority.peer.writeFile(Q, 'q1')]);
+  release.resolve();
+  await peerWrites;
 
-  const resumed = new Promise((resolve) => {
+  const resumed = await new Promise((resolve) => {
     out.setTimeout(() => resolve([P, Q].map((p) => fs.readFileSync(p, 'utf8'))), 5);
   });
-  const early = await Promise.race([resumed, sleep(150).then(() => 'still waiting')]);
-  assert.equal(early, 'still waiting', 'a resumption may not run on a parked write a peer may have overwritten');
-  release.resolve();
-  assert.deepEqual(await resumed, ['PEER', 'q1'], 'the acknowledgement says the peer wrote last');
+  assert.deepEqual(resumed, ['PEER', 'q1'], 'the peer wrote last, and the resumption sees it');
 }
 
 console.log('node-shims-self-write-coherence: all assertions passed');

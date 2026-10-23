@@ -7,57 +7,88 @@
 //   - the next async boundary the process reaches (here a timer's barrier)
 //     repairs it, so the same call then answers.
 // The failure is the real one: a directory became searchable, so the barrier
-// relists it, and that relist fails.
+// relists it, and that relist fails. Each case is a process of its own.
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createAuthority } from './lib/resident-body.mjs';
+import { createAuthority, runScenarios } from './lib/resident-body.mjs';
 import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-const authority = createAuthority();
-const kernel = authority.rawVfs.as(CRED_KERNEL);
-authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
-// A directory the process cannot search yet, holding a file.
-kernel.mkdir('home/user/app/locked', { mode: 0o700 });
-kernel.writeFile('home/user/app/locked/inside.txt', 'inside');
+const APP = '/home/user/app';
+const INSIDE = `${APP}/locked/inside.txt`;
 
-let listingFails = false;
-const { fs, setTimeout: shimTimeout } = shimsOnSession({
-  authority,
-  cwd: '/home/user/app',
-  overrides: (forward) => ({
-    fsList: async (...args) => {
-      if (listingFails) throw new Error('Network connection lost.');
-      return forward('fsList', args);
-    },
-  }),
-});
-const stats = () => globalThis.__nimbusProcessFs.stats();
-const afterTimer = () => new Promise((resolve) => shimTimeout(resolve, 0));
+/**
+ * A process in APP, and its namespace stopped: `locked` became searchable,
+ * and the relist its barrier began for it failed.
+ */
+async function stoppedNamespace() {
+  const authority = createAuthority();
+  const kernel = authority.rawVfs.as(CRED_KERNEL);
+  authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+  // A directory the process cannot search yet, holding a file.
+  kernel.mkdir('home/user/app/locked', { mode: 0o700 });
+  kernel.writeFile('home/user/app/locked/inside.txt', 'inside');
 
-assert.equal(fs.existsSync('/home/user/app'), true, 'the launch answers from its namespace');
-const refusalsBefore = stats().notResident;
+  const failing = { on: false };
+  const { fs, setTimeout: shimTimeout } = shimsOnSession({
+    authority,
+    cwd: APP,
+    overrides: (forward) => ({
+      fsList: async (...args) => {
+        if (failing.on) throw new Error('Network connection lost.');
+        return forward('fsList', args);
+      },
+    }),
+  });
+  const afterTimer = () => new Promise((resolve) => shimTimeout(resolve, 0));
 
-// The directory becomes searchable; the barrier that reports it relists it,
-// and that relist fails.
-kernel.chmod('home/user/app/locked', 0o755);
-listingFails = true;
-await afterTimer();
+  assert.equal(fs.existsSync(APP), true, 'the launch answers from its namespace');
+  await authority.peerAs(CRED_KERNEL).chmod('home/user/app/locked', 0o755);
+  failing.on = true;
+  await afterTimer();
+  return { fs, afterTimer, failing, stats: () => globalThis.__nimbusProcessFs.stats() };
+}
 
-let refused = null;
-try { fs.statSync('/home/user/app/locked/inside.txt'); } catch (error) { refused = error; }
-assert.ok(refused, 'a sync stat is refused while the namespace is not answering');
-assert.equal(refused.code, 'EAGAIN');
-assert.match(refused.message, /a listing of \/home\/user\/app\/locked failed \(Network connection lost\.\)/,
-  `the refusal names its cause: ${refused.message}`);
-assert.match(refused.message, /fs\.promises\.stat/, 'and the asynchronous form that answers now');
-assert.throws(() => fs.readdirSync('/home/user/app'), (e) => e.code === 'EAGAIN' && /fs\.promises\.readdir/.test(e.message));
-assert.equal(stats().notResident, refusalsBefore + 2, 'each refusal is counted');
+const refusalOf = (call) => {
+  try { call(); } catch (error) { return error; }
+  throw new Error('expected a refusal');
+};
 
-// The next async boundary repairs it, and the same call answers.
-listingFails = false;
-await afterTimer();
-assert.equal(fs.statSync('/home/user/app/locked/inside.txt').size, 6, 'the refused call now answers');
-assert.deepEqual(fs.readdirSync('/home/user/app/locked'), ['inside.txt']);
+const scenarios = {
+  async 'a synchronous stat is refused EAGAIN while the namespace is not answering'() {
+    const { fs } = await stoppedNamespace();
+    const refused = refusalOf(() => fs.statSync(INSIDE));
+    assert.equal(refused.code, 'EAGAIN');
+    assert.match(refused.message, /fs\.promises\.stat/, 'and the asynchronous form that answers now');
+  },
 
-console.log('namespace-failure-state: a failed relist refuses by name, is counted, and the next boundary repairs it');
+  async 'the refusal names the listing that failed'() {
+    const { fs } = await stoppedNamespace();
+    const refused = refusalOf(() => fs.statSync(INSIDE));
+    assert.match(
+      refused.message,
+      /a listing of \/home\/user\/app\/locked failed \(Network connection lost\.\)/,
+      `the refusal names its cause: ${refused.message}`,
+    );
+  },
+
+  async 'each refusal is counted, and readdir is refused the same way'() {
+    const { fs, stats } = await stoppedNamespace();
+    const before = stats().notResident;
+    refusalOf(() => fs.statSync(INSIDE));
+    const listing = refusalOf(() => fs.readdirSync(APP));
+    assert.equal(listing.code, 'EAGAIN');
+    assert.match(listing.message, /fs\.promises\.readdir/);
+    assert.equal(stats().notResident, before + 2, 'each refusal is counted');
+  },
+
+  async 'the next async boundary repairs it, and the same call answers'() {
+    const { fs, afterTimer, failing } = await stoppedNamespace();
+    failing.on = false;
+    await afterTimer();
+    assert.equal(fs.statSync(INSIDE).size, 6, 'the refused call now answers');
+    assert.deepEqual(fs.readdirSync(`${APP}/locked`), ['inside.txt']);
+  },
+};
+
+await runScenarios(import.meta.path, scenarios);

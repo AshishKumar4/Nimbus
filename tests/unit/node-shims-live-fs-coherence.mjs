@@ -18,7 +18,7 @@ const barrierGate = { held: false, gate: null };
 const authority = createAuthority();
 authority.kfs.mkdir(dir, { recursive: true });
 authority.kfs.writeFile(resident, 'v1');
-const { fs, handle } = shimsOnSession({
+const { fs } = shimsOnSession({
   authority,
   cwd: dir,
   bundle: { 'home/user/coherence/resident.txt': 'v1' },
@@ -32,8 +32,8 @@ const { fs, handle } = shimsOnSession({
 const fsp = fs.promises;
 
 // A sibling process mutates the authoritative VFS after this facet spawned.
-authority.peer.writeFile(resident, current);
-authority.peer.writeFile(late, 'created-after-spawn');
+await authority.peer.writeFile(resident, current);
+await authority.peer.writeFile(late, 'created-after-spawn');
 
 const observed = {
   readFile: await fsp.readFile(resident, 'utf8'),
@@ -89,7 +89,7 @@ assert.deepEqual(observed, {
 // that refusal has to be actionable on its own: name the file, say why it
 // could not be served, and name the call that will serve it.
 const neverTouched = `${dir}/never-touched.txt`;
-authority.kfs.writeFile(neverTouched, 'only-in-the-authority');
+await authority.peer.writeFile(neverTouched, 'only-in-the-authority');
 // The namespace learned the name from the async readdir above, so the sync
 // existence view knows the path while the content view does not — which is
 // exactly the case EAGAIN exists to distinguish from a genuine ENOENT.
@@ -133,7 +133,7 @@ fs.writeFileSync(resident, 'same-facet-open-pending');
 {
   const opened = await fsp.open(resident, 'r');
   assert.equal(
-    authority.kfs.readFileString(resident),
+    await authority.peer.readFileString(resident),
     'same-facet-open-pending',
     'async open flushes pending sync content before observing authority metadata',
   );
@@ -142,12 +142,12 @@ fs.writeFileSync(resident, 'same-facet-open-pending');
 
 fs.writeFileSync(resident, 'same-facet-pending');
 assert.equal(await fsp.readFile(resident, 'utf8'), 'same-facet-pending');
-assert.equal(authority.kfs.readFileString(resident), 'same-facet-pending');
+assert.equal(await authority.peer.readFileString(resident), 'same-facet-pending');
 
 const accessCreated = `${dir}/access-created.txt`;
 fs.writeFileSync(accessCreated, 'created-before-access');
 await fsp.access(accessCreated);
-assert.equal(authority.kfs.readFileString(accessCreated), 'created-before-access');
+assert.equal(await authority.peer.readFileString(accessCreated), 'created-before-access');
 
 fs.mkdirSync(`${dir}/same-facet-dir`);
 assert.deepEqual(
@@ -159,7 +159,7 @@ assert.deepEqual(
   await fsp.readdir(dir),
   ['access-created.txt', 'late.txt', 'never-touched.txt', 'resident.txt', 'same-facet-dir'],
 );
-assert.equal(authority.kfs.stat(`${dir}/same-facet-dir`).type, 'directory');
+assert.equal((await authority.peer.stat(`${dir}/same-facet-dir`)).type, 'directory');
 
 // Removal has to retract the path from the sync existence view too. The
 // spawn-time metadata snapshot outlives the file it describes, so without
@@ -190,7 +190,7 @@ assert.throws(() => fs.readFileSync(dir, 'utf8'), (error) => {
 // output, intermittently. create-next-app copied its template that way and
 // wrote the directories but none of the files.
 {
-  authority.kfs.writeFile(`${dir}/held.txt`, 'held');
+  await authority.peer.writeFile(`${dir}/held.txt`, 'held');
   barrierGate.gate = Promise.withResolvers();
   barrierGate.held = true;
   const read = fsp.readFile(`${dir}/held.txt`, 'utf8');

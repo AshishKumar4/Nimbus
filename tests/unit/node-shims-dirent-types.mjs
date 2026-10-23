@@ -51,7 +51,8 @@ assert.deepEqual(kinds(await fs.promises.readdir(UNTYPED, { withFileTypes: true 
 }
 
 // ── Every exact type is its own predicate ──────────────────────────────────
-assert.deepEqual(kinds(await fs.promises.readdir(TYPED, { withFileTypes: true })), { sub: DIRECTORY, 'top.txt': CHARACTER },
+// The session lists the device beside the tree, so the listing has it too, typed as one.
+assert.deepEqual(kinds(await fs.promises.readdir(TYPED, { withFileTypes: true })), { null: CHARACTER, sub: DIRECTORY, 'top.txt': CHARACTER },
   'a character device is a character device, not a file');
 
 // ── The synchronous listing (the launch's namespace) types a device by its mode ──
@@ -61,7 +62,7 @@ assert.equal(fs.opendirSync(TYPED).readSync()?.name, 'null', 'opendirSync lists 
 
 // ── fs.promises.cp walks an untyped tree as a tree ─────────────────────────
 await fs.promises.cp(UNTYPED, '/tmp/copy', { recursive: true });
-assert.equal(authority.kfs.readFileString('/tmp/copy/sub/deeper/low.txt'), 'low\n', 'the deepest file is copied');
-assert.equal(authority.kfs.stat('/tmp/copy/sub').type, 'directory', 'and a directory is made a directory');
+assert.equal(await authority.peer.readFileString('/tmp/copy/sub/deeper/low.txt'), 'low\n', 'the deepest file is copied');
+assert.equal((await authority.peer.stat('/tmp/copy/sub')).type, 'directory', 'and a directory is made a directory');
 
 console.log('node-shims-dirent-types: all assertions passed');

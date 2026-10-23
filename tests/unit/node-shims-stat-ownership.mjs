@@ -11,7 +11,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createAuthority } from './lib/resident-body.mjs';
 import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+
 const APP = '/home/user/app';
 
 const authority = createAuthority();
@@ -23,7 +23,9 @@ kernel.mkdir(`${APP}/etc-like`, { mode: 0o755 });
 kernel.chown(`${APP}/etc-like`, 0, 0);
 authority.kfs.writeFile(`${APP}/mine-already.txt`, 'mine');
 authority.kfs.chmod(`${APP}/mine-already.txt`, 0o600);
-kernel.mkdir('tmp', { mode: 0o1777 });
+// /tmp is the session's from its creation; make it what a shared, sticky /tmp is.
+kernel.chmod('tmp', 0o1777);
+kernel.chown('tmp', 0, 0);
 kernel.writeFile('tmp/theirs.txt', 'theirs');
 kernel.chown('tmp/theirs.txt', 1001, 1001);
 
@@ -40,8 +42,9 @@ const own = (p) => t(() => { const s = fs.statSync(p); return { uid: s.uid, gid:
 assert.deepEqual(own(`${APP}/root-owned.json`), { uid: 0, gid: 0, mode: '644' });
 assert.deepEqual(own(`${APP}/etc-like`), { uid: 0, gid: 0, mode: '755' });
 const dated = fs.statSync(`${APP}/root-owned.json`);
-assert.equal(dated.ino, authority.kfs.stat(`${APP}/root-owned.json`).ino, 'chokidar sees the inode identity the session gives');
-assert.equal(dated.mtime.getTime(), authority.kfs.stat(`${APP}/root-owned.json`).mtime, 'and the session\'s own timestamps');
+const described = await authority.peer.stat(`${APP}/root-owned.json`);
+assert.equal(dated.ino, described.ino, 'chokidar sees the inode identity the session gives');
+assert.equal(dated.mtime.getTime(), described.mtime, 'and the session\'s own timestamps');
 
 // Stat'ed from the session, never the reader's own: a file the reader cannot
 // change, and one it cannot see into.
