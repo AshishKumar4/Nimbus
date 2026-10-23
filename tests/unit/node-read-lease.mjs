@@ -17,6 +17,7 @@ import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
 import {
   CRED,
   createAuthority,
+  coherenceStats,
   facetSupervisor,
   launchResident,
   runScenarios,
@@ -79,7 +80,7 @@ await runScenarios(import.meta.path, {
     const before = asked(log);
     for (let i = 0; i < 50; i++) await probe.resume();
     assert.ok(asked(log) - before <= 2, `50 responses asked ${asked(log) - before} times under a trusted lease`);
-    assert.ok(globalThis.__nimbusVfsCoherence.leasedBarriers >= 45, `${globalThis.__nimbusVfsCoherence.leasedBarriers} barriers answered by the lease`);
+    assert.ok(coherenceStats().leasedBarriers >= 45, `${coherenceStats().leasedBarriers} barriers answered by the lease`);
   },
 
   async 'a timer asks the session under a trusted read lease too: its turn carries no I/O, so neither the clock nor the trust moves there'() {

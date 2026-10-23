@@ -45,12 +45,12 @@ let grants = 0;
 /** @type {(name: string, args: unknown[]) => Promise<unknown>} */
 let forward = async () => { throw new Error('forward is not ready'); };
 const handle = facetSupervisor(authority, {
-  fsAcquired: async (...args) => {
+  fsReadBatch: async (...args) => {
     if (!wrote && JSON.stringify(args).includes('data/big.bin')) {
       wrote = true;
       await authority.peer.writeFile('home/user/app/pushed.txt', 'y'.repeat(PUSHED));
     }
-    return forward('fsAcquired', args);
+    return forward('fsReadBatch', args);
   },
   fsStorageGrant: async (...args) => {
     if (wrote) { grants++; await sleep(300); }

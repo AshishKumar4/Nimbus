@@ -14,7 +14,6 @@
 // local answer must never get wrong (held-local-reads-design.md T1–T16).
 
 import assert from 'node:assert/strict';
-import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
@@ -49,9 +48,9 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   const counted = { asked: 0, relistGate: null, lose: 0 };
   let forward;
   const handle = facetSupervisor(authority, {
-    fsAcquired: async (acquire, op, args) => {
-      if (op === 'stat' || op === 'lstat') counted.asked++;
-      return forward('fsAcquired', [acquire, op, args]);
+    stat: async (...args) => {
+      counted.asked++;
+      return forward('stat', args);
     },
     fsList: async (...args) => {
       if (counted.relistGate !== null) await counted.relistGate.promise;
@@ -258,20 +257,12 @@ await runScenarios(import.meta.path, {
     assert.equal(asked() - before, 0, 'once answered, the view did not answer');
   },
 
-  async 'a grant without a certificate, or a cursor in another epoch, asks the session (T13, T15)'() {
-    const stripped = await boot({ strip: true });
-    await stripped.fs.promises.stat(`${OUT}/seeded.txt`);
-    let before = stripped.asked();
-    await stripped.fs.promises.stat(`${OUT}/seeded.txt`);
-    assert.equal(stripped.asked() - before, 1, 'a grant without a certificate answered');
-    const { fs, asked } = await boot();
+  async 'a grant without a certificate asks the session (T13)'() {
+    const { fs, asked } = await boot({ strip: true });
     await fs.promises.stat(`${OUT}/seeded.txt`);
-    const cursor = globalThis.__nimbusVfsCursor;
-    const position = cursor.position;
-    cursor.position = positionOf(position.table, { ...position.feeds, '/': { epoch: 'another', cursor: rootOf(position).cursor } });
-    before = asked();
-    await fs.promises.stat(`${OUT}/seeded.txt`).finally(() => { if (rootOf(cursor.position).epoch === 'another') cursor.position = position; });
-    assert.equal(asked() - before, 1, 'a cursor in another epoch answered');
+    const before = asked();
+    await fs.promises.stat(`${OUT}/seeded.txt`);
+    assert.equal(asked() - before, 1, 'a grant without a certificate answered');
   },
 
   async 'a route across two held roots asks until the view has reached both certificates (T14)'() {

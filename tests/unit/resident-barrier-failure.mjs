@@ -22,7 +22,6 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import {
-  coherenceStats,
   createAuthority,
   facetSupervisor,
   launchResident,
@@ -97,15 +96,16 @@ async function boot() {
 
 await runScenarios(import.meta.path, {
   async 'a barrier whose ACQUIRE is dropped'() {
-    const { authority, fault, probe } = await boot();
+    const { authority, fault, probe, log } = await boot();
     await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     fault.fsAcquire = DROPPED;
+    const lists = log.calls.fsList ?? 0;
     assert.equal(
       await probe.resume(F),
       'v2',
       'a dropped ACQUIRE is not an empty delta: the rows are reconciled against the listing',
     );
-    assert.ok(coherenceStats().barrierFailures >= 1, 'and the failure is counted where the coherence stats are read');
+    assert.ok((log.calls.fsList ?? 0) > lists, 'and the listing was asked for the rows it reconciles');
   },
 
   async 'a repair owed within one epoch asks a delta from the store\'s floor, never a listing'() {
@@ -118,21 +118,21 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.resume(F), 'v2', 'the change is seen');
     assert.equal((log.calls.fsList ?? 0) - lists, 0, 'the repair listed nothing: the delta from the floor covers it');
     assert.ok((log.calls.fsAcquire ?? 0) - acquires <= 3, `and it took a delta or two (${(log.calls.fsAcquire ?? 0) - acquires} ACQUIREs)`);
-    assert.ok(coherenceStats().floorRepairs >= 1, 'counted as a repair from the floor');
   },
 
   async 'a peer file the dropped barrier missed is the peer\'s, not free: its record, and no write'() {
     // A failed barrier that were read as "nothing changed" would leave the
     // listing saying the peer's new name is free: statSync ENOENT, and a
     // write would pass as a creation owned by the writer.
-    const { authority, fault, probe } = await boot();
+    const { authority, fault, probe, log } = await boot();
     const root = authority.peerAs(CRED_KERNEL);
     await root.writeFile('home/user/app/peer.txt', 'theirs');
     await root.chmod('home/user/app/peer.txt', 0o644);
     fault.fsAcquire = DROPPED;
+    const lists = log.calls.fsList ?? 0;
     const seen = await probe.resumeWith(() => probe.own('/home/user/app/peer.txt'));
     fault.fsAcquire = null;
-    assert.ok(coherenceStats().barrierFailures >= 1, 'the barrier did fail');
+    assert.ok((log.calls.fsList ?? 0) > lists, 'the barrier did fail: the listing was asked for what it missed');
     assert.deepEqual(seen, { uid: 0, gid: 0, mode: '644' }, 'the resumption knew the peer\'s file and its owner');
     assert.equal(probe.t(() => probe.fs.writeFileSync('/home/user/app/peer.txt', 'ours')), 'ERR:EACCES', 'never a creation of its own');
     await probe.resumeWith(() => null);

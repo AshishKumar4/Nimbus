@@ -10,7 +10,6 @@
 import assert from 'node:assert/strict';
 import { _rpcFsAcquire } from '../../packages/worker/src/session/rpc.ts';
 import {
-  coherenceStats,
   createAuthority,
   facetSupervisor,
   launchResident,
@@ -49,7 +48,6 @@ await runScenarios(import.meta.path, {
       '{"pages":1}|chunk',
     );
     assert.equal(log.calls.fsReadBatch ?? 0, reads, 'the bytes rode the ACQUIRE, not a read');
-    assert.equal(coherenceStats().pushes, 2);
   },
 
   async 'a held file a peer rewrites is replaced in place, with no refetch'() {

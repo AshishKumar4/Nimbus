@@ -243,7 +243,7 @@ await runScenarios(import.meta.path, {
     await probe.resume();
     await until(() => appliedCursor() >= made, 'the barrier reported the new link');
     assert.equal(await probe.fs.promises.readFile(`${APP}/moving.txt`, 'utf8'), 'b');
-    assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'the access that missed was answered');
+    assert.deepEqual(await globalThis.__nimbusProcessFs.misses(), [], 'the access that missed was answered');
   },
 
   async 'a pending mode through a link reaches the authority before a stat of it'() {
@@ -364,7 +364,7 @@ await runScenarios(import.meta.path, {
     assert.throws(() => probe.fs.readSync(fd, Buffer.alloc(4), 0, 4, 0), { code: 'EAGAIN' }, 'the late file is not resident');
     probe.fs.closeSync(fd);
     assert.equal(await probe.fs.promises.readFile(`${APP}/late-link.txt`, 'utf8'), 'late');
-    assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'no miss is left to fail the run');
+    assert.deepEqual(await globalThis.__nimbusProcessFs.misses(), [], 'no miss is left to fail the run');
   },
 
   async 'a write through a symlink loop is ELOOP'() {

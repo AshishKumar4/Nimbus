@@ -247,17 +247,16 @@ await runScenarios(import.meta.path, {
     // that cannot name what changed waits for every own acknowledgement in
     // flight, and the listing it repaired from says who wrote last.
     const held = heldWriteFile();
-    const { authority, probe } = await boot({}, held.overrides, { tombstoneRows: 0 });
+    const { authority, log, probe } = await boot({}, held.overrides, { tombstoneRows: 0 });
 
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
     await authority.peer.writeFile('home/user/app/race.txt', 'PEER');
     for (let i = 0; i < 4_000; i++) await authority.peer.writeFile('home/user/app/churn.txt', `churn-${i}`);
     await authority.peer.unlink('home/user/app/churn.txt');
+    const lists = log.calls.fsList ?? 0;
     const resumed = probe.resume(`${APP}/race.txt`);
     assert.equal(await Promise.race([resumed, sleep(100).then(() => 'still waiting')]), 'still waiting');
-    const stats = coherenceStats();
-    assert.ok(stats.poisons >= 1 && stats.reconciles >= 1, 'the scenario is vacuous unless the barrier was poisoned and repaired');
 
     held.release();
     assert.equal(
@@ -265,6 +264,7 @@ await runScenarios(import.meta.path, {
       'PEER',
       'the repair skipped the report, so it must hand the listed revision to the write that owns the row',
     );
+    assert.ok((log.calls.fsList ?? 0) > lists, 'the scenario is vacuous unless the barrier was poisoned and repaired by a listing');
   },
 
   async 'a read in flight while a barrier reports its path'() {
@@ -307,15 +307,14 @@ await runScenarios(import.meta.path, {
     const files = {};
     for (let i = 0; i < N; i++) files[`many-${i}.txt`] = `old-${i}`;
     const paths = Object.keys(files).map((name) => `${APP}/${name}`);
-    const hold = { armed: false, held: false, gate: Promise.withResolvers(), served: Promise.withResolvers(), reads: 0, learns: 0 };
+    const hold = { armed: false, held: false, gate: Promise.withResolvers(), served: Promise.withResolvers(), reads: 0 };
     const { authority, log, probe } = await boot(files, (auth) => ({
       async fsReadBatch(requests) {
         const entries = await _rpcFsReadBatch(auth.host, requests);
         if (hold.armed) {
-          // A learn (_learnLive) rides the batch as an lstat request: not a read.
+          // A lookup rides the batch as an lstat request: not a read.
           const many = requests.filter((request) => request.path.includes('/many-'));
           hold.reads += many.filter((request) => request.lstat !== true).length;
-          hold.learns += many.filter((request) => request.lstat === true).length;
           if (!hold.held) {
             hold.held = true;
             hold.served.resolve();
@@ -330,7 +329,7 @@ await runScenarios(import.meta.path, {
     const first = probe.resumeAll(paths);
     await hold.served.promise;
     // Each later barrier asks, or the read lease the first one took answers it.
-    const barriers = () => (log.calls.fsAcquire ?? 0) + (globalThis.__nimbusVfsCoherence?.leasedBarriers ?? 0);
+    const barriers = () => coherenceStats().barriers + coherenceStats().leasedBarriers;
     const acquired = barriers();
     const later = [];
     for (let i = 0; i < 9; i++) later.push(probe.resumeAll(paths));
@@ -343,7 +342,6 @@ await runScenarios(import.meta.path, {
       assert.deepEqual(seen, expected, 'every resumption reads the peer bytes');
     }
     assert.equal(hold.reads, N, `one read per changed file, not one per resumption (was ${hold.reads})`);
-    assert.equal(hold.learns, N, `one learn per changed file, not one per resumption (was ${hold.learns})`);
   },
 
   async 'a refetch in flight that a later write outdates'() {

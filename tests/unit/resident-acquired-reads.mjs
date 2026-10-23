@@ -1,13 +1,7 @@
 #!/usr/bin/env bun
-// An async read takes its barrier with it: one call to the session where it
-// was two (a stat) or three (a readFile, with its stat for the sync view).
-//
-// Every async fs read applies an ACQUIRE first, so what the sync view shows
-// afterwards is at least as new as what the read returned. Each was its own
-// round trip, measured at 7-8 ms on a throwaway (2026-10-01) while the
-// session's own work took under a millisecond. fsAcquired answers the barrier
-// and the read together; the process applies the barrier before it uses the
-// value, and before it throws when the read was refused.
+// An async read takes its barrier before it answers: what the sync view shows
+// after it is at least as new as what the read returned, and a read the session
+// answers after a barrier reported its file gone does not bring the name back.
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -74,19 +68,20 @@ async function callsOf(log, run) {
   for (const [name, n] of Object.entries(log.calls)) if (n !== (before[name] ?? 0)) made[name] = n - (before[name] ?? 0);
   return { value, made };
 }
+const total = (made) => Object.values(made).reduce((sum, n) => sum + n, 0);
 
 await runScenarios(import.meta.path, {
   async 'a readFile, a stat and an lstat each make one call'() {
     const { probe, log } = await boot();
     const read = await callsOf(log, () => probe.fs.promises.readFile(F, 'utf8'));
     assert.equal(read.value, 'v1');
-    assert.deepEqual(read.made, { fsAcquired: 1 }, 'readFile: the barrier, the bytes and the stat together');
+    assert.equal(total(read.made), 1, `readFile: the barrier, the bytes and the stat together (${JSON.stringify(read.made)})`);
     const stat = await callsOf(log, () => probe.fs.promises.stat(F));
     assert.equal(stat.value.size, 2);
-    assert.deepEqual(stat.made, { fsAcquired: 1 }, 'stat');
+    assert.equal(total(stat.made), 1, `stat (${JSON.stringify(stat.made)})`);
     const lstat = await callsOf(log, () => probe.fs.promises.lstat(F));
     assert.equal(lstat.value.isFile(), true);
-    assert.deepEqual(lstat.made, { fsAcquired: 1 }, 'lstat');
+    assert.equal(total(lstat.made), 1, `lstat (${JSON.stringify(lstat.made)})`);
   },
 
   async 'what an async read returned, the sync view shows after it'() {
@@ -108,77 +103,52 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.settle(probe.fs.promises.readFile('/home/user/app/missing.txt', 'utf8')), 'ERR:ENOENT');
   },
 
-  async 'a session deployed before fsAcquired is asked for the barrier and the read separately'() {
-    // Each refusal an older deployment gives: its SupervisorRPC lacks the
-    // method, its host lacks the op, or its host refuses the op's read id.
-    for (const refusal of [
-      'The RPC receiver does not implement the method "fsAcquired".',
-      "supervisor op: 'fsAcquired' is not served by this host",
-      "supervisor op: 'fsAcquired' is not a read, so it cannot carry a read id",
-    ]) {
-      const { authority, probe, log } = await boot({ fsAcquired: async () => { throw new Error(refusal); } });
-      await authority.peer.writeFile('home/user/app/f.txt', 'v2');
-      assert.equal(await probe.fs.promises.readFile(F, 'utf8'), 'v2', `readFile still reads (${refusal})`);
-      assert.equal((await probe.fs.promises.stat(F)).size, 2, 'stat still stats');
-      const later = await callsOf(log, () => probe.fs.promises.stat(F));
-      assert.equal(later.made.fsAcquired, undefined, 'and fsAcquired is not asked again');
-      assert.equal(later.made.fsAcquire, 1, 'the barrier is asked on its own');
-    }
-  },
-
-  async 'a session that answers no barrier with the read is asked for one'() {
-    let forward;
-    const { authority, probe, log, forward: f } = await boot({
-      fsAcquired: async (...args) => ({ ...(await forward('fsAcquired', args)), acquired: undefined }),
-    });
-    forward = f;
-    await authority.peer.writeFile('home/user/app/g.txt', 'g2');
-    const stat = await callsOf(log, () => probe.fs.promises.stat(F));
-    assert.equal(stat.made.fsAcquire, 1, 'the barrier is asked on its own');
-    assert.notEqual(probe.read(G), 'g1', 'and applied');
-  },
-
   async 'a read answered after a barrier reported its file gone does not bring the name back'() {
-    // The session read the file and its stat, and the answer is held while a
-    // peer deletes the file and a barrier applies the deletion.
+    // The session answers the read's content, which is held while a peer
+    // deletes the file and a barrier applies the deletion.
+    const h = '/home/user/app/h.txt';
     const served = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
     const { authority, probe } = await boot((forward) => ({
       fsReadBatch: async (...args) => {
         const answer = await forward('fsReadBatch', args);
-        if (!armed) return answer;
+        if (!armed || !args[0].some((request) => request.path.endsWith('/h.txt') && request.lstat !== true)) return answer;
         armed = false;
         served.resolve();
         await release.promise;
         return answer;
       },
     }));
+    // Made after the launch, so the store holds none of its bytes.
+    await authority.peer.writeFile('home/user/app/h.txt', 'h1');
     armed = true;
-    const reading = probe.fs.promises.readFile(G, 'utf8');
+    const reading = probe.fs.promises.readFile(h, 'utf8');
     await served.promise;
-    await authority.peer.unlink('home/user/app/g.txt');
+    await authority.peer.unlink('home/user/app/h.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => appliedCursor() >= deleted, 'the barrier applied the deletion');
     release.resolve();
-    assert.equal(await reading, 'g1', 'the read is what was there when it was served');
+    assert.equal(await reading, 'h1', 'the read is what was there when it was served');
     await resumed;
-    assert.equal(probe.fs.existsSync(G), false, 'the sync view has the name gone');
+    assert.equal(probe.fs.existsSync(h), false, 'the sync view has the name gone');
     await probe.resume();
-    assert.equal(probe.fs.existsSync(G), false, 'after another barrier too');
+    assert.equal(probe.fs.existsSync(h), false, 'after another barrier too');
   },
 
   async 'a read whose barrier the cursor passed still teaches the sync view its file'() {
-    // The read's barrier is answered, then an unrelated write moves the
-    // cursor past it, and only then is the file made and read: the read
-    // cannot date its stat, and asks for a fresh one.
+    // The file is made after the launch and before the read, so the read's
+    // bytes are the session's to fetch. Its barrier is answered, then an
+    // unrelated write moves the cursor past it, and only then do the bytes
+    // come back: the sync view has the file the read found.
     const acquired = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
+    const late = '/home/user/app/late.txt';
     const { authority, probe } = await boot((forward) => ({
       fsReadBatch: async (...args) => {
-        if (armed) {
+        if (armed && args[0].some((request) => request.path.endsWith('/late.txt') && request.lstat !== true)) {
           armed = false;
           acquired.resolve();
           await release.promise;
@@ -186,15 +156,14 @@ await runScenarios(import.meta.path, {
         return forward('fsReadBatch', args);
       },
     }));
+    await authority.peer.writeFile('home/user/app/late.txt', 'late');
     armed = true;
-    const late = '/home/user/app/late.txt';
     const reading = probe.fs.promises.readFile(late, 'utf8');
     await acquired.promise;
     await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     const unrelated = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => appliedCursor() >= unrelated, 'the barrier applied the unrelated write');
-    await authority.peer.writeFile('home/user/app/late.txt', 'late');
     release.resolve();
     assert.equal(await reading, 'late');
     await resumed;

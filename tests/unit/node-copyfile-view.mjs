@@ -52,11 +52,11 @@ await runScenarios(import.meta.path, {
     const release = Promise.withResolvers();
     let box;
     box = await boot((forward) => ({
-      writeBatchStream: async (...args) => {
-        if (!hold) return forward('writeBatchStream', args);
+      fsCopyFile: async (...args) => {
+        if (!hold) return forward('fsCopyFile', args);
         hold = false;
         await box.authority.peer.writeFile('home/user/app/src', 'B');
-        const answer = await forward('writeBatchStream', args);
+        const answer = await forward('fsCopyFile', args);
         answered.resolve();
         await release.promise;
         return answer;
@@ -82,13 +82,13 @@ await runScenarios(import.meta.path, {
     let hold = false;
     let box;
     box = await boot((forward) => ({
-      writeBatchStream: async (...args) => {
+      fsCopyFile: async (...args) => {
         if (hold) {
           hold = false;
           await box.authority.peer.unlink('home/user/app/d');
           await box.authority.peer.symlink('B', 'home/user/app/d');
         }
-        return forward('writeBatchStream', args);
+        return forward('fsCopyFile', args);
       },
     }), (authority) => {
       authority.kfs.writeFile('home/user/app/src', 'S');
