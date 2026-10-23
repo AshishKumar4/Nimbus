@@ -40,6 +40,7 @@ import {
   beginLoaderFetch,
   readmitRefused,
   claimAdmission,
+  refusedStart,
   suspendHeldAdmission,
   withDynamicWorkerCapNamed,
   type DynamicWorkerClaim,
@@ -65,7 +66,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import type { EntrypointStub, ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
-import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
+import { ENTERED_FAILURE_SOURCE, RUN_ENTERED, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
 
 /** The one binding a pool needs off whichever env its host hands it. */
@@ -376,9 +377,15 @@ export function assembleLoaderWorkerModuleSource(
     : '__fn__(request)';
   lines.push(
     TASK_BODY_ERROR_SOURCE,
+    ENTERED_FAILURE_SOURCE,
     'export default class extends WorkerEntrypoint {',
-    '  execute(...args) {',
-    `    return ${callExpr};`,
+    '  // What the task throws is its own, never a refusal to start it (RUN_ENTERED).',
+    '  async execute(...args) {',
+    '    try {',
+    `      return await ${callExpr};`,
+    '    } catch (error) {',
+    '      throw __nimbusEntered(error);',
+    '    }',
     '  }',
     '',
     '  // Loads the worker and runs nothing (IsolatePool.warm).',
@@ -1034,7 +1041,7 @@ export class IsolatePool {
           return await runOnce(null);
         }
         if (err instanceof Error) {
-          throw new ExecutionError(err.message, err.stack);
+          throw Object.assign(new ExecutionError(err.message, err.stack), { [RUN_ENTERED]: Reflect.get(err, RUN_ENTERED) === true });
         }
         throw new ExecutionError(String(err));
       } finally {
@@ -1137,7 +1144,7 @@ export class IsolatePool {
           // reverse direction. This refresh targets the stale-loader case.
           continue;
         }
-        if (cause === 'dynamic_worker_cap' && held) {
+        if (refusedStart(lastError) && held) {
           // The platform refused to start this call: nothing ran, so it is
           // sent again, without spending an attempt, once the ledger lets it in.
           firstRefusal ??= Date.now();

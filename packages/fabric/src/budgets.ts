@@ -34,15 +34,16 @@ import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { RUN_ENTERED } from './task-body-error.js';
 import { withResolvers } from './turn-budget.js';
 
 export { DO_DYNAMIC_WORKER_LIMIT };
 
 /**
  * Ends one hold, idempotently. Pass the error the call failed with, if it
- * did: the platform's refusal at the Dynamic Worker limit (classifyError's
- * 'dynamic_worker_cap') pauses the ledger's admissions (see {@link beginLoaderFetchWhenFree}); anything else,
- * or nothing, just ends the hold.
+ * did: the platform's refusal at the Dynamic Worker limit (refusedStart)
+ * pauses the ledger's admissions (see {@link beginLoaderFetchWhenFree});
+ * anything else, or nothing, just ends the hold.
  */
 export type EndLoaderFetch = (failure?: unknown) => void;
 
@@ -228,7 +229,7 @@ function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefi
         entry.news.delete(holder);
       }
     }
-    if (classifyError(failure) === 'dynamic_worker_cap') refused(entry, epoch);
+    if (refusedStart(failure)) refused(entry, epoch);
     else if (epoch === entry.epoch && entry.pauseMs === 0) entry.refusals = 0;
     admitWaiters(entry);
   };
@@ -1020,13 +1021,22 @@ function claimedWidth(entry: LoaderLedger): number {
 }
 
 /**
+ * Whether `error` is the platform refusing a Dynamic Worker's start at its
+ * limit: worded so (classifyError), and not thrown by a task its call had
+ * entered (RUN_ENTERED), which may say anything and must not run again.
+ */
+export function refusedStart(error: unknown): boolean {
+  return classifyError(error) === 'dynamic_worker_cap' && Reflect.get(Object(error), RUN_ENTERED) !== true;
+}
+
+/**
  * Name the per-DO accounting on a refusal at the Dynamic Worker limit; hand
  * every other error back untouched. The platform's message
  * says only that the limit was hit — which workers were in flight, and what
  * fan-outs had claimed, is what the operator needs to know to shrink anything.
  */
 export function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error {
-  if (classifyError(error) !== 'dynamic_worker_cap') return error;
+  if (!refusedStart(error)) return error;
   const entry = ledger(ctx);
   const platform = error instanceof Error ? error.message : String(error);
   return new Error(

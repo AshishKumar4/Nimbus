@@ -26,7 +26,7 @@ import {
 } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
-import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ProcessNotAdmitted, type ResponseScope, type SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -41,6 +41,7 @@ import {
   claimAdmission,
   launchWorkerKey,
   readmitRefused,
+  refusedStart,
   withDynamicWorkerCapNamed,
 } from './budgets.js';
 import {
@@ -63,7 +64,7 @@ import type { ProcessFsOp } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
-import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import { enteredByRun } from './one-shot-entry.js';
 import { holdThreadWatch } from './thread-stalls.js';
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 
@@ -927,7 +928,7 @@ async function runOneShot<T>(
           }
         });
       } catch (error) {
-        if (started || Reflect.get(Object(error), RUN_ENTERED) === true || classifyError(error) !== 'dynamic_worker_cap') throw error;
+        if (started || !refusedStart(error)) throw error;
         // Refused before it was entered: an RPC-invoked worker stays counted until its session tears down, and workerd gives no signal for that.
         // The ledger learns the refusal from the hold it ends.
         endFetch(error);
