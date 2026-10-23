@@ -1830,15 +1830,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) {
-      counts.local++;
-      const done = holder.write(handleId, offset, bytes, !now && answeredWrites);
-      if (done !== undefined) return done;
-      // Bytes this process does not hold are refused as the sync read of them is, and their fetch begun.
-      const of = holder.provisional.inodeOf(handleId);
-      if (of !== undefined && !holder.provisional.pending(of.entry.dev, of.entry.ino)) refusedFetch = faultIn(of.key, of.entry);
-      throw NOT_NOW;
-    }
+    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes, !now && answeredWrites); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
