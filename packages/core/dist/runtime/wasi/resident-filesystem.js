@@ -1242,10 +1242,11 @@ export function residentFilesystem(session, resident, delegation) {
      * A change an awaited caller makes that the session would otherwise make by
      * name (a whole-file write, mkdir -p, a copy): decided here as a caller
      * that cannot wait decides it (`decided`), then answered once the session
-     * has everything this process logged (its refusal thrown), so it travels
-     * in the process's waves (a stopped run's are put back: SqliteVFS
-     * restoreRun) as the program's own change. The session's (`session`)
-     * where this view cannot decide it.
+     * has everything this process logged (its refusal thrown) and a barrier
+     * begun after it landed, as the session's own change by name is (shown),
+     * so it travels in the process's waves (a stopped run's are put back:
+     * SqliteVFS restoreRun) as the program's own change. The session's
+     * (`session`) where this view cannot decide it.
      */
     const decidedThenSent = (decided, session) => {
         if (now || holder === null)
@@ -1257,7 +1258,7 @@ export function residentFilesystem(session, resident, delegation) {
         catch {
             return session();
         }
-        return holder.flush().then(() => value);
+        return shown(holder.flush().then(() => value));
     };
     /**
      * A change by name no held subtree decided, at `keys` (where each name's

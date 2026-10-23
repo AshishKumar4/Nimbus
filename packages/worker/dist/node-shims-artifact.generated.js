@@ -13,9 +13,9 @@ export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-5208234753402970.js
 export const NODE_SHIMS_BUILD_ID = "5208234753402970";
 export const NODE_SHIMS_SHA256 = "520823475340297057f5bb0e60472aefb1248dd8fc5a8d2d117e4986ccc1439a";
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-823e7974cc7f5bca.js";
-export const RESIDENT_STORE_BUILD_ID = "823e7974cc7f5bca";
-export const RESIDENT_STORE_SHA256 = "823e7974cc7f5bcae41973f99f5cecf878942722daaff6a874c27a3268b98e19";
+export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-9a82780227d600fa.js";
+export const RESIDENT_STORE_BUILD_ID = "9a82780227d600fa";
+export const RESIDENT_STORE_SHA256 = "9a82780227d600fad5c4f382baf2897260769fc2efab8c2e7b5081ce2cec1d02";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-eb58a6d5234006d4.js";
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "eb58a6d5234006d4";

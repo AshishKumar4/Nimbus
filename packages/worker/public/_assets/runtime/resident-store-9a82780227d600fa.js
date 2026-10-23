@@ -10740,7 +10740,7 @@ var __nimbusResidentModule = (() => {
       } catch {
         return session2();
       }
-      return holder.flush().then(() => value);
+      return shown(holder.flush().then(() => value));
     };
     const ownChange = (keys, decided, session2) => {
       const rows = keys.map((key) => key === void 0 || !store.ready() ? void 0 : ownEntryAt(key));
