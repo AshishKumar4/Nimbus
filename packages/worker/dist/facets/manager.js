@@ -56,8 +56,6 @@ import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.j
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, STYLESHEET_SOURCE_MAX_FILES } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
-/** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
-const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
@@ -103,7 +101,7 @@ import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_BYTES, LAUNCH_GUESS_MAX_BYTES, LAUNCH_GUESS_MAX_ENTRIES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { REPL_IMPORT } from '@nimbus-sh/core/runtime/js-repl-names.js';
@@ -2285,8 +2283,8 @@ function _bundleCellLength(cell) {
  * on trees with several 5–10 MiB artifacts that read alone was the memory
  * pressure that reset the isolate.
  *
- * `perFileCeiling` is the pass's own cap (e.g. CWD_SNAPSHOT_MAX_FILE_BYTES,
- * BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES); omit it for budget-only checks.
+ * `perFileCeiling` is a guessing pass's (LAUNCH_GUESS_MAX_BYTES); omit
+ * it for budget-only checks.
  */
 async function _bundleAdmits(vfs, path, budgetState, perFileCeiling) {
     const stat = await filesOf(vfs).lstat(path).catch(() => null);
@@ -2857,12 +2855,11 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
         if ((isBundleModuleCandidate(stripped) || stripped.endsWith('.cjs')) && !isNativeBinPath(stripped)) {
             if (independent.has(stripped))
                 return false;
-            if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)))
+            if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, LAUNCH_GUESS_MAX_BYTES)))
                 return false;
             const closure = await prefetchForRequire(filesOf(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')), '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
                 purpose: 'dependency-closure', held: bundle,
                 maxAdditionalBytes: Math.max(0, bound - rawBytes),
-                maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
             }, undefined, options.conditions);
             if ('kind' in closure || closure.bundle[stripped] === undefined)
                 return false;
@@ -2875,7 +2872,6 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                 bundle[member] = cell;
                 rawBytes += _bundleCellRawBytes(cell);
                 budgetState.totalBytes += _bundleCellLength(cell);
-                budgetState.fileCount++;
                 added++;
             }
             groups.push({ root: stripped, members: new Set(Object.keys(closure.bundle)) });
@@ -2883,22 +2879,18 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
         }
         if (stripped in bundle)
             return false;
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            return false;
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
         try {
             if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
                 return false;
-            // This is a guess at what a program might require, and the same
-            // per-file ceiling the entry-package walk applies bounds it: a
-            // multi-MiB main entry is an alternative bundle (typescript's 8.69 MiB
-            // `lib/typescript.js` beside the `lib/tsc.js` that actually runs), and
-            // one guess must not spend a third of the budget — and a third of the
-            // supervisor's headroom — on every invocation that never reads it.
-            // Literal dependencies use the closure's byte allowance, not this
-            // speculative-root per-file ceiling.
-            if (!(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)))
+            // This is a guess at what a program might require, bounded as every
+            // guess is (LAUNCH_GUESS_MAX_BYTES): a multi-MiB main entry is an
+            // alternative bundle (typescript's 8.69 MiB `lib/typescript.js` beside
+            // the `lib/tsc.js` that actually runs), and a guess may cost a rebuild
+            // no more than the miss it saves. Literal dependencies use the
+            // closure's byte allowance, not this speculative-root ceiling.
+            if (!(await _bundleAdmits(vfs, stripped, budgetState, LAUNCH_GUESS_MAX_BYTES)))
                 return false;
             // A guess must not be a native binary. Nothing in a Workers isolate can
             // load a `.node` addon or a `.exe` — the ABI policy classifies them
@@ -2921,7 +2913,6 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
             bundle[stripped] = content;
             rawBytes += raw;
             budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
             added++;
             return true;
         }
@@ -3079,7 +3070,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
     // 9.2 MB wasm image the launch would compile): a guess does not guess those.
     const followed = new Set();
     for (let i = 0; i < deferred.length; i++) {
-        if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+        if (rawBytes >= bound)
             break;
         const target = await resolveDeferredImport(filesOf(vfs), deferred[i], options.pacer?.spend.bind(options.pacer), options.conditions);
         // Its own package: where the deferral lands, not how it is spelled.
@@ -3239,7 +3230,7 @@ const STATIC_ABSOLUTE_LITERALS = {
  */
 async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selection) {
     for (const [path, source] of sources) {
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES || budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return;
         if (!selection.mayName(source))
             continue;
@@ -3250,7 +3241,7 @@ async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selecti
             const key = stripLeadingSlashes(named);
             if (bundle[key] !== undefined)
                 continue;
-            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES || budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+            if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
                 return;
             try {
                 if (!(await filesOf(vfs).exists(key)) || (await filesOf(vfs).isDirectory(key)))
@@ -3264,7 +3255,6 @@ async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selecti
                     continue;
                 bundle[key] = content;
                 budgetState.totalBytes += cellLen;
-                budgetState.fileCount++;
             }
             catch { /* missing, unreadable, or gone since */ }
         }
@@ -3338,9 +3328,8 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
     // `npm create vite@latest test-vite -- --template vanilla`).
     //
     // 1000 covers the documented create-* family (create-vite ~316, create-
-    // nuxt ~700, create-react-router ~400). Still well below the optional
-    // enrichment budget of 4000 files / 24 MiB, which retains the defense
-    // against pathological package trees.
+    // nuxt ~700, create-react-router ~400). The map's bytes
+    // (VFS_BUNDLE_MAX_BYTES) still bound what it stages of a pathological tree.
     //
     // for the prior wave's empirical investigation (243 manifest entries,
     // only 140/243 readable pre-bump on prod 11df6ca).
@@ -3393,7 +3382,7 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
             if (stat === null)
                 continue;
             const size = stat.size;
-            if (size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)
+            if (size > LAUNCH_GUESS_MAX_BYTES)
                 continue;
             candidates.push({ path: child, size });
         }
@@ -3410,8 +3399,6 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
     candidates.sort((a, b) => a.size - b.size);
     let added = 0;
     for (const candidate of candidates) {
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            break;
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             break;
         if (candidate.size > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)
@@ -3431,7 +3418,6 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
             continue;
         bundle[candidate.path] = content;
         budgetState.totalBytes += cellLen;
-        budgetState.fileCount++;
         added++;
     }
     return { added, wasmPaths };
@@ -3580,8 +3566,6 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     candidates.sort((a, b) => a.size - b.size);
     let added = 0;
     for (const candidate of candidates) {
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            break;
         if (budgetState.totalBytes + candidate.size > VFS_BUNDLE_MAX_BYTES)
             continue;
         let content;
@@ -3601,7 +3585,6 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         requiredPaths.add(candidate.path);
         bytes += raw;
         budgetState.totalBytes += cellLen;
-        budgetState.fileCount++;
         added++;
     }
     // A module brings what it loads synchronously, its closure staged whole or
@@ -3624,7 +3607,6 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
             // UTF-8 bytes, which bound both the raw bytes `room` counts and the
             // cell lengths the bundle's own cap counts.
             maxAdditionalBytes: Math.max(0, Math.min(room - bytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
-            maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
         });
         if ('kind' in closure)
             continue;
@@ -3639,7 +3621,6 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
             requiredPaths.add(dep);
             bytes += raw;
             budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
             added++;
         }
     }
@@ -3711,25 +3692,6 @@ function _isLoadableModuleCell(path) {
     return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.json'
         || ext === '.wasm' || ext === '' || bundleCompiledLoader(path) !== null;
 }
-/**
- * Per-file ceiling for the speculative passes over installed packages: the
- * entry-package walk (`addBinTargetSiblings`) and the main-entry oversample
- * (`greedyAddMainEntries`).
- *
- * Everything the entry package needs in order to *run* arrives through the
- * require closure, which is uncapped and never evicted. These passes exist
- * only to catch what the static walker cannot see — data files, and modules
- * reached by a computed require — and those are small. Multi-MiB cells in a
- * package tree are overwhelmingly alternative bundles — typescript ships an
- * 8.69 MiB `lib/typescript.js` that `tsc` never reads — rather than data.
- *
- * So one speculative guess must not spend the budget every later invocation
- * then carries: the same reasoning as `CWD_SNAPSHOT_MAX_FILE_BYTES`, applied
- * to the package tree. A miss this causes is loud and self-repairing: the
- * facet reports the unstaged read and the next build stages it from the
- * residency ledger, which has no per-file rule.
- */
-const BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES = 4 * 1024 * 1024;
 function shouldIncludeBinPackageFile(pkgRoot, path, bundleProfile) {
     if (bundleProfile === 'scaffold')
         return true;
@@ -3769,11 +3731,12 @@ function inCwdProject(root, path) {
 }
 async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
     const root = cwdProjectRoot(cwd);
-    const MAX_PROJECT_FILES = 512;
     let added = 0;
     let visited = 0;
+    // What the walk has staged: guesses, which together cost a rebuild no more than one miss.
+    let guessed = 0;
     const queue = [root];
-    while (queue.length > 0 && visited < MAX_PROJECT_FILES) {
+    while (queue.length > 0 && visited < LAUNCH_GUESS_MAX_ENTRIES) {
         const dir = queue.shift();
         let entries;
         try {
@@ -3783,7 +3746,7 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
             continue;
         }
         for (const e of entries) {
-            if (visited >= MAX_PROJECT_FILES)
+            if (visited >= LAUNCH_GUESS_MAX_ENTRIES)
                 break;
             visited++;
             if (e.name === '.' || e.name === '..')
@@ -3798,14 +3761,11 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
             }
             if (bundle[child] !== undefined)
                 continue;
-            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-                return { added };
             if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
                 return { added };
-            // Skip an oversized file before reading it: this walk guesses at what
-            // the program might read, and one guess must not spend the budget (or
-            // the supervisor's headroom) that every later invocation then carries.
-            if (!(await _bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES)))
+            // Skip a file past what guessing may still spend before reading it:
+            // this walk guesses at what the program might read.
+            if (!(await _bundleAdmits(vfs, child, budgetState, LAUNCH_GUESS_MAX_BYTES - guessed)))
                 continue;
             let content;
             try {
@@ -3815,13 +3775,13 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
                 continue;
             }
             const cellLen = _bundleCellLength(content);
-            if (cellLen > CWD_SNAPSHOT_MAX_FILE_BYTES)
+            if (guessed + cellLen > LAUNCH_GUESS_MAX_BYTES)
                 continue;
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return { added };
             bundle[child] = content;
+            guessed += cellLen;
             budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
             added++;
         }
     }
@@ -4178,7 +4138,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     for (const path of closurePaths)
         room -= _bundleCellRawBytes(bundle[path]);
     let truncated = false;
-    const budgetState = { totalBytes: 0, fileCount: 0 };
+    const budgetState = { totalBytes: 0 };
     const emits = new Map();
     const codeOnly = new Set();
     // Each enrichment pass below re-scans the bundle accumulated so far, so a
@@ -6397,7 +6357,8 @@ export class FacetManager {
                 const roots = this._profileRoots(closure, spec.cwd);
                 if (roots.length === 0)
                     return [];
-                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+                // Another tenant's reads, read by no run of this one: a guess for this launch.
+                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), LAUNCH_GUESS_MAX_BYTES));
                 return offered.map((entry) => entry.path);
             };
             const learning = await this.learning.forLaunch(key);

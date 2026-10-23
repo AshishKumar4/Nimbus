@@ -80,7 +80,9 @@ var __nimbusResidentModule = (() => {
   var PREFETCH_CACHE_MAX_BYTES = 10 * 1024 * 1024;
   var TRANSFORM_STORE_MAX_BYTES = 64 * 1024 * 1024;
   var TRANSFORM_STORE_MAX_ENTRY_BYTES = TRANSFORM_STORE_MAX_BYTES / 8;
-  var CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+  var GUESS_MISS_MS = 416;
+  var LAUNCH_GUESS_MAX_BYTES = Math.floor(GUESS_MISS_MS / 452 * 1024 * 1024);
+  var LAUNCH_GUESS_MAX_ENTRIES = Math.floor(GUESS_MISS_MS / (86 / 420));
   var WASI_RESIDENT_FILE_CAP_BYTES = 8 * 1024 * 1024;
   var DEFAULT_HOME = "/home/user";
   function defaultPath(home) {
