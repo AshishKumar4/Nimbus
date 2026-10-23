@@ -260,6 +260,7 @@ export function createTransport(coherence, admission, namespace, cells) {
         const landed = new SafeMap();
         let filled = 0, failed = 0, fetchedBytes = 0;
         const failedPaths = new SafeSet();
+        const stalePaths = new SafeSet();
         /** This read's own, from before it is asked: the chunk rows it writes are its while nothing changes their heads (cells.beginFill). */
         const paths = new SafeList();
         for (let i = 0; i < files.length; i++)
@@ -317,8 +318,11 @@ export function createTransport(coherence, admission, namespace, cells) {
                         cells.put(t, range.path, { error: 'EACCES' }, range.rev);
                         filled++;
                     }
-                    else
+                    else {
                         failedPaths.add(range.path);
+                        if (code === 'ESTALE')
+                            stalePaths.add(range.path);
+                    }
                     continue;
                 }
                 const bytes = ownValue(entry, 'bytes');
@@ -371,7 +375,7 @@ export function createTransport(coherence, admission, namespace, cells) {
             await admission.reportSize();
         return {
             requested, filled: filled + copied, failed,
-            bytes: fetchedBytes, ranges: ranges.length, copied,
+            bytes: fetchedBytes, ranges: ranges.length, copied, stale: stalePaths.size,
         };
     };
     /**

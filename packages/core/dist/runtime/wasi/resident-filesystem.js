@@ -50,6 +50,8 @@ import { isCharacterDevice } from '../../vfs/vfs.js';
 const MAX_LISTINGS_PER_CALL = 64;
 /** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
 const MAX_CATCH_UPS_PER_CALL = 3;
+/** What a call's local answer is where the session said the view is behind for what it reads (a fill refused ESTALE). */
+const BEHIND = Symbol('behind');
 /** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
 const WALKED_DIRECTORIES = 1024;
 /**
@@ -664,7 +666,7 @@ export function residentFilesystem(session, resident, delegation) {
         const fill = () => {
             counts.fills++;
             counts.filledBytes += entry.size;
-            return store.fill(key, entry).then(keep);
+            return store.fill(key, entry).then((bytes) => (bytes === 'stale' ? BEHIND : keep(bytes)));
         };
         // A batch fetching it (read-ahead) is waited on, not repeated.
         const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
@@ -681,7 +683,17 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const answer = (name, local, remote, caughtUps = 0) => {
         const settle = (value) => {
-            if (value !== DELEGATE) {
+            // The session said the view is behind for what this call reads: a barrier, then the call again (a caller that
+            // may wait; past the bound, or one that cannot wait, the session answers).
+            if (value === BEHIND && !now && caughtUps < MAX_CATCH_UPS_PER_CALL) {
+                return catchUp().then((ok) => {
+                    if (ok)
+                        return answer(name, local, remote, caughtUps + 1);
+                    delegated(name);
+                    return remote();
+                });
+            }
+            if (value !== DELEGATE && value !== BEHIND) {
                 counts.local++;
                 return value;
             }
@@ -917,6 +929,8 @@ export function residentFilesystem(session, resident, delegation) {
         if (existing !== undefined)
             return pinned(existing);
         return after(contentOf(key, entry), (bytes) => {
+            if (bytes === BEHIND)
+                return BEHIND;
             if (bytes === undefined || !store.reserve(bytes.byteLength))
                 return null;
             const pin = { bytes, holders: 0 };

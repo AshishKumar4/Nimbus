@@ -2563,9 +2563,9 @@ var __nimbusResidentModule = (() => {
           async fill(k, entry) {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
-            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
+            const fetched = await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
             const bytes = view.content(k, entry.revision);
-            return bytes === void 0 ? null : bytes;
+            return bytes !== void 0 ? bytes : fetched.stale > 0 ? "stale" : null;
           },
           pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
           // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).
@@ -2856,6 +2856,7 @@ var __nimbusResidentModule = (() => {
       const landed = new SafeMap();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = new SafeSet();
+      const stalePaths = new SafeSet();
       const paths = new SafeList();
       for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
       const fill = cells.beginFill(paths);
@@ -2895,7 +2896,10 @@ var __nimbusResidentModule = (() => {
             if (code === "EACCES" && range.part === 0) {
               cells.put(t, range.path, { error: "EACCES" }, range.rev);
               filled++;
-            } else failedPaths.add(range.path);
+            } else {
+              failedPaths.add(range.path);
+              if (code === "ESTALE") stalePaths.add(range.path);
+            }
             continue;
           }
           const bytes2 = ownValue3(entry, "bytes");
@@ -2942,7 +2946,8 @@ var __nimbusResidentModule = (() => {
         failed,
         bytes: fetchedBytes,
         ranges: ranges.length,
-        copied
+        copied,
+        stale: stalePaths.size
       };
     };
     const enumerate = async (supervisor) => {
