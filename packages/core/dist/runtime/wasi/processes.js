@@ -802,7 +802,7 @@ export function processHost(opts) {
         left: async () => {
             checking = false;
             if (pendingSignal === null && received > 0)
-                await supervisor()?.cpSignalsTaken?.(received).catch(() => { });
+                await supervisor()?.cpSignalsTaken?.(received);
         },
     };
 }

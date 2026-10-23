@@ -581,7 +581,11 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     cpTakeSignal(waitMs: number): Promise<string | null>;
     /** The signals this process's program catches now: each one sent to it is its own to take (cpNextSignal), any other its default. */
     cpCatchSignals(catches: readonly string[]): Promise<void>;
-    /** This process's guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+    /**
+     * This process's guest took each of the first `received` signals handed to
+     * it (SessionProcessSupervisor.signalsTaken). Harmless to repeat (it
+     * clears only what that count covers), so a lost call is re-sent.
+     */
     cpSignalsTaken(received: number): Promise<void>;
     /**
      * This process says whether its only remaining work is waiting on its own
