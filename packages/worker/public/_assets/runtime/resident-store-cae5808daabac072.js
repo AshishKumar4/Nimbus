@@ -10637,7 +10637,12 @@ var __nimbusResidentModule = (() => {
         return false;
       if (holder.provisional.touches(keyOf(path)))
         return true;
-      const followed = resolve(path, true);
+      let followed;
+      try {
+        followed = walkOnce("", keyOf(path), true);
+      } catch {
+        return false;
+      }
       return typeof followed === "string" && followed !== "" && holder.provisional.touches(followed);
     };
     Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
@@ -11050,6 +11055,8 @@ var __nimbusResidentModule = (() => {
       const file = readerFiles.get(handleId);
       if (file !== void 0)
         return answer("fstat", () => {
+          if (owed.own > caught.own)
+            return DELEGATE;
           const entry = entryAt(file.key);
           return entry !== void 0 && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
         }, () => authority.fstat(handleId));

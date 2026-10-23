@@ -994,8 +994,15 @@ export function residentFilesystem(session, resident, delegation) {
             return false;
         if (holder.provisional.touches(keyOf(path)))
             return true;
-        // A change made through a link is decided at the file the link names (chmod follows it): that file's key counts too.
-        const followed = resolve(path, true);
+        // A change made through a link is decided at the file the link names (chmod follows it): that file's key counts
+        // too, as this view resolves it now (a name it cannot resolve here has nothing decided beneath it).
+        let followed;
+        try {
+            followed = walkOnce('', keyOf(path), true);
+        }
+        catch {
+            return false;
+        }
         return typeof followed === 'string' && followed !== '' && holder.provisional.touches(followed);
     };
     Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
@@ -1499,10 +1506,13 @@ export function residentFilesystem(session, resident, delegation) {
                 counts.local++;
                 return statOf(entry);
             });
-        // A read-only descriptor of a file: as its name has the file now, while the name still leads to that same file.
+        // A read-only descriptor of a file: as its name has the file now, while the name still leads to that same file and
+        // nothing this process asked of the session since (another description's change of it) is owed to the view.
         const file = readerFiles.get(handleId);
         if (file !== undefined)
             return answer('fstat', () => {
+                if (owed.own > caught.own)
+                    return DELEGATE;
                 const entry = entryAt(file.key);
                 return entry !== undefined && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
             }, () => authority.fstat(handleId));
