@@ -8848,7 +8848,7 @@ export class FacetManager {
     entry: ProcessEntry,
     code: string,
     opts: Parameters<FacetManager['exec']>[1],
-    stop: StopRecord,
+    stop: Extract<StopRecord, { kind: 'listen' | 'miss' }>,
     /**
      * The run's input channel and read-ahead account, its abort (a kill,
      * Ctrl-C), and the identity its \`< file\` had when it started.
@@ -8915,8 +8915,8 @@ export class FacetManager {
     const resume: StoppedRunNext = {
       replay: {
         run: stop.run + 1,
-        tape: stop.tape!,
-        ...(read === undefined ? { listen: true } : { read }),
+        tape: stop.tape,
+        boundary: read === undefined ? { kind: 'listen' } : { kind: 'read', path: read },
         prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
       },
       ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
@@ -9003,7 +9003,7 @@ export class FacetManager {
    */
   private async _resumeStoppedRun(
     entry: ProcessEntry,
-    stop: StopRecord,
+    stop: Extract<StopRecord, { kind: 'stdin' | 'diverged' }>,
     stops: number,
     inputChannel: number,
     launch: Pick<ExecLaunchOpts, 'captureOutput' | 'stdinFile'>,
@@ -9055,8 +9055,8 @@ export class FacetManager {
     }
     const replay: ReplayLaunch = {
       run: stop.run + 1,
-      tape: stop.tape!,
-      stopAt: stop.stopAt!,
+      tape: stop.tape,
+      boundary: { kind: 'stdin', stopAt: stop.stopAt },
       prefix: stopped.prefix ? { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) } : null,
       observations: this.replay.get(pid)?.journal.observations,
     };
@@ -10819,6 +10819,12 @@ export class FacetManager {
         this.portRegistry.unregisterByPid(entry.pid);
         if (opts.resume && stop.kind === 'diverged') {
           await this._endByStop(entry.pid, stop, true);
+          return;
+        }
+        // A resident is not promoted (its runs are not promotable): a stop at a
+        // listen or a miss is not one it can be run again from.
+        if (stop.kind === 'listen' || stop.kind === 'miss') {
+          await this._endByStop(entry.pid, stop, opts.resume !== undefined);
           return;
         }
         const waiting = new AbortController();

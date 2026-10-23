@@ -7,6 +7,7 @@ export function decodeBase64(text: string | undefined): Uint8Array {
 }
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isBase64Within = (value: unknown, maxBytes: number): value is string =>
   typeof value === 'string' && value.length <= Math.ceil(maxBytes / 3) * 4 && value.length % 4 === 0 && BASE64.test(value);
 const isCount = (value: unknown, max: number): value is number =>
@@ -15,9 +16,8 @@ const isReadings = (value: unknown): value is [number, number][] =>
   Array.isArray(value) && value.length <= REPLAY_TAPE_MAX_READINGS
   && value.every((entry) => Array.isArray(entry) && entry.length === 2 && Number.isFinite(entry[0]) && isCount(entry[1], Number.MAX_SAFE_INTEGER) && entry[1] >= 1);
 
-function isTape(value: unknown): value is ReplayTape {
-  if (typeof value !== 'object' || value === null) return false;
-  const tape = value as Record<string, unknown>;
+function isTape(tape: unknown): tape is ReplayTape {
+  if (!isObject(tape)) return false;
   return Array.isArray(tape.seed) && tape.seed.length === 4 && tape.seed.every((word) => isCount(word, 0xffffffff))
     && isReadings(tape.now) && isReadings(tape.perf)
     && isBase64Within(tape.random, REPLAY_TAPE_MAX_RANDOM_BYTES)
@@ -28,8 +28,8 @@ function isOutput(value: unknown): value is StoppedOutput[] {
   if (!Array.isArray(value) || value.length > 4096) return false;
   let bytes = 0;
   for (const chunk of value) {
-    if (typeof chunk !== 'object' || chunk === null) return false;
-    const { s, at, b } = chunk as Record<string, unknown>;
+    if (!isObject(chunk)) return false;
+    const { s, at, b } = chunk;
     if ((s !== 'stdout' && s !== 'stderr') || !isCount(at, Number.MAX_SAFE_INTEGER) || !isBase64Within(b, 2 * REPLAY_PREFIX_MAX_BYTES)) return false;
     bytes += (b.length / 4) * 3;
     if (bytes > 2 * REPLAY_PREFIX_MAX_BYTES + 3) return false;
@@ -61,30 +61,35 @@ function parseStopRecord(error: unknown, nonce: string, run: number): StopRecord
   const marker = `${STOP_RECORD_PREFIX}${nonce} `;
   const at = message.indexOf(marker);
   if (nonce.length < 16 || at < 0 || message.length - at > STOP_RECORD_MAX_CHARS) return null;
-  let record: unknown;
-  try { record = JSON.parse(message.slice(at + marker.length)); } catch { return null; }
-  if (typeof record !== 'object' || record === null) return null;
-  const r = record as Record<string, unknown>;
-  if (r.v !== 3 || r.run !== run || !isOutput(r.out)) return null;
-  if (r.captured !== undefined) {
-    const captured = r.captured as Record<string, unknown> | null;
-    if (typeof captured !== 'object' || captured === null
-      || typeof captured.stdout !== 'string' || typeof captured.stderr !== 'string'
-      || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES) return null;
+  let r: unknown;
+  try { r = JSON.parse(message.slice(at + marker.length)); } catch { return null; }
+  if (!isObject(r) || r.v !== 3 || r.run !== run || !isOutput(r.out)) return null;
+  const { captured, catches } = r;
+  if (captured !== undefined && (!isObject(captured)
+    || typeof captured.stdout !== 'string' || typeof captured.stderr !== 'string'
+    || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES)) return null;
+  if (catches !== undefined && (typeof catches !== 'string' || !/^(SIG[A-Z0-9]+(,SIG[A-Z0-9]+)*)?$/.test(catches) || catches.length > 400)) return null;
+  const common = {
+    run, out: r.out,
+    ...(captured === undefined ? {} : { captured: { stdout: captured.stdout, stderr: captured.stderr } }),
+    ...(catches === undefined ? {} : { catches }),
+  };
+  const { kind, tape } = r;
+  if (kind === 'stdin') {
+    const { until, stopAt } = r;
+    if ((until !== 'end' && until !== 'data') || !isCount(stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(tape)) return null;
+    return { v: 3, ...common, kind, until, stopAt, tape };
   }
-  if (r.catches !== undefined && (typeof r.catches !== 'string' || !/^(SIG[A-Z0-9]+(,SIG[A-Z0-9]+)*)?$/.test(r.catches) || r.catches.length > 400)) return null;
-  if (r.kind === 'stdin') {
-    if ((r.until !== 'end' && r.until !== 'data') || !isCount(r.stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(r.tape)) return null;
-  } else if (r.kind === 'listen') {
-    if (!isTape(r.tape)) return null;
-  } else if (r.kind === 'miss') {
-    if (typeof r.path !== 'string' || r.path.length === 0 || !isTape(r.tape)) return null;
-  } else if (r.kind === 'diverged') {
-    if (typeof r.why !== 'string' || r.why.length > 1000) return null;
-  } else {
-    return null;
+  if (kind === 'listen') return isTape(tape) ? { v: 3, ...common, kind, tape } : null;
+  if (kind === 'miss') {
+    const { path } = r;
+    return typeof path === 'string' && path.length > 0 && isTape(tape) ? { v: 3, ...common, kind, path, tape } : null;
   }
-  return record as StopRecord;
+  if (kind === 'diverged') {
+    const { why } = r;
+    return typeof why === 'string' && why.length <= 1000 ? { v: 3, ...common, kind, why } : null;
+  }
+  return null;
 }
 
 const EMPTY = new Uint8Array(0);
