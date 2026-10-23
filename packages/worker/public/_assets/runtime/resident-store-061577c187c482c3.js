@@ -10106,8 +10106,8 @@ var __nimbusResidentModule = (() => {
           reserve: (bytes) => resident.reserve(bytes),
           release: (bytes) => resident.release(bytes),
           ...resident.keep === void 0 ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) },
-          mounted: (key) => walkedMounts && mountedName(key),
-          unreported: (key) => walkedMounts && unreportedName(key)
+          mounted: (key) => nodeFs && mountedName(key),
+          unreported: (key) => nodeFs && unreportedName(key)
         },
         isHomeRoot: delegation.isHomeRoot,
         ...delegation.grantAfter === void 0 ? {} : { grantAfter: delegation.grantAfter },
@@ -10178,7 +10178,7 @@ var __nimbusResidentModule = (() => {
         }
         const entry = store.entry(key);
         if (entry === void 0) {
-          if (!walkedMounts || !(passing || mountedName(key)))
+          if (!nodeFs || !(passing || mountedName(key)))
             return { missing: key };
           passing = true;
           step = walk.next(PASSED_THROUGH);
@@ -10408,9 +10408,8 @@ var __nimbusResidentModule = (() => {
         return void 0;
       return entry;
     };
-    const answerable = (key, entry) => fedRow(key, entry) === true || walkedMounts && now;
-    const walkedMounts = delegation?.walkedMounts === true;
-    const answeredWrites = delegation?.answeredWrites === true;
+    const answerable = (key, entry) => fedRow(key, entry) === true || nodeFs && now;
+    const nodeFs = delegation?.nodeFs === true;
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
@@ -10459,7 +10458,7 @@ var __nimbusResidentModule = (() => {
       const entry = entryAt(key);
       if (entry === void 0)
         return void 0;
-      if (walkedMounts)
+      if (nodeFs)
         return onKernelMount(key) ? void 0 : entry;
       return (entry === null ? onMount(key) : entry.dev !== store.device) ? void 0 : entry;
     };
@@ -11052,11 +11051,9 @@ var __nimbusResidentModule = (() => {
           counts.local++;
           return statOf(entry);
         });
-      const file = readerFiles.get(handleId);
+      const file = nodeFs ? readerFiles.get(handleId) : void 0;
       if (file !== void 0)
         return answer("fstat", () => {
-          if (owed.own > caught.own || holder?.provisional.touches(file.key) === true)
-            return DELEGATE;
           const entry = entryAt(file.key);
           return entry !== void 0 && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
         }, () => authority.fstat(handleId));
@@ -11114,7 +11111,7 @@ var __nimbusResidentModule = (() => {
     fs.write = (handleId, offset, bytes) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        return holder.write(handleId, offset, bytes, !now && answeredWrites);
+        return holder.write(handleId, offset, bytes, !now && nodeFs);
       }
       if (now)
         throw NOT_NOW;
@@ -11124,7 +11121,7 @@ var __nimbusResidentModule = (() => {
     fs.ftruncate = (handleId, size) => {
       if (holder?.owns(handleId)) {
         counts.local++;
-        return holder.ftruncate(handleId, size, !now && answeredWrites);
+        return holder.ftruncate(handleId, size, !now && nodeFs);
       }
       if (now)
         throw NOT_NOW;

@@ -78,7 +78,7 @@ function extensionOf(name) {
 const DELEGATE = Symbol('delegate');
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
 const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 };
-/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.walkedMounts): searchable by anyone. */
+/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.nodeFs): searchable by anyone. */
 const PASSED_THROUGH = { type: 'directory', mode: 0o40555, uid: 0, gid: 0 };
 /**
  * The session's calls that can change a name or an access: before one, the
@@ -293,8 +293,8 @@ export function residentFilesystem(session, resident, delegation) {
                 reserve: (bytes) => resident.reserve(bytes),
                 release: (bytes) => resident.release(bytes),
                 ...(resident.keep === undefined ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) }),
-                mounted: (key) => walkedMounts && mountedName(key),
-                unreported: (key) => walkedMounts && unreportedName(key),
+                mounted: (key) => nodeFs && mountedName(key),
+                unreported: (key) => nodeFs && unreportedName(key),
             },
             isHomeRoot: delegation.isHomeRoot,
             ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
@@ -356,7 +356,7 @@ export function residentFilesystem(session, resident, delegation) {
         const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
         if (crossed !== undefined)
             crossed.length = 0;
-        // Beneath a directory on a mount the walk passed (walkedMounts).
+        // Beneath a directory on a mount the walk passed (nodeFs).
         let passing = false;
         for (let step = walk.next();;) {
             if (step.done)
@@ -380,7 +380,7 @@ export function residentFilesystem(session, resident, delegation) {
                 // Node's walk passes a directory on a mount the launch's listing could not name (a device that
                 // resolves its own paths shows only what its user consented to, as the session hands it the
                 // whole name), and what is beneath it: a name there is answered where the listing named it.
-                if (!walkedMounts || !(passing || mountedName(key)))
+                if (!nodeFs || !(passing || mountedName(key)))
                     return { missing: key };
                 passing = true;
                 step = walk.next(PASSED_THROUGH);
@@ -676,9 +676,8 @@ export function residentFilesystem(session, resident, delegation) {
      * feed's (not fixed) not while a read lease is trusted.
      */
     // Node's walked mounts answer its calls that cannot wait; one that may is the session's, as a fed mount's moving rows under a trusted lease are.
-    const answerable = (key, entry) => fedRow(key, entry) === true || (walkedMounts && now);
-    const walkedMounts = delegation?.walkedMounts === true;
-    const answeredWrites = delegation?.answeredWrites === true;
+    const answerable = (key, entry) => fedRow(key, entry) === true || (nodeFs && now);
+    const nodeFs = delegation?.nodeFs === true;
     /**
      * Whether `entry` at `key`, a row off the session's own device, is a fed
      * mount's (true), one a feed answers for but not now (false: a moving feed
@@ -748,7 +747,7 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = entryAt(key);
         if (entry === undefined)
             return undefined;
-        if (walkedMounts)
+        if (nodeFs)
             return onKernelMount(key) ? undefined : entry;
         return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
     };
@@ -1506,14 +1505,10 @@ export function residentFilesystem(session, resident, delegation) {
                 counts.local++;
                 return statOf(entry);
             });
-        // A read-only descriptor of a file: as its name has the file now, while the name still leads to that same file,
-        // nothing this process asked of the session since is owed to the view, and nothing it decided there is unretired
-        // (another description of it, a /dev/fd reopen's among them, may have changed it where only the session says how).
-        const file = readerFiles.get(handleId);
+        // Node's read-only descriptor of a file: as its name has the file now, while the name still leads to that same file.
+        const file = nodeFs ? readerFiles.get(handleId) : undefined;
         if (file !== undefined)
             return answer('fstat', () => {
-                if (owed.own > caught.own || holder?.provisional.touches(file.key) === true)
-                    return DELEGATE;
                 const entry = entryAt(file.key);
                 return entry !== undefined && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
             }, () => authority.fstat(handleId));
@@ -1575,7 +1570,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.write = (handleId, offset, bytes) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            return holder.write(handleId, offset, bytes, !now && answeredWrites);
+            return holder.write(handleId, offset, bytes, !now && nodeFs);
         }
         if (now)
             throw NOT_NOW;
@@ -1585,7 +1580,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.ftruncate = (handleId, size) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            return holder.ftruncate(handleId, size, !now && answeredWrites);
+            return holder.ftruncate(handleId, size, !now && nodeFs);
         }
         if (now)
             throw NOT_NOW;
