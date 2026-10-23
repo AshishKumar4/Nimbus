@@ -2993,9 +2993,9 @@ function _bundleCellLength(cell: string | Uint8Array): number {
   return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
 
-/** What the file at `path` weighs in the map: its content, and what the map spends naming it (moduleMapEntryBytes). */
+/** What the file at `path` weighs in the map: its content's UTF-8 bytes, and what the map spends naming it (moduleMapEntryBytes). */
 function _bundleEntryLength(path: string, cell: string | Uint8Array): number {
-  return _bundleCellLength(cell) + moduleMapEntryBytes(path);
+  return _bundleCellRawBytes(cell) + moduleMapEntryBytes(path);
 }
 
 /**
@@ -3620,7 +3620,8 @@ export async function greedyAddMainEntries(
       const closure = await prefetchForRequire(filesOf(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')),
         '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
           purpose: 'dependency-closure', held: bundle,
-          maxAdditionalBytes: Math.max(0, bound - rawBytes),
+          // What both the raw bound and the enrichment's naming-inclusive budget still allow.
+          maxAdditionalBytes: Math.max(0, Math.min(bound - rawBytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
         }, undefined, options.conditions);
       if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
       for (const deferral of closure.deferred ?? []) if (deferral.alternatives === 1) deferred.push(deferral);

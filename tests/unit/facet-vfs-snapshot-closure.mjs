@@ -175,9 +175,10 @@ assert.equal(
 
 
 // What the map spends naming a file counts against its bytes: 3,000 packages
-// of two tiny files each under a 6,000-character directory would name 36 MB
-// of paths for a few KB of content, and the map holds only as many as its
-// bytes allow.
+// of three tiny files each (a manifest, and a main that requires a second
+// module, so each guess brings a closure of two) under a 6,000-character
+// directory would name 54 MB of paths for a few KB of content, and the map
+// holds only as many as its bytes allow.
 {
   const cwd = 'home/user/' + Array.from({ length: 30 }, () => 'd'.repeat(199)).join('/');
   const PACKAGES = 3000;
@@ -185,7 +186,8 @@ assert.equal(
   for (let index = 0; index < PACKAGES; index++) {
     const packageRoot = `${cwd}/node_modules/optional-${index}`;
     files[`${packageRoot}/package.json`] = JSON.stringify({ name: `optional-${index}`, main: 'index.js' });
-    files[`${packageRoot}/index.js`] = 'module.exports = true;';
+    files[`${packageRoot}/index.js`] = 'module.exports = require("./b.js");';
+    files[`${packageRoot}/b.js`] = 'module.exports = true;';
   }
   files[`${cwd}/package.json`] = JSON.stringify({
     name: 'app',
