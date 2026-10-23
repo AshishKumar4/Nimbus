@@ -1445,10 +1445,10 @@ const __fsMod = (() => {
       try {
         const fs = _rf();
         // Decided on the session as it is now: what another process did before it, as Node's call finds it, and what
-        // the session made of this process's own changes before it (sent and answered first: one it refused is gone).
+        // the session made of this process's own changes at the name (sent and answered first: one it refused is gone).
         // Not in a subtree this process holds: no other changes it, so its view is the session's.
         if (__nimbusProcessSupervised && !_heldHere(fs, p, dest)) {
-          if (fs.holding()) await fs.send();
+          if (fs.holding() && (typeof p === "string" || p instanceof URL) && fs.decidedAt(_resolve(p))) await fs.send();
           fs.inbound();
         }
         return await run(fs);

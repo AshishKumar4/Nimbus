@@ -222,6 +222,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
+    /** Whether this process decided a change at `path` (its name, as spelled) that the session has not answered yet. */
+    decidedAt(path: string): boolean;
     /**
      * The process's filesystem client, its holder's and the only one it has:
      * its effect is the output gate (what the holder decided logged and sent

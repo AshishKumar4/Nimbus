@@ -6515,9 +6515,6 @@ var __nimbusResidentModule = (() => {
           throw fsError2("ENOENT", "rename", path);
         if (from === to)
           return true;
-        const into = rowAt(parentKey3(to));
-        if (into === void 0 || into === null || into.dev !== source.dev)
-          return false;
         if (source.type === "directory" && within2(to, from))
           throw fsError2("EINVAL", "rename", path);
         if (source.type === "directory" && target !== null && target.type === "directory") {
@@ -10619,6 +10616,7 @@ var __nimbusResidentModule = (() => {
       directoryPool?.cancelPending();
     };
     fs.holding = () => holder?.pending() ?? false;
+    fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
     Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
