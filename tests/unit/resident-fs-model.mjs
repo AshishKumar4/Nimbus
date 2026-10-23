@@ -257,16 +257,6 @@ async function runSteps(steps, met, grants) {
    * the session has not numbered (`L`) is the file its creating open reaches.
    */
   const expecting = (pairs) => pairs;
-  /**
-   * What a creating open at `name` expects, made (`made`) where the view had
-   * no name: nothing exclusively (the session's EEXIST refuses it first),
-   * nor where it empties a name the view (not this process) says is free:
-   * open(O_CREAT|O_TRUNC) truncates whatever a peer made there since.
-   */
-  const creating = (name, reference, made, flags) => (made && (flags.exclusive || (flags.truncate && !ownName(name))) ? [] : expecting([[name, reference]]));
-  /** Whether the process's own effects since its view's last catch-up named `name` (made, removed or moved it): its decisions' name, not the view's. */
-  const ownName = (name) => pending.some((record) => !record.refused && (
-    (record.effect.kind === 'name' && record.effect.name === name) || (record.effect.kind === 'rename' && (record.effect.from === name || record.effect.to === name))));
 
   /** The process's operation `step`, made synchronously: its local refusal, which the model predicts, or its effects. */
   const processStep = async (step, label) => {
@@ -308,7 +298,7 @@ async function runSteps(steps, met, grants) {
       }
       if (step.flags.truncate) records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
       const flags = { write: true, read: step.flags.read, create: step.flags.create, exclusive: made && step.flags.exclusive, truncate: step.flags.truncate };
-      if (logs) undelivered.push({ records, logged: { opened, flags, expect: creating(step.name, reference, made, step.flags) } });
+      if (logs) undelivered.push({ records, logged: { opened, flags, expect: made && step.flags.exclusive ? [] : expecting([[step.name, reference]]) } });
       opened.logs = logs;
       return;
     }
@@ -411,7 +401,7 @@ async function runSteps(steps, met, grants) {
       }
       records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
       const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
-      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: opened, expect: creating(step.name, reference, reference === undefined, { truncate: true }) } });
+      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: opened, expect: expecting([[step.name, reference]]) } });
     }
     if (step.op === 'copy') {
       const source = fileAt(step.from);
@@ -436,7 +426,7 @@ async function runSteps(steps, met, grants) {
       }
       records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
       const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
-      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, mode: source.mode & 0o777, write: { kind: 'write', offset: 0, data }, close: opened, expect: creating(step.to, reference, reference === undefined, { truncate: true }) } });
+      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, mode: source.mode & 0o777, write: { kind: 'write', offset: 0, data }, close: opened, expect: expecting([[step.to, reference]]) } });
     }
   };
 

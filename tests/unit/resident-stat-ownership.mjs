@@ -189,7 +189,7 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.t(() => probe.fs.chmodSync('/tmp/shared/mine', 0o600)), undefined);
   },
 
-  async 'a name a peer creates after the last delta: the write is refused at write-back, reported, and not ours past the next barrier'() {
+  async 'a name a peer creates after the last delta: the write, ordered before it, is replaced by it, reported to nobody, and not ours past the next barrier'() {
     const { authority, probe, log } = await boot({ tmp: true });
     await probe.resume(() => null);
     const root = authority.peerAs(CRED_KERNEL);
@@ -206,8 +206,8 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.resume(() => probe.t(() => probe.fs.unlinkSync('/tmp/raced'))), 'ERR:EPERM', 'nor removable as ours');
     probe.exit();
     for (let i = 0; i < 50 && log.exit === null; i++) await sleep(20);
-    assert.ok(log.exit !== null && (log.exit.code !== 0 || /EACCES/.test(String(log.exit.reason) + log.stderr)),
-      `the refusal reached the exit report: ${JSON.stringify(log.exit)}`);
+    // Decided on the view, before the peer's file: the peer's replaced it, as on Linux, with nothing to report.
+    assert.ok(log.exit !== null && log.exit.code === 0, `nothing reported: ${JSON.stringify(log.exit)} ${log.stderr}`);
   },
 
   async "rewriting an existing file keeps its owner and mode"() {
