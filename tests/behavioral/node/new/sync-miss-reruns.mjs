@@ -37,7 +37,7 @@ try {
   for (const run of ['first', 'second']) {
     const r = await t.run('cd /home/user/d21/app && node main.js /home/user/d21-data/x.txt', 120_000);
     const said = lines(r.output);
-    console.log(JSON.stringify({ run, exit: r.exitCode, tail: said.slice(-6) }));
+    console.log(JSON.stringify({ run, exit: r.exitCode, said: said.filter((line) => !line.startsWith('[nimbus-debug]')) }));
     a.check(`${run} run: it read the file, after its asynchronous work, and ended with its own status (3)`,
       said.includes(`READ=${PAYLOAD}`) && r.exitCode === 3, JSON.stringify({ exit: r.exitCode, tail: said.slice(-8) }));
     a.check(`${run} run: what it printed before the read is shown once`,
