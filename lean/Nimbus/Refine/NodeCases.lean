@@ -6,17 +6,24 @@
   mutations (chmods included), one ACQUIRE. The reader's namespace must be exactly
   `atCursor` before and `atAnswer` after (path → "dir" | "file").
 
-  `lean/fixtures/node-overlay.json` (`Store.overlay_no_stale`): one facet process
+  `lean/fixtures/node-overlay.json`: one process on the resident filesystem
   and a peer. `{"facet":"write"}` is a `writeFileSync` whose write-back is held;
   `{"facet":"rm"}` an unflushed `unlinkSync` of a file it wrote and has not
   flushed (a peer's `rm` names only a present path); `{"facet":"flush"}` delivers every
-  held write-back (committed and acknowledged, in order); `{"facet":"acquire"}` a
-  barrier. A read must return one of `expectAnyOf` (bytes, or "ENOENT"): the
-  process's own pending effect when it has one, else a value the authority held
-  at some instant between the last barrier (or boot) and now. An `acquire` never
-  comes while a pending own write's path was committed by a peer since the last
-  barrier: the code's barrier would wait for that write's acknowledgement, so the
-  generator flushes first.
+  held write-back in order; `{"facet":"acquire"}` a barrier. Each write-back is
+  decided on the file its name led to as the process saw it (as of the last
+  barrier, or a file it made since): delivered where the name leads to that
+  file still (a peer's write in place keeps it), else orphaned, as Linux leaves
+  a write to a file a peer's change left no name to: refused and reported to
+  nobody (core runtime/wasi/provisional.ts `expect`, process-fs-client
+  orphanedRefusal). A read must return one of `expectAnyOf` (bytes, or
+  "ENOENT"): the process's own pending effect when it has one, else a value
+  the authority held at some instant between the last barrier (or boot) and
+  now. An `acquire` never comes while a pending own write's path was
+  committed by a peer since the last barrier: the generator flushes first.
+  The rule is the resident filesystem's; `Store.overlay_no_stale` proved it of
+  the deleted node engine's unconditional write-back, and is retired pending
+  its ticket (verify/handoffs/ticket-retire-store-model.md).
 -/
 
 import Nimbus.Refine.VisibleDeltaCases
@@ -78,11 +85,21 @@ structure OS where
   now : Nat
   /-- Authority history: (path, instant, value). -/
   hist : List (Nat × Nat × Val)
-  own : List (Nat × Val)
+  /-- Pending own effects: (path, value, the file it was decided on). -/
+  own : List (Nat × Val × Option Nat)
+  /-- The file each name leads to as the process made it since the last barrier. -/
+  known : List (Nat × Option Nat)
   H : Nat
 
 def valAt (h : List (Nat × Nat × Val)) (p t : Nat) : Val :=
   h.foldl (fun acc x => if x.1 = p ∧ x.2.1 ≤ t then x.2.2 else acc) none
+
+/-- The file `p` names at `t`: the instant of the commit that made it there from nothing, none while nothing is. -/
+def idAt (h : List (Nat × Nat × Val)) (p t : Nat) : Option Nat :=
+  h.foldl (fun acc x => if x.1 = p ∧ x.2.1 ≤ t then
+    (match x.2.2 with
+      | none => none
+      | some _ => if acc.isSome then acc else some x.2.1) else acc) none
 
 def valJson : Val → Json
   | some n => .str s!"v{n}"
@@ -90,18 +107,41 @@ def valJson : Val → Json
 
 def allowed (s : OS) (p : Nat) : List Json :=
   match s.own.find? (·.1 == p) with
-  | some (_, v) => [valJson v]
+  | some (_, v, _) => [valJson v]
   | none =>
     let vs := (List.range (s.now + 1)).filter (s.H ≤ ·) |>.map (valAt s.hist p)
     (vs.eraseDups).map valJson
 
 def commit (s : OS) (p : Nat) (v : Val) : OS := { s with now := s.now + 1, hist := s.hist ++ [(p, s.now + 1, v)] }
 
+/-- The file a new own effect at `p` is decided on: its pending chain's, a file it made since the barrier, else the view's. -/
+def decidedOn (s : OS) (p : Nat) : Option Nat :=
+  match s.own.find? (·.1 == p) with
+  | some (_, _, d) => d
+  | none => match s.known.find? (·.1 == p) with
+    | some (_, k) => k
+    | none => idAt s.hist p s.H
+
+/-- Every held write-back in order: committed where its name leads to the file it was decided on, else orphaned. -/
+def flushOwn (s : OS) : OS := Id.run do
+  let mut t := s
+  for (q, v, d) in s.own do
+    let cur := idAt t.hist q t.now
+    if cur == d then
+      t := commit t q v
+      let made : Option Nat := match v with
+        | none => none
+        | some _ => if cur.isSome then cur else some t.now
+      t := { t with known := (t.known.filter (·.1 != q)) ++ [(q, made)] }
+    else
+      t := { t with known := t.known.filter (·.1 != q) }
+  return { t with own := [] }
+
 def pname (p : Nat) : String := s!"/f{p}"
 
 def genOverlayCase : Gen (Option Json) := do
   let n := (← below 20) + 8
-  let mut s : OS := { now := 0, hist := [], own := [], H := 0 }
+  let mut s : OS := { now := 0, hist := [], own := [], known := [], H := 0 }
   let mut out : Array Json := #[]
   let mut nextV := 1
   for _ in [0:n] do
@@ -117,27 +157,25 @@ def genOverlayCase : Gen (Option Json) := do
         s := commit s p none
         out := out.push (.obj [("auth", .str "rm"), ("path", .str (pname p))])
     else if k < 6 then
-      s := { s with own := (s.own.filter (·.1 != p)) ++ [(p, some nextV)] }
+      s := { s with own := (s.own.filter (·.1 != p)) ++ [(p, some nextV, decidedOn s p)] }
       out := out.push (.obj [("facet", .str "write"), ("path", .str (pname p)), ("bytes", .str s!"v{nextV}")])
       nextV := nextV + 1
     else if k < 7 then
       -- the process removes only a file it wrote and has not flushed
-      if s.own.any fun x => x.1 == p && x.2.isSome then
-        s := { s with own := (s.own.filter (·.1 != p)) ++ [(p, none)] }
+      if s.own.any fun x => x.1 == p && x.2.1.isSome then
+        s := { s with own := (s.own.filter (·.1 != p)) ++ [(p, none, decidedOn s p)] }
         out := out.push (.obj [("facet", .str "rm"), ("path", .str (pname p))])
     else if k < 8 then
-      for (q, v) in s.own do s := commit s q v
-      s := { s with own := [] }
+      s := flushOwn s
       out := out.push (.obj [("facet", .str "flush")])
     else if k < 9 then
       -- a barrier whose answer reports a path with a pending own write waits for
       -- that write's acknowledgement (`_awaitReportedOwnWrites`): flush first
       let raced := s.own.any fun x => s.hist.any fun y => y.1 == x.1 && decide (s.H < y.2.1)
       if raced then
-        for (q, v) in s.own do s := commit s q v
-        s := { s with own := [] }
+        s := flushOwn s
         out := out.push (.obj [("facet", .str "flush")])
-      s := { s with H := s.now }
+      s := { s with H := s.now, known := [] }
       out := out.push (.obj [("facet", .str "acquire")])
     else
       out := out.push (.obj [("facet", .str "read"), ("path", .str (pname p)), ("expectAnyOf", .arr (allowed s p))])
@@ -146,8 +184,9 @@ def genOverlayCase : Gen (Option Json) := do
   return some (.obj [("steps", .arr out.toList)])
 
 def overlayFixture : String :=
-  fixtureText [("fixture", .str "node-overlay"), ("model", .str "Nimbus.Coherence.Store.overlay_no_stale"),
-      ("note", .str "paths /f0../f2 start absent; a facet write-back is held until flush; flush commits and acknowledges every held write-back in order; reads happen at a resumption behind the last barrier (boot counts)")]
+  fixtureText [("fixture", .str "node-overlay"),
+      ("model", .str "the resident filesystem's write-back: delivered where its name leads to the file it was decided on, else orphaned and reported to nobody (Nimbus.Coherence.Store.overlay_no_stale proved the deleted node engine's unconditional write-back; retired pending verify/handoffs/ticket-retire-store-model.md)"),
+      ("note", .str "paths /f0../f2 start absent; a facet write-back is held until flush; flush delivers every held write-back in order, each decided on the file its name led to as the process saw it; a peer's write keeps the file a name leads to, its rm and a write after it do not; reads happen at a resumption behind the last barrier (boot counts)")]
     (runGen 0x4F564C (casesOf 150 genOverlayCase))
 
 end Nimbus.Refine.NodeCases

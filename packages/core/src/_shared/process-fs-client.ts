@@ -126,6 +126,9 @@ export interface ProcessFsGrant {
 export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
 
 /** An op committed: the stat of the file its data call published, when it published one. */
+/** What the session answers a change decided on a name that leads elsewhere now (sqlite-vfs expectAt, an O_NOFOLLOW open of a link). */
+const ORPHANED_ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EEXIST', 'ELOOP', 'ENOTDIR']);
+
 export interface ProcessFsAnswer {
   receipt?: ProcessFsReceipt;
   /** The op's path's revision right before it and the session's right after (WaveMutation), when it committed on the session's own filesystem. */
@@ -784,12 +787,40 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
   };
 
-  /** `entry` failed: `refused` where the session never applied it (its verdict, or it was never sent); else its fate is unknown. */
-  const fail = (entry: Entry, errno: string, message: string, refused = false): void => {
+  /**
+   * The descriptions whose open the session refused as orphaned: what was
+   * made through one went to a file no name leads to (orphanedRefusal).
+   */
+  const orphanedDescriptions = new Set<string>();
+  /**
+   * Whether the session refused `op` only because the name it was decided
+   * on leads elsewhere now (a peer removed, replaced or swapped a link in at
+   * it since: the file the process decided on, or none, is not there): on
+   * Linux the process's call resolved first, and what it made went to a
+   * file the peer's change left no name to. That is no error the program
+   * sees. A change through a description such an open made is the same.
+   */
+  const orphanedRefusal = (op: ProcessFsOp | null, errno: string): boolean => {
+    if (op === null || op.type !== 'call' && op.type !== 'rename' && op.type !== 'setattr') return false;
+    if (op.type === 'call' && 'description' in op.call && op.call.description !== undefined && orphanedDescriptions.has(op.call.description)) return true;
+    const decided = op.type === 'rename' ? op.expect !== undefined || op.expectTo !== undefined
+      : op.type === 'setattr' ? op.expect !== undefined
+      : ('expect' in op.call && op.call.expect !== undefined) || (op.call.call === 'open' && op.call.nofollow === true);
+    if (!decided || !ORPHANED_ERRNOS.has(errno)) return false;
+    if (op.type === 'call' && op.call.call === 'open' && op.call.description !== undefined) orphanedDescriptions.add(op.call.description);
+    return true;
+  };
+
+  /**
+   * `entry` failed: `refused` where the session never applied it (its
+   * verdict, or it was never sent); else its fate is unknown. `op`: what it
+   * logged, where the session's verdict names it.
+   */
+  const fail = (entry: Entry, errno: string, message: string, refused = false, op: ProcessFsOp | null = null): void => {
     settled(entry);
     const path = entry.paths[0] ?? '';
     if (entry.acknowledged) {
-      failures[failures.length] = { op: entry.name, path, errno, message };
+      if (!(refused && orphanedRefusal(op, errno))) failures[failures.length] = { op: entry.name, path, errno, message };
       entry.resolve({ failed: { errno, message, ...(refused ? { refused: true as const } : {}) } });
     } else {
       entry.reject(fsError(errno, message, path));
@@ -992,7 +1023,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const entry = entries[index]!;
       if (refused !== null && entry.seq === refused.seq) {
         counters.refused++;
-        fail(entry, refused.errno, refused.message, true);
+        fail(entry, refused.errno, refused.message, true, ops[index] ?? null);
         if (writer === null) ack = mathMax(ack, entry.seq);
         continue;
       }

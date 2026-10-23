@@ -257,6 +257,8 @@ function __nimbusStartProcessFilesystem(root) {
     ...(typeof __nimbusAnswersNoRecall === "undefined" ? {} : { holdsGrants: false }),
     // A mount without a change feed as its launch walked it, and changes on mounts its own (as node's fs answers them).
     walkedMounts: true,
+    // An awaited write answered once the session has it (as node's fs answers it).
+    answeredWrites: true,
     residency: {
       // An import()'s prefetch (__nimbusHydrated): its misses are its own, charged to its quota.
       speculation: () => globalThis.__nimbusVfsSpeculation || null,
@@ -276,7 +278,10 @@ function __nimbusStartProcessFilesystem(root) {
 // live boundary: a response, a served process's flush). A change the program
 // was told succeeded that the session refused is thrown here.
 async function __nimbusFlushFilesystem() {
-  if (__nimbusProcessFilesystem !== null) await __nimbusProcessFilesystem.flush();
+  if (__nimbusProcessFilesystem === null) return;
+  await __nimbusProcessFilesystem.flush();
+  const failure = __nimbusProcessFilesystem.client ? __nimbusProcessFilesystem.client.takeFailuresError() : null;
+  if (failure) throw failure;
 }
 // The run's end: everything held sent and answered, and the first refusal of
 // what the program was told it wrote thrown, naming the file.
@@ -1420,6 +1425,12 @@ const __fsMod = (() => {
     // A content read this process does not hold: a one-shot that can be run again stops here, to run again
     // as a resident, which holds the file (stop-replay.ts miss). Not a speculation's (its fetch repairs it),
     // nor fd 0's read of a \`< file\`, which stops for stdin (__nimbusTakeStdin).
+    // The process's own write, which neither its store nor its heap's own-write bound could hold: the workspace's storage is full.
+    if (mount === null && named && typeof __resident !== "undefined" && __resident.cells.storageMiss(_strip(_resolve(p)))) {
+      const full = _fsErr("ENOSPC", syscall, p, dest);
+      full.message = "ENOSPC: workspace storage is full; '" + String(p) + "' is readable asynchronously" + (asyncForm ? " (" + asyncForm + ")" : "");
+      return full;
+    }
     if (mount === null && named && (syscall === "open" || syscall === "read") && __nimbusReplay && !globalThis.__nimbusVfsSpeculation && !__nimbusTakingStdinFile) {
       __nimbusReplay.miss(_strip(_resolve(p)));
     }
@@ -1442,26 +1453,13 @@ const __fsMod = (() => {
    * \`run\` over the filesystem, awaited, its refusal Node's \`syscall\` of
    * \`p\`: an operation in flight from its start to its answer, as Node's
    * libuv request is, so the program is not taken for finished between the
-   * session calls it makes. A change is answered once the session has
-   * everything the process logged (another process reads it as this one
-   * was told it is), its refusal the call's: as this fs has always answered
-   * an awaited change.
+   * session calls it makes. A change outside a held subtree is answered once
+   * the session has it, its refusal the call's (answeredWrites).
    */
   function _async(syscall, p, run, dest) {
     return __nimbusTrackOp((async () => {
-      try {
-        const fs = _rf();
-        const answer = await run(fs);
-        if (__nimbusProcessSupervised) await fs.flush();
-        return answer;
-      } catch (error) { throw _rfError(error, syscall, p, dest); }
-    })());
-  }
-  /** An awaited call that changes nothing (a read's): answered as the filesystem answers it. */
-  function _asyncQuiet(syscall, p, run) {
-    return __nimbusTrackOp((async () => {
       try { return await run(_rf()); }
-      catch (error) { throw _rfError(error, syscall, p); }
+      catch (error) { throw _rfError(error, syscall, p, dest); }
     })());
   }
   /**
@@ -1471,7 +1469,7 @@ const __fsMod = (() => {
    * before it answers from what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _asyncQuiet(syscall, p, (fs) => {
+    return _async(syscall, p, (fs) => {
       if (__nimbusProcessSupervised) fs.inbound();
       return run(fs);
     });

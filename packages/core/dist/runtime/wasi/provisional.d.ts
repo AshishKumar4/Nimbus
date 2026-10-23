@@ -298,9 +298,13 @@ export interface Provisional {
     writeFile(key: string, path: string, bytes: Uint8Array, row: ResidentEntry | null, umask: number | undefined): boolean;
     /** Undefined where its bytes are the store's and it does not hold them: inodeOf says what to fetch. */
     read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
-    /** Logged as made: it needs none of the file's bytes (what it keeps is folded over them when they are held). */
-    write(handleId: number, offset: number | null, bytes: Uint8Array): number;
-    ftruncate(handleId: number, size: number): void;
+    /**
+     * Logged as made: it needs none of the file's bytes (what it keeps is
+     * folded over them when they are held). `awaited`: its caller waits for
+     * the session's answer (its refusal the call's), as a change by name's.
+     */
+    write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean): number | Promise<number>;
+    ftruncate(handleId: number, size: number, awaited?: boolean): void | Promise<void>;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (unknown: as a stat by name there). */
     fstat(handleId: number): ResidentEntry | undefined;

@@ -6,7 +6,8 @@
 // allowance it holds. A program that writes past a small limit therefore
 // never takes the session DO and its facet together past it. The program
 // sees ENOSPC only when the session itself refuses the write, and a refused
-// write is not served back to it.
+// write is not served back to it: a synchronous one leaves what its open
+// made, an empty file, as open(O_CREAT|O_TRUNC) and a failed write(2) do.
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, facetSql } from './lib/resident-body.mjs';
@@ -43,7 +44,7 @@ const { started } = await launchResident({
 // As the fabric does once the facet is up: its row is the cap it keeps under.
 if (typeof started?.storageCap === "number") raw.ledger.reportSize(FACET, started.storageCap);
 const facetBytes = () => sql.db.query('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()').get().n;
-const inSession = (name) => authority.kfs.exists(`home/user/app/${name}`);
+const inSession = (name) => { try { return Number(authority.kfs.stat(`home/user/app/${name}`).size) > 0; } catch { return false; } };
 const probe = globalThis.__probe;
 
 const MB = 1_000_000;
@@ -76,7 +77,8 @@ for (let i = 0; i < 16; i++) {
     assert.ok(room < MB, `step ${i}: refused with ${room} bytes free`);
     // An async writer is told; a sync one's write is not served back.
     if (async) assert.equal(answer, 'ENOSPC');
-    assert.equal(probe.size(`/home/user/app/${name}`), 'ENOENT');
+    const left = probe.size(`/home/user/app/${name}`);
+    assert.ok(left === 'ENOENT' || left === 0 || left === 'EAGAIN', `step ${i}: a refused write is not served back (${left})`);
   }
 }
 assert.ok(refused > 0, 'the program wrote past the limit');

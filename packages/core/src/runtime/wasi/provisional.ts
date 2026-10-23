@@ -368,9 +368,13 @@ export interface Provisional {
   writeFile(key: string, path: string, bytes: Uint8Array, row: ResidentEntry | null, umask: number | undefined): boolean;
   /** Undefined where its bytes are the store's and it does not hold them: inodeOf says what to fetch. */
   read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
-  /** Logged as made: it needs none of the file's bytes (what it keeps is folded over them when they are held). */
-  write(handleId: number, offset: number | null, bytes: Uint8Array): number;
-  ftruncate(handleId: number, size: number): void;
+  /**
+   * Logged as made: it needs none of the file's bytes (what it keeps is
+   * folded over them when they are held). `awaited`: its caller waits for
+   * the session's answer (its refusal the call's), as a change by name's.
+   */
+  write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean): number | Promise<number>;
+  ftruncate(handleId: number, size: number, awaited?: boolean): void | Promise<void>;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
   /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (unknown: as a stat by name there). */
   fstat(handleId: number): ResidentEntry | undefined;
@@ -1289,7 +1293,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * its own (or retained), its logged bytes under the client's cap, what it
    * keeps admitted; then folded and logged as it was made.
    */
-  const contentOp = (desc: Desc, op: InodeOp, call: ProcessFsOp, logs: number, syscall: string): void => {
+  const contentOp = (desc: Desc, op: InodeOp, call: ProcessFsOp, logs: number, syscall: string, awaited = false): Promise<unknown> | undefined => {
     const inode = desc.inode;
     // Through its description the session reaches its file wherever, or whether, a name leads to it; by number only while one does.
     if (desc.description === undefined && inode.state === null && !named(inode)) throw fsError('ESTALE', syscall, desc.path);
@@ -1298,8 +1302,20 @@ export function provisional(host: ProvisionalHost): Provisional {
     admitOps(inode, [op], syscall, desc.path);
     ready(inode);
     host.drain();
+    if (awaited) {
+      // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
+      const record = recorded(desc.inode, op, desc.description);
+      desc.lastRecord = record;
+      const answer = host.client.submit(call);
+      desc.lastAnswer = answer;
+      void answer.then((answered) => settleRecords([record], false, answered.mutation?.after), () => settleRecords([record], true))
+        .then(() => { fit(inode); host.sent(); }).catch(endedOnly);
+      fit(inode);
+      return answer;
+    }
     recordedFor(desc, op, host.client.submit(call, { acknowledged: true }));
     fit(inode);
+    return undefined;
   };
 
   /** `op` a record of its own, settled by `answer` (its client entry's): the one a write the client folds into that entry extends (continued). */
@@ -1698,32 +1714,34 @@ export function provisional(host: ProvisionalHost): Provisional {
       return chunk;
     },
 
-    write: (handleId, offset, bytes) => {
+    write: (handleId, offset, bytes, awaited = false) => {
       const desc = descOf(handleId);
       if (!desc.write) throw fsError('EBADF', 'write', desc.path);
       const at = host.now();
       const start = desc.append ? undefined : offset ?? desc.position;
-      if (continued(desc, start, bytes, at)) {
+      if (!awaited && continued(desc, start, bytes, at)) {
         desc.position = start === undefined ? desc.inode.state!.size : offset === null ? start + typedArrayByteLength(bytes) : desc.position;
         return typedArrayByteLength(bytes);
       }
       // One private copy: what is folded and what is logged, whatever the caller does with its buffer after.
       const data = owned(bytes);
+      let answer: Promise<unknown> | undefined;
       if (desc.append) {
-        contentOp(desc, { kind: 'append', data, at }, { type: 'call', call: { call: 'append', path: desc.inode.key, ...by(desc), data } }, typedArrayByteLength(data), 'write');
+        answer = contentOp(desc, { kind: 'append', data, at }, { type: 'call', call: { call: 'append', path: desc.inode.key, ...by(desc), data } }, typedArrayByteLength(data), 'write', awaited);
         desc.position = desc.inode.state!.size;
       } else {
         const start = offset ?? desc.position;
-        contentOp(desc, { kind: 'write', offset: start, data, at }, { type: 'call', call: { call: 'write', path: desc.inode.key, ...by(desc), offset: start, data } }, typedArrayByteLength(data), 'write');
+        answer = contentOp(desc, { kind: 'write', offset: start, data, at }, { type: 'call', call: { call: 'write', path: desc.inode.key, ...by(desc), offset: start, data } }, typedArrayByteLength(data), 'write', awaited);
         if (offset === null) desc.position = start + typedArrayByteLength(data);
       }
-      return typedArrayByteLength(bytes);
+      return answer === undefined ? typedArrayByteLength(bytes) : promiseThen(answer, () => typedArrayByteLength(bytes));
     },
 
-    ftruncate: (handleId, size) => {
+    ftruncate: (handleId, size, awaited = false) => {
       const desc = descOf(handleId);
       if (!desc.write) throw fsError('EINVAL', 'ftruncate', desc.path);
-      contentOp(desc, { kind: 'truncate', size, at: host.now() }, { type: 'call', call: { call: 'ftruncate', path: desc.inode.key, ...by(desc), size } }, 0, 'ftruncate');
+      const answer = contentOp(desc, { kind: 'truncate', size, at: host.now() }, { type: 'call', call: { call: 'ftruncate', path: desc.inode.key, ...by(desc), size } }, 0, 'ftruncate', awaited);
+      return answer === undefined ? undefined : answer.then(() => undefined);
     },
 
     seek: (handleId, offset, whence) => {

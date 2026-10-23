@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // perf-regression/cjs-global-reads — a node program's loop that reads a
-// global in a strict CommonJS module it requires, against the baseline.
+// global in a strict CommonJS module it requires, against the baseline; and a
+// resident's writes, each stat'ed after, as a dev server writes its output.
 //
 // User flow timed: `node strict.js`, 2e7 rounds of Math.imul, from the
 // command to its last line; the least of REPEATS a round. workerd compiles a
@@ -14,6 +15,8 @@
 //
 // Realistic causes of a fail here:
 //   - a strict cell emitted as a `{ cjs }` module again (strictModuleCell).
+//   - a resident's awaited write, or the stat after it, taking more round
+//     trips to the session (core runtime/wasi/resident-filesystem.ts).
 
 import { mintSession, Terminal, makeAsserter, deleteSession, stripAnsi } from '../_driver.mjs';
 import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
@@ -35,9 +38,22 @@ const ROUNDS = 12;
  */
 const REPEATS = 2;
 const LOOP = 'let h = 0; for (let i = 0; i < 2e7; i++) h = Math.imul(h ^ i, 16777619);';
+/** Writes a resident makes, each awaited and then stat'ed, into a directory of its own: its time, in the resident. */
+const WRITES = 200;
 const FILES = {
   'loop-strict.js': `"use strict";\nmodule.exports = () => { ${LOOP} return h; };\n`,
   'strict.js': 'console.log("strict " + require("./loop-strict")());\n',
+  // A server is a resident (it listens): its writes run where a dev server's do.
+  'writes.js': [
+    'const fs = require("fs");',
+    'const server = require("http").createServer((q, s) => s.end()).listen(0, async () => {',
+    '  fs.mkdirSync("out", { recursive: true });',
+    '  const begin = performance.now();',
+    `  for (let i = 0; i < ${WRITES}; i++) { await fs.promises.writeFile("out/f" + (i % 20) + ".js", "export default " + i + ";\\n"); fs.statSync("out/f" + (i % 20) + ".js"); }`,
+    '  console.log("writes " + Math.round(performance.now() - begin));',
+    '  server.close();',
+    '});',
+  ].join('\n') + '\n',
 };
 
 /** `command`'s least wall over REPEATS, once it printed its line. */
@@ -51,6 +67,18 @@ async function leastWall(t, command, line) {
   return Math.min(...walls);
 }
 
+/** The least `line` reports of its own time over REPEATS: a resident's loop, timed where it runs. */
+async function leastReported(t, command, line) {
+  const reported = [];
+  for (let i = 0; i < REPEATS; i++) {
+    const timed = await t.run(command, 120_000);
+    const found = new RegExp(`^${line} (\\d+)$`, 'm').exec(stripAnsi(timed.output));
+    if (found === null) throw new Error(`${command}: ${JSON.stringify(stripAnsi(timed.output).slice(-300))}`);
+    reported.push(Number(found[1]));
+  }
+  return Math.min(...reported);
+}
+
 const result = await measurePaired(arms, ROUNDS, async (target) => {
   const sid = await mintSession(target);
   const t = new Terminal(sid);
@@ -61,7 +89,11 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
     for (const [name, text] of Object.entries(FILES)) await t.writeFile(name, text);
     // Once untimed, so each program's map is staged, as every arm's is.
     await t.run('node strict.js', 120_000);
-    return { 'strict cell global reads': await leastWall(t, 'node strict.js', 'strict') };
+    await t.run('node writes.js', 120_000);
+    return {
+      'strict cell global reads': await leastWall(t, 'node strict.js', 'strict'),
+      'resident write then stat': await leastReported(t, 'node writes.js', 'writes'),
+    };
   } finally {
     await t.close();
     await deleteSession(sid);
@@ -69,7 +101,9 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
 });
 
 assertCandidateRounds(a, 'its programs run their loops', result);
-const graded = assertPaired(a, 'strict cell global reads', result);
+const gradedReads = assertPaired(a, 'strict cell global reads', result);
+const gradedWrites = assertPaired(a, 'resident write then stat', result);
+const graded = gradedReads && gradedWrites;
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : graded ? 0 : 2);

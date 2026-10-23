@@ -526,6 +526,14 @@ export interface ResidentDelegation {
    * decide.
    */
   readonly walkedMounts?: boolean;
+  /**
+   * A descriptor's write or truncate outside a held subtree, by a caller
+   * that may wait, is answered once the session has it, its refusal the
+   * call's: node's fs, as it always answered an awaited write. Without it
+   * such a write is answered once logged (a WASI guest's write(2)), the
+   * session's refusal its next close's, sync's or settle's.
+   */
+  readonly answeredWrites?: boolean;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
   /**
    * The directories the last process in this facet opened, in order (its
@@ -679,14 +687,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * The barrier, for what is owed now: true once it lands (a debt made while
    * it ran is owed still). An answer a delivery carried stands in only if no
    * own debt arose since its arguments were built: an own change the session
-   * answered meanwhile is not in it. It asks a read lease with it where this
-   * run takes them, held from the moment it is granted and vouched once
-   * applied.
+   * answered meanwhile is not in it. One the session started itself (a
+   * routed request's, answered from where the session stands: no arguments
+   * of this process's) stands in only if no own debt arose since this
+   * process last caught up (protocol §9.2's piggyback). It asks a read lease
+   * with it where this run takes them, held from the moment it is granted
+   * and vouched once applied.
    */
   const catchUp = (given?: ResidentBarrierOptions['delivered']): Promise<boolean> => {
     const at = { input: owed.input, own: owed.own };
     const own = given === undefined || given === null ? undefined : ownValue(given.args, 'own');
-    const delivered = given && typeof own === 'number' && owed.own <= own ? given : undefined;
+    const delivered = given && (typeof own === 'number' ? owed.own <= own : owed.own <= caught.own) ? given : undefined;
     counts.barriers++;
     const client = holder?.client;
     const ask = client !== undefined && (delegation === undefined ? undefined : ownValue(delegation, 'readLeases'))?.() === true ? client.readLeaseAsk() : null;
@@ -1081,6 +1092,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const answerable = (key: string, entry: ResidentEntry): boolean => walkedMounts || fedRow(key, entry) === true;
   const walkedMounts = (delegation === undefined ? undefined : ownValue(delegation, 'walkedMounts')) === true;
+  const answeredWrites = (delegation === undefined ? undefined : ownValue(delegation, 'answeredWrites')) === true;
 
   /**
    * Whether `entry` at `key`, a row off the session's own device, is a fed
@@ -1380,7 +1392,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   reflectDefineProperty(fs, 'client', dataDescriptor(holder?.client ?? null, false, true, false));
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
-  fs.flush = async () => { await holder?.flush(); };
+  fs.flush = async () => { await holder?.send(); };
   fs.settle = async () => {
     const failures: UnsettledWrite[] = [];
     await faultsEnded();
@@ -1889,14 +1901,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes); }
+    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes, !now && answeredWrites); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
   };
 
   fs.ftruncate = (handleId, size) => {
-    if (holder?.owns(handleId)) { counts.local++; holder.ftruncate(handleId, size); return; }
+    if (holder?.owns(handleId)) { counts.local++; return holder.ftruncate(handleId, size, !now && answeredWrites); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('ftruncate', () => authority.ftruncate(handleId, size));

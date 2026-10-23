@@ -344,6 +344,14 @@ export interface ResidentDelegation {
      * decide.
      */
     readonly walkedMounts?: boolean;
+    /**
+     * A descriptor's write or truncate outside a held subtree, by a caller
+     * that may wait, is answered once the session has it, its refusal the
+     * call's: node's fs, as it always answered an awaited write. Without it
+     * such a write is answered once logged (a WASI guest's write(2)), the
+     * session's refusal its next close's, sync's or settle's.
+     */
+    readonly answeredWrites?: boolean;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
     /**
      * The directories the last process in this facet opened, in order (its

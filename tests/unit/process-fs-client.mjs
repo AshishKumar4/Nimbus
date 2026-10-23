@@ -1179,4 +1179,32 @@ for (const durable of [false, true]) {
   assert.equal(s.text('home/user/kept-b'), 'B');
 }
 
+// ── A change decided on a name that leads elsewhere now is the orphaned
+//    outcome Linux gives (the process's call resolved first; a peer's change
+//    left what it made no name): the session refuses it and nothing is
+//    reported, nor is anything made through its open. A refusal Linux would
+//    surface (permission) is reported ─────────────────────────────────────
+{
+  const s = session();
+  const kernel = s.engine.as(CRED_KERNEL);
+  s.engine.as(CRED_SESSION_USER).writeFile('home/user/swapped.txt', 'first');
+  const decidedOn = Number(kernel.stat('home/user/swapped.txt').ino);
+  // A peer replaces it: the name leads to another file now.
+  kernel.unlink('home/user/swapped.txt');
+  s.engine.as(CRED_SESSION_USER).writeFile('home/user/swapped.txt', 'the peer\'s');
+  const c = client(s);
+  const opened = c.submit({ type: 'call', call: { call: 'open', path: 'home/user/swapped.txt', mode: 0o644, access: 'write', truncate: true, description: 'd1', expect: decidedOn } }, { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'write', path: 'home/user/swapped.txt', description: 'd1', offset: 0, data: enc.encode('mine') } }, { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'close', path: 'home/user/swapped.txt', description: 'd1' } }, { acknowledged: true });
+  kernel.mkdir('home/user/locked', { mode: 0o555 });
+  c.submit(writeFile('home/user/locked/x', 'refused'), { acknowledged: true });
+  await c.flush();
+  assert.equal((await opened).failed?.refused, true, 'the open was refused');
+  assert.equal(s.text('home/user/swapped.txt'), 'the peer\'s', 'what the name holds is the peer\'s');
+  const failures = c.takeFailures();
+  assert.deepEqual(failures.map((failure) => [failure.op, failure.path, failure.errno]), [['writeFile', 'home/user/locked/x', 'EACCES']],
+    `only the refusal Linux would surface is reported: ${JSON.stringify(failures)}`);
+  await c.settle();
+}
+
 console.log('process-fs-client: ok');

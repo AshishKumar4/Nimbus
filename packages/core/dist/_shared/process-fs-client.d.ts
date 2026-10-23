@@ -128,7 +128,6 @@ export interface ProcessFsGrant {
 }
 /** The session's stat of a file a data call published (its receipt, less the path). */
 export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
-/** An op committed: the stat of the file its data call published, when it published one. */
 export interface ProcessFsAnswer {
     receipt?: ProcessFsReceipt;
     /** The op's path's revision right before it and the session's right after (WaveMutation), when it committed on the session's own filesystem. */
