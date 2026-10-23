@@ -2519,12 +2519,16 @@ function __nimbusProcessFs() {
       published: (escape) => supervisor().fsPublished(escape ? { escape } : undefined),
       // The subtrees the process writes often enough: decided here
       // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
-      grants: {
+      // A process that runs only while a call holds it (a runner, which its
+      // generated code says with __nimbusAnswersNoRecall) cannot answer a
+      // recall between its calls: it holds none, and the session decides
+      // each of its changes.
+      ...(typeof __nimbusAnswersNoRecall !== "undefined" ? {} : { grants: {
         acquire: (path, delegate) => supervisor().fsAcquireExclusiveMutation(path, { delegate }),
         release: async (owner) => { await supervisor().fsReleaseExclusiveMutation(owner); },
         awaitRecall: (owner, waitMs) => supervisor().fsAwaitRecall(owner, waitMs),
         recalled: async (owner, kind) => { await supervisor().fsRecalled(owner, kind); },
-      },
+      } }),
     },
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",

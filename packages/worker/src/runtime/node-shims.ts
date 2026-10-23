@@ -14533,6 +14533,27 @@ async function __nimbusStageImport(specifier, parentUrl) {
   }
   return resolution;
 }
+// What a runner call's code requires and imports statically (FacetManager
+// runnerRun), with what each of those modules requests in turn, read ahead
+// before the code runs, as an import() reads ahead (__nimbusStageImport): its
+// synchronous require then finds the files held. An import() in the code
+// reads ahead when it runs. Nothing rests on this: a request that does not
+// resolve, or a closure past the bound, is left to the code's own require,
+// which reports it as any refused read.
+async function __nimbusStageRequests(text, importer) {
+  const requests = __nimbusModuleRequests(importer, text, true).requests;
+  for (let i = 0; i < requests.length; i++) {
+    const request = requests[i];
+    if (request.kind === "dynamic") continue;
+    const quota = __nimbusPrefetchQuota(request.specifier);
+    const stager = __nimbusImportStager(quota);
+    if (stager === null) return;
+    try {
+      const target = await __nimbusHydrated(() => __nimbusRequestTarget(request.kind, request.specifier, importer), quota);
+      if (target !== null) await stager.closure(target);
+    } catch {}
+  }
+}
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
   return Promise.resolve().then(async () => {
     // V8's own checks and messages (node 22), which run before resolution.

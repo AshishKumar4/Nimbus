@@ -85,6 +85,7 @@ import {
   type ResidentBootSpec,
   type ResidentDiskReader,
   type ResidentSupervisorProps,
+  type RunnerCallParams,
   type Supervise,
 } from './process-fabric.js';
 import {
@@ -166,6 +167,10 @@ class FacetProcessHost implements ProcessHost {
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
     return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
+  }
+
+  callRunner<I extends object, T>(params: RunnerCallParams<I>, consume: (answer: object) => T): Promise<T> {
+    return processes(this.ctx, this.env).callRunner(() => supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {
@@ -384,6 +389,15 @@ class PeerProcessHost implements ProcessHost {
       return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
     });
   }
+
+  /** In the coordinator, as runOnce: a runner has no residency to place. */
+  callRunner<I extends object, T>(params: RunnerCallParams<I>, consume: (answer: object) => T): Promise<T> {
+    return this.reconcile().then(() => {
+      if (this.closed) throw new Error('Nimbus: the process host is closed');
+      return processes(this.ctx, this.env).callRunner(() => supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
+    });
+  }
+
   async open(params: ProcessHostParams): Promise<HostedProcess> {
     if (this.closed) throw new Error('Nimbus: the process host is closed');
     if (params.facet) {
