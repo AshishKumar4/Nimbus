@@ -4367,6 +4367,8 @@ const __nimbusErrnoDescription = {"E2BIG":"argument list too long","EPERM":"oper
 const { utf8Length: __nimbusUtf8Length } = (()=>{var c=new TextEncoder,f;function d(n){if(n.length>=256)return s(n);let e=n.length;for(let t=0;t<n.length;t++){let r=n.charCodeAt(t);if(!(r<128))if(r<2048)e+=1;else if(r>=55296&&r<=56319&&t+1<n.length){let o=n.charCodeAt(t+1);o>=56320&&o<=57343?(e+=2,t++):e+=2}else e+=2}return e}function s(n){f??=new Uint8Array(262144);let e=0;for(let t=0;t<n.length;){let r=c.encodeInto(t===0?n:n.slice(t),f);t+=r.read,e+=r.written}return e}
 
 return {"utf8Length":d};})();
+// fd 0 reading its `< file` (__nimbusTakeStdin): the program's read of stdin, not of a file.
+let __nimbusTakingStdinFile = false;
 const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
@@ -4429,8 +4431,404 @@ const __fsMod = (() => {
     return _coerceMode(opts !== null && typeof opts === "object" ? opts.mode : undefined, 0o666);
   }
 
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-3f0dda1eb74b8b5c.js
   // The errors this fs made itself, as Node words them: a call's refusal passes them on as they are (_rfError).
   const _madeHere = new __NimbusSafeWeakSet();
+========
+  function _forgetSyncTree(k) {
+    const prefix = k + "/";
+    _forgetLocalAttrs(k, true);
+    _nsOwnSet(k, "absentTree");
+    for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
+    _forgetSyncPath(k);
+  }
+
+  /**
+   * The honest error for a sync read the resident view cannot serve. A facet
+   * has no synchronous I/O primitive, so a sync read is limited to content
+   * staged into this process, but the namespace names every path the
+   * credential can see. ENOENT is correct only when it names none; for a path
+   * that exists it would send the caller hunting for a missing file instead
+   * of awaiting the read that would return it.
+   */
+  function _notResidentError(absPath, displayPath, syscall, asyncForm) {
+    const st = _statLadder(absPath);
+    if (st === undefined) return _absentErr(absPath, syscall, displayPath, asyncForm);
+    if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
+    // Unreadable to this credential: the namespace's mode says so, and no
+    // bytes could have been staged for it.
+    if (!_modeAllows(st, 4)) return _fsErr("EACCES", syscall, displayPath);
+    if (typeof __resident !== "undefined" && __resident.cells.storageMiss(_strip(absPath))) {
+      // The process's own write, which neither its store nor its heap budget
+      // could hold: the workspace's storage is full.
+      const full = _fsErr("ENOSPC", syscall, displayPath);
+      full.message = "ENOSPC: workspace storage is full; '" + String(displayPath) + "' is readable asynchronously"
+        + (_supervisor() ? " (" + asyncForm + ")" : "");
+      return full;
+    }
+    // A one-shot that can be run again stops here, to run again as a
+    // resident, which holds the file (stop-replay.ts miss). A speculation's
+    // read is repaired asynchronously instead (_recordResidencyMiss), and
+    // fd 0's read of a `< file` stops for stdin (__nimbusTakeStdin).
+    if (__nimbusReplay && !_speculation() && !__nimbusTakingStdinFile) __nimbusReplay.miss(_strip(absPath));
+    _recordResidencyMiss(absPath);
+    const err = _fsErr("EAGAIN", syscall, displayPath);
+    err.message += " — '" + String(displayPath) + "' exists but its content is not " +
+      "resident in this facet, and synchronous I/O cannot block to fetch it" +
+      // The async form only reaches the live VFS when a supervisor is bound;
+      // without one it re-enters this same resident view, so promising that
+      // it would return the bytes would be its own lie.
+      (_supervisor() ? "; " + asyncForm + " reads it from the live filesystem" : "");
+    return err;
+  }
+
+  /**
+   * Every path a synchronous access asked for and did not get.
+   *
+   * EAGAIN is the honest code, and it is still one no program branches on:
+   * it cannot arise from a read of a real POSIX regular file, so no library
+   * has a handler for it. Whatever catch block does receive it was written
+   * for a file that is missing, and the reader carries on with the answer it
+   * prepared for that — a wrong answer, silently. Throwing alone therefore
+   * cannot be the whole behaviour; the miss is recorded too, and two
+   * consumers read the record for different reasons:
+   *
+   *   - The runner, at exit: an entry that survived to the end was never
+   *     answered, so the program's result rests on a read that failed. It
+   *     names the files and exits non-zero rather than let that report
+   *     success.
+   *   - The supervisor, as the misses happen (the runtime-code report) and
+   *     from the exit envelope: the next bundle built for the same entry
+   *     stages exactly these paths, so the miss stops recurring. Observation,
+   *     not a guess about what a program will read. A run the platform kills
+   *     sends no envelope, so the report as they happen is what teaches it.
+   *
+   * An entry clears only when the program takes the remedy its error names:
+   * an asynchronous read of the path, which waits for the bytes. No later
+   * synchronous answer clears it, neither a read the fault-in has since made
+   * succeed nor a stat or existence check: by then the program may have
+   * built on the refusal. vite's resolver swallows the EAGAIN of a
+   * package.json, bundles the package it took to be missing, and asks about
+   * the same path again later, successfully.
+   */
+  const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
+    || (globalThis.__nimbusVfsResidencyMisses = new __NimbusSafeSet());
+
+  /**
+   * A speculative read: the import() prefetch (__nimbusHydrated) reads ahead
+   * of the program, as its loader will, so that what it reads is held when
+   * the program needs it. While it runs, globalThis.__nimbusVfsSpeculation is
+   * set: a miss is faulted in like any other, but it is the prefetch's, kept
+   * in the speculation's own set, and the program's ledger is neither added
+   * to nor answered: the exit report and the next launch's learning see only
+   * the program's own accesses.
+   */
+  // A synchronous access to a file's content where its miss would have been
+  // raised (_notResidentError): a run again of a run that stopped at that
+  // miss has reached where it stopped (stop-replay.ts read).
+  function _contentRead(absPath) {
+    if (__nimbusReplay && !_speculation() && !__nimbusTakingStdinFile) __nimbusReplay.read(_strip(absPath));
+  }
+
+  function _speculation() {
+    return globalThis.__nimbusVfsSpeculation || null;
+  }
+
+  function _recordMiss(k) {
+    if (k === "") return;
+    const speculation = _speculation();
+    if (speculation) { speculation.misses.add(k); return; }
+    if (_residencyMisses.has(k)) return;
+    _residencyMisses.add(k);
+    if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
+    _stats.misses++;
+  }
+
+  /**
+   * Repairs already issued, so each one costs one round trip.
+   *
+   * Kept apart from the ledger above because the two answer different
+   * questions and a path can need both: the same file can be refused first
+   * for being unmapped, which is repaired by fetching its parent's listing,
+   * and then for having no resident content, which is repaired by fetching
+   * the file. Sharing one set let the second repair be swallowed by the
+   * first, and the read never became answerable.
+   */
+  const _faulted = new __NimbusSafeSet();
+  function _faultOnce(kind, k) {
+    const token = kind + ":" + k;
+    if (_faulted.has(token)) return false;
+    _faulted.add(token);
+    return true;
+  }
+
+  /**
+   * Paths the authority did not have when the access was refused.
+   *
+   * What the exit report asks is whether the program's result rests on a read
+   * that failed, and that is not the same question as whether the path is
+   * there NOW. A program told there is no config writes one, so by the time
+   * the run ends the file exists — authored by the program itself, out of the
+   * very branch the not-found answer sent it down. Nothing was withheld from
+   * it. Measured: create-next-app's update notifier reads /tmp/update-check,
+   * does not find it, writes it, and the whole scaffold was failed over a file
+   * that had never existed; c3 does the same with its wrangler metrics file.
+   *
+   * So the repair records what it saw, and it asks with a stat rather than a
+   * read. A read flushes this facet's pending writes to the authority before
+   * issuing, so it would hand back the bytes the program had just parked and
+   * report the path as one that was there all along.
+   */
+  const _observedAbsent = new __NimbusSafeSet();
+
+  // The miss is the access the program made; the fault-in reads, and so
+  // holds, the file the links on it name by that file's own name.
+  function _recordResidencyMiss(absPath) {
+    const k = _strip(absPath);
+    _recordMiss(k);
+    const landing = _nsLandingKey(k) ?? k;
+    _faultIn(landing);
+    // A speculation's miss through a link is fetched as the file it names.
+    const speculation = _speculation();
+    if (speculation && speculation.issued.has(landing)) speculation.issued.add(k);
+  }
+
+  // The asynchronous read of a refused path answered it (the ledger above).
+  function _residencySatisfied(absPath) {
+    if (_residencyMisses.size === 0 || _speculation()) return;
+    const k = _strip(absPath);
+    _residencyMisses.delete(k);
+    // A descriptor opened through a link misses under the file it names.
+    const held = _nsActive() ? _nsHeldKey(k) : null;
+    if (held !== null) _residencyMisses.delete(held);
+  }
+
+  /**
+   * Fault the page in.
+   *
+   * The access that missed cannot be served — no continuation exists to
+   * suspend — but the bytes can be resident before the next one. A program
+   * that retries, a later phase that reaches the same file, a second module
+   * reading the same data: all of those are refused a second time for a
+   * reason that was already repairable after the first.
+   *
+   * One round trip per path while it is out: the ledger above is the
+   * dedupe, so a read loop over a non-resident file costs one fetch rather
+   * than one per turn. A fetch whose bytes did not land (its fill was spoiled
+   * by a barrier that could not date them, or the store refused them) is not
+   * an answer: the path is asked for again by the next read that misses it,
+   * up to _FAULT_ATTEMPTS times. Once asked for good, it was answered.
+   *
+   * Nothing awaits the fill, but it rides the same RPC accounting every other
+   * read does, so the drain settles it before teardown. That is the behaviour
+   * to want: an isolate torn down mid-fetch leaves the repair undone, and the
+   * cost of not doing so is one read the program was going to need anyway.
+   */
+  const _repairOf = new __NimbusSafeMap();
+  const _FAULT_ATTEMPTS = 4;
+  const _faultAttempts = new __NimbusSafeMap();
+  function _faultIn(k) {
+    if (!_supervisor()) return;
+    const speculation = _speculation();
+    if (_faulted.has("content:" + k)) {
+      // Asked for already: a speculation waits on that same fill, and reads
+      // again after it as the one that issued it does.
+      const pending = _repairOf.get(k);
+      if (speculation && pending) { speculation.repairs[speculation.repairs.length] = pending; speculation.issued.add(k); }
+      return;
+    }
+    // A speculation's fetch is charged to its quota before it is issued, and
+    // past the quota is not issued at nor marked asked: the program's own
+    // read of it later still faults it in.
+    if (speculation && speculation.quota && !speculation.quota.file()) return;
+    _faultOnce("content", k);
+    const attempt = (_faultAttempts.get(k) || 0) + 1;
+    _faultAttempts.set(k, attempt);
+    // Swallowed here rather than at the settle: a repair nobody asked for
+    // must not surface as an unhandled rejection, and a failed one is simply
+    // a path that stays unanswered and stays in the ledger.
+    try {
+      const repair = _observeThenFill(k, speculation && speculation.quota).catch(() => {}).finally(() => {
+        _repairOf.delete(k);
+        // Not landed and not proven absent: the next miss may ask again.
+        const landed = (__vfsBundle && k in __vfsBundle) || _observedAbsent.has(k);
+        if (!landed && attempt < _FAULT_ATTEMPTS) _faulted.delete("content:" + k);
+      });
+      _repairs[_repairs.length] = repair;
+      _repairOf.set(k, repair);
+      if (speculation) { speculation.repairs[speculation.repairs.length] = repair; speculation.issued.add(k); }
+    } catch { /* the fill is speculative */ }
+  }
+
+  /**
+   * A quota's charge for one read: the stat's size was admitted before it
+   * began; every byte the read can reach past it is charged before the range
+   * that reaches it is issued. The first range asks for one byte past the
+   * admitted size, so a file that grew is seen to have grown, and the rest
+   * is planned (and charged) from a fresh stat; a refusal ends the read
+   * there. `through` is the offset the read is about to reach.
+   */
+  function _rangeCharge(quota, admitted) {
+    let charged = admitted;
+    const charge = (through) => {
+      if (through <= charged) return true;
+      if (!quota.bytes(through - charged)) return false;
+      charged = through;
+      return true;
+    };
+    charge.admitted = admitted;
+    return charge;
+  }
+
+  /**
+   * Ask what the authority has, then fetch it if there is anything to fetch.
+   *
+   * The stat is not an extra round trip on balance: where the path is absent —
+   * which is most refusals, since module resolvers and config lookups probe
+   * far more paths than exist — it replaces a content read that could only
+   * have failed, and it is the one observation that settles whether the run
+   * was denied anything.
+   */
+  async function _observeThenFill(k, quota) {
+    const supervisor = _supervisor();
+    const absPath = "/" + k;
+    // A quota's charge is the file's size, so a fetch under one is issued
+    // only once a stat has given it, and not at all past the quota; and the
+    // read is charged in ranges, as it plans them.
+    if (quota && (typeof supervisor.stat !== "function" || typeof supervisor.fsReadRange !== "function")) { _faulted.delete("content:" + k); return; }
+    let charge = null;
+    if (typeof supervisor.stat === "function") {
+      let meta;
+      // A thrown stat is the authority failing to answer, not an answer:
+      // nothing is learned, and the miss stands.
+      // Queued on the path: the program's own later mutations of it must not
+      // overtake the stat, and its earlier ones, lingering, go now.
+      const observe = () => __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r);
+      if (_hasVfsMutationQueue() && __nimbusAncestorTails(absPath).length > 0) __nimbusHurryVfs();
+      try { meta = await (_hasVfsMutationQueue() ? __nimbusQueueVfsMutation(absPath, observe, false) : observe()); }
+      catch { return; }
+      if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
+      if (meta.type === "directory") return;
+      if (quota && !quota.bytes(Number(meta.size) || 0)) { _faulted.delete("content:" + k); return; }
+      if (quota) charge = _rangeCharge(quota, Number(meta.size) || 0);
+      // A store at its budget refuses a fill, and asks for room only then.
+      // The repair can wait, so it reserves the room first, and the bytes it
+      // fetches land in it; where none is to be had, they are not fetched.
+      if (typeof meta.size === "number" && typeof __resident !== "undefined" && !(await __resident.admission.reserve(k, __nimbusResidentModule.residentFileCost(meta.size)))) return;
+    }
+    try { await _liveReadFile(absPath, undefined, undefined, charge); }
+    finally { if (typeof __resident !== "undefined") __resident.admission.release(k); }
+  }
+
+  /**
+   * Repairs in flight, and the wait the exit report owes them.
+   *
+   * A refusal and the fetch that answers it are one event seen from two
+   * sides, so a program that ends between them has not been denied anything
+   * yet — it simply has not waited. Deciding the run was dishonest at that
+   * moment reports a failure the very next turn would have retracted, which
+   * for a short command is most of them. So the ledger is read only after
+   * every outstanding repair has landed and every proven absence has been
+   * retired. Published on globalThis because the runner that reports is
+   * outside this closure, the same way the resumption barriers are.
+   */
+  const _repairs = new __PathList();
+  globalThis.__nimbusVfsResidencySettle = async () => {
+    // One boundary listing can move the boundary a level deeper rather than
+    // settle the question outright, and which directory to ask for next is
+    // only knowable once the previous answer has landed. So drain, settle,
+    // and go round again while the settle is still asking for listings. It
+    // terminates: every round enumerates a directory that was unknown, each
+    // directory is fetched at most once (_faultOnce), and the paths in the
+    // ledger have finitely many components.
+    for (;;) {
+      while (_repairs.length > 0) {
+        const batch = new __PathList();
+        for (let i = 0; i < _repairs.length; i++) batch[i] = _repairs[i];
+        _repairs.length = 0;
+        await __nimbusSettled(batch);
+      }
+      _settleProvenAbsences();
+      if (_repairs.length === 0) return;
+    }
+  };
+
+
+
+
+
+
+
+
+
+
+  // What the authority says of a path after this process's own async request
+  // (a stat, read or accepted write) is what the sync view answers for it
+  // from then on, as it would after the delta that reports it
+  // (vfs/resident namespace.noteLiveStat).
+  //
+  // The lstat rides the read batch (_queueBatchRequest) rather than a call
+  // of its own: a resumption refetches every path it owes at once
+  // (_acquireAndRefetch), and a learn per path made that one lstat call per
+  // path — 1,601 in flight from one facet after a program wrote 1,600 files,
+  // some of which stayed pending and never reached the session
+  // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
+  // the learns cost a round trip per batch, as the reads before them do.
+  /** `written`: the revision of the own write the stat is asked after (namespace.noteLiveStat). */
+  async function _learnLive(absPath, supervisor, written) {
+    if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
+    const ticket = _beginFill(_strip(absPath));
+    try {
+      let stat;
+      try { stat = await _queueBatchRequest(supervisor, { path: absPath, lstat: true }, 0); } catch { return; }
+      _noteLearnedStat(absPath, stat ?? null, ticket, written);
+    } finally {
+      _endFill(ticket);
+    }
+  }
+
+  /**
+   * Keep a stat the authority answered while `ticket` (_beginFill) was
+   * open, unless a barrier reported the path, meanwhile, above what the stat
+   * is known to cover: the cursor the ticket was dated at, or the own write
+   * it was read after (`written`). A deletion among those reports leaves
+   * no row the stat could be judged against, and keeping the stat would
+   * bring back a name nothing will report gone again. False when the stat
+   * was not kept, so the caller can ask for a fresh one (_learnLive): a
+   * ticket that cannot date its read at all (_acquiredRead, _spoilFills)
+   * says nothing of whether the path changed.
+   */
+  function _noteLearnedStat(absPath, stat, ticket, written) {
+    if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
+    const k = _strip(absPath);
+    __resident.namespace.noteLiveStat(k, stat, written);
+    // Not beneath a directory it made just now, whose names are its own.
+    const made = _nsOwnGet(k);
+    if (stat !== null && made?.state === "file" && !_nsParked(k)) {
+      const held = __resident.namespace.lookup(k, false, (at) => (at === k ? undefined : _nsWord(at)));
+      if (held !== "ELOOP" && held.table === k && held.row !== undefined) _nsOwnDrop(k);
+    }
+    return true;
+  }
+
+  /**
+   * Retire the misses a repair turned into honest absence. A miss is a wrong
+   * answer only when the path was THERE and the process was denied it: one on
+   * a name the namespace does not have (or the authority did not have when it
+   * was asked) was the program's not-found branch, taken for the right
+   * reason. Failing the run over those would fail every module resolver,
+   * which probes dozens of paths that do not exist by design.
+   */
+  function _settleProvenAbsences() {
+    if (_residencyMisses.size === 0) return;
+    for (const k of [..._residencyMisses]) {
+      if (_observedAbsent.has(k) || (_nsActive() && _statLadder("/" + k) === undefined)) _residencyMisses.delete(k);
+    }
+  }
+
+  // Node's message is "ENOENT: no such file or directory, open 'x'", and
+  // "rename 'a' -> 'b'" for a call naming two paths.
+>>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-3182358f1501ee62.js
   function _fsErr(code, syscall, p, dest) {
     const described = Object.prototype.hasOwnProperty.call(__nimbusErrnoDescription, code) ? __nimbusErrnoDescription[code] + ", " : "";
     const second = dest === undefined ? "" : " -> '" + dest + "'";
@@ -4782,6 +5180,7 @@ const __fsMod = (() => {
       const encoding = typeof opts === "string" ? opts : opts?.encoding;
       return encoding ? bytes.toString(encoding) : bytes;
     }
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-3f0dda1eb74b8b5c.js
     const absPath = _at(p);
     const content = _readingDirectory(p, () => _sync("open", p, "fs.promises.readFile", (fs) => fs.readFile(absPath)));
     if (content === null) throw _fsErr("ENOENT", "open", p);
@@ -4798,6 +5197,26 @@ const __fsMod = (() => {
   function _readAnswer(absPath, content, opts) {
     const encoding = _encodingOf(opts);
     if (encoding) return _decodeAs(content, encoding);
+========
+    const absPath = _resolve(p);
+    _ensureAncestorsTraversable(absPath, "open", p);
+    const content = _bundleLookup(absPath);
+    if (content === undefined) {
+      throw _notResidentError(absPath, p, "open", "fs.promises.readFile");
+    }
+    _contentRead(absPath);
+    const denial = _denialCode(content);
+    if (denial) throw _fsErr(denial, "open", p);
+    // Bytes held under a name the namespace does not show are no file there:
+    // what statSync says of the name, readFileSync says too.
+    if (_ensureReadable(absPath, "open", p) === undefined && _nsActive()) throw _absentErr(absPath, "open", p, "fs.promises.readFile", true);
+    const encoding = typeof opts === "string" ? opts : opts?.encoding;
+    if (encoding) {
+      // An encoding requested: a string, whatever the cell's shape.
+      return _decodeAs(content, encoding);
+    }
+    // No encoding requested — produce a Buffer-shaped Uint8Array.
+>>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-3182358f1501ee62.js
     const bytes = __BufferMod.from(content);
     // A wasm image the launch compiled through the module map is tagged on
     // the way out, so the WebAssembly seam below can answer the package's own
@@ -5550,6 +5969,477 @@ const __fsMod = (() => {
     };
   }
 
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-3f0dda1eb74b8b5c.js
+========
+  /**
+   * open(2)'s refusals in open(2)'s order, from `name` (the name itself,
+   * not followed, where it was looked at: { link, directory, size }) and
+   * `opened` (what the open reaches): O_CREAT with O_DIRECTORY (EINVAL, as
+   * Linux since 6.4 answers), O_EXCL of a name there (EEXIST),
+   * O_NOFOLLOW of a final link (ELOOP, or ENOTDIR under O_DIRECTORY), then
+   * what is opened. Answers whether something is opened.
+   */
+  function _openRefusal(path, fl, name, opened) {
+    if (fl.create && fl.directory) throw _fsErr("EINVAL", "open", path);
+    if (fl.create && fl.exclusive && (name !== undefined || opened !== undefined)) throw _fsErr("EEXIST", "open", path);
+    if (!fl.followSymlinks && name?.link) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
+    if (opened?.directory) throw _fsErr("EISDIR", "open", path);
+    if (opened !== undefined && fl.directory) throw _fsErr("ENOTDIR", "open", path);
+    if (opened === undefined && !fl.create) throw _fsErr("ENOENT", "open", path);
+    return opened !== undefined;
+  }
+  function _openedAs(stats) {
+    return stats === undefined ? undefined : { link: stats.isSymbolicLink(), directory: stats.isDirectory(), size: stats.size };
+  }
+  /**
+   * Whether this view knows nothing is at `absPath` (the name itself when
+   * `noFollow`): a judgment of nothing else, refusing nothing. A namespace
+   * that cannot answer (a relist failed) knows nothing.
+   */
+  function _knownAbsent(absPath, noFollow) {
+    return _nsActive() && _statLadder(absPath, noFollow) === undefined && _nsUnlisted(absPath, !noFollow, false) === null;
+  }
+
+  /**
+   * An open that creates or truncates as the session judges and makes it, in
+   * one call (W7 open): O_EXCL, O_NOFOLLOW, what is there, the access asked,
+   * the umask, and the create or the truncate. A name a peer changed since this view looked is
+   * refused there, never followed. Stage 3's holder handles log the same call.
+   */
+  function _openCall(k, fl, mode) {
+    return {
+      call: "open", path: k, mode: mode & 0o7777, umask: __processUmask,
+      access: fl.read && fl.write ? "readwrite" : fl.write ? "write" : "read",
+      ...(fl.create ? { create: true } : {}),
+      ...(fl.truncate ? { truncate: true } : {}),
+      ...(fl.exclusive ? { exclusive: true } : {}),
+      ...(fl.followSymlinks ? {} : { nofollow: true }),
+    };
+  }
+
+  /**
+   * An open that empties the file or may make it, as this view keeps it:
+   * the file empty and parked, the open logged (_openCall) for the session
+   * to judge as it lands. The cell is the file's whole content
+   * when the open empties it or makes it new (O_TRUNC, O_EXCL), or when the
+   * session's answer is an empty file; a create that finds a file with
+   * bytes keeps them, which the session then answers. `absent`: this view
+   * knows nothing is there.
+   */
+  function _parkOpen(absPath, fl, mode, absent, acknowledged) {
+    const k = _strip(absPath);
+    _parkWrite(k, new Uint8Array(0), mode, absent);
+    const whole = fl.truncate || fl.exclusive;
+    if (whole) _parkedPartial.delete(k);
+    else _parkedPartial.set(k, __vfsWriteGenerations[k]);
+    // A create that may have found a file: the empty cell is its whole content when the file it opened is empty.
+    const partial = whole ? false : (answered) => answered.receipt === undefined || Number(answered.receipt.size) !== 0;
+    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial });
+  }
+
+  // ── FileHandle — returned from fs.promises.open ──
+  // Stateless-live design: the handle owns path/flags/position FACET-side
+  // and issues ranged supervisor RPCs (fsReadRange/fsWriteRange/fsTruncate),
+  // so there is no server-side fd state to lose across supervisor
+  // hibernation and partial reads/writes never move whole files. Unflushed
+  // sync writes (__vfsWrites) take read precedence; the local sync view is
+  // overlaid on writes so readFileSync stays coherent.
+  // The prior content a sync positional write or truncate lays its bytes
+  // over. Shared by the descriptor forms and truncateSync.
+  function _residentWriteBase(absPath, p, syscall) {
+    const cell = _writtenCell(absPath);
+    if (cell !== undefined) {
+      _contentRead(absPath);
+      const denial = _denialCode(cell);
+      if (denial) throw _fsErr(denial, syscall, p);
+      return _asBytes(cell);
+    }
+    const asyncForm = "the async fs." + syscall + "/fs.promises form";
+    const st = statSync(p, { throwIfNoEntry: false });
+    // Non-resident and non-empty: writing onto a zero-filled base would
+    // silently destroy the bytes we cannot see. Refuse instead.
+    if (st !== undefined && st.size !== 0) throw _notResidentError(absPath, p, syscall, asyncForm);
+    // Absent or empty: an empty base is the true prior content (the namespace
+    // names every path this credential can see).
+    return new Uint8Array(0);
+  }
+
+  // A change the program was told succeeded that the session has refused
+  // since (its client's recorded refusals, each reported once): what a sync
+  // or a close of a descriptor reports, with the session's errno, as
+  // fsync(2) and close(2) report a deferred write's failure (and a WASI
+  // process's do).
+  function _recordedRefusal(syscall, p) {
+    if (!_supervisor()) return;
+    const taken = __nimbusProcessFs().takeFailures();
+    if (taken.length === 0) return;
+    const error = _fsErr(taken[0].errno, syscall, p);
+    error.message += " (the session refused what this process wrote: " + taken.map((failure) => failure.op + " " + failure.path + ": " + failure.message).join("; ") + ")";
+    throw error;
+  }
+
+  // Synced means in the session: the path's own writes sent, everything the
+  // process logged before it answered, and what the session refused of it
+  // reported here.
+  async function _fsyncAsync(absPath, p, syscall = "fsync") {
+    const supervisor = _supervisor();
+    if (supervisor) {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _awaitStructuralOrder(absPath);
+      await __nimbusProcessFs().flush();
+      _recordedRefusal(syscall, p);
+    }
+    _markVfsStale();
+  }
+
+  let __nextFileHandleFd = 3;
+  const __fileHandles = new Map();
+  class __FileHandle {
+    constructor(path, flagInfo, size) {
+      this._path = path;
+      this._abs = _target(path, flagInfo.followSymlinks, "open");
+      this._flags = flagInfo;
+      this._position = 0;
+      this._size = size;
+      this._closed = false;
+      this.fd = __nextFileHandleFd++;
+      __fileHandles.set(this.fd, this);
+    }
+    _assertOpen(syscall) {
+      if (this._closed) throw _fsErr("EBADF", syscall, this._path);
+    }
+    async read(buffer, offset, length, position) {
+      this._assertOpen("read");
+      if (!this._flags.read) throw _fsErr("EBADF", "read", this._path);
+      if (buffer && !(buffer instanceof Uint8Array)) {
+        // options-object form: read({ buffer, offset, length, position })
+        const o = buffer;
+        buffer = o.buffer; offset = o.offset; length = o.length; position = o.position;
+      }
+      if (!buffer) buffer = __BufferMod.alloc(16384);
+      const off = offset || 0;
+      const want = (length === undefined || length === null) ? buffer.length - off : Math.max(0, Number(length));
+      const pos = (position === undefined || position === null) ? this._position : Math.max(0, Number(position));
+      const slice = await _readRangeAt(this._abs, this._path, pos, want) || new Uint8Array(0);
+      buffer.set(slice, off);
+      if (position === undefined || position === null) this._position = pos + slice.length;
+      return { bytesRead: slice.length, buffer };
+    }
+    async write(buffer, offset, length, position) {
+      this._assertOpen("write");
+      if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
+      // As writeSync and callback write read them: (string[, position[,
+      // encoding]]), (buffer[, offset[, length[, position]]]) or (buffer, {
+      // offset, length, position }).
+      const norm = _normWriteArgs(buffer, offset, length, position);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Math.max(0, Number(norm.pos));
+      const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
+      if (bytes.byteLength === 0) {
+        return { bytesWritten: 0, buffer };
+      }
+      let writeAt = at;
+      const supervisor = _supervisor();
+      const parkedKey = _strip(this._abs);
+      if (supervisor && Object.prototype.hasOwnProperty.call(__vfsWrites, parkedKey) &&
+          _parkedPartial.get(parkedKey) !== __vfsWriteGenerations[parkedKey]) {
+        // The file's whole bytes are a parked cell of this process's (its
+        // changes logged, not yet answered): the write lands on it now and
+        // is logged after them, as writeSync's does, and answered in turn.
+        const base = _asBytes(__vfsWrites[parkedKey]);
+        writeAt = this._flags.append ? base.byteLength : at;
+        _parkWrite(parkedKey, _spliceCell(base, writeAt, bytes));
+        _parkedPartial.delete(parkedKey);
+        const logged = _logParked(this._abs, this._flags.append
+          ? { type: "call", call: { call: "append", path: parkedKey, data: _ownedCell(bytes) } }
+          : { type: "call", call: { call: "write", path: parkedKey, offset: writeAt, data: _ownedCell(bytes) } });
+        await _fsRpc(logged.answer, "write", this._path, () => undefined);
+        await logged.claimed;
+        _markVfsStale();
+      } else if (supervisor) {
+        const overlayGeneration = __vfsWriteGenerations[_strip(this._abs)];
+        const key = _strip(this._abs);
+        // The description's write, as write(2) makes it, logged now: at its
+        // offset, or (O_APPEND) at the file's end as it is when the write
+        // lands, which the receipt's size says.
+        const sent = _ownMutation(
+          this._abs,
+          () => _fsRpc(
+            _vfsCall(this._flags.append
+              ? { call: "append", path: key, data: _ownedCell(bytes) }
+              : { call: "write", path: key, offset: writeAt, data: _ownedCell(bytes) }),
+            "write", this._path,
+            (answer) => {
+              if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
+              return answer.mutation;
+            },
+          ),
+          () => {
+            const key = _strip(this._abs);
+            if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
+                __vfsWriteGenerations[key] === overlayGeneration) {
+              _overlayLocalCell(this._abs, writeAt, bytes);
+            }
+          },
+        );
+        sent.catch(() => {});
+        await __nimbusQueueVfsMutation(this._abs, () => sent);
+        _markVfsStale();
+      } else {
+        const cell = _writtenCell(this._abs);
+        this._commit(_spliceCell(cell === undefined ? new Uint8Array(0) : _asBytes(cell), at, bytes));
+      }
+      this._size = Math.max(this._size, writeAt + bytes.byteLength);
+      if (pos === null || this._flags.append) this._position = writeAt + bytes.byteLength;
+      if (this._flags.sync) await this.sync();
+      return { bytesWritten: bytes.byteLength, buffer };
+    }
+    async readFile(opts) { return _readFileAsync(this._path, opts); }
+    async writeFile(data, opts) {
+      await _writeFileAsync(this._path, data, opts);
+      this._size = _byteLen(typeof data === "string" || data instanceof Uint8Array ? data : String(data));
+    }
+    async appendFile(data, opts) {
+      await _appendFileAsync(this._path, data, opts);
+      this._size += _byteLen(typeof data === "string" || data instanceof Uint8Array ? data : String(data));
+    }
+    async stat(opts) {
+      const bigint = Boolean(opts?.bigint);
+      return _statsAs(await _statAsync(this._path), bigint);
+    }
+    async truncate(len) {
+      this._assertOpen("ftruncate");
+      if (!this._flags.write) throw _fsErr("EBADF", "ftruncate", this._path);
+      const size = Math.max(0, Math.trunc(Number(len) || 0));
+      await _truncateAsync(this._path, size);
+      this._size = size;
+    }
+    // ── Synchronous descriptor I/O ──
+    // A node facet has NO synchronous I/O primitive (no JSPI suspension, as
+    // the WASI runtimes have), so sync fd ops are served from exactly the
+    // resident view readFileSync/writeFileSync use — __vfsWrites overlaid on
+    // __vfsBundle. Content that is not resident cannot be fetched without
+    // blocking, so those calls raise EAGAIN rather than invent bytes.
+    // Writes buffer into __vfsWrites and are drained by the existing
+    // write-back path (_flushLocalPathToSupervisor), identical to
+    // writeFileSync; closeSync/fsyncSync therefore cannot block on
+    // durability and only mark the VFS stale.
+    _residentBytes(syscall) {
+      const cell = _writtenCell(this._abs);
+      if (cell === undefined) return undefined;
+      const denial = _denialCode(cell);
+      if (denial) throw _fsErr(denial, syscall, this._path);
+      return _asBytes(cell);
+    }
+    _notResident(syscall) {
+      return _notResidentError(
+        this._abs, this._path, syscall, "the async fs." + syscall + "/fs.promises form",
+      );
+    }
+    _readBase(syscall) {
+      const bytes = this._residentBytes(syscall);
+      if (bytes === undefined) throw this._notResident(syscall);
+      _contentRead(this._abs);
+      return bytes;
+    }
+    _writeBase(syscall) { return _residentWriteBase(this._abs, this._path, syscall); }
+    // `op`: the change, logged now (acknowledged: a sync call returned).
+    _commit(next, op) {
+      const k = _strip(this._abs);
+      _parkWrite(k, next);
+      _parkedPartial.delete(k);
+      if (op) _logParked(this._abs, op, { acknowledged: true });
+      _markVfsStale();
+      this._size = next.byteLength;
+    }
+    _readSync(buffer, offset, length, position) {
+      this._assertOpen("read");
+      if (!this._flags.read) throw _fsErr("EBADF", "read", this._path);
+      const off = offset === undefined || offset === null ? 0 : Number(offset);
+      const want = length === undefined || length === null
+        ? buffer.length - off
+        : Math.max(0, Number(length));
+      const useCurrent = _isCurrentPos(position);
+      const pos = useCurrent ? this._position : Number(position);
+      const buf = this._readBase("read");
+      const from = Math.min(pos, buf.byteLength);
+      const slice = buf.subarray(from, Math.min(buf.byteLength, from + want));
+      buffer.set(slice, off);
+      if (useCurrent) this._position = pos + slice.byteLength;
+      return slice.byteLength;
+    }
+    _writeSync(data, a, b, c) {
+      this._assertOpen("write");
+      if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
+      const norm = _normWriteArgs(data, a, b, c);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Number(norm.pos);
+      _ensureWritable(this._abs, "write", this._path);
+      const base = this._writeBase("write");
+      const at = this._flags.append
+        ? base.byteLength
+        : (pos === null ? this._position : pos);
+      const key = _strip(this._abs);
+      this._commit(_spliceCell(base, at, bytes), this._flags.append
+        ? { type: "call", call: { call: "append", path: key, data: _ownedCell(bytes) } }
+        : { type: "call", call: { call: "write", path: key, offset: at, data: _ownedCell(bytes) } });
+      if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      if (this._flags.sync) fsyncSync(this.fd);
+      return bytes.byteLength;
+    }
+    _truncateSync(len) {
+      this._assertOpen("ftruncate");
+      if (!this._flags.write) throw _fsErr("EBADF", "ftruncate", this._path);
+      const size = Math.max(0, Math.trunc(Number(len) || 0));
+      _ensureWritable(this._abs, "ftruncate", this._path);
+      const base = this._writeBase("ftruncate");
+      const next = new Uint8Array(size);
+      next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
+      this._commit(next, { type: "call", call: { call: "ftruncate", path: _strip(this._abs), size } });
+      if (this._position > size) this._position = size;
+    }
+    async chmod(mode) { this._assertOpen("fchmod"); await _chmodAsync(this._path, mode, this._abs); }
+    async chown(uid, gid) { this._assertOpen("fchown"); await _chownAsync(this._path, uid, gid, undefined, "fchown", this._abs); }
+    async utimes(atime, mtime) { this._assertOpen("futimes"); await _utimesAsync(this._path, atime, mtime, undefined, "futimes", this._abs); }
+    // Durability here means: every byte parked for this path has reached
+    // the authority and every mutation queued for it has landed. The bridge
+    // itself is synchronously durable, so no further RPC is owed.
+    async sync() { this._assertOpen("fsync"); await _fsyncAsync(this._abs, this._path, "fsync"); }
+    async datasync() { this._assertOpen("fdatasync"); await _fsyncAsync(this._abs, this._path, "fdatasync"); }
+    // Scatter/gather over the ranged read/write: one sequential pass per
+    // buffer, stopping at the first short read, positions advanced by hand
+    // when an explicit one was given so the file position stays untouched.
+    async readv(buffers, position) {
+      this._assertOpen("read");
+      let bytesRead = 0;
+      let pos = _isCurrentPos(position) ? null : Number(position);
+      for (const buffer of buffers) {
+        const r = await this.read(buffer, 0, buffer.byteLength, pos);
+        bytesRead += r.bytesRead;
+        if (pos !== null) pos += r.bytesRead;
+        if (r.bytesRead < buffer.byteLength) break;
+      }
+      return { bytesRead, buffers };
+    }
+    async writev(buffers, position) {
+      this._assertOpen("write");
+      let bytesWritten = 0;
+      let pos = _isCurrentPos(position) ? null : Number(position);
+      for (const buffer of buffers) {
+        const r = await this.write(buffer, 0, buffer.byteLength, pos);
+        bytesWritten += r.bytesWritten;
+        if (pos !== null) pos += r.bytesWritten;
+      }
+      return { bytesWritten, buffers };
+    }
+    async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); _recordedRefusal("close", this._path); }
+    [Symbol.asyncDispose]() { return this.close(); }
+  }
+
+  async function _openAsync(path, flags, mode) {
+    const fl = _parseOpenFlags(flags);
+    const supervisor = _supervisor();
+    // Without a session this view is all there is, as the sync open's.
+    if (!supervisor) return _fdHandle(openSync(path, flags, mode), "open");
+    const absPath = _target(path, fl.followSymlinks, "open");
+    if ((fl.create || fl.truncate) && !fl.directory) return _openWriteLive(path, absPath, fl, _coerceMode(mode, 0o666), supervisor);
+    // Any other open changes nothing and looks once, at the session: the
+    // name itself under O_NOFOLLOW, else what it reaches.
+    let there;
+    if (typeof supervisor.stat === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
+      const meta = await _fsRpc(fl.followSymlinks ? supervisor.stat(absPath) : supervisor.lstat(absPath), "open", path, (result) => result);
+      there = meta ? { link: meta.type === "symlink", directory: meta.type === "directory", size: Number(meta.size) || 0 } : undefined;
+    } else {
+      there = _openedAs(fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : lstatSync(path, { throwIfNoEntry: false }));
+    }
+    _openRefusal(path, fl, fl.followSymlinks ? undefined : there, there);
+    return new __FileHandle(path, fl, there.size);
+  }
+
+  /**
+   * An open that creates or truncates, at the session (_openCall), every
+   * errno the session's, answered before it returns. A file this view knows
+   * is not there is
+   * parked empty as the sync open's is (_parkOpen), and the answer kept as a
+   * write's (_writeFileAsync); one it holds that O_TRUNC empties is trimmed
+   * when the open lands, as a truncate's (_truncateAsync); a create that
+   * finds a file keeps nothing.
+   */
+  async function _openWriteLive(path, absPath, fl, mode, supervisor) {
+    await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
+    const k = _strip(absPath);
+    const call = _openCall(k, fl, mode);
+    let answer;
+    if (fl.create && _knownAbsent(absPath, !fl.followSymlinks)) {
+      const logged = _parkOpen(absPath, fl, mode, true, false);
+      let kept = false;
+      const ticket = _beginFill(k);
+      try {
+        answer = await _fsRpc(logged.answer, "open", path, (result) => result);
+        await logged.claimed;
+        _markVfsStale();
+        const receipt = answer.receipt;
+        if (receipt !== undefined) kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      } finally {
+        _endFill(ticket);
+      }
+      if (!kept) await _learnLive(absPath, supervisor);
+    } else if (fl.truncate) {
+      const generation = __vfsWriteGenerations[k];
+      const localCell = _bundleLookup(absPath);
+      const sent = _ownMutation(
+        absPath,
+        () => _fsRpc(_vfsCall(call), "open", path, (result) => { answer = result; return _receiptOf(result); }),
+        () => {
+          if (__vfsWriteGenerations[k] === generation && localCell !== undefined) _truncateLocalCell(absPath, 0);
+        },
+      );
+      sent.catch(() => {});
+      await __nimbusQueueVfsMutation(absPath, () => sent);
+      _markVfsStale();
+    } else {
+      answer = await _fsRpc(_vfsCall(call), "open", path, (result) => result);
+    }
+    const receipt = answer?.receipt;
+    const size = receipt !== undefined ? Number(receipt.size) || 0
+      : Number((fl.followSymlinks ? statSync : lstatSync)(path, { throwIfNoEntry: false })?.size ?? 0);
+    return new __FileHandle(path, fl, size);
+  }
+
+  function openSync(path, flags, mode) {
+    const fl = _parseOpenFlags(flags);
+    const createMode = _coerceMode(mode, 0o666);
+    const absPath = _target(path, fl.followSymlinks, "open");
+    // The name itself where O_NOFOLLOW or O_EXCL asks about it (O_EXCL: a dangling link is there).
+    const name = !fl.followSymlinks || (fl.create && fl.exclusive) ? _openedAs(lstatSync(path, { throwIfNoEntry: false })) : undefined;
+    const st = fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : undefined;
+    const exists = _openRefusal(path, fl, name, fl.followSymlinks ? _openedAs(st) : name);
+    if (fl.read && exists) _ensureReadable(absPath, "open", path);
+    if (fl.write || fl.truncate || !exists) _ensureWritable(absPath, "open", path);
+    if (!exists) _noteCreation(_strip(absPath), createMode);
+    let size = exists ? (st ?? lstatSync(path)).size : 0;
+    // O_TRUNC means "make it empty", so zeroing is the requested semantic,
+    // and creating a genuinely absent file is too. O_APPEND must NEVER
+    // pre-create: "exists" is only as good as the sync view, so a file
+    // created after this facet booted looks absent, and zeroing it at open
+    // time would destroy exactly the content the caller asked to preserve.
+    if (fl.truncate || (!exists && !fl.append)) {
+      // Creating or truncating also makes the file resident, which is what
+      // lets the sync read/write path serve it without blocking; the open
+      // itself is the session's to judge again as it lands (_parkOpen).
+      _parkOpen(absPath, fl, createMode, !exists, true);
+      size = 0;
+    }
+    return new __FileHandle(path, fl, size).fd;
+  }
+
+  // ── fd table ──
+  // fds 0/1/2 are the process stdio triple and deliberately live OUTSIDE
+  // __fileHandles (which allocates from 3 up), so fs.writeSync(1, ...) —
+  // how a lot of bundled CLI output actually reaches the terminal — lands
+  // on the real process streams instead of failing EBADF.
+>>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-3182358f1501ee62.js
   function _fdHandle(fd, syscall) {
     const handle = __fileHandles.get(Number(fd));
     if (!handle || handle._closed) throw _fsErr("EBADF", syscall, fd);
@@ -11330,11 +12220,14 @@ function __nimbusTakeStdin() {
     // synchronous read of it. One the launch did not stage stops the run, and
     // the next run reads it ahead (FacetManager.exec); a run that cannot stop
     // answers as any unstaged read does.
+    __nimbusTakingStdinFile = true;
     try {
       return { source: { bytes: __fsMod.readFileSync(file.path).subarray(file.offset) }, ended };
     } catch (err) {
       if (err && err.code === "EAGAIN") __nimbusStopForStdin("end", "read");
       throw err;
+    } finally {
+      __nimbusTakingStdinFile = false;
     }
   }
   if (__nimbusLiveInputChannel()) {
@@ -15775,6 +16668,14 @@ function __resolutionStat(path) {
     if (error && error.code === "EAGAIN") throw error;
     return undefined;
   }
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-3f0dda1eb74b8b5c.js
+========
+  // Held: the read a miss of it would have stopped at (readFileSync's, below).
+  if (__vfsBundle && k in __vfsBundle) { __nimbusReplay?.read(k); return _coerceStr(__vfsBundle[k]); }
+  if (__vfsWrites && k in __vfsWrites) { __nimbusReplay?.read(k); return _coerceStr(__vfsWrites[k]); }
+  // Fallback: try through fs shim (handles _resolve for user-facing paths)
+  try { return __fsMod.readFileSync("/" + k, "utf8"); } catch { return fallback; }
+>>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-3182358f1501ee62.js
 }
 function __fileExists(path) {
   return __resolutionStat(path) !== undefined;
@@ -16577,6 +17478,8 @@ const __nimbusCommonJsPending = new __NimbusSafeMap();
 // its cell compiled, nothing of it run.
 function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, esModule) {
   if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(__vfsKey(String(resolvedPath)));
+  // A module's load reads its file, held in the map or not: where a miss of it stopped the run before (__readFileOr).
+  __nimbusReplay?.read(__vfsKey(String(resolvedPath)));
   const filename = "/" + __vfsKey(resolvedPath);
   const normalizedPath = __pathSlice(filename, 1);
   // A query's or fragment's import is a job of its own, kept by its URL.
@@ -18693,6 +19596,27 @@ async function __nimbusStageImport(specifier, parentUrl) {
     if (unheld.length > 0) await __nimbusReadAhead(unheld, quota);
   }
   return resolution;
+}
+// What a runner call's code requires and imports statically (FacetManager
+// runnerRun), with what each of those modules requests in turn, read ahead
+// before the code runs, as an import() reads ahead (__nimbusStageImport): its
+// synchronous require then finds the files held. An import() in the code
+// reads ahead when it runs. Nothing rests on this: a request that does not
+// resolve, or a closure past the bound, is left to the code's own require,
+// which reports it as any refused read.
+async function __nimbusStageRequests(text, importer) {
+  const requests = __nimbusModuleRequests(importer, text, true).requests;
+  for (let i = 0; i < requests.length; i++) {
+    const request = requests[i];
+    if (request.kind === "dynamic") continue;
+    const quota = __nimbusPrefetchQuota(request.specifier);
+    const stager = __nimbusImportStager(quota);
+    if (stager === null) return;
+    try {
+      const target = await __nimbusHydrated(() => __nimbusRequestTarget(request.kind, request.specifier, importer), quota);
+      if (target !== null) await stager.closure(target);
+    } catch {}
+  }
 }
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
   return Promise.resolve().then(async () => {

@@ -68,6 +68,8 @@ export interface ExecTelemetryRecord {
   esmAdoptions: number;
   /** Whether the prefetch bundle was served from cache (no VFS walk). */
   cacheHit: boolean;
+  /** Why the cached build of this launch was dropped as stale (launch-reads.ts staleReason), when it was. */
+  cacheDrop?: string;
   /**
    * What `bundleMs` spent where its cost is per module: the transform pass
    * (cells stored, transformed, and its wall time) and the staging of ES

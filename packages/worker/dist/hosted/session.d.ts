@@ -19,7 +19,7 @@
  */
 import { RpcTarget } from 'cloudflare:workers';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionRunnerOptions, SessionRunnerRunOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 export interface HostedSessionScope {
@@ -88,6 +88,22 @@ export declare class HostedSession extends RpcTarget implements SessionRpc, Pick
         timestamp: number;
         stdout: string;
         stderr: string;
+    }>;
+    _rpcRunnerRun(id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions): Promise<{
+        value?: string | undefined;
+        stdout: string;
+        stderr: string;
+        error?: {
+            message: string;
+            name?: string | undefined;
+            stack?: string | undefined;
+            code?: string | undefined;
+        } | undefined;
+        fresh: boolean;
+        ms: number;
+    }>;
+    _rpcRunnerClose(id: string): Promise<{
+        closed: boolean;
     }>;
     _rpcReadFile(path: string, _pid?: undefined, cred?: VfsCred): Promise<string | null>;
     _rpcReadFileBytes(path: string, _pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;

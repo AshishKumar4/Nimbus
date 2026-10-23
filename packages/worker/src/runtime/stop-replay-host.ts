@@ -77,6 +77,8 @@ function parseStopRecord(error: unknown, nonce: string, run: number): StopRecord
     if ((r.until !== 'end' && r.until !== 'data') || !isCount(r.stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(r.tape)) return null;
   } else if (r.kind === 'listen') {
     if (!isTape(r.tape)) return null;
+  } else if (r.kind === 'miss') {
+    if (typeof r.path !== 'string' || r.path.length === 0 || !isTape(r.tape)) return null;
   } else if (r.kind === 'diverged') {
     if (typeof r.why !== 'string' || r.why.length > 1000) return null;
   } else {

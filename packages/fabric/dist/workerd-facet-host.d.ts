@@ -15,7 +15,7 @@
 import { type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { type ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
+import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type RunnerCallParams, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
@@ -46,12 +46,21 @@ interface LoadedWorkerStub {
  * passes a string id and a promise callback.
  */
 interface WorkerLoaderBinding {
-    get(id: string | null, code: () => unknown): {
-        getDurableObjectClass(name: string, opts?: {
-            limits: FacetResourceLimits;
-        }): unknown;
-    };
+    get(id: string | null, code: () => unknown): KeyedWorkerStub;
     load(code: unknown): LoadedWorkerStub;
+}
+/** What a keyed `LOADER.get` hands back: a resident's class, or a runner's entrypoint. */
+interface KeyedWorkerStub {
+    getDurableObjectClass(name: string, opts?: {
+        limits: FacetResourceLimits;
+    }): unknown;
+    getEntrypoint(name?: string, opts?: {
+        limits: FacetResourceLimits;
+    }): RunnerEntrypointStub;
+}
+/** A runner's entrypoint (the guest's generated `run`): one call's input in, its answer out. */
+interface RunnerEntrypointStub {
+    run(input: object, ended: () => Promise<string | null>): Promise<object>;
 }
 /**
  * The bindings `processes` needs off whichever DO is hosting. A
@@ -189,6 +198,12 @@ export declare class Processes {
      * boot specs exist to avoid — for a run that gains nothing by moving.
      */
     run<T>(supervisor: ResidentSupervisorProps, supervise: Supervise, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+    /**
+     * One call on a runner, a KEYED dynamic worker its owner calls again: see
+     * RunnerCallParams. `supervisor` mints its binding's props, asked for on
+     * the loader's miss, so a warm call opens no write epoch of its own.
+     */
+    callRunner<I extends object, T>(supervisor: () => ResidentSupervisorProps, params: RunnerCallParams<I>, consume: (answer: object) => T): Promise<T>;
 }
 /**
  * The write log a process left in its facet's store (process-fs-journal.ts),
