@@ -8,6 +8,7 @@
 // the link, and a later write to target.txt by anyone never reached it.
 
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
 const APP = '/home/user/app';
@@ -55,7 +56,7 @@ async function peerWrites(authority, probe, content) {
   await authority.peer.writeFile('home/user/app/target.txt', content);
   const written = authority.rawVfs.revision();
   await probe.resume();
-  await until(() => globalThis.__nimbusVfsCursor.rev >= written, 'the barrier applied the peer write');
+  await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= written, 'the barrier applied the peer write');
 }
 
 await runScenarios(import.meta.path, {
@@ -205,7 +206,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.writeFile('home/user/elsewhere/big.txt', 'b'.repeat(65536));
     const rewritten = authority.rawVfs.revision();
     await probe.fs.promises.stat(`${APP}/f.txt`);
-    await until(() => globalThis.__nimbusVfsCursor.rev >= rewritten, 'a barrier reported the rewrite');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= rewritten, 'a barrier reported the rewrite');
     release.resolve();
     assert.equal(await reading, 'a'.repeat(65536), 'the read is what it found');
     assert.notEqual(probe.read(BIG), 'a'.repeat(65536), 'the sync view does not hold the older bytes');
@@ -235,13 +236,13 @@ await runScenarios(import.meta.path, {
     await authority.peer.symlink('../elsewhere/a.txt', 'home/user/app/moving.txt');
     let made = authority.rawVfs.revision();
     await probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier listed the link');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= made, 'the barrier listed the link');
     assert.equal(probe.read(`${APP}/moving.txt`), 'ERR:EAGAIN', 'a.txt is not resident');
     await authority.peer.unlink('home/user/app/moving.txt');
     await authority.peer.symlink('../elsewhere/b.txt', 'home/user/app/moving.txt');
     made = authority.rawVfs.revision();
     await probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier reported the new link');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= made, 'the barrier reported the new link');
     assert.equal(await probe.fs.promises.readFile(`${APP}/moving.txt`, 'utf8'), 'b');
     assert.deepEqual([...globalThis.__nimbusVfsResidencyMisses], [], 'the access that missed was answered');
   },
@@ -304,7 +305,7 @@ await runScenarios(import.meta.path, {
     await renamed.promise;
     const committed = authority.rawVfs.revision();
     await probe.fs.promises.stat(`${APP}/f.txt`);
-    await until(() => globalThis.__nimbusVfsCursor.rev >= committed, 'a barrier reported the rename');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= committed, 'a barrier reported the rename');
     assert.equal(probe.fs.lstatSync(moved).isSymbolicLink(), true, 'the table\'s row for the new name');
     assert.throws(() => probe.fs.realpathSync(moved), { code: 'ENOENT' });
     // The rename is still unanswered: a write through the new name waits for
@@ -359,7 +360,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.symlink('../elsewhere/late.txt', 'home/user/app/late-link.txt');
     const made = authority.rawVfs.revision();
     await probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= made, 'the barrier listed the late file and link');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= made, 'the barrier listed the late file and link');
     const fd = probe.fs.openSync(`${APP}/late-link.txt`, 'r');
     assert.throws(() => probe.fs.readSync(fd, Buffer.alloc(4), 0, 4, 0), { code: 'EAGAIN' }, 'the late file is not resident');
     probe.fs.closeSync(fd);

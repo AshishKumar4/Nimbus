@@ -146,7 +146,7 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
     /** A peer with credential `cred` (root's, for a change the session user may not make). */
     peerAs: (cred) => peerOf(rawVfs.as(cred)),
     host,
-    cursor: () => ({ epoch: rawVfs.epoch, rev: rawVfs.revision() }),
+    cursor: () => /** @type {any} */ (host.supervisorBridge().acquire(null)).position,
     read: (path) => dec.decode(kfs.readFile(path)),
   };
 }
@@ -185,7 +185,7 @@ export function facetSupervisor(authority, overrides = {}) {
   if (!overridden('fsAcquired')) {
     own.fsAcquired = async (acquire, op, args) => {
       if (!overridden('fsAcquire') && !overridden(op)) return forward('fsAcquired', [acquire, op, args]);
-      const acquireArgs = acquire.options === undefined ? [acquire.epoch, acquire.cursor] : [acquire.epoch, acquire.cursor, acquire.options];
+      const acquireArgs = acquire.options === undefined ? [acquire.position] : [acquire.position, acquire.options];
       const answer = overridden('fsAcquire') ? await own.fsAcquire(...acquireArgs) : await forward('fsAcquire', acquireArgs);
       const acquired = { args: acquire, answer };
       try {

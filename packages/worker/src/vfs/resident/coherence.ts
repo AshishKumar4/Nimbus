@@ -21,8 +21,11 @@
  */
 
 import type { HeapTables, ResidentTables } from './tables.js';
+import { isFeedPosition, type FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
+import { JSONParse, JSONStringify } from '@nimbus-sh/core/_shared/primordials.js';
 
-export interface Cursor { epoch: string; rev: number }
+/** Where the store's rows are known-good: the namespace's position (feed-position.ts), each fed mount's feed. */
+export type Cursor = FeedPosition;
 
 export interface Coherence {
   /** Bound to tables (store.bind / store.bindInMemory), sealed. */
@@ -52,6 +55,12 @@ export interface Coherence {
 
 export function createCoherence(): Coherence {
   let t: ResidentTables | null = null;
+  /**
+   * The cursor as last read or written, for the tables it is of: read again
+   * once they are another (bind), or were cleared (a clear seals them, or
+   * writes a cursor at once: beginLazy).
+   */
+  let read: { tables: ResidentTables; cursor: Cursor | null } | null = null;
   let heap: HeapTables | null = null;
   let isSealed = true;
   /**
@@ -64,7 +73,7 @@ export function createCoherence(): Coherence {
   let sealReason = 'the store has not reconciled with the authority in this incarnation';
 
   return {
-    bind(tables, heapTables) { t = tables; heap = heapTables; },
+    bind(tables, heapTables) { t = tables; heap = heapTables; read = null; },
     bound: () => t !== null,
     serving: () => t !== null && !isSealed,
     tables(doing) {
@@ -92,6 +101,7 @@ export function createCoherence(): Coherence {
     seal(reason) {
       isSealed = true;
       sealReason = String(reason || 'resealed');
+      read = null;
     },
     unseal() {
       isSealed = false;
@@ -101,13 +111,23 @@ export function createCoherence(): Coherence {
     setUndated(value) { undated = value; },
     cursor() {
       if (t === null) return null;
-      const epoch = t.metaGet('epoch');
-      const rev = t.metaGet('rev');
-      return epoch === undefined || rev === undefined ? null : { epoch, rev: Number(rev) };
+      if (read !== null && read.tables === t) return read.cursor;
+      const text = t.metaGet('position');
+      let cursor: Cursor | null = null;
+      if (text !== undefined) {
+        try {
+          const parsed: unknown = JSONParse(text);
+          cursor = isFeedPosition(parsed) ? parsed : null;
+        } catch {
+          cursor = null;
+        }
+      }
+      read = { tables: t, cursor };
+      return cursor;
     },
     writeCursor(tables, cursor) {
-      tables.metaSet('epoch', String(cursor.epoch));
-      tables.metaSet('rev', String(Number(cursor.rev)));
+      tables.metaSet('position', JSONStringify(cursor));
+      read = { tables, cursor };
     },
   };
 }

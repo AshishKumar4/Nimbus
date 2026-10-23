@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { runScenarios } from './lib/resident-body.mjs';
 import { APP, bootEngine, stat as engineStat } from './lib/guest-engines.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -185,6 +186,140 @@ await runScenarios(import.meta.path, {
     await e.authority.peerAs(CRED_KERNEL).mkdir('newtop', { mode: 0o755 });
     await e.input();
     assert.deepEqual(facts(e.sync.stat('/')), await sessionRoot());
+  },
+
+  async 'a fed mount is answered now; one with no feed is the session\'s'(e = undefined) {
+    const mem = new MemoryVFS();
+    mem.writeFile('/a', new TextEncoder().encode('MEM'));
+    const plain = new MemoryVFS();
+    plain.writeFile('/a', new TextEncoder().encode('PLAIN'));
+    // The same tree, stating no change model: a snapshot its listing could only walk.
+    const unfed = new Proxy(plain, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
+    e = await bootEngine('holder', {
+      seed(authority) {
+        authority.files.vfs.mount('/mnt/mem', mem);
+        authority.files.vfs.mount('/mnt/plain', unfed);
+      },
+    });
+    for (const dir of ['/dev', '/proc', '/mnt/mem', '/mnt/plain']) await e.fs.readdir(dir);
+
+    // /dev: its rows, as the session's stat says them.
+    const devNull = await answersNow(e, 'stat of /dev/null', () => e.sync.stat('/dev/null'));
+    assert.equal(Number(devNull.mode) & 0o170000, 0o020000, 'a character device');
+    assert.equal(Number(devNull.dev), Number((await e.authority.files.vfs.stat('/dev/null')).dev));
+    // /proc: a generated file made here, at each read, as the session makes it.
+    const uptime = new TextDecoder().decode(await answersNow(e, 'readFile of /proc/uptime', () => e.sync.readFile('/proc/uptime')));
+    assert.match(uptime, /^\d+\.\d\d \d+\.\d\d\n$/);
+    assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a volatile file is size 0');
+    assert.deepEqual(await answersNow(e, 'readFile of /proc/version', () => e.sync.readFile('/proc/version')), await e.fs.readFile('/proc/version'));
+    // A fed mount's file, once read, is held as any; another's change is shown once the input's barrier lands.
+    assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/mem/a')), 'MEM');
+    assert.equal(new TextDecoder().decode(await answersNow(e, 'readFile of /mnt/mem/a', () => e.sync.readFile('/mnt/mem/a'))), 'MEM');
+    mem.writeFile('/b', new TextEncoder().encode('NEW'));
+    await e.input();
+    assert.equal(Number((await answersNow(e, 'stat of /mnt/mem/b', () => e.sync.stat('/mnt/mem/b'))).size), 3);
+    // A mount with no feed: the session's to answer, never the view's.
+    await answersNow(e, 'stat of /mnt/plain/a', () => e.sync.stat('/mnt/plain/a'), 'EAGAIN');
+    assert.equal(engineStat(await e.fs.stat('/mnt/plain/a'))?.size, 5);
+  },
+
+  async 'a fed mount made over a file the process held shows the mount\'s bytes'(e = undefined) {
+    // No read lease: while one is trusted, a moving mount's rows are the session's (below).
+    e = await bootEngine('eager', { leases: false });
+    await e.authority.peer.mkdir('home/user/app/cov', { mode: 0o755 });
+    await e.authority.peer.writeFile('home/user/app/cov/f', 'ROOT1');
+    await e.input();
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/cov/f`)), 'ROOT1');
+    // The same name, of the same size, at a revision far below the root's on its own feed.
+    const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
+    mem.writeFile('/f', new TextEncoder().encode('MOUNT'));
+    e.authority.files.vfs.mount(`${APP}/cov`, mem);
+    await e.input();
+    await e.fs.stat(APP);
+    const shown = (() => { try { return new TextDecoder().decode(e.sync.readFile(`${APP}/cov/f`)); } catch (error) { return error.code; } })();
+    assert.ok(shown === 'MOUNT' || shown === 'EAGAIN', `readFileSync of a file a mount now covers: ${shown}`);
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/cov/f`)), 'MOUNT');
+  },
+
+  async 'a fed mount beneath one with no feed is reached as that one lets the process reach it'(e = undefined) {
+    // The parent states no change model: its access changes unreported.
+    const parent = new MemoryVFS({ uid: 0, gid: 0 });
+    parent.mkdir('/b', { mode: 0o755 });
+    const unfedParent = new Proxy(parent, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
+    const child = new MemoryVFS({ uid: 1000, gid: 1000 });
+    child.writeFile('/f', new TextEncoder().encode('CHILD'));
+    e = await bootEngine('holder', {
+      seed(authority) {
+        authority.files.vfs.mount('/mnt/u', unfedParent);
+        authority.files.vfs.mount('/mnt/u/b', child);
+      },
+    });
+    await e.fs.readdir('/mnt/u/b');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/u/b/f')), 'CHILD');
+    // Out of band, as such a backend changes: the process may no longer search it.
+    parent.chmod('/', 0o700);
+    await assert.rejects(Promise.resolve().then(() => e.fs.readFile('/mnt/u/b/f')), (error) => error?.code === 'EACCES');
+    await answersNow(e, 'readFile beneath a parent the process may not search', () => e.sync.readFile('/mnt/u/b/f'), 'EAGAIN');
+  },
+
+  async 'a Node program\'s read through a link to a fed mount follows the mount\'s changes'(e = undefined) {
+    const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
+    mem.writeFile('/f', new TextEncoder().encode('OLD'));
+    e = await bootEngine('node', {
+      seed(authority) {
+        authority.files.vfs.mount('/mnt/mem', mem);
+        authority.kfs.symlink('/mnt/mem/f', 'home/user/app/ln');
+      },
+    });
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/ln`)), 'OLD');
+    mem.writeFile('/f', new TextEncoder().encode('NEW'));
+    await e.input();
+    const shown = (() => { try { return new TextDecoder().decode(e.sync.readFile(`${APP}/ln`)); } catch (error) { return error.code; } })();
+    assert.ok(shown === 'NEW' || shown === 'EAGAIN', `readFileSync through the link after the mount changed: ${shown}`);
+  },
+
+  async 'a fed mount\'s held file survives a restart of the session\'s database'(e = undefined) {
+    const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
+    mem.writeFile('/f', new TextEncoder().encode('KEPT'));
+    e = await bootEngine('eager', {
+      leases: false,
+      seed(authority) {
+        authority.kfs.writeFile('home/user/app/seed.txt', 'SEED');
+        authority.files.vfs.mount('/mnt/mem', mem);
+      },
+    });
+    await e.fs.readdir('/mnt/mem');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/mem/f')), 'KEPT');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/seed.txt`)), 'SEED');
+    e.authority.rawVfs.rotateIncarnation();
+    await e.input();
+    await e.fs.stat(APP);
+    assert.equal(new TextDecoder().decode(await answersNow(e, 'readFile of a mount\'s held file after a restart', () => e.sync.readFile('/mnt/mem/f'))), 'KEPT');
+  },
+
+  async 'under a trusted read lease a moving mount\'s rows are the session\'s, a fixed one\'s the view\'s'(e = undefined) {
+    const mem = new MemoryVFS();
+    mem.writeFile('/a', new TextEncoder().encode('MEM'));
+    e = await bootEngine('eager', { seed(authority) { authority.files.vfs.mount('/mnt/mem', mem); } });
+    for (const dir of ['/dev', '/mnt/mem']) await e.fs.readdir(dir);
+    // Input arrives: the next call's barrier asks a lease, and is granted one.
+    e.fs.inbound();
+    await e.fs.stat(APP);
+    assert.equal(e.fs.client.readTrusted(), true, 'the barrier took no lease');
+    await answersNow(e, 'stat of /mnt/mem/a under a trusted lease', () => e.sync.stat('/mnt/mem/a'), 'EAGAIN');
+    assert.equal(Number((await e.fs.stat('/mnt/mem/a')).size), 3);
+    assert.equal(Number((await answersNow(e, 'stat of /dev/null under a trusted lease', () => e.sync.stat('/dev/null'))).mode) & 0o170000, 0o020000);
+  },
+
+  async 'a Node program reads /dev and /proc synchronously as the session holds them'(e = undefined) {
+    e = await bootEngine('node', {});
+    await e.fs.readdir('/proc');
+    await e.fs.readdir('/dev');
+    assert.equal(Number(e.sync.stat('/dev/null').mode) & 0o170000, 0o020000, 'a character device');
+    assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a generated file is size 0');
+    // vite's is-wsl, at import: a generated file made here, as the session makes it, not a refused read.
+    assert.deepEqual(e.sync.readFile('/proc/version'), await e.fs.readFile('/proc/version'));
+    assert.match(new TextDecoder().decode(e.sync.readFile('/proc/uptime')), /^\d+\.\d\d \d+\.\d\d\n$/);
   },
 
   async 'an awaited change only the session decides is shown once it returns'(e = undefined) {

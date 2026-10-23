@@ -2,10 +2,11 @@ import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../v
 import { type Authority } from './descriptors.js';
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
-import { type CompositeVFS } from '../vfs/composite.js';
+import type { CompositeVFS, MountWalk } from '../vfs/composite.js';
+import { type FeedPosition } from './feed-position.js';
 import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsCred, VfsListOptions, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
@@ -117,7 +118,14 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      */
     revision(path?: RuntimeFsPath): number;
     contentKey(path: RuntimeFsPath): string;
-    acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
+    /**
+     * What changed since `position`: the namespace's feed (CompositeFeed.since),
+     * each fed mount's changes where the namespace routes to it, or a poison
+     * (none held, or another mount table); SQLite's alone where this bridge
+     * has no namespace.
+     */
+    acquire(position: FeedPosition | null, options?: VfsAcquireOptions): VfsAcquireResult;
+    /** One page of every name this caller's namespace shows (namespacePage), or SQLite's where it has none. */
     list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage;
     realpath(path: RuntimeFsPath): string;
     remove(path: RuntimeFsPath, options?: {
@@ -227,4 +235,14 @@ export declare function fitsWholeRead(stat: {
     readonly size: number;
     readonly mode?: number;
 }, maxBytes: number): boolean;
+/**
+ * One page of every name `namespace` shows `cred`, in path order: its feed's
+ * listing (CompositeFeed.list), SQLite's names less what a mount covers,
+ * each fed mount's, the directories the namespace makes, and what `walk`
+ * found on the mounts without a feed, cut to a page by SQLite's own bound
+ * (listPageBudget), at the position read before it. A mounted directory
+ * `cred` may not read and search is marked unreadable, as SQLite marks its
+ * own.
+ */
+export declare function namespacePage(namespace: CompositeVFS, cred: VfsCred, after: string | null, limit: number | undefined, walk: MountWalk, options?: VfsListOptions): VfsListPage;
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

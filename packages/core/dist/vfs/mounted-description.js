@@ -15,7 +15,7 @@
  * their file (settleHeld), never before another process's change.
  */
 import { processView, settleHeld } from '../runtime/descriptors.js';
-import { runtimeStatOf } from './composite.js';
+import { runtimeStatOf } from './runtime-stat.js';
 import { andThen, isPromise } from './vfs.js';
 import { isVfsError } from './vfs-error.js';
 import { flagsRefusal, openAccess, openFollows, refusesDirectory } from './open-rules.js';

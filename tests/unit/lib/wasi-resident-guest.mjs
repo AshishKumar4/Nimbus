@@ -99,7 +99,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
     };
   }
   // What session/rpc.ts answers itself rather than through the op table.
-  supervisor.fsAcquire = async (epoch, cursor, options) => session.bridge.bridge(pid).acquire(epoch, cursor, options);
+  supervisor.fsAcquire = async (position, options) => session.bridge.bridge(pid).acquire(position, options);
   /** The directory batches the guest asked for (fsReadDirectories requests). */
   const batches = [];
   supervisor.fsReadDirectories = async (request) => { batches.push(request); return session.dispatch({ op: 'fsReadDirectories', args: [request], pid }); };

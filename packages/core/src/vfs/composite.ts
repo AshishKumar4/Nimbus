@@ -24,7 +24,8 @@ import type {
   Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsOpenFile, VfsRemoval,
   VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants, WriteAttribution,
 } from './vfs.js';
-import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry, VfsListOptions } from '../runtime/os-contracts.js';
+import { feedOf, positionOf, type FeedCursor, type FeedPosition } from '../runtime/feed-position.js';
 import { LOCAL_PLACEMENT, type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { inWatchedTree, projectChange, type VfsEvent, type VfsEventType } from './events.js';
@@ -33,19 +34,10 @@ import { normalizeVfsPath, parentOf } from './path.js';
 import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { modeAllows } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
-import { DIRENT_TYPES } from './dirent-type.js';
+import { runtimeStatOf } from './runtime-stat.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
-
-/**
- * Where a reader of a namespace's feed stands: the mount table as its
- * principal saw it, and each change feed's epoch and cursor.
- */
-export interface FeedPosition<Epoch extends string | null = string> {
-  readonly table: string;
-  readonly feeds: Readonly<Record<string, { readonly epoch: Epoch; readonly cursor: number }>>;
-}
 
 /** One answer of the feed: every path changed since the position, or a poison (relist). */
 export interface FeedAnswer {
@@ -74,8 +66,9 @@ export type MountWalk = readonly VfsListEntry[];
  */
 export interface CompositeFeed {
   position(): FeedPosition;
-  since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
-  list(after: string | null, limit: number, walked?: MountWalk): { entries: VfsListEntry[]; next: string | null };
+  /** What changed since `position`; null (a reader with none) is a poison. */
+  since(position: FeedPosition | null, options?: VfsAcquireOptions): FeedAnswer;
+  list(after: string | null, limit: number, walked?: MountWalk, options?: VfsListOptions): { entries: VfsListEntry[]; next: string | null };
   /**
    * What the mounts without a feed hold where `named` points into them, as
    * this principal: each such mount point that it can reach, and, on it, the
@@ -133,21 +126,6 @@ const SYNTH_RUNTIME_STAT: RuntimeVfsStat = {
   dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
 };
 
-/**
- * A namespace entry's stat in the runtime contract's shape: its identity
- * (dev, ino) is the namespace's, and a mounted backend's entries carry no
- * SQLite revision.
- */
-export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
-  // Format bits the backend's mode leaves out are its coarse type's (dirent-type.ts).
-  const typeBits = DIRENT_TYPES[stat.type].format;
-  const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & S_IFMT ? stat.mode : typeBits | stat.mode);
-  return {
-    dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
-    ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
-    mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : 0,
-  };
-}
 
 export type { Principal } from './vfs.js';
 
@@ -825,7 +803,7 @@ export class CompositeVFS implements VFS {
     return {
       position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
       since: (position, options) => this.feedSince(position, options),
-      list: (after, limit, walked) => this.feedList(after, limit, walked),
+      list: (after, limit, walked, options) => this.feedList(after, limit, walked, options),
       walk: (named, limit) => this.walkUnfed(named, limit),
     };
   }
@@ -858,11 +836,11 @@ export class CompositeVFS implements VFS {
   }
 
   private feedPosition(table: string, sources: Array<{ mount: Mount; changes: VfsChanges | undefined }>): FeedPosition {
-    const feeds: Record<string, { epoch: string; cursor: number }> = {};
+    const feeds: Record<string, FeedCursor> = {};
     for (const { mount, changes } of sources) {
-      if (changes) feeds[mount.point] = { epoch: changes.epoch, cursor: changes.revision() };
+      if (changes) feeds[mount.point] = changes.fixed ? { epoch: changes.epoch, cursor: changes.revision(), fixed: true } : { epoch: changes.epoch, cursor: changes.revision() };
     }
-    return { table, feeds };
+    return positionOf(table, feeds);
   }
 
   private static reroot(point: string, path: string): string {
@@ -876,24 +854,25 @@ export class CompositeVFS implements VFS {
     return !this.isStructural(path) || this.table.mounts.get(path) === mount;
   }
 
-  private feedSince(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer {
+  private feedSince(position: FeedPosition | null, options?: VfsAcquireOptions): FeedAnswer {
     const table = this.feedSignature();
     const sources = this.feedSources();
     const poison = (): FeedAnswer => ({ position: this.feedPosition(table, sources), poison: true, paths: [] });
-    if (position.table !== table) return poison();
-    const feeds: Record<string, { epoch: string; cursor: number }> = {};
+    if (position === null || position.table !== table) return poison();
+    const feeds: Record<string, FeedCursor> = {};
     const paths: VfsInvalidatedPath[] = [];
     for (const { mount, changes } of sources) {
       if (!changes) continue;
-      const held = position.feeds[mount.point];
+      const held = feedOf(position, mount.point);
       if (held === undefined) return poison();
       const delta = changes.since(held.epoch, held.cursor, options);
       if (delta.poison) return poison();
-      feeds[mount.point] = { epoch: delta.epoch, cursor: delta.rev };
+      feeds[mount.point] = changes.fixed ? { epoch: delta.epoch, cursor: delta.rev, fixed: true } : { epoch: delta.epoch, cursor: delta.rev };
       for (const entry of delta.paths) {
         const at = CompositeVFS.reroot(mount.point, entry.path);
         if (this.feedShows(at, mount)) {
-          paths.push(at === entry.path ? entry : { ...entry, path: at });
+          paths.push(at === entry.path && mount.dev === null ? entry
+            : { ...entry, path: at, ...(entry.stat ? { stat: this.identifyListed(mount, at, entry.stat) } : {}) });
           continue;
         }
         // A covered row changing is nothing to the reader, except at a
@@ -905,7 +884,7 @@ export class CompositeVFS implements VFS {
         }
       }
     }
-    return { position: { table, feeds }, poison: false, paths };
+    return { position: positionOf(table, feeds), poison: false, paths };
   }
 
   /**
@@ -916,7 +895,7 @@ export class CompositeVFS implements VFS {
    * those mounts). A mount without a feed shows only its point otherwise.
    * Take `position()` before the first page.
    */
-  private feedList(after: string | null, limit: number, walked: MountWalk = []): { entries: VfsListEntry[]; next: string | null } {
+  private feedList(after: string | null, limit: number, walked: MountWalk = [], options?: VfsListOptions): { entries: VfsListEntry[]; next: string | null } {
     const want = Math.max(1, limit);
     const past = (path: string): boolean => after === null || comparePaths(path, after) > 0;
     const streams: Array<{ entries: readonly VfsListEntry[]; more: boolean }> = [];
@@ -943,11 +922,11 @@ export class CompositeVFS implements VFS {
       const entries: VfsListEntry[] = [];
       let more = true;
       while (entries.length < want && more) {
-        const page = changes.list(from, want);
+        const page = changes.list(from, want, options);
         for (const entry of page.entries) {
           const at = CompositeVFS.reroot(point, entry.path);
           if (past(at) && this.feedShows(at, mount) && at !== point) {
-            entries.push(at === entry.path ? entry : { ...entry, path: at });
+            entries.push(at === entry.path && mount.dev === null ? entry : { ...entry, path: at, stat: this.identifyListed(mount, at, entry.stat) });
           }
         }
         more = page.next !== null;
@@ -1074,6 +1053,12 @@ export class CompositeVFS implements VFS {
 
   // ── the table ──────────────────────────────────────────────────────────
 
+  /**
+   * Mount `source` at `point`. What a process's view answers of it follows
+   * the backend's change model (VFS.changes): a fed one's names are listed
+   * and followed by every process, as the root's are; one with none is
+   * walked where a launch named it and is the session's to answer.
+   */
   mount(point: string, source: VfsSource, options: MountOptions = {}): void {
     const at = normalizePath(point);
     if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
@@ -1896,6 +1881,18 @@ export class CompositeVFS implements VFS {
   }
 
   /** Whether the table declares an accepted mount point, even if its source is absent. */
+  /**
+   * Whether the mount at `point` states a fixed change model (VfsChanges.fixed:
+   * its tree never changes, as the kernel's /dev and /proc): false for any
+   * other, or one whose source is absent.
+   */
+  fixedMount(point: string): boolean {
+    const mount = this.table.mounts.get(point);
+    if (mount === undefined) return false;
+    const files = this.backend(mount);
+    return files !== null && files.changes?.fixed === true;
+  }
+
   someMountPoint(wants: (point: string) => boolean): boolean {
     for (const mount of this.table.mounts.values()) {
       if (wants(mount.point)) return true;
@@ -3016,6 +3013,18 @@ export class CompositeVFS implements VFS {
   private identityOf(r: Resolution): string {
     const operand = r.operand;
     return operand !== undefined && r.spelling !== r.path ? `${operand.point}\0${operand.rel}` : r.path;
+  }
+
+  /** A fed mount's listed or reported stat at `at`, identified as `stat` there says it (identifyOn): its mount's device, its inode numbered where it has none. */
+  private identifyListed(mount: Mount, at: string, stat: RuntimeVfsStat): RuntimeVfsStat {
+    if (mount.dev === null) return stat;
+    let ino = stat.ino;
+    if (ino === 0) {
+      const known = mount.inos.get(at);
+      ino = known ?? mount.inos.size + 1;
+      if (known === undefined) mount.inos.set(at, ino);
+    }
+    return { ...stat, dev: mount.dev, ino };
   }
 
   /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */

@@ -19,10 +19,10 @@ const omit = (value: unknown, keys: readonly string[]): unknown => {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 };
 const acquire = (value: unknown): unknown => {
-  const v = omit(value, ['epoch', 'rev']) as { paths?: unknown[] } | null;
+  const v = omit(value, ['position']) as { paths?: unknown[] } | null;
   return v && Array.isArray(v.paths) ? { ...v, paths: v.paths.map((p) => omit(p, ['rev'])) } : v;
 };
-const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor', 'begin']);
+const acquireArgs = (value: unknown): unknown => omit(value, ['position', 'begin']);
 const delivered = (value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
   const v = value as { args?: unknown; answer?: unknown };
@@ -54,7 +54,7 @@ export const REPLAY_OPERATION_POLICY = {
   chmod: effect, access: read, chown: effect, setUmask: read,
   readdir: read, exists: read, mkdir: effect, rmdir: effect, rename: effect,
   unlink: effect, readlink: read, fsLinkLeadsTo: read, symlink: effect,
-  // Epoch/cursor and push/scope strategy belong to the replica's cache,
+  // The position and push/scope strategy belong to the replica's cache,
   // not the program. Match acquisitions by their position in this run;
   // the complete observable namespace/stat/content answer still diverges
   // if those different cache requests produce different inputs.
@@ -62,11 +62,11 @@ export const REPLAY_OPERATION_POLICY = {
   fsAcquired: { kind: 'observation', answer: withAcquire, args: (a) => [acquireArgs(a[0]), a[1], a[2]] },
   fsRevision: read,
   fsList: { kind: 'observation', answer: (value) => {
-    const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
+    const v = omit(value, ['position']) as { entries?: unknown[] } | null;
     return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
   } },
   fsListTree: { kind: 'observation', answer: (value) => {
-    const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
+    const v = omit(value, ['position']) as { entries?: unknown[] } | null;
     return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
   } },
   // Facet identity and free-space cache sizing are internal; the granted

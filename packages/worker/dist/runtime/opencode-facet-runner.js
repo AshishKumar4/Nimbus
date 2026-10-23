@@ -1152,7 +1152,7 @@ async function __ocBootStore() {
     __supervisor,
   );
   if (__booted.cursor) {
-    globalThis.__nimbusVfsCursor = { epoch: __booted.cursor.epoch, rev: __booted.cursor.rev };
+    globalThis.__nimbusVfsCursor = { position: __booted.cursor };
   }
   return __resident.sync.requireNamespace(__supervisor, __booted.failure);
 }

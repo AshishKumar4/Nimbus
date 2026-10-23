@@ -3,20 +3,23 @@
  *
  * Synchronous and read-only. A file is a generator from the reading
  * principal's credential to text; `register` adds or replaces one, and
- * `name` may be nested (`net/info`), which makes its directories. Nothing
- * here is stored, so nothing here has a revision: a cache never holds it.
+ * `name` may be nested (`net/info`), which makes its directories.
+ *
+ * Its tree changes only by `register`, so its feed is an immutable one
+ * (immutable-changes.ts): a reader that listed it is current until a file
+ * is registered. A file is generated (`register` with `volatile`: the
+ * standard ones, proc-files.ts, and /proc/mounts), its stat size 0, as
+ * Linux procfs says, its content made at each read; or held (the trust
+ * store), its stat its content's size.
+ * Every stat's mtime is the tree's: when it was made, or last registered to.
  */
 import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
-import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
+import { immutableChanges } from './immutable-changes.js';
+import { PROC_FILES, type ProcGenerator } from './proc-files.js';
+import type { SyncVFS, VFS, VfsChanges, VfsCred, VfsDirent, VfsStat } from './vfs.js';
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 
-/**
- * A /proc file's content, for the credential of the process reading it (null:
- * the embedder's view): text made when read, or bytes made once and shared,
- * which a whole-file read copies and a stat or ranged read does not.
- */
-export type ProcGenerator = (cred: VfsCred | null) => string | Uint8Array;
 
 const enc = new TextEncoder();
 /** A directory's and a file's mode and owner: what their stats say and their access asks. */
@@ -28,23 +31,39 @@ function key(path: string): string {
   return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
 }
 
-export class ProcVFS implements VFS {
-  private readonly files: Map<string, ProcGenerator>;
-  readonly sync: SyncVFS;
+/** What every view of one /proc shares: its files, which of them are volatile, its tree's version and time, and its feed. */
+interface ProcTree {
+  readonly files: Map<string, ProcGenerator>;
+  readonly volatile: Set<string>;
+  version: number;
+  mtimeMs: number;
+  changes?: VfsChanges;
+}
 
-  constructor(files?: Map<string, ProcGenerator>, private readonly cred: VfsCred | null = null) {
-    this.files = files ?? new Map();
+export class ProcVFS implements VFS {
+  readonly sync: SyncVFS;
+  readonly changes: VfsChanges;
+
+  constructor(private readonly tree: ProcTree = { files: new Map(), volatile: new Set(), version: 0, mtimeMs: Date.now() }, private readonly cred: VfsCred | null = null) {
     this.sync = this;
+    // One feed for every principal's view: its tree is theirs alike (a file's content is what differs, made when read).
+    this.changes = tree.changes ??= immutableChanges(this, () => tree.version);
   }
 
-  /** Add or replace `/proc/<name>`. */
-  register(name: string, generator: ProcGenerator): void {
-    this.files.set(key(name), generator);
+  private get files(): Map<string, ProcGenerator> { return this.tree.files; }
+
+  /** Add or replace `/proc/<name>`; `volatile`: its content is made at each read (size 0). */
+  register(name: string, generator: ProcGenerator, volatile = false): void {
+    const k = key(name);
+    this.files.set(k, generator);
+    if (volatile) this.tree.volatile.add(k); else this.tree.volatile.delete(k);
+    this.tree.version++;
+    this.tree.mtimeMs = Date.now();
   }
 
   /** The same files, generated for `cred`. */
   as(cred: VfsCred): ProcVFS {
-    return new ProcVFS(this.files, cred);
+    return new ProcVFS(this.tree, cred);
   }
 
   private isDir(k: string): boolean {
@@ -63,10 +82,11 @@ export class ProcVFS implements VFS {
 
   stat(path: string): VfsStat | null {
     const k = key(path);
-    if (this.isDir(k)) return DIR;
+    if (this.isDir(k)) return { ...DIR, mtimeMs: this.tree.mtimeMs };
     if (!this.files.has(k)) return null;
+    if (this.tree.volatile.has(k)) return { size: 0, mtimeMs: this.tree.mtimeMs, ...FILE };
     const content = this.generate(path);
-    return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: Date.now(), ...FILE };
+    return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: this.tree.mtimeMs, ...FILE };
   }
 
   readFile(path: string): Uint8Array {
@@ -136,47 +156,7 @@ const CA_CERTIFICATES = enc.encode(CA_CERTIFICATES_PEM);
  */
 export function standardProc(): ProcVFS {
   const proc = new ProcVFS();
-  proc.register('cpuinfo', () => {
-    const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 1 : 1;
-    const lines: string[] = [];
-    for (let i = 0; i < cores; i++) {
-      lines.push(`processor\t: ${i}`, 'model name\t: Browser Virtual CPU', `cpu cores\t: ${cores}`, '');
-    }
-    return lines.join('\n');
-  });
-  proc.register('meminfo', () => {
-    const memory = ((globalThis as { performance?: unknown }).performance as {
-      memory?: { jsHeapSizeLimit: number; usedJSHeapSize: number; totalJSHeapSize: number };
-    } | undefined)?.memory;
-    if (!memory) return ['MemTotal:       2097152 kB', 'MemFree:        1048576 kB', 'MemUsed:        1048576 kB', ''].join('\n');
-    const totalKB = Math.floor(memory.jsHeapSizeLimit / 1024);
-    const usedKB = Math.floor(memory.usedJSHeapSize / 1024);
-    return [
-      `MemTotal:       ${totalKB} kB`,
-      `MemFree:        ${totalKB - usedKB} kB`,
-      `MemUsed:        ${usedKB} kB`,
-      `HeapTotal:      ${Math.floor(memory.totalJSHeapSize / 1024)} kB`,
-      '',
-    ].join('\n');
-  });
-  proc.register('uptime', () => {
-    const seconds = typeof performance !== 'undefined' ? (performance.now() / 1000).toFixed(2) : '0.00';
-    return `${seconds} ${seconds}\n`;
-  });
-  proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
+  for (const [name, { generate }] of Object.entries(PROC_FILES)) proc.register(name, generate, true);
   proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
-  proc.register('net/info', () => {
-    const conn = typeof navigator !== 'undefined'
-      ? (navigator as unknown as { connection?: { effectiveType?: string; downlink?: number; rtt?: number; type?: string } }).connection
-      : undefined;
-    if (!conn) return 'Network information not available\n';
-    return [
-      `type:          ${conn.type ?? 'unknown'}`,
-      `effectiveType: ${conn.effectiveType ?? 'unknown'}`,
-      `downlink:      ${conn.downlink ?? 0} Mbps`,
-      `rtt:           ${conn.rtt ?? 0} ms`,
-      '',
-    ].join('\n');
-  });
   return proc;
 }

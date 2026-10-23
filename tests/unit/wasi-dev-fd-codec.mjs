@@ -77,6 +77,7 @@ async function processWith(files, { holding = false, session: direct = false } =
   const counted = {
     get device() { return view.device; },
     get cred() { return view.cred; },
+    cursor: () => view.cursor(),
     ready: () => view.ready(),
     entry: (key) => view.entry(key),
     children: (key) => view.children(key),
@@ -200,6 +201,19 @@ await check('a renamed file opened through /dev/fd is that file, not the new one
   await p.settle();
   assert.equal(dec.decode(await p.authority.readFile('/home/user/a.txt')), 'new');
   assert.equal(dec.decode(await p.authority.readFile('/home/user/b.txt')), 'changed');
+});
+
+await check('a /proc file made at each read reads its content through a descriptor, a device as the session reads it', async () => {
+  const p = await processWith({});
+  // Listed, as a walk of /proc and /dev lists them.
+  await p.fs.readdir('/proc');
+  await p.fs.readdir('/dev');
+  const uptime = await p.open('proc/uptime');
+  assert.match(await p.read(uptime, 64), /^\d+\.\d\d \d+\.\d\d\n$/);
+  await p.close(uptime);
+  const zero = await p.open('dev/zero');
+  assert.equal(await p.read(zero, 4), '\0\0\0\0');
+  await p.close(zero);
 });
 
 await check('a file a held subtree decided, renamed there, is the one /dev/fd opens', async () => {

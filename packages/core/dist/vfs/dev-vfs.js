@@ -14,6 +14,7 @@
  * WASI socket prefix, not a node here.
  */
 import { S_IFCHR } from './vfs.js';
+import { immutableChanges } from './immutable-changes.js';
 import { syscallError } from './vfs-error.js';
 const DEV_MODE = S_IFCHR | 0o666;
 /** Largest buffer one read produces; fewer bytes than asked is ordinary read(2). */
@@ -43,6 +44,8 @@ function name(path) {
 }
 export class DevVFS {
     sync = this;
+    /** Its devices are fixed: a reader that listed them is current (immutable-changes.ts). */
+    changes = immutableChanges(this);
     /** The device at `path`; ENOENT for `syscall` when there is none. */
     node(path, syscall) {
         const found = DEVICES.get(name(path));

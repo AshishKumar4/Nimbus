@@ -11,6 +11,7 @@ import { nsDescribes, nsKey } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY } from './tables.js';
+import { isFeedPosition, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
  *
@@ -233,7 +234,10 @@ export function createTransport(coherence, admission, namespace, cells) {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-            const version = file.rev === 0 ? ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null : null;
+            // A file on the root's feed is dated by its revision there, which the session's reads check; any other (a
+            // mount's, its revision its own feed's, or none) by its version, as its listing's stat named it.
+            const dated = file.rev !== 0 && file.epoch !== null;
+            const version = dated ? null : ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null;
             const ckey = ownValue(file, 'ckey') ?? null;
             for (let part = 0; part < parts; part++) {
                 const offset = part * RESIDENT_CHUNK_BYTES;
@@ -396,10 +400,12 @@ export function createTransport(coherence, admission, namespace, cells) {
             if (!listed || !arrayIsArray(listed.entries)) {
                 throw new Error('Nimbus: fsList returned no page');
             }
+            if (!isFeedPosition(listed.position))
+                throw new Error('Nimbus: fsList returned no position');
             if (cursor === null) {
-                cursor = { epoch: stringOf(listed.epoch), rev: NumberOf(listed.rev) };
+                cursor = listed.position;
             }
-            else if (stringOf(listed.epoch) !== cursor.epoch) {
+            else if (!sameEpochs(listed.position, cursor)) {
                 return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: 'the supervisor changed incarnation mid-enumeration' };
             }
             for (let i = 0; i < listed.entries.length; i++) {
@@ -435,7 +441,7 @@ export function createTransport(coherence, admission, namespace, cells) {
                 }
                 // Its stat, for the bytes the store already has: who may read them (namespace.readable).
                 const contentKey = ownValue(entry, 'contentKey');
-                entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+                entries[entries.length] = { path, size, rev, epoch: rootEpochFor(cursor, path), ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
             }
             if (listed.next === null || listed.next === undefined) {
                 return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };

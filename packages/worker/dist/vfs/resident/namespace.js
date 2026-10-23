@@ -28,6 +28,7 @@
  */
 import { namespaceRowBytes } from './cell-cost.js';
 import { namespaceAllows } from './permissions.js';
+import { feedFor } from '@nimbus-sh/core/runtime/feed-position.js';
 import { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 import { arrayCopy, dateNow, Error, NumberOf, numberIsInteger, objectAssign, objectHasOwn, ownField, SafeList, SafeMap, SafeSet, StringFromCharCode, stringCharCodeAt, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, } from '@nimbus-sh/core/_shared/primordials.js';
 import { nsKey, nsName, nsParent, nsRowAt, walkNamespace } from './namespace-lookup.js';
@@ -557,7 +558,9 @@ export function createNamespace(coherence, admission) {
                 return;
             const t = coherence.require();
             const held = nsRowAt(t, k);
-            if (held !== undefined && (written === undefined ? held.rev >= cursor.rev : held.rev > written))
+            // Dated by its own feed's clock (the root's for the session's files).
+            const now = feedFor(cursor, k).cursor;
+            if (held !== undefined && (written === undefined ? held.rev >= now : held.rev > written))
                 return;
             if (stat === null) {
                 if (held !== undefined)
@@ -569,7 +572,7 @@ export function createNamespace(coherence, admission) {
             const target = ownValue(stat, 'linkTarget') ?? ownValue(stat, 'target') ?? null;
             if (stat.type === 'symlink' && target === null)
                 return;
-            tryPut(t, k, stat, written ?? cursor.rev, target);
+            tryPut(t, k, stat, written ?? now, target);
         },
         clear() {
             generation++;

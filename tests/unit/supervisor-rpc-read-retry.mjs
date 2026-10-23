@@ -13,6 +13,7 @@
 // Cloudflare's error-handling contract.
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { mock } from 'bun:test';
 
 mock.module('cloudflare:workers', () => ({
@@ -69,7 +70,7 @@ function host(failures, error) {
             stubs.add(stub);
             if (calls.length <= failures) throw error();
             if (envelope.op === 'stat') return { type: 'file', size: 3845898 };
-            if (envelope.op === 'fsAcquire') return { epoch: 'e1', cursor: 9, paths: [], poison: false };
+            if (envelope.op === 'fsAcquire') return { position: positionOf('', { '/': { epoch: 'e1', cursor: 9 } }), paths: [], poison: false };
             return 1;
           },
         };
@@ -94,8 +95,8 @@ function host(failures, error) {
 // dropped barrier fails the same interpreter start a dropped stat did.
 {
   const { rpc, calls } = host(1, () => dropped());
-  const barrier = await rpc.fsAcquire('e1', 3);
-  assert.equal(barrier.cursor, 9, 'a barrier the platform dropped once did not answer');
+  const barrier = await rpc.fsAcquire(positionOf('', { '/': { epoch: 'e1', cursor: 3 } }));
+  assert.equal(rootOf(barrier.position).cursor, 9, 'a barrier the platform dropped once did not answer');
   assert.deepEqual(calls, ['fsAcquire', 'fsAcquire']);
   console.log('  ok  a dropped barrier is answered on a fresh stub');
 }

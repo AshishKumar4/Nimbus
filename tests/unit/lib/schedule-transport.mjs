@@ -61,7 +61,7 @@ export function scheduleTransport({ park = () => false, note = () => {}, poisone
     // Only a barrier's own ACQUIRE: a delivered or combined one that is a poison is refused, and asked again (node-shims _deliveredAnswer).
     if (poisonNext && name === 'fsAcquire') {
       poisonNext = false;
-      asked = [null, 0, ...args.slice(2)];
+      asked = [null, ...args.slice(1)];
       poisoned();
     }
     const settled = await Promise.resolve(call(asked)).then((value) => ({ value }), (error) => ({ error }));

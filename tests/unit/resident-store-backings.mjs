@@ -14,6 +14,7 @@
 // the operations.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { heapTables, RK_OWN_WRITE } from '../../packages/worker/src/vfs/resident/tables.ts';
@@ -200,7 +201,7 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   s.bindInMemory(BUDGET);
   let grants = 0;
   s.admission.setStorage(undefined, { fsStorageGrant: async () => { grants++; return { granted: 1 << 30 }; } });
-  s.sync.adoptModuleBundle({}, { epoch: 'e', rev: 1 });
+  s.sync.adoptModuleBundle({}, positionOf('', { '/': { epoch: 'e', cursor: 1 } }));
   const text = (n, c) => c.repeat(n);
   assert.equal(s.cells.fill('home/user/a.txt', text(64 * 1024, 'a'), 2), true, 'a fill within the budget is held');
   assert.equal(s.cells.get('home/user/a.txt'), text(64 * 1024, 'a'));

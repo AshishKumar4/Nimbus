@@ -58,10 +58,10 @@ const privateRev = raw.revision('/tmp/x', A);
 assert.ok(privateRev > sharedRev);
 assert.equal(raw.revision(`${PRIVATE_ROOT}/x`), privateRev);
 
-function listed(bridge, name) {
+async function listed(bridge, name) {
   let after = null;
   do {
-    const page = bridge.list(after, 64);
+    const page = await bridge.list(after, 64);
     for (const entry of page.entries) if (entry.path === name) return entry;
     after = page.next;
   } while (after !== null);
@@ -69,7 +69,7 @@ function listed(bridge, name) {
 }
 
 // ── Everything the bridge reports is the private file's revision ──────────
-assert.equal(listed(fs, 'tmp/x')?.rev, privateRev, 'list() reports the private file');
+assert.equal((await listed(fs, 'tmp/x'))?.rev, privateRev, 'list() reports the private file');
 assert.equal(fs.revision('/tmp/x'), privateRev, 'revision() reported the shared tmp/x');
 assert.equal(fs.stat('/tmp/x').revision, privateRev, 'stat() reported the shared tmp/x');
 assert.equal(fs.stat('/tmp/x', { followSymlinks: false }).revision, privateRev);
@@ -101,9 +101,10 @@ assert.deepEqual(receipt, { before: beforeRange, after: raw.revision() }, 'the r
 // no name for, is not reported to it at all.
 {
   const cursor = raw.revision();
+  const at = fs.acquire(null).position;
   kernel.writeFile('tmp/x', 'shared, rewritten');
   const own = fs.writeFile('/tmp/x', 'private v4');
-  const delta = fs.acquire(raw.epoch, cursor);
+  const delta = fs.acquire(at);
   assert.equal(delta.poison, false);
   assert.deepEqual(
     delta.paths.filter((entry) => entry.path.startsWith('tmp')).sort((l, r) => (l.path < r.path ? -1 : 1)),
@@ -114,7 +115,7 @@ assert.deepEqual(receipt, { before: beforeRange, after: raw.revision() }, 'the r
   // An unconfined caller names storage as it is, but only what it could
   // list: the shared tmp/x, and not A's private file, whose root it cannot
   // traverse. The kernel can, and is told of both.
-  const session = host.supervisorBridge().acquire(raw.epoch, cursor);
+  const session = host.supervisorBridge().acquire(at);
   const names = new Set(session.paths.map((entry) => entry.path));
   assert.ok(names.has('tmp/x'));
   assert.ok(!names.has(`${PRIVATE_ROOT}/x`), 'the session user was told a name in A\'s private root');
@@ -128,11 +129,11 @@ store.bind({ storage: facetStorage(facetSql()) });
 const supervisor = {
   fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
-  fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, undefined, pid),
+  fsAcquire: (position) => _rpcFsAcquire(host, position, undefined, pid),
 };
 const asText = (cell) => (typeof cell === 'string' ? cell : dec.decode(cell));
 
-store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+store.sync.adoptModuleBundle({}, fs.acquire(null).position);
 // The launch's data plan holds A's /tmp/x.
 store.sync.setPlan(['tmp/x']);
 const filled = await store.sync.synchronize(supervisor);
@@ -143,7 +144,7 @@ assert.equal(asText(store.cells.get('tmp/x')), 'private v4');
 // name the delta has to evict.
 kernel.writeFile(`${PRIVATE_ROOT}/x`, 'a peer wrote this');
 const held = store.coherence.cursor();
-const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev));
+const applied = store.cells.admit(await supervisor.fsAcquire(held));
 assert.deepEqual(applied.dropped, ['tmp/x'], "a peer's write left A holding the replaced bytes");
 assert.equal(store.cells.get('tmp/x'), undefined);
 const refilled = await store.sync.synchronize(supervisor);

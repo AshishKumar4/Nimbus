@@ -1143,18 +1143,18 @@ export function processFsClient(options) {
         holds(key) {
             return grants.some((grant) => !grant.ended && within(key, grant.root));
         },
-        vouch(key, cursor) {
-            if (client.pending() || ownHeld || cursor.rev < ownThrough)
+        vouch(key, root) {
+            if (client.pending() || ownHeld || root.cursor < ownThrough)
                 return undefined;
-            return client.certifies(key, cursor);
+            return client.certifies(key, root);
         },
-        certifies(key, cursor) {
+        certifies(key, root) {
             if (escaped !== null)
                 return undefined;
             let found;
             for (const grant of grants) {
                 const certificate = grant.certificate;
-                if (certificate === undefined || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision)
+                if (certificate === undefined || certificate.epoch !== root.epoch || root.cursor < certificate.revision)
                     continue;
                 const standing = standingOf(grant, key);
                 if (standing === 'held')

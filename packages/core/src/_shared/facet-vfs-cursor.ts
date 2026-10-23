@@ -33,20 +33,16 @@
  * is generated from a per-invocation spec that is not addressed by its bytes,
  * so there it is simply one more field of that spec.
  */
+import type { FeedPosition } from '../runtime/feed-position.js';
+
 export const VFS_CURSOR_SEED_SOURCE = `
 if (__MODULE_VFS_CURSOR) {
-  globalThis.__nimbusVfsCursor = {
-    epoch: __MODULE_VFS_CURSOR.epoch,
-    rev: __MODULE_VFS_CURSOR.rev,
-  };
+  globalThis.__nimbusVfsCursor = { position: __MODULE_VFS_CURSOR };
 }
 `;
 
-/** The cursor a facet snapshot travels with, or `null` when it has none. */
-export interface FacetVfsCursor {
-  epoch: string;
-  rev: number;
-}
+/** The cursor a facet snapshot travels with (the namespace's position it was read at), or `null` when it has none. */
+export type FacetVfsCursor = FeedPosition;
 
 /**
  * The `__MODULE_VFS_CURSOR` literal for a generated facet body. `null` is a

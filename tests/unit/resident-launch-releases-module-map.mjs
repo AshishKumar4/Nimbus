@@ -2,6 +2,7 @@
 // A resident drops uncached serialized sources before its real host opens,
 // while cached serialized sources remain intact at that boundary.
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 
 import { buildFacetVfsBundleSource, generateLongRunningNodeCode, releaseGeneratedSources, releaseSerializedSources } from '../../packages/worker/src/facets/manager.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -109,7 +110,7 @@ async function launch(cacheRetained) {
 await runScenarios(import.meta.path, {
   async 'total release'() {
     const bundle = { 'home/user/a.js': 'module.exports = 42;\n' };
-    const cursor = { epoch: 'e', rev: 7 };
+    const cursor = positionOf('', { '/': { epoch: 'e', cursor: 7 } });
     const state = { bundle, cursor, reachableCount: 1, truncated: false, emits: new Map(), esm: new Map() };
     state.bundleSource = await buildFacetVfsBundleSource(state.bundle);
     releaseSerializedSources(state);

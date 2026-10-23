@@ -4,10 +4,10 @@ const omit = (value, keys) => {
     return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 };
 const acquire = (value) => {
-    const v = omit(value, ['epoch', 'rev']);
+    const v = omit(value, ['position']);
     return v && Array.isArray(v.paths) ? { ...v, paths: v.paths.map((p) => omit(p, ['rev'])) } : v;
 };
-const acquireArgs = (value) => omit(value, ['epoch', 'cursor', 'begin']);
+const acquireArgs = (value) => omit(value, ['position', 'begin']);
 const delivered = (value) => {
     if (!value || typeof value !== 'object')
         return value;
@@ -40,7 +40,7 @@ export const REPLAY_OPERATION_POLICY = {
     chmod: effect, access: read, chown: effect, setUmask: read,
     readdir: read, exists: read, mkdir: effect, rmdir: effect, rename: effect,
     unlink: effect, readlink: read, fsLinkLeadsTo: read, symlink: effect,
-    // Epoch/cursor and push/scope strategy belong to the replica's cache,
+    // The position and push/scope strategy belong to the replica's cache,
     // not the program. Match acquisitions by their position in this run;
     // the complete observable namespace/stat/content answer still diverges
     // if those different cache requests produce different inputs.
@@ -48,11 +48,11 @@ export const REPLAY_OPERATION_POLICY = {
     fsAcquired: { kind: 'observation', answer: withAcquire, args: (a) => [acquireArgs(a[0]), a[1], a[2]] },
     fsRevision: read,
     fsList: { kind: 'observation', answer: (value) => {
-            const v = omit(value, ['epoch', 'rev']);
+            const v = omit(value, ['position']);
             return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
         } },
     fsListTree: { kind: 'observation', answer: (value) => {
-            const v = omit(value, ['epoch', 'rev']);
+            const v = omit(value, ['position']);
             return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
         } },
     // Facet identity and free-space cache sizing are internal; the granted

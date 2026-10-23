@@ -32,6 +32,7 @@ import { namespaceRowBytes } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import { namespaceAllows, type ModeMeta, type ResidentCred } from './permissions.js';
 import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { feedFor } from '@nimbus-sh/core/runtime/feed-position.js';
 import { NS_DIR, NS_FILE, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
 import {
   arrayCopy, dateNow, Error, NumberOf, numberIsInteger, objectAssign, objectHasOwn, ownField, SafeList, SafeMap, SafeSet,
@@ -651,7 +652,9 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       if (cursor === null) return;
       const t = coherence.require();
       const held = nsRowAt(t, k);
-      if (held !== undefined && (written === undefined ? held.rev >= cursor.rev : held.rev > written)) return;
+      // Dated by its own feed's clock (the root's for the session's files).
+      const now = feedFor(cursor, k).cursor;
+      if (held !== undefined && (written === undefined ? held.rev >= now : held.rev > written)) return;
       if (stat === null) {
         if (held !== undefined) forget(t, k);
         return;
@@ -659,7 +662,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       if (!nsDescribes(stat)) return;
       const target = ownValue(stat, 'linkTarget') ?? ownValue(stat, 'target') ?? null;
       if (stat.type === 'symlink' && target === null) return;
-      tryPut(t, k, stat, written ?? cursor.rev, target);
+      tryPut(t, k, stat, written ?? now, target);
     },
     clear() {
       generation++;

@@ -205,7 +205,7 @@ await runScenarios(import.meta.path, {
     });
     // Another process reads under its lease, which the process's write meets.
     const reader = authority.files.bind({ pid: 99, cred: CRED });
-    const leased = () => reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true }).readLease;
+    const leased = () => reader.acquire(reader.acquire(null).position, { lease: true }).readLease;
     // Raw timers: a program's timer takes a barrier first, which waits for the process's own writes in flight.
     const flushed = () => Promise.race([globalThis.__nimbusProcessFs.flush().then(() => 'answered'), rawSleep(200).then(() => 'waiting')]);
     let lease = leased();
@@ -233,7 +233,7 @@ await runScenarios(import.meta.path, {
       authority.files.continueAtCommit(pid);
     }, undefined, `require("tls").connect({ host: "127.0.0.1", port: 9 }).on("error", () => {});\n${PROGRAM}`);
     const reader = authority.files.bind({ pid: 99, cred: CRED });
-    const { readLease } = reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true });
+    const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
     assert.ok(readLease, 'no lease to meet');
     probe.fs.writeFileSync(F, 'v2');
     const flushed = await Promise.race([globalThis.__nimbusProcessFs.flush().then(() => 'answered'), rawSleep(200).then(() => 'waiting')]);
@@ -255,7 +255,7 @@ await runScenarios(import.meta.path, {
     await until(() => globalThis.__nimbusProcessFs.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
     await globalThis.__nimbusProcessFs.flush();
     const reader = authority.files.bind({ pid: 99, cred: CRED });
-    const { readLease } = reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true });
+    const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
     assert.ok(readLease, 'no lease to meet');
     probe.connect();
     const written = probe.fs.promises.writeFile('/home/user/app/out/saved', 'saved');

@@ -23,6 +23,7 @@
  * over — measured past the DO CPU limit at pi scale. See `synchronize`.
  */
 import { residentCellCost } from './cell-cost.js';
+import { feedFor, isFeedPosition, rootEpochFor, sameClock } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsDescribes, nsKey, nsRowAt } from './namespace.js';
 import { NS_FILE, RK_OWN_WRITE } from './tables.js';
 import { messageOf } from './transport.js';
@@ -102,12 +103,12 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             return cursor;
         let result;
         try {
-            result = await supervisor.fsAcquire(cursor.epoch, cursor.rev, acquireOptions());
+            result = await supervisor.fsAcquire(cursor, acquireOptions());
         }
         catch {
             result = null;
         }
-        if (!result || result.poison || typeof result.rev !== 'number' || typeof result.epoch !== 'string') {
+        if (!result || result.poison || !isFeedPosition(result.position)) {
             // Unanswered: the namespace keeps the listing's revision, which the
             // program's first barrier brings forward like any other.
             return cursor;
@@ -119,7 +120,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             const found = namespace.resolve(path, false);
             if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE)
                 continue;
-            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch, version: versionOf(found.row) });
+            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
         }
         if (refetch.length > 0)
             await transport.fetchFiles(supervisor, refetch);
@@ -210,15 +211,16 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         // from one that was never walked.
         const judgeable = listing.complete;
         const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
-        // May a held revision be COMPARED with a listed one? Only inside one
-        // supervisor incarnation: across a restart the clocks are unrelated, and an
-        // untouched path lists at rev 0, which would vouch for anything.
-        const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;
+        // May a held revision of `path` be COMPARED with a listed one? Only on one
+        // clock: its feed in one incarnation. Across a restart the clocks are
+        // unrelated, and an untouched path lists at rev 0, which would vouch for anything.
+        const at = listing.cursor;
+        const comparable = (path) => judgeable && held !== null && sameClock(held, at, path);
         // A file listed at revision 0 has none the store can compare: a mounted
         // file's (its backend keeps no revision on the session's clock; a file
         // SQLite holds was written at a generation past 0). Its row is never
         // vouched for, so a reconcile refetches what the mount holds now.
-        const vouches = (entry, rev) => comparable && entry !== undefined && entry.rev > 0 && rev >= entry.rev;
+        const vouches = (entry, rev) => entry !== undefined && comparable(entry.path) && entry.rev > 0 && rev >= entry.rev;
         const listed = new Map();
         for (const file of listing.entries)
             listed.set(file.path, file);
@@ -227,18 +229,24 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         const dropped = [];
         const own = [];
         let rekeyed = 0;
+        /** Dated files the listing proved current: kept, so never swept with the rest. */
+        let vouched = 0;
         for (const row of rows) {
             const entry = listed.get(row.path);
             if (row.rev === RK_OWN_WRITE) {
                 current.add(row.path);
                 own.push({
                     path: row.path,
-                    rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev,
+                    rev: !comparable(row.path) ? null : entry !== undefined ? entry.rev : feedFor(at, row.path).cursor,
                 });
                 continue;
             }
-            const keep = vouches(entry, row.rev) || !judgeable;
-            if (keep) {
+            if (vouches(entry, row.rev)) {
+                vouched++;
+                current.add(row.path);
+                continue;
+            }
+            if (!judgeable) {
                 current.add(row.path);
                 continue;
             }
@@ -267,10 +275,15 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             const entry = listed.get(path);
             if (rev === RK_OWN_WRITE) {
                 current.add(path);
-                own.push({ path, rev: !comparable ? null : entry !== undefined ? entry.rev : listing.cursor.rev });
+                own.push({ path, rev: !comparable(path) ? null : entry !== undefined ? entry.rev : feedFor(at, path).cursor });
                 continue;
             }
-            if (vouches(entry, rev) || !judgeable) {
+            if (vouches(entry, rev)) {
+                vouched++;
+                current.add(path);
+                continue;
+            }
+            if (!judgeable) {
                 current.add(path);
                 continue;
             }
@@ -278,12 +291,13 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             dropped.push(path);
         }
         // Sweep what could not be vouched for. When NOTHING could — a new supervisor
-        // incarnation, whose revisions say nothing about ours — that is every row but
-        // this facet's own unflushed writes, and at pi scale a per-path delete would
+        // incarnation, whose revisions say nothing about ours, and no other feed's
+        // file kept — that is every row but this facet's own unflushed writes, and
+        // at pi scale a per-path delete would
         // be ~32,000 statements in one turn against an object that has been observed
         // resetting under exactly that load. So it is a predicate there, and per path
         // where a reconcile has made the set small by construction.
-        if (dropped.length > 0 && !comparable && rekeyed === 0) {
+        if (dropped.length > 0 && vouched === 0 && rekeyed === 0) {
             t.dropDatedFiles();
         }
         else {
@@ -314,7 +328,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 continue;
             }
             if (plan.has(file.path) || wanted.has(file.path)
-                || (pushable(file.path) && (!comparable || file.rev > held.rev)))
+                || (pushable(file.path) && (!comparable(file.path) || file.rev > feedFor(held, file.path).cursor)))
                 fetch.push(file);
         }
         // Reserve mandatory metadata growth while optional data is fetched, but
@@ -366,7 +380,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             rekeyed,
             dropped: dropped.length,
             own,
-            reconciled: comparable,
+            reconciled: comparable(''),
             complete: listing.complete,
             cursor: judgeable ? listing.cursor : null,
             ...(listing.reason ? { incomplete: listing.reason } : {}),
@@ -388,8 +402,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             // store, or empties it first.
             throw new Error('Nimbus: a module bundle is adopted only into an empty store');
         }
-        const given = moduleCursor;
-        if (!given || given.epoch == null || given.rev == null) {
+        if (!isFeedPosition(moduleCursor)) {
             // An undated snapshot. Adopt NOTHING and serve an empty store.
             //
             // Not a throw, because this is a real path rather than a misuse: a facet
@@ -407,11 +420,10 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             coherence.unseal();
             return null;
         }
-        const rev = Number(given.rev);
         for (const path of Object.keys(bundle || {})) {
-            cells.put(t, path, bundle[path], rev);
+            cells.put(t, path, bundle[path], feedFor(moduleCursor, path).cursor);
         }
-        return cells.admit({ poison: false, paths: [], epoch: String(given.epoch), rev }).cursor;
+        return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
     };
     const fail = (pass) => (pass && (pass.skipped || pass.incomplete)) || null;
     return {
@@ -544,7 +556,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 const row = nsRowAt(t, path);
                 if (row === undefined || row.kind !== NS_FILE)
                     continue;
-                fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null, version: versionOf(row) });
+                fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
             }
             return transport.fetchFiles(supervisor, fetch);
         },

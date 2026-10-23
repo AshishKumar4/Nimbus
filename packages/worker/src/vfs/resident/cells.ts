@@ -33,6 +33,7 @@ import {
 } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { floorFor, isFeedPosition, notAfter, samePosition } from '@nimbus-sh/core/runtime/feed-position.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type ChunkRow, type FileHead, type ResidentTables } from './tables.js';
 
 /** An own write held in memory: the store had no room for it in its tables. */
@@ -315,23 +316,23 @@ export function createCells(
     const dropped = new SafeList<string>();
     const relist = new SafeList<string>();
     let kept = 0, pushed = 0;
-    const epoch = result && result.epoch != null ? stringOf(result.epoch) : null;
-    const rev = result && result.rev != null ? NumberOf(result.rev) : null;
-    if (epoch === null || rev === null) {
+    const position = result ? ownValue(result, 'position') : undefined;
+    if (!isFeedPosition(position)) {
       throw new Error(
         'Nimbus: fsAcquire returned no cursor; the resident store stays sealed '
         + 'rather than serving rows it cannot date',
       );
     }
     // Answers can be admitted out of the order they were served in (two
-    // barriers in flight). One older than the store's cursor describes a state
-    // the store has already moved past: admitting it would move the cursor
-    // back and install its bytes over newer ones. Within an epoch the cursor
-    // only moves forward, and only entries above it are applied.
+    // barriers in flight). One at or before the store's cursor describes a
+    // state the store has already reached: admitting it would move the cursor
+    // back and install its bytes over newer ones. Within a table and its
+    // feeds' epochs the cursor only moves forward, and only each feed's
+    // entries above its cursor are applied (floorFor).
     const at = coherence.cursor();
-    const floor = at !== null && coherence.sealed() === null && at.epoch === epoch && !(result && result.poison) ? at.rev : null;
-    if (at !== null && floor !== null && rev <= floor) {
-      return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: rev < floor };
+    const floorAt = at !== null && coherence.sealed() === null && !(result && result.poison) ? at : null;
+    if (at !== null && floorAt !== null && notAfter(position, floorAt)) {
+      return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: !samePosition(position, floorAt) };
     }
     // The namespace moves with the cursor or not at all: a delta without stats,
     // or a poison, leaves it describing a revision the cursor has left, so it
@@ -366,7 +367,7 @@ export function createCells(
       for (let i = 0; i < paths.length; i++) {
         const entry = paths[i];
         const entryRev = NumberOf(entry.rev);
-        if (floor !== null && entryRev <= floor) continue;
+        if (floorAt !== null && entryRev <= floorFor(position, floorAt, entry.path)) continue;
         const path = entry.path;
         if (namespaced && namespace.ready()) {
           const again = namespace.applyEntry(t, entry);
@@ -451,9 +452,9 @@ export function createCells(
         dropped[dropped.length] = path;
       }
     }
-    coherence.writeCursor(t, { epoch, rev });
+    coherence.writeCursor(t, position);
     coherence.unseal();
-    return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
+    return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: position };
   };
 
   /**

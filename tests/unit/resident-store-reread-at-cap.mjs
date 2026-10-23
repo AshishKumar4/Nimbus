@@ -12,13 +12,14 @@
 // with no room for them, leave no row: never the old bytes.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_CHUNK_BYTES } from '../../packages/worker/src/vfs/facet-resident-limits.ts';
 import { facetSql } from './lib/resident-body.mjs';
 import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const enc = new TextEncoder();
-const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
+const CURSOR = { poison: false, paths: [], position: positionOf('', { '/': { epoch: 'e1', cursor: 7 } }) };
 const STAT = (size) => ({ type: 'file', size, mode: 0o100644, uid: 1000, gid: 1000, atime: 0, mtime: 0, ctime: 0, ino: 1 });
 const FILES = {
   'home/user/app/src/App.tsx': 'export const App = () => <div className="text-red-500">naïve 日本語</div>;\n'.repeat(30),
@@ -63,7 +64,7 @@ for (const [path, body] of Object.entries(FILES)) {
 {
   const path = 'home/user/app/src/App.tsx';
   const bytes = bytesOf(FILES[path]);
-  const admitted = store.cells.admit({ poison: false, epoch: 'e1', rev: 10, paths: [{ path, rev: 10, bytes, stat: STAT(bytes.byteLength) }] });
+  const admitted = store.cells.admit({ poison: false, position: positionOf('', { '/': { epoch: 'e1', cursor: 10 } }), paths: [{ path, rev: 10, bytes, stat: STAT(bytes.byteLength) }] });
   assert.deepEqual(admitted.dropped, [], 'nothing held is dropped');
   assert.ok(store.cells.has(path), 'the pushed file is still held, at the cap');
   assert.equal(t.fileRev(path), 10, 'dated at the delta');

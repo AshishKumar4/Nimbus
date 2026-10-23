@@ -121,9 +121,9 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
   /** @type {any} */
   const supervisor = {
     // A poison is the session's answer to an ACQUIRE from no cursor.
-    fsAcquire: (epoch, cursor, options) => answered('fsAcquire', () => (poisonNext
-      ? (poisonNext = false, authority.acquire(null, 0, { namespace: true }))
-      : authority.acquire(epoch, cursor, options))),
+    fsAcquire: (position, options) => answered('fsAcquire', () => (poisonNext
+      ? (poisonNext = false, authority.acquire(null, { namespace: true }))
+      : authority.acquire(position, options))),
     fsList: (after, limit) => answered('fsList', async () => listed(await authority.list(after, limit))),
     readdir: (path) => answered('readdir', () => authority.readdir(path)),
     readlink: (path) => authority.readlink(path),
@@ -146,8 +146,8 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
   else store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
   if (eager) {
-    const { epoch, rev } = await authority.acquire(null, 0, { namespace: true });
-    const boot = await store.sync.boot(() => ({}), { epoch, rev }, supervisor, 0);
+    const { position } = await authority.acquire(null, { namespace: true });
+    const boot = await store.sync.boot(() => ({}), position, supervisor, 0);
     assert.equal(boot.failure, null, 'the namespace enumerated at boot');
   } else {
     assert.equal(await store.view.bootLazy(supervisor), true);

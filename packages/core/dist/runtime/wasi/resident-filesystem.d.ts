@@ -39,6 +39,7 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
+import { type FeedPosition } from '../feed-position.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -107,11 +108,8 @@ export interface ResidentNamespace {
     acquireArgs(): ResidentAcquireArgs | null;
     /** Whether the store holds rows a repair could not vouch for: every barrier repairs until one does. */
     repairOwed?(): boolean;
-    /** The store's provenance cursor. */
-    cursor(): {
-        epoch: string;
-        rev: number;
-    } | null;
+    /** The store's provenance cursor: the namespace's position its rows are known-good at. */
+    cursor(): FeedPosition | null;
     /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
     reserve(bytes: number): boolean;
     /** Return what `reserve` charged. */
@@ -133,8 +131,7 @@ export interface ResidentNamespace {
  * changes when they were built, and `own`, its own debt then (acquireArgs).
  */
 export interface ResidentAcquireArgs {
-    readonly epoch: string;
-    readonly cursor: number;
+    readonly position: FeedPosition;
     readonly options?: object;
     readonly begin?: number;
     readonly own?: number;
@@ -146,8 +143,8 @@ export interface ResidentBarrierOptions {
     readonly answer?: VfsAcquireResult;
     /**
      * An answer a delivery carried, with the arguments it was asked with: it
-     * stands in for asking when it answers from a cursor the store has reached,
-     * in its epoch.
+     * stands in for asking when it answers from a position the store has
+     * reached.
      */
     readonly delivered?: {
         readonly args: ResidentAcquireArgs;

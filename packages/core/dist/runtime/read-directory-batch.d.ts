@@ -9,8 +9,21 @@ export declare const DIRECTORY_READ_RPC: 'fsReadDirectories';
 declare const Request: z.ZodObject<{
     channel: z.ZodString;
     sequence: z.ZodNumber;
-    epoch: z.ZodNullable<z.ZodString>;
-    cursor: z.ZodNumber;
+    position: z.ZodNullable<z.ZodPipe<z.ZodObject<{
+        table: z.ZodString;
+        feeds: z.ZodRecord<z.ZodString, z.ZodObject<{
+            epoch: z.ZodString;
+            cursor: z.ZodNumber;
+            fixed: z.ZodOptional<z.ZodLiteral<true>>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>, z.ZodTransform<import("./feed-position.js").FeedPosition, {
+        table: string;
+        feeds: Record<string, {
+            epoch: string;
+            cursor: number;
+            fixed?: true | undefined;
+        }>;
+    }>>>;
     open: z.ZodArray<z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
         directory: z.ZodNumber;
         path: z.ZodString;

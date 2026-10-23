@@ -3,6 +3,7 @@
  * token provenance across hibernation, not a second mutation journal. */
 import { LruMap } from '../_shared/lru-map.js';
 import { normalizeVfsPath } from '../vfs/path.js';
+import { feedsOf, isFeedPosition, positionOf, rootOf } from './feed-position.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const REPOSITORIES = 128;
 const TOKENS_PER_REPOSITORY = 32;
@@ -47,7 +48,7 @@ function restore(value) {
                 || !(token.mounts === null || (Array.isArray(token.mounts) && token.mounts.every((p) => typeof p === 'string'))))
                 return undefined;
             const mounts = boundedMounts(token.mounts);
-            tokens.set(token.rev, { epoch: row.epoch, mounts });
+            tokens.set(token.rev, { epoch: row.epoch, mounts, position: isFeedPosition(token.position) ? token.position : null });
         }
         return { epoch: row.epoch, highWater: row.highWater, untrustedThrough: row.untrustedThrough, tokens };
     }
@@ -56,7 +57,7 @@ function restore(value) {
     }
 }
 function serialize(history) {
-    const tokens = [...history.tokens.keys()].map((rev) => ({ rev, mounts: history.tokens.get(rev).mounts }));
+    const tokens = [...history.tokens.keys()].map((rev) => ({ rev, mounts: history.tokens.get(rev).mounts, position: history.tokens.get(rev).position }));
     return JSON.stringify({ epoch: history.epoch, highWater: history.highWater, untrustedThrough: history.untrustedThrough, tokens });
 }
 /** Unknown/oversized mount metadata is full invalidation, never omission. */
@@ -88,22 +89,30 @@ export function makeGitFsmonitor(state) {
                     trusted.set(key, history);
                 const before = history ? serialize(history) : null;
                 const issued = cursor >= 0 ? history?.tokens.get(cursor) : undefined;
-                const epoch = issued?.epoch ?? null;
-                const delta = await fs.acquire(epoch, Math.max(0, cursor), { namespace: true });
-                if (!Number.isSafeInteger(delta.rev) || delta.rev < 0)
+                // From the token's place on each feed it holds, in the table as it stands: a mount that came or went is the
+                // mount footprint's to report (mergeMounts), so it is no poison here; a feed it never held starts now.
+                let from = null;
+                if (issued?.position) {
+                    const now = (await fs.acquire(null)).position;
+                    from = positionOf(now.table, { ...feedsOf(now), ...feedsOf(issued.position) });
+                }
+                const delta = await fs.acquire(from, { namespace: true });
+                // The token is the root's revision; the position it was issued at is what the next query asks from.
+                const at = rootOf(delta.position);
+                if (!Number.isSafeInteger(at.cursor) || at.cursor < 0)
                     throw new Error('fsmonitor: invalid VFS revision');
                 if (!history) {
-                    history = { epoch: delta.epoch, untrustedThrough: cursor, highWater: delta.rev, tokens: new LruMap(TOKENS_PER_REPOSITORY) };
+                    history = { epoch: at.epoch, untrustedThrough: cursor, highWater: at.cursor, tokens: new LruMap(TOKENS_PER_REPOSITORY) };
                     trusted.set(key, history);
                 }
-                else if (history.epoch !== delta.epoch) {
+                else if (history.epoch !== at.epoch) {
                     // Numeric revisions can repeat after a restore. Never re-authorize
                     // an old token simply because we returned that number in a new epoch.
                     history.untrustedThrough = Math.max(history.untrustedThrough, history.highWater, cursor);
-                    history.epoch = delta.epoch;
+                    history.epoch = at.epoch;
                     history.tokens.clear();
                 }
-                history.highWater = Math.max(history.highWater, delta.rev);
+                history.highWater = Math.max(history.highWater, at.cursor);
                 // Every mounted backend is uncertain: its external writes have no
                 // journal. Keep each issued revision's mount footprint, so unmounting
                 // between queries also invalidates the old prefix. Reissuing the same
@@ -117,20 +126,20 @@ export function makeGitFsmonitor(state) {
                     return relative !== '.git' && !relative.startsWith('.git/');
                 }));
                 const dirtyMounts = mergeMounts(issued ? issued.mounts : [], currentMounts);
-                if (delta.rev > history.untrustedThrough) {
-                    const old = history.tokens.get(delta.rev);
-                    history.tokens.set(delta.rev, { epoch: delta.epoch, mounts: mergeMounts(old ? old.mounts : [], currentMounts) });
+                if (at.cursor > history.untrustedThrough) {
+                    const old = history.tokens.get(at.cursor);
+                    history.tokens.set(at.cursor, { epoch: at.epoch, mounts: mergeMounts(old ? old.mounts : [], currentMounts), position: delta.position });
                 }
                 const saved = serialize(history);
                 if (state && saved !== before)
                     await state.save(key, saved);
-                const reply = (paths) => encoder.encode(`${delta.rev}\0${paths.map((path) => `${path}\0`).join('')}`);
-                if (epoch === null || delta.poison || cursor > delta.rev)
+                const reply = (paths) => encoder.encode(`${at.cursor}\0${paths.map((path) => `${path}\0`).join('')}`);
+                if (from === null || delta.poison || cursor > at.cursor)
                     return reply(['/']);
                 const paths = new Set();
                 const prefix = root === '' ? '' : `${root}/`;
                 let sawRoot = false;
-                let size = String(delta.rev).length + 1;
+                let size = String(at.cursor).length + 1;
                 if (dirtyMounts === null)
                     return reply(['/']);
                 for (const point of dirtyMounts) {
@@ -165,7 +174,8 @@ export function makeGitFsmonitor(state) {
                     if (entry.stat?.type === 'directory' && !entry.structural && !entry.subtree)
                         continue;
                     const name = entry.structural || entry.subtree || entry.stat?.type === 'directory' ? `${relative}/` : relative;
-                    if (paths.has(name))
+                    // A dirty mount (reported whole) covers what its own feed names under it.
+                    if (paths.has(name) || dirtyMounts.some((point) => `${prefix}${name}`.startsWith(`${point}/`)))
                         continue;
                     size += utf8Length(name) + 1;
                     if (size > MAX_REPLY_BYTES)

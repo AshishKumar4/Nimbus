@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
+import { FeedPositionSchema } from './feed-position-schema.js';
 import { withRecall } from '../vfs/recall.js';
 import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_SEQUENCE_WINDOW } from '../constants.js';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
@@ -14,8 +15,7 @@ const Ids = z.array(z.number().int().nonnegative()).max(DIRECTORY_PREFETCH_LIMIT
 const Request = z.object({
   channel: z.string().uuid(),
   sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  epoch: z.string().nullable(),
-  cursor: z.number().int().nonnegative(),
+  position: FeedPositionSchema.nullable(),
   open: z.array(RuntimeFsPathSchema).max(DIRECTORY_BATCH_LIMIT),
   retire: Ids,
   claim: Ids,
@@ -225,7 +225,7 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
         } finally { budget.reserved--; }
       }
       live();
-      const acquire = await withRecall(() => fs.acquire(request.epoch, request.cursor, { namespace: true, lease: request.lease }));
+      const acquire = await withRecall(() => fs.acquire(request.position, { namespace: true, lease: request.lease }));
       live();
       return { channel: request.channel, sequence: request.sequence, opened, acquire,
         retired: [...request.retire], claimed: [...request.claim], outstanding: budget.tracked.size + budget.reserved };

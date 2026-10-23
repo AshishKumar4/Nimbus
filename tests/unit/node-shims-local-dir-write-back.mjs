@@ -16,6 +16,7 @@
 // log directory.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -55,7 +56,7 @@ const supervisor = {
 waveSupervisor(supervisor);
 
 // The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
@@ -146,7 +147,7 @@ function spawnFacet() {
   let mkdirCalls = 0;
   const counted = { ...supervisor, mkdir: (p) => { mkdirCalls++; return supervisor.mkdir(p); } };
   listAuthority(rawVfs);
-  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+  globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
   const counting = (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
     {},
     {},
@@ -169,7 +170,7 @@ function spawnFacet() {
   let mkdirCalls = 0;
   const counted = { ...supervisor, mkdir: (p) => { mkdirCalls++; return supervisor.mkdir(p); } };
   listAuthority(rawVfs);
-  globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+  globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
   const fs = (declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { home: ['user'], 'home/user': [] } }), factory(
     {},
     {},

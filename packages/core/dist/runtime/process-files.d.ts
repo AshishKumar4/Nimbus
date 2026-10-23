@@ -94,10 +94,12 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * What a process's launch names — its working directory, program and
      * arguments, the literal paths its code names, the files its module map
      * was read from — which is where its listing (`list`) walks mounts without
-     * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT). `names` is
-     * asked only when the process's credential sees a mount beyond SQLite and
-     * the kernel's, so a launch computes nothing for a namespace that is
-     * SQLite alone. Adds to what was named.
+     * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT), there or once
+     * a mount above them goes. Kept for the names on a mount an embedder made
+     * (any but the root and those whose trees are fixed: the kernel's /dev and
+     * /proc), and `names` asked only when the process's credential sees one,
+     * so a launch computes nothing for a namespace of SQLite and the kernel's.
+     * Adds to what was named.
      */
     nameLaunch({ pid, cred }: NimbusFilesystemBinding, names: () => Iterable<string>): void;
     /** Where `pid`'s listings of the mounts beyond SQLite stand (made when `create`), or undefined. */

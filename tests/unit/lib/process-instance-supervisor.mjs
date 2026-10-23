@@ -16,7 +16,7 @@ export function processInstanceSupervisor(authority, cred) {
       return;
     }
     if (name === 'reportExit') { outputs.exit = args[0]; return; }
-    if (name === 'fsAcquire') acquireRequests.push({ epoch: args[0], rev: args[1] });
+    if (name === 'fsAcquire') acquireRequests.push(args[0]);
     return send(name, args);
   });
   return {

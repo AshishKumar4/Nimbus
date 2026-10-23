@@ -51,6 +51,9 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
+import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf, type FeedPosition } from '../feed-position.js';
+import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
+import { isCharacterDevice } from '../../vfs/vfs.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -114,8 +117,8 @@ export interface ResidentNamespace {
   acquireArgs(): ResidentAcquireArgs | null;
   /** Whether the store holds rows a repair could not vouch for: every barrier repairs until one does. */
   repairOwed?(): boolean;
-  /** The store's provenance cursor. */
-  cursor(): { epoch: string; rev: number } | null;
+  /** The store's provenance cursor: the namespace's position its rows are known-good at. */
+  cursor(): FeedPosition | null;
   /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
   reserve(bytes: number): boolean;
   /** Return what `reserve` charged. */
@@ -138,8 +141,7 @@ export interface ResidentNamespace {
  * changes when they were built, and `own`, its own debt then (acquireArgs).
  */
 export interface ResidentAcquireArgs {
-  readonly epoch: string;
-  readonly cursor: number;
+  readonly position: FeedPosition;
   readonly options?: object;
   readonly begin?: number;
   readonly own?: number;
@@ -153,8 +155,8 @@ export interface ResidentBarrierOptions {
   readonly answer?: VfsAcquireResult;
   /**
    * An answer a delivery carried, with the arguments it was asked with: it
-   * stands in for asking when it answers from a cursor the store has reached,
-   * in its epoch.
+   * stands in for asking when it answers from a position the store has
+   * reached.
    */
   readonly delivered?: { readonly args: ResidentAcquireArgs; readonly answer: VfsAcquireResult } | null;
   /** A read lease asked with the barrier: `answered` once the session grants it, whatever the barrier does next. */
@@ -379,6 +381,9 @@ const NOT_NOW: unique symbol = Symbol('not now');
 
 /** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
 const REFUSED_ON_A_DIRECTORY: ReadonlySet<string> = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
+
+/** The device of a directory the namespace makes that no backend holds (CompositeVFS: no backend's, the root mount's none). */
+const NAMESPACE_DEV = 0;
 
 /** Whether the session refuses `syscall` with `args` on a directory: an open as the session's open judges one (refusesDirectory). */
 function refusesADirectory(syscall: string, args: readonly unknown[]): boolean {
@@ -652,7 +657,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (key === '') { step = walk.next(ROOT_FOR_WALK); continue; }
       const entry = store.entry(key);
       if (entry === undefined) return { missing: key };
-      if (entry !== null && entry.dev !== store.device) return DELEGATE;
+      if (entry !== null && entry.dev !== store.device && !answerable(key, entry)) return DELEGATE;
       step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
     }
   };
@@ -848,9 +853,75 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const entryAt = (key: string): ResidentEntry | null | undefined => {
     const entry = store.entry(key);
     if (entry === undefined) return undefined;
-    if (entry !== null && entry.dev !== store.device) return undefined;
+    if (entry !== null && entry.dev !== store.device && !answerable(key, entry)) return undefined;
     return entry;
   };
+
+  /**
+   * Whether the view answers for `entry` at `key`, a row off the session's
+   * own filesystem's device (whose rows it answers, asked first at each
+   * call site): a row of a fed mount (a mount whose backend states its
+   * change model: VFS.changes, /dev and /proc among them), never one of a
+   * mount without a feed (a snapshot its listing walked), which is the
+   * session's to answer. A row is its fed mount's where its device is that
+   * mount's root's (the deepest fed mount point at or above it): a mount
+   * without a feed beneath it has a device of its own. A directory the
+   * namespace makes above a fed mount point is answered too. A moving
+   * feed's (not fixed) not while a read lease is trusted.
+   */
+  const answerable = (key: string, entry: ResidentEntry): boolean => {
+    const cursor = store.cursor();
+    if (cursor === null) return false;
+    // A directory the namespace makes above a fed mount that no backend holds (no device: the namespace's own): the
+    // table's, which a poison moves. One a backend without a feed holds is that backend's, its changes unreported.
+    if (entry.type === 'directory' && entry.dev === NAMESPACE_DEV && abovePoint(cursor, key)) return true;
+    const at = feedPointOf(cursor, key);
+    if (at === ROOT_FEED) return false;
+    // A read lease vouches for the engine alone, whose writes recall it (a table change too): while one is
+    // trusted, the view has not asked since it was granted, so a row of a feed that moves is the session's.
+    if (feedOf(cursor, at)?.fixed !== true && holder?.client.readTrusted() === true) return false;
+    const point = at.slice(1);
+    const root = point === key ? entry : store.entry(point);
+    return root !== undefined && root !== null && root.dev === entry.dev;
+  };
+
+  /** Whether `key` is on a mount (its deepest fed mount point is not the root): the session's to change, never this process's to decide. */
+  const onMount = (key: string): boolean => {
+    const cursor = store.cursor();
+    return cursor !== null && feedPointOf(cursor, key) !== ROOT_FEED;
+  };
+
+  /**
+   * The row at `key` where this process may decide a change on it: the
+   * session's own filesystem's (absent there too). A mount's row, or a name
+   * absent on a mount, is the session's: a wave deciding on it is refused
+   * (the name leads to a mount, not the file the process decided on).
+   */
+  const ownEntryAt = (key: string): ResidentEntry | null | undefined => {
+    const entry = entryAt(key);
+    if (entry === undefined) return undefined;
+    return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
+  };
+
+  /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
+  const volatileProc = (key: string, entry: ResidentEntry): boolean => {
+    if (entry.type !== 'file' || entry.size !== 0) return false;
+    const cursor = store.cursor();
+    return cursor !== null && feedPointOf(cursor, key) === PROC_MOUNT_POINT;
+  };
+
+  /**
+   * A generated /proc file's bytes, made here by the session's own generator
+   * (proc-files.ts) where this process has it; undefined where only the
+   * session makes it (/proc/mounts).
+   */
+  const generated = (key: string): Uint8Array | undefined => {
+    const generate = procFileGenerator(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
+    if (generate === undefined) return undefined;
+    const content = generate({ ...store.cred, umask: 0 });
+    return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
+  };
+
 
   /**
    * A file's bytes: what this process decided for it, else the store's,
@@ -949,10 +1020,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * anyway, counting it toward taking the subtree.
    */
   const decidable = (key: string, ...walks: Walk[]): boolean => {
+    if (onMount(key)) return false;
     if (holder!.client.held(key) === undefined) return true;
     const cursor = store.cursor();
     return walks.every((walk) => walk.crossed.every((name) => holder!.entry(name) !== undefined
-      || (cursor !== null && holder!.client.certifies(name, cursor) !== undefined)));
+      || (cursor !== null && holder!.client.certifies(name, rootOf(cursor)) !== undefined)));
   };
 
   /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
@@ -1074,6 +1146,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const entry = entryAt(key);
     // Only the file the caller stat'd, at the revision it stat'd: anything else is the session's to open.
     if (!entry || entry.type !== 'file' || entry.dev !== stat.dev || entry.ino !== stat.ino || entry.size > WASI_RESIDENT_FILE_CAP_BYTES) return null;
+    // Bytes no row holds (a device's, a volatile /proc file's): a descriptor of the session's reads them.
+    if (isCharacterDevice(entry.mode) || volatileProc(key, entry)) return null;
     if (!modeAllows(entry, 4, store.cred)) return null;
     // A file this process changed is the session's to read where its bytes are not known here (its changes are answered there first).
     if (holder?.provisional.pending(entry.dev, entry.ino) || entry.revision !== stat.revision) return null;
@@ -1112,7 +1186,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // As the authority checks: permission before what kind of name it is.
     if (!modeAllows(entry, 4, store.cred)) throw fsError('EACCES', 'open', path);
     if (entry.type === 'directory') throw fsError('EISDIR', 'open', path);
-    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES) return DELEGATE;
+    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode)) return DELEGATE;
+    if (volatileProc(key, entry)) return generated(key) ?? DELEGATE;
     return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
   }), () => authority.readFile(path, options));
 
@@ -1240,7 +1315,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder === null || !store.ready()) throw NOT_NOW;
     const walk = walkFor(path, follow);
     if (walk === DELEGATE || walk instanceof Promise) throw NOT_NOW;
-    const row = entryAt(walk.key);
+    const row = ownEntryAt(walk.key);
     if (row === undefined) throw NOT_NOW;
     const done = decided(walk.key, row);
     if (done === false || done === undefined) throw NOT_NOW;
@@ -1261,7 +1336,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * a grant decides a name or the view cannot place one, by the session.
    */
   const ownChange = <T>(keys: readonly (string | undefined)[], decided: (rows: (ResidentEntry | null)[], awaited: boolean) => boolean | Promise<unknown>, session: () => Awaitable<T>): Awaitable<T | undefined> => {
-    const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : entryAt(key)));
+    const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : ownEntryAt(key)));
     const placed = rows.every((row) => row !== undefined) ? rows as (ResidentEntry | null)[] : undefined;
     if (now) {
       if (placed === undefined || decided(placed, false) === false) throw NOT_NOW;
@@ -1361,7 +1436,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (holder === null || !store.ready() || flags.directory) return DELEGATE;
         return after(walkFor(path, flags.followSymlinks !== false), (walk) => {
           if (walk === DELEGATE) return DELEGATE;
-          const there = entryAt(walk.key);
+          const there = ownEntryAt(walk.key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
           const opened = holder!.provisional.open(walk.key, pathOf(path), flags, there, true);
           if (opened === undefined) return DELEGATE;
@@ -1704,10 +1779,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       }
       const walked = walkOnce('', next, true);
       if (walked === null) throw fsError('ELOOP', 'mkdir', path);
-      const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
+      const entry = typeof walked === 'string' ? ownEntryAt(walked) : undefined;
       if (entry === undefined) throw NOT_NOW;
       if (entry === null) {
-        const parent = entryAt(parentKey(walked as string));
+        const parent = ownEntryAt(parentKey(walked as string));
         // Made where the view cannot say it may be made (another filesystem, a mode it would have to judge): the session's.
         if (!parent || parent.type !== 'directory' || parent.dev !== store.device) throw NOT_NOW;
         if (!modeAllows(parent, 3, store.cred)) throw fsError('EACCES', 'mkdir', path);
@@ -1745,7 +1820,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const vouchedContent = ({ key }: Walk): Uint8Array | undefined => {
     const cursor = store.cursor();
-    if (cursor === null || holder!.client.vouch(key, cursor) !== 'held') return undefined;
+    if (cursor === null || holder!.client.vouch(key, rootOf(cursor)) !== 'held') return undefined;
     const entry = entryAt(key);
     return entry ? store.content(key, entry.revision) : undefined;
   };

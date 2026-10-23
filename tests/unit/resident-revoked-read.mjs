@@ -16,6 +16,7 @@
 // as uid 1000, revokes its read of a file it holds, and reads it.
 
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
@@ -74,12 +75,12 @@ async function running(revoke) {
   await authority.peer.chmod(KEY, 0o600);
   let changed = authority.rawVfs.revision();
   await probe.resume();
-  await until(() => globalThis.__nimbusVfsCursor.rev >= changed, 'the barrier reported the chmod');
+  await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= changed, 'the barrier reported the chmod');
   assert.equal(probe.read(SECRET), 'secret', 'a chmod that keeps the owner reading is no refusal');
   await revoke(authority);
   changed = authority.rawVfs.revision();
   await probe.resume();
-  await until(() => globalThis.__nimbusVfsCursor.rev >= changed, 'the barrier reported the revocation');
+  await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= changed, 'the barrier reported the revocation');
   assert.throws(() => probe.fs.accessSync(SECRET, probe.fs.constants.R_OK), { code: 'EACCES' },
     'the premise: the namespace says the process may no longer read it');
   assert.equal(probe.read(SECRET), 'ERR:EACCES', 'readFileSync of a file whose read was revoked');
@@ -147,7 +148,7 @@ async function own(settle) {
   if (settle) {
     const changed = authority.rawVfs.revision();
     await probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= changed, 'the barrier reported the chmod');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= changed, 'the barrier reported the chmod');
   }
   assert.equal(probe.fs.statSync(MINE).mode & 0o777, 0o200, 'the premise: its mode is write-only');
   assert.equal(probe.read(MINE), 'ERR:EACCES', 'readFileSync of its own write-only file');

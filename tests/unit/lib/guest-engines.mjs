@@ -201,14 +201,14 @@ async function holderBridge(supervisor) {
  * on it), over `stub`: its waves and grants through the stub, its log in
  * `sql`, a read lease asked with each barrier.
  */
-async function eagerBridge(stub, sql) {
+async function eagerBridge(stub, sql, leases = true) {
   const supervisor = answeringSupervisor(stub);
   const bridge = supervisorFilesystem(stub);
   const store = createResidentStore();
   store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
-  const cursor = await supervisor.fsAcquire(null, 0, { namespace: true });
-  const boot = await store.sync.boot(() => ({}), { epoch: cursor.epoch, rev: cursor.rev }, supervisor, 0);
+  const cursor = await supervisor.fsAcquire(null, { namespace: true });
+  const boot = await store.sync.boot(() => ({}), cursor.position, supervisor, 0);
   if (boot.failure) throw new Error(`the store did not enumerate: ${boot.failure}`);
   const view = store.view.namespaceView(supervisor, await bridge.stat('/'), CRED);
   const fs = residentFilesystem(bridge, view, {
@@ -226,7 +226,7 @@ async function eagerBridge(stub, sql) {
     ...(typeof stub.fsReadDirectories === 'function' ? { readDirectories: (request) => supervisor.fsReadDirectories(request) } : {}),
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice('home/'.length).includes('/'),
     journal: sqlJournal(sql),
-    readLeases: () => true,
+    readLeases: () => leases,
   });
   // Its own calls answer as they are; the contract's are awaited, as a codec awaits them.
   /** @type {Set<string | symbol>} */
@@ -249,10 +249,11 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
  * and answers in its place (schedule-transport.mjs). `stdin`: Node's
  * process is attached to the session's input store, and its input (`input`)
  * is a keystroke, delivered with the ACQUIRE the session computes for it.
+ * `leases`: the eager engine's process asks a read lease with each barrier.
  * @param {string} kind
- * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean }} [options]
+ * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean, leases?: boolean }} [options]
  */
-export async function bootEngine(kind, { seed, supervise = {}, stdin = false } = {}) {
+export async function bootEngine(kind, { seed, supervise = {}, stdin = false, leases = true } = {}) {
   if (!SCHEDULE_ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
   const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
@@ -313,7 +314,7 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
     fs = nodeBridge(globalThis.__engineFs);
     sync = nodeSyncBridge(globalThis.__engineFs);
   } else if (kind === 'eager') {
-    fs = await eagerBridge(handle.supervisor, sql);
+    fs = await eagerBridge(handle.supervisor, sql, leases);
     sync = new Proxy(fs.synchronous, { get: (target, name) => (name === 'copyFile' ? (from, to) => target.copyFile(from, to, { keepMode: true }) : target[name]) });
   } else {
     globalThis.__nimbusFsJournalSql = sql;

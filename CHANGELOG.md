@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Every mount states its change model, and a process's view answers by it:
+  - `/dev` and `/proc` are listed for every process and answered from its own view (`stat('/dev/null')`, a `/proc` file once read); a WASI program's call that cannot wait is no longer refused there, and Node's `statSync` and `existsSync` see them (they answered ENOENT);
+  - `/proc` stats are procfs's: every generated file (`cpuinfo`, `meminfo`, `uptime`, `version`, `net/info`, `mounts`) is size 0, every mtime the tree's; a process makes each but `mounts` itself, as the session does, so Node's `readFileSync('/proc/version')` (vite's is-wsl) and a WASI program's reads answer at once;
+  - an embedder's `MemoryVFS` mount has a change feed: a process sees another's change to it at its next barrier, where it kept a launch snapshot;
+  - a mount whose backend states no change model (`VFS.changes`) is the session's to answer: a WASI program's call that cannot wait is refused `EAGAIN` there, as before;
+  - a read lease vouches for the engine alone: while one is trusted, a WASI program asks the session for the rows of a mount that changes.
+- `git status` after a mount appears or goes reports that mount's paths, not the whole worktree, and a dirty mount covers what its own feed names beneath it.
 - Added: each write event says which exec made it. `VfsWriteEvent.execId` (from `observeWrites`) is the `execId` the process table held for the writing process when the write committed. Every process an exec starts inherits it, so a command's children, pipelines and background jobs count. It has three possible values:
   - a string: the exec that made the write;
   - `null`: no process made it, a host operation (a client's `files.*`, the kernel, seeding, a launch's images);

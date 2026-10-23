@@ -113,7 +113,7 @@ import {
   hex,
 } from './content-chunking.js';
 import { inflateChunk } from './chunk-codec.js';
-import { CRED_KERNEL, sameCred, type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsInvalidatedPath, type VfsListEntry, type VfsListOptions, type VfsListPage, type SqlDatabase, type SqlRow, type TransactionHost } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, sameCred, type GrantCertificate, type VfsAcquireOptions, type VfsDelta, type VfsCred, type VfsInvalidatedPath, type VfsListEntry, type VfsListOptions, type VfsBackendPage, type SqlDatabase, type SqlRow, type TransactionHost } from '../runtime/os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 /**
@@ -502,12 +502,12 @@ export interface CredentialedVfs {
    * Enumerate every path this credential can see, in path order, one bounded
    * page at a time. `after` resumes past a previous page's `next`.
    */
-  list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage;
+  list(after?: string | null, limit?: number, options?: VfsListOptions): VfsBackendPage;
   /**
    * The coherence barrier in this credential's path space: `invalidatedSince`
    * with each entry's current stat when `options.namespace` asks for it.
    */
-  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsDelta;
   unlink(path: string): void;
   rmdir(path: string): void;
   /**
@@ -557,7 +557,7 @@ export interface CredentialedVfs {
    * for it, and without the paths it has no name for (see
    * SqliteVFS.invalidatedSince).
    */
-  invalidatedSince(epoch: string | null, cursor: number): VfsAcquireResult;
+  invalidatedSince(epoch: string | null, cursor: number): VfsDelta;
   /**
    * The key storage holds `path` under for this credential: a confined
    * caller's /tmp/x is var/agents/<p>/tmp/x. For state kept by storage key
@@ -4137,7 +4137,7 @@ export class SqliteVFS {
    * goes unreported. Entries naming one path are merged, so a hidden
    * `rm -rf` costs one entry.
    */
-  invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsAcquireResult {
+  invalidatedSince(epoch: string | null, cursor: number, cred?: VfsCred): VfsDelta {
     this.settleAppends();
     const rev = this._revision;
     if (epoch !== this._epoch || cursor > rev) {
@@ -6099,13 +6099,13 @@ export class SqliteVFS {
     limit: number,
     cred: VfsCred,
     options: VfsListOptions = {},
-  ): VfsListPage {
+  ): VfsBackendPage {
     const contentKeys = options.contentKeys !== false;
     const revisions = options.revisions !== false;
     const linkTargets = options.linkTargets !== false;
     // A page is of what is published: one walked while a commit is held waits for it.
     this.recallHeld(null);
-    // Before the walk, deliberately — see VfsListPage.
+    // Before the walk, deliberately — see VfsBackendPage.
     const epoch = this._epoch;
     const rev = this._revision;
     const from = after === null || after === undefined ? '' : this.lexicalKey(after, cred).value;
@@ -6113,7 +6113,7 @@ export class SqliteVFS {
     // The page is bounded by its encoded bytes, not only its row count: a full
     // page of long, escaped names or link targets can exceed the RPC frame.
     const fits = listPageBudget(epoch, rev);
-    const pageEnding = (): VfsListPage => {
+    const pageEnding = (): VfsBackendPage => {
       const last = entries[entries.length - 1];
       return { epoch, rev, entries, next: last === undefined ? null : last.path };
     };
@@ -6206,7 +6206,7 @@ export class SqliteVFS {
     cursor: number,
     cred: VfsCred,
     options: VfsAcquireOptions | undefined,
-  ): VfsAcquireResult {
+  ): VfsDelta {
     // The caller's own view: names it could list, a hidden change reported
     // at the nearest directory it may see (invalidatedSince).
     const delta = this.invalidatedSince(epoch, cursor, cred);
@@ -7566,7 +7566,7 @@ export class SqliteVFS {
         const epoch = this._epoch;
         // Bounded by its encoded bytes as a live page is (listPageBudget).
         const fits = listPageBudget(epoch, g);
-        const pageEnding = (): VfsListPage => ({ epoch, rev: g, entries, next: entries[entries.length - 1]?.path ?? null });
+        const pageEnding = (): VfsBackendPage => ({ epoch, rev: g, entries, next: entries[entries.length - 1]?.path ?? null });
         // Each directory above a row judged once a page, from its own row (as a live page is).
         const closed = accessMemo(tree);
         const listedDirectories = new Map<string, INode>();
@@ -12780,7 +12780,7 @@ const entryBytesBesidePath = new WeakMap<VfsListEntry, number>();
 
 
 /**
- * The byte bound of one listing page (VfsListPage): the page's frame, each
+ * The byte bound of one listing page (VfsBackendPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
  * the last one leaves in `next` (its path in place of `null`). The returned
  * check admits an entry, listed under `path` (its own by default), while the

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Regressions for replies crossing the session boundary of a stoppable run.
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { mock } from 'bun:test';
 import { ReplayJournal } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
@@ -52,15 +53,15 @@ cases.namespace = async () => {
 cases.acquirePosition = async () => {
   const j=journal();
   const row={path:'/config',type:'file',size:3,mode:0o644,uid:1000,gid:1000,data:new Uint8Array([1,2,3])};
-  const reply={epoch:'one',rev:1,paths:[row],more:false};
-  await j.handle('fsAcquire',['one',0,{namespace:true,push:{roots:['/config'],exclude:[]}}],'a',async()=>reply);
+  const reply={position:positionOf('',{'/':{epoch:'one',cursor:1}}),paths:[row],more:false};
+  await j.handle('fsAcquire',[positionOf('',{'/':{epoch:'one',cursor:0}}),{namespace:true,push:{roots:['/config'],exclude:[]}}],'a',async()=>reply);
   j.stopped();j.start('b');
-  await j.handle('fsAcquire',['two',88,{namespace:true}],'b',async()=>({...reply,epoch:'two',rev:99}));
+  await j.handle('fsAcquire',[positionOf('',{'/':{epoch:'two',cursor:88}}),{namespace:true}],'b',async()=>({...reply,position:positionOf('',{'/':{epoch:'two',cursor:99}})}));
   await j.boundary('b');assert.equal(j.diverged,null,'cache push strategy does not change acquisition position or program inputs');j.close();
   const changed=journal();
-  await changed.handle('fsAcquire',['one',0,{namespace:true}],'a',async()=>reply);
+  await changed.handle('fsAcquire',[positionOf('',{'/':{epoch:'one',cursor:0}}),{namespace:true}],'a',async()=>reply);
   changed.stopped();changed.start('b');
-  await assert.rejects(changed.handle('fsAcquire',['two',99,{namespace:true,push:{roots:['/config']}}],'b',async()=>({...reply,paths:[{...row,data:new Uint8Array([4,5,6])}]})),/answered differently/,
+  await assert.rejects(changed.handle('fsAcquire',[positionOf('',{'/':{epoch:'two',cursor:99}}),{namespace:true,push:{roots:['/config']}}],'b',async()=>({...reply,paths:[{...row,data:new Uint8Array([4,5,6])}]})),/answered differently/,
     'matching acquisition positions still checks every observable namespace/stat/content byte');changed.close();
 };
 cases.boundary = async () => {
@@ -109,8 +110,8 @@ cases.joinedRead = async () => {
   }); };
   start('a');
   const ops = buildSessionSupervisorOps(host);
-  const args = ['epoch', 0, { namespace: true }];
-  const reply = { epoch: 'epoch', rev: 0, paths: [], more: false };
+  const args = [positionOf('',{'/':{epoch:'epoch',cursor:0}}), { namespace: true }];
+  const reply = { position: positionOf('',{'/':{epoch:'epoch',cursor:0}}), paths: [], more: false };
   const ask = (run, readId) => ops.dispatch({ op: 'fsAcquire', args, pid, run, readId });
   const [firstId, replayId, thirdId, extraId] = Array.from({ length: 4 }, () => crypto.randomUUID());
   const tick = async () => { for (let i = 0; i < 20; i++) await null; };
