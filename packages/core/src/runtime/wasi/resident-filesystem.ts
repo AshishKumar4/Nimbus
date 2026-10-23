@@ -1718,7 +1718,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // What the view refuses (a name it says is not there, a mode it says forbids it) the session says, which
       // may hold what the view has not seen yet: a caller that may wait is answered by it, as one decided here is.
       let answer: boolean | Promise<unknown>;
-      try { answer = decided(placed, true); } catch { return session(); }
+      // A name a held subtree holds is answered once logged, as its other changes there are: awaited only where none holds it.
+      try { answer = decided(placed, !keys.some((key) => holder!.holds(key!))); } catch { return session(); }
       if (answer !== false) {
         counts.local++;
         return after(answer, () => undefined);
@@ -2228,6 +2229,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // holder's or ones the view vouches for: decided here; any other, and one
   // that preserves (cp -p's metadata, the session's to judge), the session's.
   const bySessionCopy = fs.copyFile;
+  /**
+   * A copy the session makes by name, awaited. Its destination is in flight until it is answered (and shown): a change
+   * of the name decided meanwhile is not expected to find the name as it was. Answered, the process's own decisions at
+   * the name are the session's, as an unlink's or a rename's are (superseded), so the listing shows what the session holds.
+   */
+  const copyOnSession = (from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean; preserve?: boolean }): Promise<void> => {
+    const key = keyOf(pathOf(to));
+    const answered = Promise.resolve(bySessionCopy(from, to, options));
+    holder!.copying(key, answered);
+    return answered.then(() => { holder!.superseded(key); });
+  };
   fs.copyFile = (from, to, options) => {
     if (holder === null || options?.preserve === true) return bySessionCopy(from, to, options);
     const local = decide<void>(() => after(walkFor(from, true), (source) => (source === DELEGATE ? DELEGATE
@@ -2241,7 +2253,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (row === null) throw fsError('ENOENT', 'copyfile', pathOf(from));
         return provisionally(to, true, (target, there) => holder!.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
       })
-      : bySessionCopy(from, to, options)));
+      : copyOnSession(from, to, options)));
   };
   const bySessionRename = fs.rename;
   fs.rename = (from, to) => {
@@ -2268,7 +2280,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   for (let i = 0; i < byPath.length; i++) {
     const name = byPath[i];
     const passed = reflectGet(fs, name) as (...args: unknown[]) => unknown;
-    reflectSet(fs, name, (path: RuntimeFsPath, ...rest: unknown[]) => {
+    reflectSet(fs, name, (path: RuntimeFsPath, ...given: unknown[]) => {
+      // chown(2)'s -1 keeps a side, which the bridge takes as null (RuntimeFsBridge.chown); the session refuses -1 as an id.
+      let rest: unknown[] = given;
+      if (name === 'chown') {
+        rest = new SafeList<unknown>();
+        rest[0] = ownerSide(given[0]);
+        rest[1] = ownerSide(given[1]);
+        for (let j = 2; j < given.length; j++) rest[j] = given[j];
+      }
       const linkOptions = rest[2] as { followSymlinks?: boolean } | null | undefined;
       const link = name !== 'chmod' && linkOptions !== undefined && linkOptions !== null && ownValue(linkOptions, 'followSymlinks') === false;
       const attrs: W7Attrs = name === 'chmod' ? { mode: NumberOf(rest[0]) }

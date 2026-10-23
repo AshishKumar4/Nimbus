@@ -222,6 +222,8 @@ export interface DelegationHolder {
   undecided(key: string): void;
   /** The session moved or removed the name `key` (OwnNames.superseded). */
   superseded(key: string): void;
+  /** A session call by name is changing `key` until `answered` settles: what the provisional decisions leave of the name is unknown meanwhile. */
+  copying(key: string, answered: Promise<unknown>): void;
   /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
   holds(key: string): boolean;
   /** A barrier begins: its number, which `retire` takes once it lands. */
@@ -470,6 +472,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     return cell === undefined ? undefined : bytesCopy(cell.bytes, 0, cell.length);
   };
 
+  /** The session calls by name this process has in flight, per name (copying): the provisional decisions expect nothing of those names. */
+  const copies = new Map<string, number>();
   const prov: Provisional = provisionalDecisions({
     // The store's, as it knows it when asked (it learns it at its first barrier).
     get device() { return store.device; },
@@ -488,6 +492,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     // Reads by name and by number consult them only while the process sees any.
     active: (on) => { provisionalActive = on; },
     held: (key) => client.held(key) !== undefined,
+    pending: (key) => copies.has(key),
     count: (key) => { client.holder(key); },
     umask: () => options.umask?.() ?? 0o022,
     now,
@@ -661,11 +666,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     children: (key, base) => (provisionalActive ? composedChildren(key, base) : names.children(key, base)),
 
     copyFile: (from, to, path, stored, keepMode) => {
-      const source = entryOf(from);
+      const source = composedRow(from);
       // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
       if (source === undefined || source === null || source.type !== 'file' || (source.mode & 0o7000) !== 0) return false;
       if (!modeAllows(source, 4, store.cred)) return false;
-      const target = entryOf(to);
+      const target = composedRow(to);
       if (target === undefined || (target !== null && target.type !== 'file')) return false;
       // Counted toward taking the destination's subtree, as any change there is.
       const grant = deciding(to);
@@ -1048,6 +1053,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
     undecided: (key) => { names.undecide(key); },
     superseded: (key) => { names.superseded(key); },
+    copying: (key, answered) => {
+      copies.set(key, (copies.get(key) ?? 0) + 1);
+      const done = (): void => {
+        const left = (copies.get(key) ?? 1) - 1;
+        if (left > 0) copies.set(key, left); else copies.delete(key);
+      };
+      answered.then(done, done);
+    },
 
     holds: (key) => client.held(key) !== undefined,
     barrierBegun: () => {

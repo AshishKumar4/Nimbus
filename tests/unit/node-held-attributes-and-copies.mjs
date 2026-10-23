@@ -66,6 +66,11 @@ async function boot({ program = PROGRAM, held = true } = {}) {
       if (stalled !== null) await stalled.promise;
       return forward('writeBatchStream', args);
     },
+    // A copy is an RPC of its own (the session's answer, not a wave): the stall holds it as it holds a wave.
+    fsCopyFile: async (...args) => {
+      if (stalled !== null) await stalled.promise;
+      return forward('fsCopyFile', args);
+    },
     fsList: async (...args) => {
       if (listingFails) throw new Error('Network connection lost.');
       return forward('fsList', args);
@@ -533,4 +538,4 @@ const fsp = fs.promises;
     await until(() => heard.some((path) => path.endsWith('/told.txt')), 'the tree heard the write', LINGER_MS + 500);
     stop();
   },
-});
+}, { barrierFailures: ['with the namespace unavailable, chmod, utimes and chown go to the session'] });

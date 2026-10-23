@@ -1704,6 +1704,16 @@ export interface ProcessFsDrain {
 const DRAIN_WINDOW_BYTES = WAVE_BYTES;
 
 /**
+ * `op` as a replay sends it: a name the process made under its grant keeps the number the grant gave it only while
+ * that grant is held (askedIno, the session's check). A replay runs in a session that holds no such grant, so the
+ * number is the replaying session's to give, as it is to give a name's number in any session that never granted it.
+ */
+function unnumbered(op: ProcessFsOp): ProcessFsOp {
+  if (op.type !== 'call' || !('ino' in op.call)) return op;
+  return { type: 'call', call: { ...op.call, ino: undefined } as W7Call };
+}
+
+/**
  * Send what a process's journal still holds, as the process would have:
  * each entry under the writer and number it was given (its numberings), so
  * the session's cursor answers what already landed and applies the rest
@@ -1763,7 +1773,7 @@ export async function drainProcessFsJournal(options: {
       pathBytes += entryPathBytes;
       taken.push({ ...entry, seq });
     }
-    const encoded = await encodeWriteBatch({ inodes: [], chunks: [], ops: taken.map((entry) => entry.op) });
+    const encoded = await encodeWriteBatch({ inodes: [], chunks: [], ops: taken.map((entry) => unnumbered(entry.op)) });
     const result = await sendWaveAttempts({
       supervisor: session,
       writer: async () => numbering.writer,

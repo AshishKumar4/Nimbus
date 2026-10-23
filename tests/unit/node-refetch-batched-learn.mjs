@@ -8,14 +8,15 @@
 // learns the path's metadata (_learnLive). The reads travelled in batches;
 // the learns were one lstat call each — 1,599 lstat calls from one facet, and
 // in runs that hung under concurrent sessions those calls stayed pending and
-// never reached the session. A learn now rides fsReadBatch as an lstat
-// request, so the whole refetch costs about one round trip per batch.
+// never reached the session. On the resident filesystem the process reads
+// its own writes back from what it decided and keeps, and a barrier's delta
+// carries what it learns: no call is per path.
 //
 // Real code end to end: FacetManager's one-shot runner with the node shims
-// and write ledger it splices in (the staged node-shims asset, so the worker
-// dist and bundle-node-shims.mjs must be current), SupervisorRPC, the
-// session's supervisor ops and SqliteVFS. Only the platform's stub is
-// simulated: it copies the envelope as the wire does and records each call.
+// and the resident filesystem (the staged assets, so the worker dist and
+// bundle-node-shims.mjs must be current), SupervisorRPC, the session's
+// supervisor ops and SqliteVFS. Only the platform's stub is simulated: it
+// copies the envelope as the wire does and records each call.
 
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
@@ -123,10 +124,13 @@ setTimeout(() => {
   assert.equal([...kfs.readdir('home/user/probe/node_modules/lucide-react/dist/esm/icons')].length, FILES);
   assert.equal(new TextDecoder().decode(kfs.readFile('home/user/probe/done.txt')), 'ok');
 
-  // The refetch did learn what it read — the bound below is not vacuous.
+  // No call is per path: the process's own writes are its own to read back (its
+  // decisions, then what the store keeps), and what a barrier tells it about
+  // them rides the barrier's delta; whatever it reads goes in batches.
   const learns = batched.lstats + (calls.get('lstat') ?? 0);
-  assert.ok(learns >= FILES / 2, `the refetch learned only ${learns} of ${FILES} written paths`);
   assert.equal(calls.get('lstat') ?? 0, 0, `${calls.get('lstat')} learns each cost an lstat round trip of their own`);
+  const total = [...calls.values()].reduce((sum, n) => sum + n, 0);
+  assert.ok(total < FILES / 4, `${total} supervisor calls for ${FILES} written files: some are per path (${JSON.stringify(Object.fromEntries(calls))})`);
   // Each read is sent once: a batch a bound closed used to be flushed by
   // the bound and again by the microtask that opened it.
   const distinctReads = new Set(rangesSent).size;

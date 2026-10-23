@@ -128,6 +128,8 @@ export interface ProvisionalHost {
   mounted?(key: string): boolean;
   /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
   unreported?(key: string): boolean;
+  /** Whether a session call of this process is changing `key` and unanswered: the view does not yet know what it leaves there. */
+  pending?(key: string): boolean;
 }
 
 /** A rename planned (Provisional.planMove): settled once, made (`commit`) or not (`cancel`); whichever comes second does nothing. */
@@ -563,7 +565,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * directory or link made here: no description names those).
    */
   const expecting = (row: ResidentEntry | null, key: string): { expect?: W7Expected } => {
-    if (host.mounted?.(key) === true) return {};
+    if (host.mounted?.(key) === true || host.pending?.(key) === true) return {};
     if (row === null) return { expect: null };
     const inode = inodeAtNumber(row.dev, row.ino);
     if (inode?.local !== true) return { expect: row.ino };

@@ -91,6 +91,8 @@ export interface ProvisionalHost {
     mounted?(key: string): boolean;
     /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
     unreported?(key: string): boolean;
+    /** Whether a session call of this process is changing `key` and unanswered: the view does not yet know what it leaves there. */
+    pending?(key: string): boolean;
 }
 /** A rename planned (Provisional.planMove): settled once, made (`commit`) or not (`cancel`); whichever comes second does nothing. */
 export interface MovePlan {

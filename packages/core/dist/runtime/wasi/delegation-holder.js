@@ -302,6 +302,8 @@ export function delegationHolder(options) {
         const cell = prov.inode(entry.dev, entry.ino)?.cell;
         return cell === undefined ? undefined : bytesCopy(cell.bytes, 0, cell.length);
     };
+    /** The session calls by name this process has in flight, per name (copying): the provisional decisions expect nothing of those names. */
+    const copies = new Map();
     const prov = provisionalDecisions({
         // The store's, as it knows it when asked (it learns it at its first barrier).
         get device() { return store.device; },
@@ -320,6 +322,7 @@ export function delegationHolder(options) {
         // Reads by name and by number consult them only while the process sees any.
         active: (on) => { provisionalActive = on; },
         held: (key) => client.held(key) !== undefined,
+        pending: (key) => copies.has(key),
         count: (key) => { client.holder(key); },
         umask: () => ownValue(options, 'umask')?.() ?? 0o022,
         now,
@@ -493,13 +496,13 @@ export function delegationHolder(options) {
         row: (key) => (provisionalActive ? composedRow(key) : entryOf(key)),
         children: (key, base) => (provisionalActive ? composedChildren(key, base) : names.children(key, base)),
         copyFile: (from, to, path, stored, keepMode) => {
-            const source = entryOf(from);
+            const source = composedRow(from);
             // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
             if (source === undefined || source === null || source.type !== 'file' || (source.mode & 0o7000) !== 0)
                 return false;
             if (!modeAllows(source, 4, store.cred))
                 return false;
-            const target = entryOf(to);
+            const target = composedRow(to);
             if (target === undefined || (target !== null && target.type !== 'file'))
                 return false;
             // Counted toward taking the destination's subtree, as any change there is.
@@ -946,6 +949,17 @@ export function delegationHolder(options) {
         },
         undecided: (key) => { names.undecide(key); },
         superseded: (key) => { names.superseded(key); },
+        copying: (key, answered) => {
+            copies.set(key, (copies.get(key) ?? 0) + 1);
+            const done = () => {
+                const left = (copies.get(key) ?? 1) - 1;
+                if (left > 0)
+                    copies.set(key, left);
+                else
+                    copies.delete(key);
+            };
+            answered.then(done, done);
+        },
         holds: (key) => client.held(key) !== undefined,
         barrierBegun: () => {
             prov.barrierBegun();

@@ -109,14 +109,19 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a write to the copy\'s name while the copy is on its way is the later one'() {
-    // The copy's wave is held; the program writes the copy's name meanwhile, logged after the copy.
+    // The copy is on its way until its answer: the session has applied it, the answer is held, and the program writes
+    // the copy's name meanwhile, logged after the copy.
     let hold = false;
-    const held = Promise.withResolvers();
+    const applied = Promise.withResolvers();
     const release = Promise.withResolvers();
     const box = await boot((forward) => ({
-      writeBatchStream: async (...args) => {
-        if (hold) { hold = false; held.resolve(); await release.promise; }
-        return forward('writeBatchStream', args);
+      fsCopyFile: async (...args) => {
+        if (!hold) return forward('fsCopyFile', args);
+        hold = false;
+        const answer = await forward('fsCopyFile', args);
+        applied.resolve();
+        await release.promise;
+        return answer;
       },
     }));
     const { fs } = box.probe;
@@ -124,12 +129,13 @@ await runScenarios(import.meta.path, {
     await fs.promises.readFile(`${A}/s1`, 'utf8');
     hold = true;
     const copied = fs.promises.copyFile(`${A}/s1`, `${A}/d1`);
-    await held.promise;
+    await applied.promise;
     fs.writeFileSync(`${A}/d1`, 'new');
     release.resolve();
     await copied;
     assert.equal(fs.readFileSync(`${A}/d1`, 'utf8'), 'new', 'the view keeps the later write');
     assert.equal(await fs.promises.readFile(`${A}/d1`, 'utf8'), 'new', 'and so does the session');
+    assert.equal(box.authority.read('home/user/app/d1'), 'new', 'the session holds the later write');
   },
 
   async 'a chmod and utimes of the copy\'s name before the copy are superseded by it'() {
