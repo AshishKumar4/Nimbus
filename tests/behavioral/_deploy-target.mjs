@@ -238,19 +238,30 @@ async function untilServed(versionId, cycle, { timeoutMs, floorMs, what, unresol
   const requireVersion = (observed, stage) => {
     if (observed !== versionId) throw new Error(`${stage} answered version ${JSON.stringify(observed)}, expected uploaded version ${versionId}`);
   };
+  // The last failure of a cycle the deadline left whole, else of one it cut
+  // short: a wait cut to the deadline ends at it, and says little.
   let last = '';
+  let lastCut = '';
   let consecutive = 0;
+  let longest = 0;
+  let cycles = 0;
+  let failed = 0;
   while (Date.now() < deadline) {
     const started = Date.now();
     let ready = false;
+    cycles++;
     try {
       await cycle({ budget, requireVersion });
       ready = true;
     } catch (e) {
-      last = e instanceof Error ? e.message : String(e);
+      failed++;
+      const message = e instanceof Error ? e.message : String(e);
+      if (Date.now() >= deadline) lastCut = message;
+      else last = message;
     }
     if (ready && Date.now() < deadline) {
       consecutive++;
+      longest = Math.max(longest, consecutive);
       if (consecutive === READINESS_CYCLES) return { versionId, cycles: consecutive };
       const pace = Math.min(floorMs - (Date.now() - started), deadline - Date.now());
       if (pace > 0) await new Promise((resolve) => setTimeout(resolve, pace));
@@ -260,7 +271,8 @@ async function untilServed(versionId, cycle, { timeoutMs, floorMs, what, unresol
     const delay = Math.min(3_000, Math.max(0, deadline - Date.now()));
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
   }
-  throw new TargetNotReadyError(`target never completed ${READINESS_CYCLES} consecutive ${what} on uploaded version ${versionId} within ${timeoutMs}ms: ${last}${unresolved()}`);
+  const tally = `${failed} of ${cycles} cycles failed, the longest run of ${what} was ${longest}`;
+  throw new TargetNotReadyError(`target never completed ${READINESS_CYCLES} consecutive ${what} on uploaded version ${versionId} within ${timeoutMs}ms (${tally}): ${last || lastCut}${unresolved()}`);
 }
 
 /**
