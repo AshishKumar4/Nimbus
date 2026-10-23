@@ -1,21 +1,25 @@
 #!/usr/bin/env bun
-// A program that writes 1,600 files in one run reaches the session in waves,
-// not a call a file, and nothing is learned of its paths one by one afterwards.
+// A resumption that refetches every path a program wrote pays a round trip
+// per batch, not per path — its metadata learns included.
 //
 // preview/new/lucide-barrel-cache-widens runs `node setup.js`, which writes
-// 1,600 files with writeFileSync and exits. What the process writes it decides
-// itself and sends in its client's waves. S refetched every written path at the
-// resumption barrier and learned each one's metadata with an lstat call of its
-// own: 1,599 lstat calls from one facet, which in runs that hung under
-// concurrent sessions stayed pending and never reached the session.
+// 1,600 files with writeFileSync and exits. At the resumption barrier every
+// written path is refetched at once (_acquireAndRefetch), and each refetch
+// learns the path's metadata (_learnLive). The reads travelled in batches;
+// the learns were one lstat call each — 1,599 lstat calls from one facet, and
+// in runs that hung under concurrent sessions those calls stayed pending and
+// never reached the session. A learn now rides fsReadBatch as an lstat
+// request, so the whole refetch costs about one round trip per batch.
 //
-// Real code end to end: FacetManager's one-shot runner with the node shims,
-// SupervisorRPC, the session's supervisor ops and SqliteVFS. Only the
-// platform's stub is simulated: it copies the envelope as the wire does and
-// records each call.
+// Real code end to end: FacetManager's one-shot runner with the node shims
+// and write ledger it splices in (the staged node-shims asset, so the worker
+// dist and bundle-node-shims.mjs must be current), SupervisorRPC, the
+// session's supervisor ops and SqliteVFS. Only the platform's stub is
+// simulated: it copies the envelope as the wire does and records each call.
 
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
+import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../packages/core/src/constants.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { runnerLoader } from './lib/one-shot-runner.mjs';
 
@@ -31,6 +35,7 @@ const { adoptCtxExports } = await import('../../packages/fabric/src/composition.
 const { createFacetCtx, createFacetWorld } = await import('./lib/facet-host-harness.mjs');
 const { processFiles } = await import('./lib/process-bridge.mjs');
 const { createAuthority } = await import('./lib/resident-body.mjs');
+const { writeModuleSet } = await import('./lib/module-map-bundle.mjs');
 
 // The runner installs its own console/process/Buffer while a program runs.
 const realConsole = globalThis.console;
@@ -39,14 +44,21 @@ const realBuffer = globalThis.Buffer;
 const realSetTimeout = globalThis.setTimeout.bind(globalThis);
 
 const FILES = 1600;
+// node-shims.ts READ_STREAM_CHUNK_BYTES: what one refetch read asks for.
+const CHUNK_BYTES = 65536;
+// Requests one fsReadBatch round trip can carry: its path bound, or as many
+// chunk reads as its byte bound admits.
+const PER_BATCH = Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / CHUNK_BYTES));
 
 const { host, rawVfs, kfs } = createAuthority();
 const ctx = createFacetCtx(createFacetWorld(() => ({})), 'refetch-batch');
 
-// Every op the session is sent, by name (a wave is one writeBatchStream), and
-// the paths the session is asked to learn one by one (lstat requests in a batch).
 const calls = new Map();
-let learns = 0;
+const batched = { ranges: 0, lstats: 0 };
+// Every range request sent, as path@offset: one sent twice is a read made twice.
+const rangesSent = [];
+let batchesInFlight = 0;
+let batchesPeak = 0;
 const hostEnv = {
   NIMBUS_SESSION: {
     idFromName: (id) => ({ toString: () => id }),
@@ -57,12 +69,25 @@ const hostEnv = {
           const op = envelope.delivery?.op ?? envelope.op;
           calls.set(op, (calls.get(op) ?? 0) + 1);
           if (op === 'stdout' || op === 'stderr' || op === 'reportExit') return undefined;
-          if (op === 'fsReadBatch') learns += envelope.args[0].filter((request) => request.lstat === true).length;
-          // A round trip takes time: calls issued together overlap.
-          await new Promise((resolve) => realSetTimeout(resolve, 1));
-          // As RPC carries it: the envelope copied, a stream in it transferred.
-          const { stream, ...rest } = envelope;
-          return structuredClone(await host.supervisorOp({ ...structuredClone(rest), ...(stream === undefined ? {} : { stream }) }));
+          if (op === 'fsReadBatch') {
+            for (const request of envelope.args[0]) {
+              if (request.lstat === true) batched.lstats++;
+              else {
+                batched.ranges++;
+                rangesSent.push(`${request.path}@${request.offset}`);
+              }
+            }
+            batchesPeak = Math.max(batchesPeak, ++batchesInFlight);
+          }
+          try {
+            // A round trip takes time: calls issued together overlap.
+            await new Promise((resolve) => realSetTimeout(resolve, 1));
+            // As RPC carries it: the envelope copied, a stream in it transferred.
+            const { stream, ...rest } = envelope;
+            return structuredClone(await host.supervisorOp({ ...structuredClone(rest), ...(stream === undefined ? {} : { stream }) }));
+          } finally {
+            if (op === 'fsReadBatch') batchesInFlight--;
+          }
         },
         [Symbol.dispose]() {},
       };
@@ -98,13 +123,26 @@ setTimeout(() => {
   assert.equal([...kfs.readdir('home/user/probe/node_modules/lucide-react/dist/esm/icons')].length, FILES);
   assert.equal(new TextDecoder().decode(kfs.readFile('home/user/probe/done.txt')), 'ok');
 
-  // The writes went to the session in waves, not a call a file, and no path was learned one by one after them.
-  const waves = calls.get('writeBatchStream') ?? 0;
-  assert.ok(waves >= 1, 'the writes reached the session');
-  assert.ok(waves < FILES / 4, `${waves} write waves for ${FILES} written files`);
-  assert.ok(learns < FILES / 4, `${learns} lstat learns of ${FILES} written paths, one by one`);
-  assert.equal(calls.get('lstat') ?? 0, 0, `${calls.get('lstat')} lstat calls of their own`);
-  console.log(`  ok  ${FILES} written files in ${waves} waves, ${learns} learns`);
+  // The refetch did learn what it read — the bound below is not vacuous.
+  const learns = batched.lstats + (calls.get('lstat') ?? 0);
+  assert.ok(learns >= FILES / 2, `the refetch learned only ${learns} of ${FILES} written paths`);
+  assert.equal(calls.get('lstat') ?? 0, 0, `${calls.get('lstat')} learns each cost an lstat round trip of their own`);
+  // Each read is sent once: a batch a bound closed used to be flushed by
+  // the bound and again by the microtask that opened it.
+  const distinctReads = new Set(rangesSent).size;
+  assert.equal(rangesSent.length, distinctReads,
+    `${rangesSent.length - distinctReads} of ${rangesSent.length} range reads were sent more than once`);
+  // Read-side round trips: full batches of the distinct reads, and a learn
+  // batch for each read batch whose answers it learns from, bar a last
+  // partial batch of each.
+  const trips = (calls.get('fsReadBatch') ?? 0) + (calls.get('lstat') ?? 0);
+  const readBatches = Math.ceil(distinctReads / PER_BATCH);
+  const bound = 2 * readBatches + 2;
+  assert.ok(
+    trips <= bound,
+    `the refetch took ${trips} round trips for ${distinctReads} reads and ${learns} learns; ${bound} batches carry them`,
+  );
+  console.log(`  ok  ${batched.ranges} reads and ${learns} learns in ${trips} round trips (at most ${batchesPeak} in flight)`);
 } finally {
   globalThis.console = realConsole;
   globalThis.process = realProcess;

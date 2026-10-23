@@ -48,9 +48,9 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   const counted = { asked: 0, relistGate: null, lose: 0 };
   let forward;
   const handle = facetSupervisor(authority, {
-    stat: async (...args) => {
-      counted.asked++;
-      return forward('stat', args);
+    fsReadBatch: async (...args) => {
+      if (args[0].some((request) => request.lstat === true)) counted.asked++;
+      return forward('fsReadBatch', args);
     },
     fsList: async (...args) => {
       if (counted.relistGate !== null) await counted.relistGate.promise;

@@ -139,17 +139,15 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a read whose barrier the cursor passed still teaches the sync view its file'() {
-    // The file is made after the launch and before the read, so the read's
-    // bytes are the session's to fetch. Its barrier is answered, then an
-    // unrelated write moves the cursor past it, and only then do the bytes
-    // come back: the sync view has the file the read found.
+    // The read's barrier is answered, then an unrelated write moves the
+    // cursor past it, and only then is the file made and read: the read
+    // cannot date its stat, and asks for a fresh one.
     const acquired = Promise.withResolvers();
     const release = Promise.withResolvers();
     let armed = false;
-    const late = '/home/user/elsewhere/late.txt';
     const { authority, probe } = await boot((forward) => ({
       fsReadBatch: async (...args) => {
-        if (armed && args[0].some((request) => request.path.endsWith('/late.txt') && request.lstat !== true)) {
+        if (armed) {
           armed = false;
           acquired.resolve();
           await release.promise;
@@ -157,15 +155,15 @@ await runScenarios(import.meta.path, {
         return forward('fsReadBatch', args);
       },
     }));
-    await authority.peer.mkdir('home/user/elsewhere', { mode: 0o755 });
-    await authority.peer.writeFile('home/user/elsewhere/late.txt', 'late');
     armed = true;
+    const late = '/home/user/app/late.txt';
     const reading = probe.fs.promises.readFile(late, 'utf8');
     await acquired.promise;
     await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     const unrelated = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => appliedCursor() >= unrelated, 'the barrier applied the unrelated write');
+    await authority.peer.writeFile('home/user/app/late.txt', 'late');
     release.resolve();
     assert.equal(await reading, 'late');
     await resumed;

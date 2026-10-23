@@ -19,9 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { processBridge } from './lib/process-bridge.mjs';
 import {
+  coherenceStats,
   createAuthority,
   facetSupervisor,
   launchResident,
@@ -30,7 +29,6 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -96,16 +94,15 @@ async function boot() {
 
 await runScenarios(import.meta.path, {
   async 'a barrier whose ACQUIRE is dropped'() {
-    const { authority, fault, probe, log } = await boot();
+    const { authority, fault, probe } = await boot();
     await authority.peer.writeFile('home/user/app/f.txt', 'v2');
     fault.fsAcquire = DROPPED;
-    const lists = log.calls.fsList ?? 0;
     assert.equal(
       await probe.resume(F),
       'v2',
       'a dropped ACQUIRE is not an empty delta: the rows are reconciled against the listing',
     );
-    assert.ok((log.calls.fsList ?? 0) > lists, 'and the listing was asked for the rows it reconciles');
+    assert.ok(coherenceStats().barrierFailures >= 1, 'and the failure is counted where the coherence stats are read');
   },
 
   async 'a repair owed within one epoch asks a delta from the store\'s floor, never a listing'() {
@@ -124,15 +121,14 @@ await runScenarios(import.meta.path, {
     // A failed barrier that were read as "nothing changed" would leave the
     // listing saying the peer's new name is free: statSync ENOENT, and a
     // write would pass as a creation owned by the writer.
-    const { authority, fault, probe, log } = await boot();
+    const { authority, fault, probe } = await boot();
     const root = authority.peerAs(CRED_KERNEL);
     await root.writeFile('home/user/app/peer.txt', 'theirs');
     await root.chmod('home/user/app/peer.txt', 0o644);
     fault.fsAcquire = DROPPED;
-    const lists = log.calls.fsList ?? 0;
     const seen = await probe.resumeWith(() => probe.own('/home/user/app/peer.txt'));
     fault.fsAcquire = null;
-    assert.ok((log.calls.fsList ?? 0) > lists, 'the barrier did fail: the listing was asked for what it missed');
+    assert.ok(coherenceStats().barrierFailures >= 1, 'the barrier did fail');
     assert.deepEqual(seen, { uid: 0, gid: 0, mode: '644' }, 'the resumption knew the peer\'s file and its owner');
     assert.equal(probe.t(() => probe.fs.writeFileSync('/home/user/app/peer.txt', 'ours')), 'ERR:EACCES', 'never a creation of its own');
     await probe.resumeWith(() => null);
@@ -307,48 +303,13 @@ await runScenarios(import.meta.path, {
   async 'a heap-held cell whose barrier ACQUIRE is dropped'() {
     // The one-shot body and the opencode runner hold the resident set on the
     // heap rather than in facet SQLite; the same barrier guards it.
-    const authority = createAuthority();
-    const { rawVfs, kfs } = authority;
-    kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
-    kfs.writeFile('home/user/app/f.txt', 'V1');
-    const bridge = processBridge(rawVfs, kfs);
-    const dec = new TextDecoder();
-    let dropped = false;
-    const supervisor = {
-      readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-      writeFile: (p, c) => bridge.writeFile(p, c),
-      stat: (p) => bridge.stat(p),
-      lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-      readdir: (p) => bridge.readdir(p),
-      exists: async (p) => (await bridge.stat(p)) !== null,
-      fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-      fsAcquire: (position, options) => (dropped ? DROPPED() : bridge.acquire(position, options)),
-      // What a failed barrier's repair refetches with, as the session serves it.
-      fsList: (after, limit) => authority.host.supervisorOp({ op: 'fsList', args: [after, limit] }),
-      fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
-    };
-    globalThis.__nimbusVfsCursor = { position: (await bridge.acquire(null)).position };
-    declareNamespace({
-      metadata: { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
-      manifest: { 'home/user': ['app'], 'home/user/app': ['f.txt'] },
-    });
-    const shims = new Function(
-      '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-      '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
-      + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
-    )(
-      { 'home/user/app/f.txt': 'V1' },
-      {}, supervisor,
-      { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user/app', [], {}, `/home/user/app/s.js`, '/home/user/app',
-    );
-    assert.equal(shims.fs.readFileSync(F, 'utf8'), 'V1');
-    kfs.writeFile('home/user/app/f.txt', 'V2');
-    dropped = true;
-    const seen = Promise.withResolvers();
-    shims.setTimeout(() => {
-      try { seen.resolve(shims.fs.readFileSync(F, 'utf8')); } catch (error) { seen.resolve('ERR:' + error.code); }
-    }, 0);
-    assert.equal(await seen.promise, 'V2', 'the cells the failed barrier could not vouch for are refetched live');
+    const { authority, fault, probe } = await boot();
+    assert.equal(probe.read(F), 'v1');
+    await authority.peer.writeFile('home/user/app/f.txt', 'V2');
+    fault.fsAcquire = DROPPED;
+    const seen = await probe.resumeWith(() => probe.read(F));
+    fault.fsAcquire = null;
+    assert.equal(seen, 'V2', 'the cells the failed barrier could not vouch for are refetched live');
   },
 }, { barrierFailures: true });
 

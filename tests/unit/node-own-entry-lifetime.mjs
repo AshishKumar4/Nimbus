@@ -38,8 +38,6 @@ async function boot(overrides = {}) {
 
 /** A peer's chmod of `path`, then a barrier: what statSync and promises.stat each say of its mode. */
 async function afterPeerChmod({ authority, probe }, path) {
-  // The process's own changes reach the session at its boundary (an awaited read does not publish them).
-  await globalThis.__nimbusProcessFs.flush();
   await authority.peerAs(CRED_KERNEL).chmod(path.slice(1), 0o640);
   await probe.resume();
   const mode = (stat) => (stat.mode & 0o777).toString(8);

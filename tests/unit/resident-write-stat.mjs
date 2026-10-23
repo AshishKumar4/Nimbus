@@ -63,6 +63,17 @@ await runScenarios(import.meta.path, {
     assert.equal(total(again), 1, `and the next write is one call (${JSON.stringify(again)})`);
   },
 
+  async 'a write answered without a stat asks for the stat separately'() {
+    // A mount whose metadata read failed after the write committed.
+    const { probe, log } = await boot((forward) => ({
+      writeBatchStream: async (...args) => ({ ...(await forward('writeBatchStream', args)), receipts: [] }),
+    }));
+    const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
+    assert.equal(made.writeBatchStream, 1, 'the write is answered');
+    assert.equal(made.fsReadBatch, 1, 'and its stat asked for');
+    assert.equal(probe.fs.statSync('/home/user/app/new.txt').size, 5);
+  },
+
   async 'a file the process overwrote without having listed it keeps its owner'() {
     // Created by root after the launch, so the process's namespace has never
     // named it, and its write took it for a new file of its own.

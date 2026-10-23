@@ -23,12 +23,6 @@ import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
-// A step the session never answers stops the file here, and names itself.
-const realStderr = process.stderr.write.bind(process.stderr);
-const realExit = process.exit.bind(process);
-let at = 'start';
-const progress = (step) => { at = step; };
-const watchdog = setTimeout(() => { realStderr(`resident-node-request-vfs-durability: no progress for 120 s, stopped at ${at}\n`); realExit(1); }, 120_000);
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
 
@@ -120,7 +114,6 @@ http.createServer((req, res) => {
 }).listen(4387);
 `;
 
-progress('spawn');
 await manager.spawnNode(userCode, {
   command: 'node --watch server.js',
   filename: '/home/user/server.js',
@@ -147,11 +140,13 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
-const processFs = globalThis.__nimbusProcessFs;
 ;return {
   fs: builtins.fs,
-  flush: () => processFs.flush(),
-  settle: () => processFs.settle(),
+  writes: __vfsWrites,
+  queueVfsMutation: __nimbusQueueVfsMutation,
+  drainVfsMutations: __nimbusDrainVfsMutations,
+  flushVfsWrite: __nimbusFlushVfsWrite,
+  drainVfsWrites: __nimbusDrainVfsWrites,
 };`,
   );
   // Staged content comes with its records, as every launch stages it
@@ -210,14 +205,11 @@ async function assertAsyncFlushPreservesNewerWrite(initial, newer) {
   );
 }
 
-progress('206');
 await assertAsyncFlushPreservesNewerWrite('older', 'newer');
-progress('207');
 await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
 // Shim-triggered flushes and request-boundary full writes share one per-path
 // queue, so a delayed older authority RPC cannot land after the newer content.
-progress('211');
 {
   let releaseOlder;
   let olderStarted;
@@ -237,13 +229,13 @@ progress('211');
     },
     async fsTruncate() {},
   };
-  const { fs, flush } = makeShimFsFacet(supervisor);
+  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
   const path = '/home/user/cross-boundary-race.txt';
   fs.writeFileSync(path, 'older');
   const shimFlush = fs.promises.truncate(path, 5);
   await olderCall;
   fs.writeFileSync(path, 'newer');
-  const boundaryFlush = flush();
+  const boundaryFlush = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
   await Promise.resolve();
   assert.deepEqual(calls, ['older'], 'same-path boundary write waits behind the older shim flush');
   releaseOlder();
@@ -254,7 +246,6 @@ progress('211');
 
 // An older fs.promises.writeFile completion clears only its own captured
 // generation. A newer writeFileSync cell remains pending and can be persisted.
-progress('247');
 {
   let releaseOlder;
   let olderStarted;
@@ -273,21 +264,20 @@ progress('247');
       durable.set(path, text);
     },
   };
-  const { fs, flush } = makeShimFsFacet(supervisor);
+  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
   const path = '/home/user/async-write-race.txt';
   const older = fs.promises.writeFile(path, 'older');
   await olderCall;
   fs.writeFileSync(path, 'newer');
   releaseOlder();
   await older;
-  await flush();
+  await flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
   assert.equal(durable.get(path), 'newer');
   assert.deepEqual(calls, ['older', 'newer']);
 }
 
 // An append and the full write after it reach the authority in the order they
 // were made (the process's one log), whatever the first's latency.
-progress('279');
 {
   let releaseAppend;
   let appendStarted;
@@ -321,7 +311,6 @@ progress('279');
 
 // A full write queued before an append remains a full image; the later append
 // extends that image rather than reviving the external prefix it replaced.
-progress('312');
 {
   let releaseFull;
   let fullStarted;
@@ -361,7 +350,6 @@ progress('312');
 // Concurrent appends to a live-only file carry only their uncommitted suffix
 // through the per-path queue. The local fragment must never replace the live
 // prefix as if it were a complete file image.
-progress('351');
 {
   let releaseFirst;
   let firstStarted;
@@ -386,7 +374,7 @@ progress('351');
       durable = text;
     },
   };
-  const { fs } = makeShimFsFacet(supervisor);
+  const { fs, writes } = makeShimFsFacet(supervisor);
   const path = '/home/user/concurrent-appends.txt';
   const first = fs.promises.appendFile(path, 'A');
   await firstCall;
@@ -395,28 +383,50 @@ progress('351');
   await Promise.all([first, second]);
   assert.equal(durable, 'baseAB');
   assert.deepEqual(calls, ['range:A', 'range:B']);
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/concurrent-appends.txt'), false);
 }
 
-// Settle waits for the writes this process decided and has not sent yet.
-progress('387');
+// The request boundary can await every queued file-content mutation, including
+// operations that do not create a whole-file __vfsWrites cell.
 {
   let releaseMutation;
   const gate = new Promise((resolve) => { releaseMutation = resolve; });
-  const { fs, settle } = makeShimFsFacet({ async writeFile() { await gate; } });
-  fs.writeFileSync('/home/user/queued-range.txt', 'x');
+  const facet = makeShimFsFacet({});
+  const mutation = facet.queueVfsMutation(
+    '/home/user/queued-range.txt',
+    () => gate,
+  );
   let drained = false;
-  const drain = settle().then(() => { drained = true; });
+  const drain = facet.drainVfsMutations().then(() => { drained = true; });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(drained, false);
   releaseMutation();
-  await drain;
+  await Promise.all([mutation, drain]);
   assert.equal(drained, true);
+}
+
+// A failed mutation remains visible to the next durability boundary even when
+// the caller observed/caught it before the boundary started. The failure is
+// consumed exactly once so it cannot poison unrelated later requests.
+{
+  const facet = makeShimFsFacet({});
+  await assert.rejects(
+    facet.queueVfsMutation(
+      '/home/user/settled-failure.txt',
+      async () => { throw new Error('settled before boundary'); },
+    ),
+    /settled before boundary/,
+  );
+  await assert.rejects(
+    facet.drainVfsMutations(),
+    /settled before boundary/,
+  );
+  await facet.drainVfsMutations();
 }
 
 // A FileHandle range that first flushes a pending full image and a concurrent
 // boundary capture of that same generation share one in-flight full-write
 // claim. The boundary cannot queue a duplicate full image behind the range.
-progress('404');
 {
   let releaseFull;
   let fullStarted;
@@ -439,7 +449,7 @@ progress('404');
       durable = durable.slice(0, position) + text + durable.slice(position + bytes.byteLength);
     },
   };
-  const { fs, flush } = makeShimFsFacet(
+  const { fs, flushVfsWrite, writes } = makeShimFsFacet(
     supervisor,
     { 'home/user/same-generation-claim.txt': 'base' },
   );
@@ -448,18 +458,21 @@ progress('404');
   fs.writeFileSync(path, 'newbase');
   const ranged = handle.write('X', 0);
   await fullCall;
-  const boundary = flush();
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
   releaseFull();
   await Promise.all([ranged, boundary]);
   assert.equal(durable, 'Xewbase');
   assert.deepEqual(calls, ['full:newbase', 'range:X']);
   assert.equal(fs.readFileSync(path, 'utf8'), 'Xewbase');
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    writes,
+    'home/user/same-generation-claim.txt',
+  ), false);
   await handle.close();
 }
 
 // A zero-byte positional FileHandle write is a true no-op: it neither extends
 // the authority/local overlay nor advances the sequential handle position.
-progress('446');
 {
   let durable = 'base';
   let rangedWrites = 0;
@@ -493,7 +506,6 @@ progress('446');
 // FileHandle ranged writes participate in the same authority queue as a later
 // synchronous full cell, and a delayed range completion cannot overlay that
 // newer local generation.
-progress('479');
 {
   let releaseRange;
   let rangeStarted;
@@ -510,24 +522,24 @@ progress('479');
     },
     async writeFile(_path, content) { durable = cellText(content); },
   };
-  const { fs, flush } = makeShimFsFacet(supervisor);
+  const { fs, flushVfsWrite, writes } = makeShimFsFacet(supervisor);
   const path = '/home/user/handle-range-race.txt';
   const handle = await fs.promises.open(path, 'r+');
   const ranged = handle.write('OLD', 0);
   await rangeCall;
   fs.writeFileSync(path, 'newer');
-  const boundary = flush();
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
   await Promise.resolve();
   releaseRange();
   await Promise.all([ranged, boundary]);
   assert.equal(durable, 'newer');
   assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/handle-range-race.txt'), false);
   await handle.close();
 }
 
 // The local-generation guard is captured when FileHandle.write is scheduled,
 // not when a preceding same-path mutation finally lets its queue callback run.
-progress('512');
 {
   let releaseBlocker;
   let blockerStarted;
@@ -546,14 +558,14 @@ progress('512');
     },
     async writeFile(_path, content) { durable = cellText(content); },
   };
-  const { fs, flush } = makeShimFsFacet(supervisor);
+  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
   const path = '/home/user/queued-handle-range-race.txt';
   const handle = await fs.promises.open(path, 'r+');
   const blocker = handle.write('X', 0);
   await blockerCall;
   const ranged = handle.write('OLD', 0);
   fs.writeFileSync(path, 'newer');
-  const boundary = flush();
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
   releaseBlocker();
   await Promise.all([blocker, ranged, boundary]);
   assert.equal(durable, 'newer');
@@ -563,7 +575,6 @@ progress('512');
 
 // Concurrent append-mode FileHandle writes resolve the live EOF inside their
 // shared queue, so the second range cannot reuse the first range's old offset.
-progress('547');
 {
   let releaseFirst;
   let firstStarted;
@@ -598,7 +609,6 @@ progress('547');
 
 // Live truncation is ordered with later full content and its post-RPC local
 // update is generation-guarded just like ranged writes.
-progress('581');
 {
   let releaseTruncate;
   let truncateStarted;
@@ -619,23 +629,23 @@ progress('581');
     async writeFile(_path, content) { durable = cellText(content); rev += 1; return rev; },
   };
   const path = '/home/user/truncate-race.txt';
-  const { fs, flush } = makeShimFsFacet(
+  const { fs, flushVfsWrite, writes } = makeShimFsFacet(
     supervisor,
     { 'home/user/truncate-race.txt': 'abcdef' },
   );
   const truncating = fs.promises.truncate(path, 3);
   await truncateCall;
   fs.writeFileSync(path, 'newer');
-  const boundary = flush();
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
   releaseTruncate();
   await Promise.all([truncating, boundary]);
   assert.equal(durable, 'newer');
   assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/truncate-race.txt'), false);
 }
 
 // A refused write rejects its caller and leaves nothing of it parked; the
 // path's next write is sent and lands.
-progress('617');
 {
   let refuse = true;
   let durable;
@@ -645,12 +655,14 @@ progress('617');
       durable = cellText(content);
     },
   };
-  const { fs } = makeShimFsFacet(supervisor);
+  const { fs, writes } = makeShimFsFacet(supervisor);
   const path = '/home/user/retry-after-failure.txt';
   await assert.rejects(fs.promises.writeFile(path, 'failed'), (error) => error.code === 'EACCES');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false, 'a refused write stayed parked');
   refuse = false;
   await fs.promises.writeFile(path, 'recovered');
   assert.equal(durable, 'recovered');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false);
 }
 
 async function loadGeneratedWorker() {
@@ -674,7 +686,6 @@ function request(path = 'first') {
 
 // The public generated entrypoint must not return a successful response until
 // its handler's pending writeFileSync content has crossed the supervisor boundary.
-progress('655');
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -717,7 +728,6 @@ progress('655');
 
 // appendFileSync on a nonresident live file records append-only content, so the
 // request boundary appends at authority EOF instead of replacing its prefix.
-progress('697');
 {
   delete globalThis.__portRegistry;
   let durable = 'base';
@@ -759,7 +769,6 @@ progress('697');
 
 // Multiple unclaimed synchronous append fragments coalesce into one EOF
 // mutation rather than one full image or duplicate range operations.
-progress('738');
 {
   delete globalThis.__portRegistry;
   let durable = 'base';
@@ -795,7 +804,6 @@ progress('738');
 
 // Repeated request-boundary content writes are awaited directly and do not
 // accumulate settled promises in the resident runtime's pending-I/O array.
-progress('773');
 {
   delete globalThis.__portRegistry;
   const supervisor = {
@@ -824,7 +832,6 @@ progress('773');
 
 // Concurrent flush callers share one pending-I/O drain owner: neither request
 // may complete while a prior stdout task the first drain waits for is blocked.
-progress('801');
 {
   delete globalThis.__portRegistry;
   let releaseOutput;
@@ -884,7 +891,6 @@ progress('801');
 }
 
 // Adding the durability boundary must not buffer an open response body.
-progress('860');
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -920,7 +926,6 @@ progress('860');
 
 // If a newer local write lands while an older RPC is in flight, only the
 // flushed cell is cleared; the newer bytes survive for the next boundary.
-progress('895');
 {
   delete globalThis.__portRegistry;
   let releaseOlder;
@@ -976,7 +981,6 @@ progress('895');
 
 // Cell identity cannot be inferred from value equality: two separate writes of
 // the same string still have distinct mutation generations.
-progress('950');
 {
   delete globalThis.__portRegistry;
   let releaseFirst;
@@ -1029,7 +1033,6 @@ progress('950');
 }
 
 // A VFS failure cannot be hidden behind a successful HTTP response.
-progress('1002');
 {
   delete globalThis.__portRegistry;
   const supervisor = {
@@ -1055,7 +1058,6 @@ progress('1002');
 
 // A failed report of generated code neither fails the response nor skips the
 // request's writes; it is told to the process's stderr.
-progress('1027');
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -1087,7 +1089,6 @@ progress('1027');
 // Clean FileHandle range writes and truncates have no whole-file pending cell,
 // but a response still cannot cross the durability boundary while either
 // authority mutation is in flight.
-progress('1058');
 {
   const port = 4390;
   await manager.spawnNode(`
@@ -1200,7 +1201,6 @@ http.createServer((req, res) => {
 // Explicit process exit is only an intent until the owning lifecycle has
 // drained durability. A failed append cannot be hidden behind an earlier
 // terminal exit 0 or lose its writer authorization before the drain.
-progress('1170');
 {
   await manager.spawnNode(`
 const fs = require('node:fs');
@@ -1243,7 +1243,6 @@ process.exit(0);
 // The regular one-shot generated runner follows the same ordering: process.exit
 // records the intended code, the append drain runs with live authority, and
 // only the final post-drain code is reported.
-progress('1212');
 {
   const reports = [];
   let appendCalls = 0;
@@ -1304,5 +1303,4 @@ process.exit(0);
   assert.deepEqual(reports, [1], 'only the final failed durability code is reported');
 }
 
-clearTimeout(watchdog);
 console.log('resident-node-request-vfs-durability: ok');
