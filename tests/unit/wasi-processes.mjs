@@ -294,6 +294,8 @@ async function guest({ stdin, takesSignals = false } = {}) {
     },
     /** The guest exited: its host stops following its children. */
     dispose: () => bundle.procDispose(),
+    /** An entry into the guest returned (Processes.left). */
+    left: () => bundle.procLeft(),
     /** poll_oneoff on one relative monotonic clock of `ms`: its errno. */
     async sleep(ms) {
       const at = scratch();
@@ -798,6 +800,25 @@ for (const takesSignals of [true, false]) {
   answer = E.SUCCESS;
   for (let i = 0; i < 100 && answer === E.SUCCESS; i++) answer = await g.check();
   assert.equal(answer, ESIGTERM, 'and so does the next one sent');
+  g.dispose();
+  checks++;
+}
+
+// A guest that returned to its host (an entry into it ended) asks the
+// session for its signals no more: an idle resident does not long-poll. Its
+// next check watches them again.
+{
+  const g = await guest({ takesSignals: true });
+  assert.equal(await g.check(), E.SUCCESS);
+  g.left();
+  const asked = g.sup.signalWaits;
+  // The poll in flight ends at its bound (LONG_POLL_MS, 5 s).
+  await new Promise((resolve) => setTimeout(resolve, 5_500));
+  assert.equal(g.sup.signalWaits, asked, 'no poll follows the one in flight');
+  g.control.signal('SIGINT');
+  let answer = E.SUCCESS;
+  for (let i = 0; i < 100 && answer === E.SUCCESS; i++) answer = await g.check();
+  assert.equal(answer, ESIGINT, 'its next check watches them again');
   g.dispose();
   checks++;
 }

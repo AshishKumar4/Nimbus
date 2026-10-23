@@ -19,7 +19,9 @@
 //   - a parent's kill of it (the child broker's) is delivered, not its end,
 //     and a child its group's signal ended is reported killed by it;
 //   - its write to a full pipe waits until a signal, which withdraws it at
-//     once; a signal that comes as the write is made is the next wait's.
+//     once; a signal that comes as the write is made is the next wait's;
+//   - a wait for the next signal of a process that takes none lasts as long
+//     as one that waits for its first, so a guest asking again does not spin.
 
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -237,6 +239,15 @@ for (let ticks = 0; ticks < 16; ticks++) {
   } else {
     assert.deepEqual([answer, written], [{ ok: false, signal: 'SIGINT' }, 0], `${ticks}: or it answered the signal and wrote nothing`);
   }
+}
+
+// A process that takes none: its wait for a signal lasts, as an empty box's does.
+{
+  const processes = new SessionProcessSupervisor();
+  const { pid } = processes.spawn('python3', ['python3'], '/home/user');
+  const started = Date.now();
+  assert.equal(await processes.nextSignal(pid, 300), null, 'none comes');
+  assert.ok(Date.now() - started >= 290, `and the wait lasted its bound: ${Date.now() - started} ms`);
 }
 
 console.log('process-takes-signals: ok');
