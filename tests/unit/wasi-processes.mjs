@@ -823,6 +823,23 @@ for (const takesSignals of [true, false]) {
   checks++;
 }
 
+// A guest that leaves holding a signal it has not raised says nothing; one
+// that raised every signal it was handed says how many, once it leaves.
+{
+  const g = await guest({ takesSignals: true });
+  g.sup.taken = [];
+  g.sup.cpSignalsTaken = async (received) => { g.sup.taken.push(received); };
+  assert.equal(await g.check(), E.SUCCESS);
+  g.control.signal('SIGINT');
+  let answer = E.SUCCESS;
+  for (let i = 0; i < 100 && answer === E.SUCCESS; i++) answer = await g.check();
+  assert.equal(answer, ESIGINT, 'it raises the signal it was handed');
+  await g.left();
+  assert.deepEqual(g.sup.taken, [1], 'and says, as it leaves, it took the one it was handed');
+  g.dispose();
+  checks++;
+}
+
 // A guest that does not take them is never asked for them.
 {
   const g = await guest();
