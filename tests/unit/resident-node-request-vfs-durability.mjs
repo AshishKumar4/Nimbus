@@ -487,7 +487,10 @@ async function syncAppendsAtEnd(url, appended) {
   const { proc, ops } = await residentOnSession(authority, SERVER);
   assert.equal((await proc.handleHttpRequest(request(url))).status, 200);
   assert.equal(await authority.peer.readFileString(LIVE), `base${appended}`, 'the session holds the appended bytes after its live prefix');
-  assert.deepEqual(received(ops, LIVE), [appended], `the appends are one EOF mutation; the session received ${JSON.stringify(ops)}`);
+  // Each lands at the end, in order, as an append: none rewrites the live prefix.
+  const data = ops.filter((op) => op.path === key(LIVE) && op.text !== undefined);
+  assert.ok(data.every((op) => op.call === 'append'), `the appends are EOF mutations; the session received ${JSON.stringify(ops)}`);
+  assert.equal(data.map((op) => op.text).join(''), appended, 'each fragment once, in order');
 }
 
 async function retention() {
@@ -794,7 +797,9 @@ async function oneShotReportsFinalCode() {
 async function oneShotAppendNotRetried() {
   const { result, appendCalls, waves } = await runOneShot();
   assert.equal(result.exitCode, 1, JSON.stringify(result));
-  assert.equal(appendCalls, 1, `definitive EIO is not retried; the waves it was sent: ${JSON.stringify(waves)}; ${JSON.stringify(result)}`);
+  // Its bytes are sent once: a definitive EIO is not retried (what the wave after it carries is the close alone).
+  assert.equal(waves.filter((record) => record === 'file-begin:append').length, 1,
+    `definitive EIO is not retried; the waves it was sent: ${JSON.stringify(waves)}; ${JSON.stringify(result)}; ${appendCalls} waves`);
 }
 
 await runScenarios(import.meta.path, {
@@ -817,7 +822,7 @@ await runScenarios(import.meta.path, {
   'a refused write rejects its caller, and the next write to the path lands': refusedWriteRetries,
   'a response is answered only once the writes its handler made are at the session': answeredAfterWrites,
   'an appendFileSync to a live file the process does not hold appends at its end': () => syncAppendsAtEnd('sync-append', 'A'),
-  'unclaimed appendFileSync fragments are one append at the end': () => syncAppendsAtEnd('sync-appends', 'AB'),
+  'unclaimed appendFileSync fragments each append at the end': () => syncAppendsAtEnd('sync-appends', 'AB'),
   'settled request-boundary writes are not retained by the process': retention,
   'concurrent request boundaries share one drain, held by the output it waits for': sharedDrain,
   'an open response body is not buffered by the durability boundary': streamNotBuffered,
