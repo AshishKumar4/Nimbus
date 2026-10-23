@@ -808,14 +808,16 @@ return globalThis.Go;
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
+  var ANSWERING =   Symbol("answering supervisor");
   function isAnsweringStub(supervisor) {
-    return typeof Reflect.get(supervisor, "answer") === "function";
+    return Reflect.get(supervisor, ANSWERING) !== true && typeof Reflect.get(supervisor, "answer") === "function";
   }
   function answeringSupervisor(supervisor, live) {
     if (!isAnsweringStub(supervisor)) return supervisor;
     const stub = supervisor;
     return new Proxy(supervisor, {
       get(target, name) {
+        if (name === ANSWERING) return true;
         if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
         return async (...args) => {
           const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);

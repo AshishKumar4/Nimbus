@@ -168,6 +168,8 @@ export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export { feedFor, floorFor, isFeedPosition, notAfter, rootOf, samePosition, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 export { procFileGenerator } from '@nimbus-sh/core/vfs/proc-files.js';
+// The process's filesystem over this store's view: what a node program's fs answers through (core runtime/wasi/process-filesystem.ts).
+export { processFilesystem } from '@nimbus-sh/core/runtime/wasi/process-filesystem.js';
 /**
  * Drop what an earlier Nimbus kept of the store in the facet's SQL: its rows
  * are not this store's, and their bytes would count against the process's

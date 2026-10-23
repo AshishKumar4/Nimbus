@@ -34,7 +34,8 @@ export declare function supervisorAnswer(call: () => unknown): Promise<Superviso
  * `supervisor`, with its filesystem calls made through `answer` and each
  * refusal rethrown as the error it is; every other name is the stub's own.
  * A same-isolate supervisor is handed back as is: its refusals are thrown in
- * this isolate and cross nothing. The call's value is handed on and its
+ * this isolate and cross nothing; so is one already answering, whoever wraps
+ * it since (node's stop-replay ledger). The call's value is handed on and its
  * envelope released.
  *
  * `live` is told of each filesystem call as it is made, with the call in

@@ -1,10 +1,9 @@
 import { NIMBUS_ERESTART } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
-import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { processFilesystem } from '@nimbus-sh/core/runtime/wasi/process-filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
-import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
@@ -245,29 +244,16 @@ function __wasiStartResident(sup, cred) {
             view?.onAdmitted?.(listener);
         },
     };
-    // The process holds the subtrees it writes (delegation-holder.ts): its
-    // creates, writes, mkdirs, unlinks and renames there are decided here and
-    // logged into its filesystem client, which sends them as numbered waves.
-    const session = supervisorSession(sup, authority);
     // A resident's facet keeps the log of what it sends in its own store
     // (process-fs-journal.ts), drained by the session once the process is gone.
     const journalSql = Reflect.get(globalThis, '__nimbusFsJournalSql');
-    const fs = residentFilesystem(authority, booting, {
-        session,
-        ...(typeof sup.fsReadDirectories === 'function' ? {
-            readDirectories: (request) => supervisor.fsReadDirectories(request),
-        } : {}),
-        isHomeRoot: isHomeDirectory,
-        ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+    const fs = processFilesystem(sup, booting, {
+        ...(journalSql === undefined ? {} : { journalSql }),
         ...(kept === null || view === null ? {} : { walked: kept.walked }),
     });
     if (kept !== null && view !== null)
         fs.inbound();
     return { store, fs, ready };
-}
-/** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
-function isHomeDirectory(key) {
-    return key.startsWith('home/') && key.length > 'home/'.length && !key.slice('home/'.length).includes('/');
 }
 /** The filesystem the codec answers from: the process's resident one over the adopted supervisor, else the session's. */
 function __wasiFilesystem(parking) {
