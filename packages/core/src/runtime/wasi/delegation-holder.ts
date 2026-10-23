@@ -39,7 +39,7 @@ import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '..
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, stickyRefusal, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { ownNames } from './own-names.js';
 import { provisional as provisionalDecisions, type Desc, type HeldCell, type Inode, type Provisional } from './provisional.js';
@@ -560,6 +560,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     if (!modeAllows(parent, 3, store.cred)) throw fsError('EACCES', syscall, path);
     return parent;
   };
+  /** Whether `row` at `key` may be removed or replaced here: its directory writable, and its sticky bit honoured (EPERM). */
+  const removable = (key: string, row: ResidentEntry, path: string, syscall: string): boolean => {
+    const parent = writableParent(key, path, syscall);
+    if (parent === undefined) return false;
+    if (stickyRefusal(parent, row, store.cred) !== null) throw fsError('EPERM', syscall, path);
+    return true;
+  };
 
   /**
    * The file's bytes changed, from `from` on: logged before the next
@@ -921,7 +928,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const current = entryOf(key);
       if (current === undefined || current === null || current.type === 'directory') return false;
       if (deciding(key) === undefined) return false;
-      if (writableParent(key, path, 'unlink') === undefined) return false;
+      if (!removable(key, current, path, 'unlink')) return false;
       const local = prov.inode(current.dev, current.ino);
       drain(local?.cell !== undefined && local.key === key ? local : undefined);
       names.decide(key, null);
@@ -948,7 +955,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const grant = deciding(from);
       if (grant === undefined || deciding(to) !== grant) return false;
       if (from === to) return true;
-      if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined) return false;
+      if (!removable(from, source, path, 'rename') || (target === null ? writableParent(to, path, 'rename') === undefined : !removable(to, target, path, 'rename'))) return false;
       // What the names of its files grow by, admitted before anything is done; not made, given back.
       const files = prov.planMove(from, to, path);
       try {

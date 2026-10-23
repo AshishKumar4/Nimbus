@@ -1,475 +1,385 @@
 #!/usr/bin/env bun
-// A whole-file flush stamps the facet's resident cell with the revision it
-// produced, so the ACQUIRE barrier can tell that write apart from a peer's.
-// Every OTHER mutation this facet makes to a path it holds — a ranged
-// FileHandle write, truncate, utimes, chmod, chown — bumps the authority's
-// per-path revision exactly the same way, and without a stamp the next
-// barrier reads the facet's own mutation as a peer's, evicts the cell, and a
-// readFileSync that follows fails EAGAIN on bytes the facet just wrote.
-// Live, that is modern-tar's open → write → futimes → close followed by a
-// sync read of the extracted README, which exits create-astro with 1.
+// A process's own mutation of a file it holds — a ranged FileHandle write,
+// truncate, utimes, chmod, chown — is the process's, not a peer's, when the
+// next barrier reports it. Without that, the barrier reads the process's own
+// change as a peer's, drops the bytes it holds, and a synchronous read that
+// follows refuses (EAGAIN) on bytes the process just wrote. Live, that was
+// modern-tar's open → write → futimes → close followed by a sync read of the
+// extracted README, which exits create-astro with 1.
 //
-// The repair: every such RPC answers with the path's revision before and
-// after, and the facet advances the stamp only when the cell was current at
-// `before`. This test pins both directions against the real SqliteVFS: each
-// of the five own mutations survives the barrier, and a peer write landing
-// between the facet's write and its mutation still evicts.
-//
-// Stamping AFTER the RPC answers is only sound while the barrier and the
-// write are ordered, and they are not: the supervisor answers fsAcquire
-// from memory at once while a write's response waits on the output gate for
-// durability, so a barrier issued after the facet's own write can be
-// answered before it. The last section makes that ordering deterministic —
-// the mutation lands in the VFS, the test takes the barrier, and only then
-// does the RPC answer — and pins the own-mutation lease that holds the cell
-// across the gap, the whole-file flush that puts back what such a barrier
-// evicted, and the peer and failure cases where the cell must still go.
+// The session holds what the process decided and reports it at its barrier,
+// in any order: a barrier answered ahead of the process's own write, and an
+// RPC that rejects. Each case is a process of its own over the real session.
 
 import assert from 'node:assert/strict';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { PROCESS_DIR, shimStoreProcess } from './lib/shim-store-process.mjs';
+import { createAuthority, runScenarios, sleep } from './lib/resident-body.mjs';
+import { shimsOnSession } from './lib/shims-on-session.mjs';
 
-// The platform's timer, captured before the shims wrap setTimeout in the
-// resumption barrier: a plain wait that is not itself a resumption.
-const rawSetTimeout = globalThis.setTimeout;
-const rawSleep = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
-
+const dir = '/home/user/p';
+const T = 1_600_000_000_000;
 const enc = new TextEncoder();
-const dir = PROCESS_DIR;
-const WRITER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const { vfs, supervisor, fs, setTimeout: shimSetTimeout, stats } = shimStoreProcess({ writer: WRITER });
-const out = { setTimeout: shimSetTimeout };
 
-// An async stat is the cheapest ACQUIRE: it evicts what the authority
-// reports as changed and refetches nothing, which is exactly the shape in
-// which an own mutation used to turn into an EAGAIN.
-const barrier = () => fs.promises.stat(dir);
-// A shim timer is a barrier that also refetches what it dropped: the shape
-// that makes a peer's bytes visible to the next sync read.
-const timerBarrier = (fn) => new Promise((resolve, reject) => {
-  out.setTimeout(() => { try { resolve(fn()); } catch (error) { reject(error); } }, 5);
+/** A process in `dir` over a new session; `hooks` take over session calls (as shimsOnSession's overrides). */
+function facet(hooks = {}) {
+  const authority = createAuthority();
+  authority.kfs.mkdir(dir, { recursive: true });
+  return { authority, ...shimsOnSession({ authority, cwd: dir, overrides: hooks }) };
+}
+
+/** A barrier: an async stat of the directory, the cheapest one a process takes. */
+const barrier = (fs) => fs.promises.stat(dir);
+/** A shim timer's barrier, then a synchronous read of `p` in its callback. */
+const timerRead = (f, p) => new Promise((resolve, reject) => {
+  f.setTimeout(() => { try { resolve(f.fs.readFileSync(p, 'utf8')); } catch (error) { reject(error); } }, 5);
 });
-const syncRead = (p) => {
+const syncRead = (fs, p) => {
   try { return fs.readFileSync(p, 'utf8'); } catch (error) { return `${error.code}: ${error.message}`; }
 };
-const snap = () => ({ invalidations: stats.invalidations, selfWrites: stats.selfWrites, fills: stats.fills });
-let n = 0;
-const fresh = (label) => `${dir}/${label}-${n++}.txt`;
+/** `promise`, or a failure naming `what` after a few seconds: a wave that never went out is a hang, not a wait. */
+const within = (promise, what) => Promise.race([promise, sleep(5_000).then(() => { throw new Error(`timed out waiting for ${what}`); })]);
 
-// Asserts that the barrier after an own mutation of `p` kept the cell: the
-// sync read serves `expected`, nothing was refetched, and the barrier
-// counted the path as this facet's own rather than dropping it.
-async function survives(label, p, expected, before) {
-  await barrier();
-  assert.equal(syncRead(p), expected, `${label}: sync read after the barrier serves the mutated bytes`);
-  assert.equal(stats.fills, before.fills, `${label}: nothing was refetched`);
-  assert.ok(stats.selfWrites > before.selfWrites, `${label}: the barrier recognised the mutation as this facet own`);
-  assert.equal(await supervisor.readFile(p), expected, `${label}: the authority holds the same bytes`);
+// Asserts that the barrier after an own mutation of `p` kept the bytes: the
+// sync read serves `expected`, and the session holds the same.
+async function survives(label, f, p, expected) {
+  await barrier(f.fs);
+  assert.equal(syncRead(f.fs, p), expected, `${label}: sync read after the barrier serves the mutated bytes`);
+  assert.equal(await f.authority.peer.readFileString(p), expected, `${label}: the session holds the same bytes`);
 }
 
-// Reference: how many invalidations a barrier costs when only the
-// directory record is stale (the parent is deliberately never stamped).
-const parentOnly = await (async () => {
-  const p = fresh('ref');
-  await fs.promises.writeFile(p, 'REF');
-  const before = snap();
-  await barrier();
-  assert.equal(stats.fills, before.fills);
-  return stats.invalidations - before.invalidations;
-})();
-assert.ok(parentOnly <= 1, `a flushed write costs at most the parent record (was ${parentOnly})`);
-
-async function noFileInvalidation(label, before) {
-  assert.ok(
-    stats.invalidations - before.invalidations <= parentOnly,
-    `${label}: the file itself was not invalidated (${stats.invalidations - before.invalidations} > ${parentOnly})`,
-  );
-}
-
-// ── 1. Ranged write through a FileHandle ────────────────────────────────
-{
-  // Parked sync write, then the handle's write flushes it whole and lands
-  // the range on top.
-  const p = fresh('range-sync');
-  fs.writeFileSync(p, 'HELLO WORLD');
-  const fh = await fs.promises.open(p, 'r+');
-  await fh.write('JELLO', 0);
-  await fh.close();
-  assert.equal(syncRead(p), 'JELLO WORLD', 'range: local overlay is immediate');
-  const before = snap();
-  await survives('range after sync write', p, 'JELLO WORLD', before);
-  await noFileInvalidation('range after sync write', before);
-}
-{
-  // Async whole write already flushed, then the ranged write alone.
-  const p = fresh('range-async');
-  await fs.promises.writeFile(p, 'HELLO WORLD');
-  const fh = await fs.promises.open(p, 'r+');
-  await fh.write(enc.encode('!!'), 0, 2, 9);
-  await fh.close();
-  const before = snap();
-  await survives('range after async write', p, 'HELLO WOR!!', before);
-  await noFileInvalidation('range after async write', before);
-}
-{
-  // modern-tar's exact sequence: open with create, write, futimes, close,
-  // then a sync read after an unrelated async call.
-  const p = fresh('tar');
-  const fh = await fs.promises.open(p, 'w');
-  await fh.write('README');
-  await fh.utimes(new Date(1_700_000_000_000), new Date(1_700_000_000_000));
-  await fh.close();
-  const before = snap();
-  await survives('open+write+futimes+close', p, 'README', before);
-  await noFileInvalidation('open+write+futimes+close', before);
-  assert.equal(fs.statSync(p).mtime.getTime(), 1_700_000_000_000, 'the sync stat carries the futimes');
-}
-
-// ── 2. Truncate ─────────────────────────────────────────────────────────
-{
-  // Live file: the RPC trims the boundary chunk, the local cell is trimmed.
-  const p = fresh('trunc-async');
-  await fs.promises.writeFile(p, 'HELLO WORLD');
-  await fs.promises.truncate(p, 5);
-  assert.equal(syncRead(p), 'HELLO', 'truncate: local trim is immediate');
-  const before = snap();
-  await survives('truncate of a flushed file', p, 'HELLO', before);
-  await noFileInvalidation('truncate of a flushed file', before);
-}
-{
-  // FileHandle.truncate is the same path from a descriptor.
-  const p = fresh('ftrunc');
-  await fs.promises.writeFile(p, 'HELLO WORLD');
-  const fh = await fs.promises.open(p, 'r+');
-  await fh.truncate(3);
-  await fh.close();
-  const before = snap();
-  await survives('ftruncate', p, 'HEL', before);
-  await noFileInvalidation('ftruncate', before);
-}
-{
-  // A pending sync append rides ahead of the truncate as a flush, and the
-  // truncate then lands on the flushed file. The ledger drops the resident
-  // cell when it persists an append as a range (the cell is refetched on the
-  // next live read), so there is no stamp to advance here and none is
-  // claimed: the truncate must simply reach the authority in order.
-  const p = fresh('trunc-append');
-  await fs.promises.writeFile(p, 'HELLO');
-  fs.appendFileSync(p, ' WORLD');
-  await fs.promises.truncate(p, 7);
-  assert.equal(await supervisor.readFile(p), 'HELLO W', 'the truncate landed after the flushed append');
-  assert.equal(await fs.promises.readFile(p, 'utf8'), 'HELLO W');
-}
-
-// ── 3. utimes ───────────────────────────────────────────────────────────
-const T = 1_600_000_000_000;
-{
-  const p = fresh('utimes-async');
-  await fs.promises.writeFile(p, 'TIMES');
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  const before = snap();
-  await survives('utimes', p, 'TIMES', before);
-  await noFileInvalidation('utimes', before);
-  assert.equal(fs.statSync(p).mtime.getTime(), T, 'utimes: the sync stat carries the new mtime');
-  assert.equal((await fs.promises.stat(p)).mtime.getTime(), T, 'utimes: the authority carries the new mtime');
-}
-{
-  // Sync write then async utimes: the utimes flushes the parked write first.
-  const p = fresh('utimes-sync');
-  fs.writeFileSync(p, 'TIMES2');
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  const before = snap();
-  await survives('utimes after a sync write', p, 'TIMES2', before);
-  await noFileInvalidation('utimes after a sync write', before);
-}
-
-// ── 4. chmod ────────────────────────────────────────────────────────────
-{
-  const p = fresh('chmod-async');
-  await fs.promises.writeFile(p, 'MODE');
-  await fs.promises.chmod(p, 0o755);
-  const before = snap();
-  await survives('chmod', p, 'MODE', before);
-  await noFileInvalidation('chmod', before);
-  assert.equal(fs.statSync(p).mode & 0o777, 0o755, 'chmod: the sync stat carries the mode');
-  assert.equal((await fs.promises.stat(p)).mode & 0o777, 0o755, 'chmod: the authority carries the mode');
-}
-{
-  // chmodSync parks the mode and it rides the next flush of the path,
-  // which is the chmod RPC in _flushLocalPathToSupervisor.
-  const p = fresh('chmod-sync');
-  await fs.promises.writeFile(p, 'MODE2');
-  fs.chmodSync(p, 0o700);
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  const before = snap();
-  await survives('chmodSync ride-along', p, 'MODE2', before);
-  await noFileInvalidation('chmodSync ride-along', before);
-  assert.equal((await fs.promises.stat(p)).mode & 0o777, 0o700, 'chmodSync reached the authority');
-}
-
-// ── 5. chown ────────────────────────────────────────────────────────────
-{
-  const p = fresh('chown-async');
-  await fs.promises.writeFile(p, 'OWNER');
-  await fs.promises.chown(p, 1000, 1000);
-  const before = snap();
-  await survives('chown', p, 'OWNER', before);
-  await noFileInvalidation('chown', before);
-  assert.equal((await fs.promises.stat(p)).uid, 1000, 'chown reached the authority');
-}
-{
-  // chownSync queues the RPC behind the parked write.
-  const p = fresh('chown-sync');
-  fs.writeFileSync(p, 'OWNER2');
-  fs.chownSync(p, 1000, 1000);
-  await fs.promises.access(p);
-  const before = snap();
-  await survives('chownSync', p, 'OWNER2', before);
-  await noFileInvalidation('chownSync', before);
-  assert.equal((await fs.promises.stat(p)).gid, 1000, 'chownSync reached the authority');
-}
-
-// ── The other direction: a peer touched the path in between ────────────
-// The receipt's `before` is past the stamp the lease began with, so the
-// cell must go. The eviction is owed from the moment the peer wrote —
-// whether the barrier performs it or the lease's end does, once the lease
-// suppressed that barrier — so the count is measured across the whole
-// window. The refetch then serves the peer bytes, with the facet's own
-// metadata mutation applied on top.
-{
-  const p = fresh('peer-utimes');
-  await fs.promises.writeFile(p, 'MINE');
-  vfs.writeFile(p, enc.encode('PEER'));
-  const before = snap();
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  const seen = await timerBarrier(() => fs.readFileSync(p, 'utf8'));
-  assert.equal(seen, 'PEER', 'utimes after a peer write: the cell is still evicted and the peer bytes win');
-  assert.ok(stats.invalidations > before.invalidations, 'utimes after a peer write: the file was invalidated');
-  assert.equal((await fs.promises.stat(p)).mtime.getTime(), T, 'and the facet own utimes is applied on top');
-}
-{
-  const p = fresh('peer-range');
-  await fs.promises.writeFile(p, 'MINE_MINE');
-  vfs.writeFile(p, enc.encode('PEERPEERPEER'));
-  const before = snap();
-  const fh = await fs.promises.open(p, 'r+');
-  await fh.write('X', 0);
-  await fh.close();
-  const seen = await timerBarrier(() => fs.readFileSync(p, 'utf8'));
-  assert.equal(seen, 'XEERPEERPEER', 'ranged write after a peer write: the cell is evicted and the refetch shows both');
-  assert.ok(stats.invalidations > before.invalidations, 'ranged write after a peer write: the file was invalidated');
-}
-{
-  const p = fresh('peer-trunc');
-  await fs.promises.writeFile(p, 'MINE_MINE');
-  vfs.writeFile(p, enc.encode('PEERPEERPEER'));
-  const before = snap();
-  await fs.promises.truncate(p, 6);
-  const seen = await timerBarrier(() => fs.readFileSync(p, 'utf8'));
-  assert.equal(seen, 'PEERPE', 'truncate after a peer write: the cell is evicted and the refetch shows both');
-  assert.ok(stats.invalidations > before.invalidations, 'truncate after a peer write: the file was invalidated');
-}
-
-// A peer write to another path moves the global clock without touching
-// ours: the stamp advances all the same and the cell survives.
-{
-  const p = fresh('clock');
-  const other = fresh('clock-other');
-  await fs.promises.writeFile(p, 'MINE');
-  vfs.writeFile(other, enc.encode('ELSEWHERE'));
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  const before = snap();
-  await barrier();
-  assert.equal(syncRead(p), 'MINE', 'a peer write elsewhere does not unstamp our cell');
-  assert.equal(stats.fills, before.fills);
-  assert.ok(stats.selfWrites > before.selfWrites);
-}
-
-// ── A barrier ANSWERED AHEAD OF THE FACET'S OWN WRITE ───────────────────
-//
-// Everything above stamps after the RPC has answered, which is only sound
-// while the two are ordered. They are not: the supervisor answers fsAcquire
-// from memory at once, while a write's response waits on the Durable
-// Object's output gate for durability, so a barrier ISSUED AFTER the
-// facet's own write can be ANSWERED BEFORE that write's response arrives.
-// Its delta lists the path at the write's new revision and the facet's
-// stamp is still the old one — or absent, while a parked cell is in flight.
-//
-// `deferAnswer` makes that ordering deterministic instead of intermittent:
-// the supervisor method still runs its bridge call synchronously, so the
-// mutation lands in the VFS and moves the revision at the moment the facet
-// calls it, but the promise the facet is awaiting is held open until the
-// test releases it. In between, the test takes the barrier that the real
-// race delivers early.
-function deferAnswer(name) {
-  const original = supervisor[name];
-  let release;
-  let landed;
-  const gate = new Promise((resolve) => { release = resolve; });
-  const arrived = new Promise((resolve) => { landed = resolve; });
-  supervisor[name] = (...args) => {
-    supervisor[name] = original;
-    // The authority mutation happens HERE, in the caller's own turn.
-    const answer = original.apply(supervisor, args);
-    landed();
-    return gate.then(() => answer);
+/**
+ * Holds the session's answer to the next write wave, once armed: the wave is
+ * applied, and its response is held until `release`. `arm()` returns a promise
+ * that settles once the held wave is in.
+ */
+function holdNextResponse() {
+  let armed = false;
+  let gate = null;
+  let landed = null;
+  let forward;
+  const hooks = (given) => {
+    forward = given;
+    return {
+      writeBatchStream: async (stream, fence, owner) => {
+        const answer = await forward('writeBatchStream', [stream, fence, owner]);
+        if (armed) { armed = false; landed.resolve(); await gate.promise; }
+        return answer;
+      },
+    };
   };
-  return { arrived, release: () => release() };
+  return {
+    hooks,
+    arm() {
+      armed = true;
+      gate = Promise.withResolvers();
+      landed = Promise.withResolvers();
+      return landed.promise;
+    },
+    release: () => gate.resolve(),
+  };
 }
 
-// Take the barrier inside the gap `gate` holds open: its answer is in before
-// the held response. The barrier then holds its resumption until that
-// response says whose write the answer reported
-// (__nimbusReportedOwnAcknowledgements), so the response is released once the
-// answer has been admitted, and the barrier is awaited after.
-async function barrierInGap(gate) {
-  const taken = barrier();
-  await rawSleep(20);
-  gate.release();
+/** A barrier taken inside the gap a held response leaves open, then the response released. */
+async function barrierInGap(fs, held) {
+  const taken = barrier(fs);
+  await sleep(20);
+  held.release();
   await taken;
 }
 
-// (a) A ranged FileHandle write, with the barrier answered in the gap.
-// The lease is what keeps the cell: the barrier reports the path at the
-// revision this very write produced, and an eviction there is unrecoverable
-// — the response that follows would find no cell to overlay or stamp.
-{
-  const p = fresh('race-range');
-  await fs.promises.writeFile(p, 'HELLO WORLD');
-  const gate = deferAnswer('fsWriteRange');
-  const fh = await fs.promises.open(p, 'r+');
-  const write = fh.write('JELLO', 0);
-  await gate.arrived;
-  const before = snap();
-  await barrierInGap(gate);
-  await write;
-  await fh.close();
-  assert.equal(syncRead(p), 'JELLO WORLD', 'race/range: the facet own bytes survive a barrier answered ahead of its write');
-  await noFileInvalidation('race/range', before);
-  assert.ok(stats.selfWrites > before.selfWrites, 'race/range: the barrier read the leased cell as this facet own');
-  assert.equal(stats.fills, before.fills, 'race/range: nothing was refetched');
-  assert.equal(await supervisor.readFile(p), 'JELLO WORLD', 'race/range: the authority holds the same bytes');
-  // The stamp the lease settled on is the write's OWN revision, not the one
-  // it began with. A follow-up own mutation proves it: that receipt reports
-  // `before` at the write's revision, and only a stamp at or past it ends
-  // its lease by keeping the cell.
-  const after = snap();
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  await survives('race/range, follow-up own mutation', p, 'JELLO WORLD', after);
-  await noFileInvalidation('race/range, follow-up own mutation', after);
-}
+const scenarios = {
+  // ── 1. Ranged write through a FileHandle ────────────────────────────────
+  async 'a ranged write over a pending sync write survives the barrier after it'() {
+    const f = facet();
+    const p = `${dir}/range-sync.txt`;
+    f.fs.writeFileSync(p, 'HELLO WORLD');
+    const fh = await f.fs.promises.open(p, 'r+');
+    await fh.write('JELLO', 0);
+    await fh.close();
+    assert.equal(syncRead(f.fs, p), 'JELLO WORLD', 'range: local overlay is immediate');
+    await survives('range after sync write', f, p, 'JELLO WORLD');
+  },
 
-// (b) A whole-file write, same ordering. The parked cell is unstamped
-// while it is in flight (_parkWrite retires the stamp), so this barrier
-// legitimately evicts the __vfsBundle copy and the facet is left holding
-// only __vfsWrites — which the flush then deletes. The flush reinstalls
-// the bytes it just persisted, which is why the read below is not EAGAIN
-// and why the cell is stamped at the revision the write produced.
-{
-  const p = fresh('race-whole');
-  await fs.promises.writeFile(p, 'FIRST');
-  const gate = deferAnswer('writeFile');
-  const write = fs.promises.writeFile(p, 'SECOND');
-  await gate.arrived;
-  const before = snap();
-  await barrierInGap(gate);
-  await write;
-  assert.equal(syncRead(p), 'SECOND', 'race/whole: the flushed bytes survive a barrier answered ahead of the write');
-  assert.equal(await supervisor.readFile(p), 'SECOND', 'race/whole: the authority holds them too');
-  // Same proof of the stamp: the follow-up own mutation's receipt reports
-  // `before` at the write's revision, so its lease can only keep the cell
-  // if the reinstalled copy was stamped there.
-  const after = snap();
-  await fs.promises.utimes(p, new Date(T), new Date(T));
-  await survives('race/whole, follow-up own mutation', p, 'SECOND', after);
-  await noFileInvalidation('race/whole, follow-up own mutation', after);
-}
+  async 'a ranged write after an awaited whole-file write survives the barrier after it'() {
+    const f = facet();
+    const p = `${dir}/range-async.txt`;
+    await f.fs.promises.writeFile(p, 'HELLO WORLD');
+    const fh = await f.fs.promises.open(p, 'r+');
+    await fh.write(enc.encode('!!'), 0, 2, 9);
+    await fh.close();
+    await survives('range after async write', f, p, 'HELLO WOR!!');
+  },
 
-// The whole-file reinstall is bounded by the same rule. A peer writing
-// after the facet's flush landed is reported ABOVE the revision that flush
-// produced, and the barrier answered in the gap consumes that report — so
-// the bytes in hand are no longer what the authority serves and must NOT
-// go back. The facet pays the refetch it pays today.
-{
-  const p = fresh('race-whole-peer');
-  await fs.promises.writeFile(p, 'FIRST');
-  const gate = deferAnswer('writeFile');
-  const write = fs.promises.writeFile(p, 'SECOND');
-  await gate.arrived;
-  vfs.writeFile(p, enc.encode('PEER'));
-  await barrierInGap(gate);
-  await write;
-  assert.match(syncRead(p), /^EAGAIN/, 'race/whole-peer: the evicted cell is not put back over a peer write');
-  assert.equal(await fs.promises.readFile(p, 'utf8'), 'PEER', 'race/whole-peer: the refetch serves the peer bytes');
-}
+  async 'open with create, write, futimes and close, then a sync read, serves the bytes'() {
+    const f = facet();
+    const p = `${dir}/tar.txt`;
+    const fh = await f.fs.promises.open(p, 'w');
+    await fh.write('README');
+    await fh.utimes(new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+    await fh.close();
+    await survives('open+write+futimes+close', f, p, 'README');
+    assert.equal(f.fs.statSync(p).mtime.getTime(), 1_700_000_000_000, 'the sync stat carries the futimes');
+  },
 
-// (c) A peer write lands between the facet's own write and its deferred
-// response. The receipt was read in the write's own turn, so it cannot see
-// that peer; the barrier the lease suppressed reported it, and the lease's
-// end adjudicates that report against the stamp it settled on and evicts.
-// The next sync read after a timer barrier therefore serves the PEER bytes
-// — never the facet's stale cell.
-{
-  const p = fresh('race-peer');
-  await fs.promises.writeFile(p, 'MINE_MINE');
-  const gate = deferAnswer('fsWriteRange');
-  const fh = await fs.promises.open(p, 'r+');
-  const write = fh.write('X', 0);
-  await gate.arrived;
-  const before = snap();
-  vfs.writeFile(p, enc.encode('PEERPEERPEER'));
-  await barrierInGap(gate);
-  await write;
-  await fh.close();
-  assert.ok(stats.invalidations > before.invalidations, 'race/peer: the cell was evicted rather than kept stale');
-  const seen = await timerBarrier(() => fs.readFileSync(p, 'utf8'));
-  assert.equal(seen, 'PEERPEERPEER', 'race/peer: the sync read serves the peer bytes');
-  assert.equal(await supervisor.readFile(p), 'PEERPEERPEER', 'race/peer: and the authority agrees');
-}
+  // ── 2. Truncate ─────────────────────────────────────────────────────────
+  async 'truncate of an awaited file trims the bytes the barrier keeps'() {
+    const f = facet();
+    const p = `${dir}/trunc-async.txt`;
+    await f.fs.promises.writeFile(p, 'HELLO WORLD');
+    await f.fs.promises.truncate(p, 5);
+    assert.equal(syncRead(f.fs, p), 'HELLO', 'truncate: local trim is immediate');
+    await survives('truncate of a flushed file', f, p, 'HELLO');
+  },
 
-// The same shape with the peer landing BEFORE the facet's write reaches the
-// authority: here the receipt itself reports a `before` past the stamp the
-// lease began with, so the lease ends as a peer's write regardless of any
-// barrier. The facet's range is applied on top of the peer bytes.
-{
-  const p = fresh('race-peer-first');
-  await fs.promises.writeFile(p, 'MINE_MINE');
-  vfs.writeFile(p, enc.encode('PEERPEERPEER'));
-  const gate = deferAnswer('fsWriteRange');
-  const fh = await fs.promises.open(p, 'r+');
-  const write = fh.write('X', 0);
-  await gate.arrived;
-  const before = snap();
-  await barrierInGap(gate);
-  await write;
-  await fh.close();
-  assert.ok(stats.invalidations > before.invalidations, 'race/peer-first: the receipt alone ends the lease with an eviction');
-  const seen = await timerBarrier(() => fs.readFileSync(p, 'utf8'));
-  assert.equal(seen, 'XEERPEERPEER', 'race/peer-first: the refetch shows the peer bytes with the facet range on top');
-}
+  async 'ftruncate through a descriptor survives the barrier after it'() {
+    const f = facet();
+    const p = `${dir}/ftrunc.txt`;
+    await f.fs.promises.writeFile(p, 'HELLO WORLD');
+    const fh = await f.fs.promises.open(p, 'r+');
+    await fh.truncate(3);
+    await fh.close();
+    await survives('ftruncate', f, p, 'HEL');
+  },
 
-// (d) An RPC that rejects ends the lease exactly as a peer's write does:
-// the outcome is unknown, so the cell goes and the stamp with it. The
-// mutation's own caller still sees the failure, and a later async read
-// still works.
-{
-  const p = fresh('race-throw');
-  await fs.promises.writeFile(p, 'KEEP');
-  const original = supervisor.fsWriteRange;
-  supervisor.fsWriteRange = async () => {
-    supervisor.fsWriteRange = original;
-    const error = new Error('EIO: authority died mid-write');
-    error.code = 'EIO';
-    throw error;
-  };
-  const before = snap();
-  const fh = await fs.promises.open(p, 'r+');
-  await assert.rejects(() => fh.write('X', 0), /EIO/, 'race/throw: the caller is told');
-  await fh.close();
-  assert.ok(stats.invalidations > before.invalidations, 'race/throw: the lease ended with an eviction');
-  assert.match(syncRead(p), /^EAGAIN/, 'race/throw: the sync view refuses rather than serving an unproven cell');
-  assert.equal(await fs.promises.readFile(p, 'utf8'), 'KEEP', 'race/throw: the async read still works');
-}
+  async 'a truncate after a pending sync append lands on the flushed file, in order'() {
+    const f = facet();
+    const p = `${dir}/trunc-append.txt`;
+    await f.fs.promises.writeFile(p, 'HELLO');
+    f.fs.appendFileSync(p, ' WORLD');
+    await f.fs.promises.truncate(p, 7);
+    assert.equal(await f.authority.peer.readFileString(p), 'HELLO W', 'the truncate landed after the flushed append');
+    assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'HELLO W');
+  },
 
-assert.equal(stats.poisons, 0, 'a seeded cursor is never poisoned');
-console.log('node-shims-own-mutation-stamps: all assertions passed');
+  // ── 3. utimes ───────────────────────────────────────────────────────────
+  async 'utimes survives the barrier after it, and the times are the process\'s'() {
+    const f = facet();
+    const p = `${dir}/utimes-async.txt`;
+    await f.fs.promises.writeFile(p, 'TIMES');
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    await survives('utimes', f, p, 'TIMES');
+    assert.equal(f.fs.statSync(p).mtime.getTime(), T, 'utimes: the sync stat carries the new mtime');
+    assert.equal((await f.fs.promises.stat(p)).mtime.getTime(), T, 'utimes: the session carries the new mtime');
+  },
+
+  async 'utimes after a sync write flushes that write first, and survives the barrier'() {
+    const f = facet();
+    const p = `${dir}/utimes-sync.txt`;
+    f.fs.writeFileSync(p, 'TIMES2');
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    await survives('utimes after a sync write', f, p, 'TIMES2');
+  },
+
+  // ── 4. chmod ────────────────────────────────────────────────────────────
+  async 'chmod survives the barrier after it, and reaches the session'() {
+    const f = facet();
+    const p = `${dir}/chmod-async.txt`;
+    await f.fs.promises.writeFile(p, 'MODE');
+    await f.fs.promises.chmod(p, 0o755);
+    await survives('chmod', f, p, 'MODE');
+    assert.equal(f.fs.statSync(p).mode & 0o777, 0o755, 'chmod: the sync stat carries the mode');
+    assert.equal((await f.fs.promises.stat(p)).mode & 0o777, 0o755, 'chmod: the session carries the mode');
+  },
+
+  async 'a chmodSync rides the next flush of its path, and reaches the session'() {
+    const f = facet();
+    const p = `${dir}/chmod-sync.txt`;
+    await f.fs.promises.writeFile(p, 'MODE2');
+    f.fs.chmodSync(p, 0o700);
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    await survives('chmodSync ride-along', f, p, 'MODE2');
+    assert.equal((await f.fs.promises.stat(p)).mode & 0o777, 0o700, 'chmodSync reached the session');
+  },
+
+  // ── 5. chown ────────────────────────────────────────────────────────────
+  async 'chown survives the barrier after it, and reaches the session'() {
+    const f = facet();
+    const p = `${dir}/chown-async.txt`;
+    await f.fs.promises.writeFile(p, 'OWNER');
+    await f.fs.promises.chown(p, 1000, 1000);
+    await survives('chown', f, p, 'OWNER');
+    assert.equal((await f.fs.promises.stat(p)).uid, 1000, 'chown reached the session');
+  },
+
+  async 'a chownSync queues behind the pending write, and reaches the session'() {
+    const f = facet();
+    const p = `${dir}/chown-sync.txt`;
+    f.fs.writeFileSync(p, 'OWNER2');
+    f.fs.chownSync(p, 1000, 1000);
+    await f.fs.promises.access(p);
+    await survives('chownSync', f, p, 'OWNER2');
+    assert.equal((await f.fs.promises.stat(p)).gid, 1000, 'chownSync reached the session');
+  },
+
+  // ── The other direction: a peer touched the path in between ────────────
+  // The peer's change is the session's, so the process's next read of the
+  // path serves the peer's bytes, with the process's own metadata applied.
+  async 'utimes after a peer write: the peer bytes win, and the process\'s utimes is applied'() {
+    const f = facet();
+    const p = `${dir}/peer-utimes.txt`;
+    await f.fs.promises.writeFile(p, 'MINE');
+    await f.authority.peer.writeFile(p, 'PEER');
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    assert.equal(await timerRead(f, p), 'PEER', 'utimes after a peer write: the peer bytes win');
+    assert.equal((await f.fs.promises.stat(p)).mtime.getTime(), T, 'and the process own utimes is applied on top');
+  },
+
+  async 'a ranged write after a peer write: the refetch shows both'() {
+    const f = facet();
+    const p = `${dir}/peer-range.txt`;
+    await f.fs.promises.writeFile(p, 'MINE_MINE');
+    await f.authority.peer.writeFile(p, 'PEERPEERPEER');
+    const fh = await f.fs.promises.open(p, 'r+');
+    await fh.write('X', 0);
+    await fh.close();
+    assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'XEERPEERPEER', 'ranged write after a peer write: the refetch shows both');
+  },
+
+  async 'a truncate after a peer write: the refetch shows the peer bytes, cut'() {
+    const f = facet();
+    const p = `${dir}/peer-trunc.txt`;
+    await f.fs.promises.writeFile(p, 'MINE_MINE');
+    await f.authority.peer.writeFile(p, 'PEERPEERPEER');
+    await f.fs.promises.truncate(p, 6);
+    assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'PEERPE', 'truncate after a peer write: the refetch shows both');
+  },
+
+  async 'a peer write elsewhere does not disturb the process\'s own file'() {
+    const f = facet();
+    const p = `${dir}/clock.txt`;
+    const other = `${dir}/clock-other.txt`;
+    await f.fs.promises.writeFile(p, 'MINE');
+    await f.authority.peer.writeFile(other, 'ELSEWHERE');
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    await barrier(f.fs);
+    assert.equal(syncRead(f.fs, p), 'MINE', 'a peer write elsewhere does not unstamp our cell');
+  },
+
+  // ── A barrier ANSWERED AHEAD OF THE PROCESS'S OWN WRITE ───────────────────
+  //
+  // The supervisor answers a barrier from memory at once, while a write's
+  // response waits on the session's output gate for durability, so a barrier
+  // issued after the process's own write can be answered before that write's
+  // response arrives. The held response makes that ordering deterministic: the
+  // session applies the wave, its answer is held, and the test takes the
+  // barrier the real race delivers early. A decided write sends no wave until
+  // something flushes, so each arming is followed by a flush: that is the wave
+  // the hold holds. A peer's change waits for the process's read lease to be
+  // recalled, which waits for this response, so a peer's write queued in the
+  // gap lands once the response is released.
+  async 'a ranged write survives a barrier answered before its response'() {
+    const held = holdNextResponse();
+    const f = facet(held.hooks);
+    const p = `${dir}/race-range.txt`;
+    await f.fs.promises.writeFile(p, 'HELLO WORLD');
+    const fh = await f.fs.promises.open(p, 'r+');
+    const landed = held.arm();
+    const write = fh.write('JELLO', 0);
+    await sleep(0);
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
+    await barrierInGap(f.fs, held);
+    await write;
+    await sent;
+    await fh.close();
+    assert.equal(syncRead(f.fs, p), 'JELLO WORLD', 'race/range: the process own bytes survive a barrier answered ahead of its write');
+    assert.equal(await f.authority.peer.readFileString(p), 'JELLO WORLD', 'race/range: the session holds the same bytes');
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    await survives('race/range, follow-up own mutation', f, p, 'JELLO WORLD');
+  },
+
+  async 'a whole-file write survives a barrier answered before its response'() {
+    const held = holdNextResponse();
+    const f = facet(held.hooks);
+    const p = `${dir}/race-whole.txt`;
+    await f.fs.promises.writeFile(p, 'FIRST');
+    const landed = held.arm();
+    const write = f.fs.promises.writeFile(p, 'SECOND');
+    await sleep(0);
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
+    await barrierInGap(f.fs, held);
+    await write;
+    await sent;
+    assert.equal(syncRead(f.fs, p), 'SECOND', 'race/whole: the flushed bytes survive a barrier answered ahead of the write');
+    assert.equal(await f.authority.peer.readFileString(p), 'SECOND', 'race/whole: the session holds them too');
+    await f.fs.promises.utimes(p, new Date(T), new Date(T));
+    await survives('race/whole, follow-up own mutation', f, p, 'SECOND');
+  },
+
+  async 'a peer write after a whole-file write is served, not the process\'s bytes'() {
+    const held = holdNextResponse();
+    const f = facet(held.hooks);
+    const p = `${dir}/race-whole-peer.txt`;
+    await f.fs.promises.writeFile(p, 'FIRST');
+    const landed = held.arm();
+    const write = f.fs.promises.writeFile(p, 'SECOND');
+    await sleep(0);
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
+    const peerWrite = f.authority.peer.writeFile(p, 'PEER');
+    await barrierInGap(f.fs, held);
+    await within(write, 'the write behind the held response');
+    await sent;
+    await within(peerWrite, 'the peer write behind the held response');
+    assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'PEER', 'race/whole-peer: the refetch serves the peer bytes');
+  },
+
+  async 'a peer write after a ranged write is served, and the range is not kept over it'() {
+    const held = holdNextResponse();
+    const f = facet(held.hooks);
+    const p = `${dir}/race-peer.txt`;
+    await f.fs.promises.writeFile(p, 'MINE_MINE');
+    const fh = await f.fs.promises.open(p, 'r+');
+    const landed = held.arm();
+    const write = fh.write('X', 0);
+    await sleep(0);
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
+    const peerWrite = f.authority.peer.writeFile(p, 'PEERPEERPEER');
+    await barrierInGap(f.fs, held);
+    await within(write, 'the write behind the held response');
+    await sent;
+    await fh.close();
+    await within(peerWrite, 'the peer write behind the held response');
+    assert.equal(await timerRead(f, p), 'PEERPEERPEER', 'race/peer: the sync read serves the peer bytes');
+    assert.equal(await f.authority.peer.readFileString(p), 'PEERPEERPEER', 'race/peer: and the session agrees');
+  },
+  // Where the bytes an awaited write left are: the sync view before any barrier, and after one.
+  async 'a sync read serves an awaited write before any barrier'() {
+    const f = facet();
+    const p = `${dir}/pre-barrier.txt`;
+    await f.fs.promises.writeFile(p, 'MINE');
+    assert.equal(syncRead(f.fs, p), 'MINE', 'the sync view serves the bytes the awaited write left');
+  },
+
+  async 'a sync read serves an awaited write after one barrier'() {
+    const f = facet();
+    const p = `${dir}/post-barrier.txt`;
+    await f.fs.promises.writeFile(p, 'MINE');
+    await barrier(f.fs);
+    assert.equal(syncRead(f.fs, p), 'MINE', 'the sync view serves the bytes the awaited write left, after a barrier');
+  },
+
+  // ── An RPC that rejects: its outcome is unknown, the caller is told ───────
+  async 'a rejected ranged write is told to its caller, and a later read still works'() {
+    let failing = false;
+    const f = facet((forward) => ({
+      writeBatchStream: async (stream, fence, owner) => {
+        if (!failing) return forward('writeBatchStream', [stream, fence, owner]);
+        await stream.cancel();
+        throw Object.assign(new Error('EIO: authority died mid-write'), { code: 'EIO' });
+      },
+    }));
+    const p = `${dir}/race-throw.txt`;
+    await f.fs.promises.writeFile(p, 'KEEP');
+    await globalThis.__nimbusProcessFs.flush();
+    const fh = await f.fs.promises.open(p, 'r+');
+    failing = true;
+    await assert.rejects(() => fh.write('X', 0), /EIO/, 'race/throw: the caller is told');
+    failing = false;
+    await fh.close();
+    assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'KEEP', 'race/throw: the async read still works');
+  },
+};
+
+await runScenarios(import.meta.path, scenarios);

@@ -8,43 +8,33 @@
 // and threw ENOENT for a source a peer had made.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { observeWaves, shimsOnSession } from './lib/shims-on-session.mjs';
 
+const authority = createAuthority();
+authority.kfs.mkdir('/home/user/app', { recursive: true });
+
+// The renames the session is sent, in program order.
 const asked = [];
-// The session: what it has, the view's snapshot plus a name a peer made since.
-const sessionHas = new Set(['/home/user/app', '/home/user/peer']);
-const supervisor = waveSupervisor({
-  async writeFile() {},
-  async mkdir() {},
-  async rename(from, to) {
-    asked.push(from);
-    if (!sessionHas.has(from)) throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${from}' -> '${to}'`), { code: 'ENOENT' });
-    sessionHas.delete(from);
-    sessionHas.add(to);
-  },
+const { fs } = shimsOnSession({
+  authority,
+  overrides: (forward) => ({
+    writeBatchStream: observeWaves(forward, (record) => {
+      if (record.type === 'rename') asked.push(`/${record.from}`);
+    }),
+  }),
 });
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
-;return { fs: builtins.fs, flushClient: () => globalThis.__nimbusProcessFs.flush() };`,
-);
-const metadata = {
-  'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
-  'home/user/app': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
-};
-const { fs, flushClient } = (declareNamespace({ metadata, manifest: { 'home/user': ['app'], 'home/user/app': [] } }), factory(
-  {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-));
+// A name the view's snapshot does not have: a peer made it after the snapshot.
+await authority.peer.writeFile('/home/user/peer', 'made by a peer');
 
 assert.throws(() => fs.renameSync('/home/user/pages', '/home/user/src-pages'), (error) => error.code === 'ENOENT' && error.syscall === 'rename', 'renameSync of a missing source returned');
 await assert.rejects(fs.promises.rename('/home/user/styles', '/home/user/src-styles'), (error) => error.code === 'ENOENT', 'an async rename of a missing source resolved');
 await fs.promises.rename('/home/user/peer', '/home/user/src-peer');
 await fs.promises.rename('/home/user/app', '/home/user/src-app');
-await flushClient();
+await globalThis.__nimbusProcessFs.flush();
 assert.deepEqual(asked, ['/home/user/styles', '/home/user/peer', '/home/user/app'], 'the session was not asked for each async rename, or was asked for the sync one');
-assert.equal(sessionHas.has('/home/user/src-peer'), true, 'a source a peer made was not renamed');
+assert.equal(authority.kfs.exists('/home/user/src-peer'), true, 'a source a peer made was not renamed');
+assert.equal(authority.kfs.exists('/home/user/peer'), false);
 assert.equal(fs.existsSync('/home/user/src-app'), true);
 
 console.log('node-rename-missing-source: ok');
