@@ -399,6 +399,10 @@ export function setFind(set, test) {
 export function ownValue(record, key) {
     return objectHasOwn(record, key) ? record[key] : undefined;
 }
+/** `record[key] = value` as an own data property, whatever Object.prototype has at `key` (a setter there is not called). */
+export function setOwnValue(record, key, value) {
+    reflectDefineProperty(record, key, dataDescriptor(value, true, true, true));
+}
 /** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
 export const promiseThen = uncurryThis(Promise.prototype.then);
 /** `Promise.resolve(value)`, of the launch's Promise. */
@@ -447,6 +451,17 @@ export const arrayPop = uncurryThis(Array.prototype.pop);
 export function stringSplit(text, separator) {
     const parts = new SafeList();
     let from = 0;
+    if (separator.length === 1) {
+        // One code unit: found by reading the text's own, a substring taken per part.
+        for (let at = 0; at < text.length; at++) {
+            if (text[at] !== separator)
+                continue;
+            parts[parts.length] = stringSlice(text, from, at);
+            from = at + 1;
+        }
+        parts[parts.length] = stringSlice(text, from);
+        return parts;
+    }
     for (let at = stringIndexOf(text, separator); at >= 0; at = stringIndexOf(text, separator, from)) {
         parts[parts.length] = stringSlice(text, from, at);
         from = at + separator.length;

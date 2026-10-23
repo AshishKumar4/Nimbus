@@ -188,6 +188,16 @@ export declare const setForEach: <T>(set: ReadonlySet<T>, each: (value: T) => vo
 export declare const arraySort: <T>(list: SafeList<T>, compare: (a: T, b: T) => number) => SafeList<T>;
 /** RegExp.prototype.exec: RegExpBuiltinExec, which reads the regexp's own lastIndex and its flags' internal slots. */
 export declare const regExpExec: (pattern: RegExp, text: string) => RegExpExecArray | null;
+/**
+ * A generator of a generator function safeGenerator made: its next, return
+ * and throw are SafeGeneratorPrototype's own, which no program reaches, so a
+ * caller drives it by its own methods.
+ */
+export interface SafeGenerator<T, TReturn, TNext> {
+    next(value?: TNext): IteratorResult<T, TReturn>;
+    return(value: TReturn): IteratorResult<T, TReturn>;
+    throw(error: unknown): IteratorResult<T, TReturn>;
+}
 export declare const generatorNext: <R>(it: Generator<unknown, R, unknown>, value?: unknown) => IteratorResult<unknown, R>;
 export declare const generatorThrow: <R>(it: Generator<unknown, R, unknown>, error: unknown) => IteratorResult<unknown, R>;
 /** `new URL(input, base)` with the realm's URL. */
@@ -247,6 +257,8 @@ export declare function mapFind<K, V>(map: ReadonlyMap<K, V>, test: (value: V) =
 export declare function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined;
 /** `record`'s own `key`, or undefined: an optional field read without the prototype chain, typed as its contract types it. */
 export declare function ownValue<T extends object, K extends keyof T>(record: T, key: K): T[K] | undefined;
+/** `record[key] = value` as an own data property, whatever Object.prototype has at `key` (a setter there is not called). */
+export declare function setOwnValue<T extends object, K extends keyof T>(record: T, key: K, value: T[K]): void;
 /** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
 export declare const promiseThen: <T, R1 = T, R2 = never>(promise: Promise<T>, onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null) => Promise<R1 | R2>;
 /** `Promise.resolve(value)`, of the launch's Promise. */

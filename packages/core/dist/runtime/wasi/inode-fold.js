@@ -10,19 +10,14 @@
  * or a clock.
  */
 import { chownedMode, timeAt } from '../../vfs/posix-access.js';
-import { bytesView, mathMax, objectHasOwn, typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor } from '../../_shared/primordials.js';
-/** One of the process's own operations on an inode, as logged; `at` is when it was decided (its times). */
-/** Which change W7Attrs carries, by its own fields: a mode's, an owner's, or times'. */
-export const isModeChange = (attrs) => objectHasOwn(attrs, 'mode');
-export const isOwnerChange = (attrs) => objectHasOwn(attrs, 'uid');
-export const isTimesChange = (attrs) => objectHasOwn(attrs, 'atime');
+import { bytesView, mathMax, typedArrayFill, typedArraySet, Uint8ArrayConstructor } from '../../_shared/primordials.js';
 /**
  * A private copy of the first `length` of `bytes`: a plain array no one else
  * holds, whatever `bytes` is (a Buffer's slice is a view of it, not a copy).
  */
-export function owned(bytes, length = typedArrayByteLength(bytes)) {
+export function owned(bytes, length = bytes.length) {
     const copy = new Uint8ArrayConstructor(length);
-    typedArraySet(copy, bytesView(bytes, 0, length));
+    typedArraySet(copy, length === bytes.length ? bytes : bytesView(bytes, 0, length));
     return copy;
 }
 /** A copy of `state` that folding into does not change `state`. */
@@ -32,10 +27,10 @@ export function copyState(state) {
 /** Room for `size` bytes in `state`'s buffer, its first `state.size` kept, the rest zero. */
 function grown(state, size) {
     const bytes = state.bytes;
-    if (size <= typedArrayByteLength(bytes))
+    if (size <= bytes.length)
         return bytes;
-    const next = new Uint8ArrayConstructor(mathMax(size, typedArrayByteLength(bytes) * 2, 4096));
-    typedArraySet(next, bytesView(bytes, 0, state.size));
+    const next = new Uint8ArrayConstructor(mathMax(size, bytes.length * 2, 4096));
+    typedArraySet(next, state.size === bytes.length ? bytes : bytesView(bytes, 0, state.size));
     return next;
 }
 /**
@@ -50,10 +45,10 @@ export function applyOp(state, op) {
     switch (op.kind) {
         case 'write':
         case 'append': {
-            if (typedArrayByteLength(op.data) === 0)
+            if (op.data.length === 0)
                 return state;
             const offset = op.kind === 'append' ? state.size : op.offset;
-            const end = offset + typedArrayByteLength(op.data);
+            const end = offset + op.data.length;
             if (state.bytes !== null) {
                 const bytes = grown(state, end);
                 if (offset > state.size)

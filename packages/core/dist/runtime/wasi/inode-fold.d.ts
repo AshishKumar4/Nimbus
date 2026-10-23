@@ -9,7 +9,7 @@
  * Plain values in, plain values out: nothing here reads the store, the log
  * or a clock.
  */
-import type { FsTime, W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 /** What an inode is, as far as its own operations change it. */
 export interface InodeState {
     /** Its bytes, the first `size` of them; null where the baseline's bytes are not held (its size is still known). */
@@ -24,18 +24,6 @@ export interface InodeState {
     ctime: number;
 }
 /** One of the process's own operations on an inode, as logged; `at` is when it was decided (its times). */
-/** Which change W7Attrs carries, by its own fields: a mode's, an owner's, or times'. */
-export declare const isModeChange: (attrs: W7Attrs) => attrs is {
-    mode: number;
-};
-export declare const isOwnerChange: (attrs: W7Attrs) => attrs is {
-    uid: number | null;
-    gid: number | null;
-};
-export declare const isTimesChange: (attrs: W7Attrs) => attrs is {
-    atime: FsTime;
-    mtime: FsTime;
-};
 export type InodeOp = {
     readonly kind: 'write';
     readonly offset: number;

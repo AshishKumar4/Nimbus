@@ -7,6 +7,7 @@
  */
 import type { RuntimeFsPath } from './os-contracts.js';
 import { type FsError } from '../vfs/vfs-error.js';
+import { type SafeGenerator } from '../_shared/primordials.js';
 export type { FsError };
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export declare const MAX_LINK_HOPS = 40;
@@ -76,5 +77,5 @@ export declare const walkBeneath: (root: string, path: RuntimeFsPath, follow: bo
     uid: number;
     gid: number;
     groups: readonly number[];
-}, handedOver: (path: string, to: string) => boolean, rootSpelling?: string) => Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
+}, handedOver: (path: string, to: string) => boolean, rootSpelling?: string) => SafeGenerator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
 //# sourceMappingURL=beneath-walk.d.ts.map

@@ -48,6 +48,7 @@ import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempt
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { ownValue, promiseResolve, promiseThen, reflectGet, SafeSet, setFind } from './primordials.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from '../runtime/delegations.js';
@@ -966,12 +967,12 @@ export function processFsClient(options) {
      * session confirmed it, then a writer recalled it), and trusting it then
      * would read past a change published since.
      */
-    const endedReadLeases = new Set();
+    const endedReadLeases = new SafeSet();
     const endReadLease = (owner) => {
         endedReadLeases.add(owner);
         // Owners are never reused; the oldest are forgotten past a bound.
         if (endedReadLeases.size > 64)
-            endedReadLeases.delete(endedReadLeases.values().next().value);
+            endedReadLeases.delete(setFind(endedReadLeases, () => true));
         if (readLease?.owner === owner)
             readLease = null;
     };
@@ -979,7 +980,8 @@ export function processFsClient(options) {
     const giveBackReadLease = async (owner) => {
         endReadLease(owner);
         counters.readReleased++;
-        await session.grants?.release(owner).catch(() => { });
+        const port = reflectGet(session, 'grants');
+        await (port === undefined ? undefined : promiseThen(promiseResolve(port.release(owner)), undefined, () => { }));
     };
     /** The run ended (settle): it takes no read lease again. */
     let runEnded = false;
@@ -989,7 +991,7 @@ export function processFsClient(options) {
      * idle, and holds a poll open for nothing).
      */
     const answerReadRecalls = async (owner) => {
-        const port = session.grants;
+        const port = reflectGet(session, 'grants');
         for (;;) {
             const polled = now();
             let kind;
@@ -1122,8 +1124,16 @@ export function processFsClient(options) {
     };
     // A process with a raw socket decides nothing here: what it awaits is the
     // session's answer, which comes once it is published.
-    const heldGrant = (key) => (escaped !== null ? undefined
-        : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
+    const heldGrant = (key) => {
+        if (escaped !== null)
+            return undefined;
+        for (let i = 0; i < grants.length; i++) {
+            const grant = grants[i];
+            if (!grant.ended && !grant.closing && !grant.shared && within(key, grant.root))
+                return grant;
+        }
+        return undefined;
+    };
     /** What refuses `bytes` more of synchronous writes past the cap the client holds unanswered. */
     const syncCapRefusal = (bytes, path) => fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
     const client = {
@@ -1192,8 +1202,9 @@ export function processFsClient(options) {
             if (escaped !== null)
                 return undefined;
             let found;
-            for (const grant of grants) {
-                const certificate = grant.certificate;
+            for (let i = 0; i < grants.length; i++) {
+                const grant = grants[i];
+                const certificate = ownValue(grant, 'certificate');
                 if (certificate === undefined || certificate.epoch !== root.epoch || root.cursor < certificate.revision)
                     continue;
                 const standing = standingOf(grant, key);
@@ -1341,12 +1352,12 @@ export function processFsClient(options) {
             return !runEnded && readLease?.owner === owner && readLease.logged === logged;
         },
         readLeaseAsk() {
-            if (session.grants === undefined || runEnded)
+            if (reflectGet(session, 'grants') === undefined || runEnded)
                 return null;
             return { at: now(), logged: answered === logged ? logged : -1 };
         },
         readLeaseAnswered(lease) {
-            if (session.grants === undefined || endedReadLeases.has(lease.owner))
+            if (reflectGet(session, 'grants') === undefined || endedReadLeases.has(lease.owner))
                 return;
             if (readLease?.owner === lease.owner) {
                 readLease.confirmedAt = now();
