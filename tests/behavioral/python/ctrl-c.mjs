@@ -36,6 +36,16 @@ const CASES = {
   recursion: { code: `def f(n): return n if n < 2 else f(n-1)+f(n-2)\n${STARTED}\nf(38)`, exit: 130, last: 'KeyboardInterrupt' },
   sleeping: { code: `import time\n${STARTED}\ntime.sleep(120)`, exit: 130, last: 'KeyboardInterrupt' },
   handled: { code: `try:\n    ${STARTED}\n    for _ in range(300_000_000): pass\nexcept KeyboardInterrupt:\n    print('BYE')`, exit: 0, last: 'BYE' },
+  // It catches the first and computes on: the second ends it, as a terminal's second Ctrl-C does.
+  twice: { code: `try:\n    ${STARTED}\n    for _ in range(300_000_000): pass\nexcept KeyboardInterrupt:\n    print('CAUGHT', flush=True)\nfor _ in range(300_000_000): pass`, exit: 130, last: 'KeyboardInterrupt', again: 'CAUGHT' },
+};
+// A script that registered a server and was interrupted before it was done is no server.
+const SCRIPT_CASES = {
+  ...CASES,
+  serving: {
+    code: `import http.server, time\nserver = http.server.HTTPServer(('127.0.0.1', 8761), http.server.BaseHTTPRequestHandler)\nserver.serve_forever()\n${STARTED}\ntime.sleep(120)`,
+    exit: 130, last: 'KeyboardInterrupt', noServer: true,
+  },
 };
 // A one-shot, or a script: `python3 <file>` runs as a resident process (cpython-runner.ts shouldRunAsResidentProcess).
 const command = (host, name) => (host === 'script' ? `python3 ctrl-c-${name}.py` : `python3 -c "exec(open('ctrl-c-${name}.py').read())"`);
@@ -53,9 +63,9 @@ try {
   const releaseT2 = holdLive(t2);
   const install = stripAnsi((await t.run(`nimbus install cpython@${BUILD}`, 600_000)).output);
   a.check(`cpython ${BUILD} installs`, /installed at|already installed/.test(install), JSON.stringify(install.slice(-600)));
-  for (const [name, { code }] of Object.entries(CASES)) await t.writeFile(`ctrl-c-${name}.py`, `${code}\n`);
+  for (const [name, { code }] of Object.entries(SCRIPT_CASES)) await t.writeFile(`ctrl-c-${name}.py`, `${code}\n`);
   run: for (const host of ['session', 'peer', 'script']) {
-    for (const [name, expected] of Object.entries(CASES)) {
+    for (const [name, expected] of Object.entries(host === 'script' ? SCRIPT_CASES : CASES)) {
       if (host === 'session') await peer(sid, 'forget');
       if (host === 'peer') await warmFor(sid, CPYTHON_RUNNER);
       const marked = await mark(sid);
@@ -63,6 +73,10 @@ try {
       t.cmd(command(host, name));
       const submission = t.submission;
       await t.waitFor((view) => lines(view).includes('STARTED'), 120_000, `${name} to start`);
+      if (expected.again !== undefined) {
+        t.send('\x03');
+        await t.waitFor((view) => lines(view).includes(expected.again), BOUND_MS, `${name} to catch the first`);
+      }
       const at = Date.now();
       t.send('\x03');
       let seen = '';
@@ -75,6 +89,7 @@ try {
       a.check(`${host} ${name}: ends within ${BOUND_MS} ms of Ctrl-C`, ms !== null && ms <= BOUND_MS, `ended after ${ms === null ? `more than ${STUCK_MS}` : ms} ms`);
       a.check(`${host} ${name}: exit ${expected.exit}, last saying ${expected.last}`,
         submission.exitCode === expected.exit && said.some((line) => line.endsWith(expected.last)), JSON.stringify({ exit: submission.exitCode, tail: said.slice(-4) }));
+      if (expected.noServer) a.check(`${host} ${name}: not started as a server`, !said.some((line) => line.includes('started (long-running)')), JSON.stringify(said.slice(-4)));
       // Still running: the terminal is the run's, and nothing after it can run.
       if (!ended) break run;
     }
