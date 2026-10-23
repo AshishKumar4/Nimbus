@@ -303,7 +303,8 @@ export class SqliteRuntimeFsBridge {
     }
     /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
     owned(owner) {
-        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
+        const { actor, pid } = this.vfs.principal;
+        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor, ...(pid === undefined ? {} : { pid }), holds: this.vfs.holds });
     }
     truncate(path, size, options = {}) {
         return called({ syscall: 'truncate', path }, () => {

@@ -255,9 +255,9 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     return self.npmInstaller;
   }
 
-export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>): void {
-    // Made as the installing process, which then installs into them.
-    const fs = self.sqliteFs!.as(cred);
+export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>, pid?: number): void {
+    // Made as the installing process, which then installs into them: its writes (VfsWriteEvent.execId).
+    const fs = self.sqliteFs!.as(cred, pid === undefined ? undefined : { pid });
     const dirs = [
       prefix,
       `${prefix}/lib`,

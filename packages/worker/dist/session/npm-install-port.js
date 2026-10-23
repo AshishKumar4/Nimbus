@@ -13,7 +13,7 @@ export function createNpmInstallPort(self, filesystem) {
             const cred = self.processes.cred(spec.pid);
             // The session's own engine calls here wait for a delegation they meet: each is repeatable.
             if (globalPrefix)
-                await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix, cred));
+                await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix, cred, spec.pid));
             if (globalBinDir)
                 await handKernelBins(filesystem, filesystem.view({ pid: spec.pid, cred }), cred, globalBinDir);
             const installCwd = globalPrefix ? `${globalPrefix}/lib` : spec.projectDir;
@@ -28,7 +28,7 @@ export function createNpmInstallPort(self, filesystem) {
                 // On-PATH bin shims, under the install's hold: even for a partial
                 // install the linker skips what never landed, so a partial tree
                 // exposes exactly the bins that installed.
-                whileHeld: globalBinDir === undefined ? undefined : () => withRecall(() => materializeNpmBinShims(sqliteFs.as(cred), `${installCwd}/node_modules`, globalBinDir)),
+                whileHeld: globalBinDir === undefined ? undefined : () => withRecall(() => materializeNpmBinShims(sqliteFs.as(cred, { pid: spec.pid }), `${installCwd}/node_modules`, globalBinDir)),
             });
             return {
                 installed: result.installed,

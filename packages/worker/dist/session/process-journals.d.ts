@@ -23,14 +23,20 @@ export interface PendingJournal {
     cred: VfsCred;
     /** The session incarnation (generation) whose process wrote it. */
     generation: number;
+    /** The exec that process was the work of (ProcessEntry.execId), as the table held it: none when it named none, or the row predates it. */
+    execId?: string;
 }
 export declare class ProcessJournals {
     private readonly sql;
     private ready;
     constructor(sql: () => Sql | undefined);
     private table;
-    /** `pid`'s facet `facet` opened, in incarnation `generation`: its log may hold changes from now on. */
-    opened(facet: string, pid: number, cred: VfsCred, generation: number): void;
+    /**
+     * `pid`'s facet `facet` opened, in incarnation `generation`: its log may
+     * hold changes from now on. `execId`, the table's for it: what a drain in
+     * a later incarnation attributes its changes to.
+     */
+    opened(facet: string, pid: number, cred: VfsCred, generation: number, execId: string | undefined): void;
     /** `pid`'s log is empty: a drain emptied it. */
     settled(pid: number): void;
     /** The row of `pid`, while its log may hold changes. */

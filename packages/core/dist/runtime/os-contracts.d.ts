@@ -202,6 +202,13 @@ export interface NimbusFilesystemBinding {
     readonly pid: number;
     readonly cred: Readonly<VfsCred>;
     readonly signal?: AbortSignal;
+    /**
+     * False: what it writes is the host's, made on the process's behalf (its
+     * images, the kernel's stores), so its write events name no process
+     * (VfsWriteEvent.execId null). Its scope, holds and recalls are still the
+     * process's. Otherwise its writes are the process's.
+     */
+    readonly attribute?: boolean;
 }
 export interface NimbusHostFilesystemLease {
     readonly fs: RuntimeFsBridge;

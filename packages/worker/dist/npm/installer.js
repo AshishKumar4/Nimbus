@@ -376,7 +376,7 @@ export class NpmInstaller {
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
             const batchResult = engineDir !== null
-                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, cache, log, npmLog)
+                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred, { pid: opts.pid }), view }, opts.pid, cache, log, npmLog)
                 : await this.fetchIntoMount(toFetch, nmDir, principal, cache, log, npmLog);
             totalFiles += batchResult.filesWritten;
             published.push(...batchResult.installed);
@@ -407,7 +407,7 @@ export class NpmInstaller {
         const keptBins = opts.global && await project.exists(manifestPath)
             ? Object.values(parseNpmBinManifest(await project.readFileString(manifestPath))?.bins ?? {}).filter((bin) => !inScope(bin.packageName))
             : [];
-        await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins));
+        await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred, { pid: opts.pid }), nmDir: `${engineDir}/node_modules` }, keptBins));
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         // The lockfile is the inventory pruning reads, so it records what is on
@@ -462,8 +462,11 @@ export class NpmInstaller {
             // through this invocation's `log`, which turns to the console once the
             // command has returned, so a late line never lands on the redrawn
             // prompt or in another install's output.
-            void withRecall(() => this.prebundleUsedModules(engineDir, rootPackages(installing()), this.store.as(opts.cred), log, opts.pid, opts.signal))
-                .catch((e) => log(`pre-bundle skipped: ${errorText(e)}`));
+            // Its writes are the install's process's, which may have ended by then: the table keeps it until the pass is done.
+            const retained = this.store.retainWriter(opts.pid);
+            void withRecall(() => this.prebundleUsedModules(engineDir, rootPackages(installing()), this.store.as(opts.cred, { pid: opts.pid }), log, opts.pid, opts.signal))
+                .catch((e) => log(`pre-bundle skipped: ${errorText(e)}`))
+                .finally(retained);
             phases['bundle'] = Date.now() - phaseStart;
         }
         setInstallPhase('done');
@@ -1126,7 +1129,7 @@ export class NpmInstaller {
         if (tmp === null) {
             throw new Error(`installing into /${nmDir} stages the packages in /tmp, which is not on the workspace filesystem`);
         }
-        const staging = this.store.as(principal.cred);
+        const staging = this.store.as(principal.cred, { pid: principal.pid });
         const stage = `${tmp}/${STAGE_PREFIX}${principal.pid}-${Date.now().toString(36)}`;
         // The engine's own calls here wait for a delegation they meet (withRecall): each is repeatable.
         await withRecall(() => staging.mkdir(stage, { recursive: true }));
