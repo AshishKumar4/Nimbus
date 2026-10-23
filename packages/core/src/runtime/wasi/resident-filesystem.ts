@@ -1543,7 +1543,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   /**
    * A change an awaited caller makes that the session would otherwise make by
-   * name (a whole-file write, mkdir -p, a copy): decided here as a caller
+   * name (a whole-file write, mkdir -p): decided here as a caller
    * that cannot wait decides it (`decided`), then answered once the session
    * has everything this process logged (its refusal thrown) and a barrier
    * begun after it landed, as the session's own change by name is (shown),
@@ -2085,13 +2085,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         return holder!.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? undefined : DELEGATE;
       }))));
     // A caller that cannot wait copies what this view holds of the source, as it reads it.
-    const decided = (): undefined => void provisionally(from, true, (source, row) => {
-      if (row === null) throw fsError('ENOENT', 'copyfile', pathOf(from));
-      return provisionally(to, true, (target, there) => holder!.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
-    });
     return after(local, (done) => (done !== DELEGATE ? undefined
-      : now ? decided()
-      : decidedThenSent(decided, () => bySessionCopy(from, to, options))));
+      : now ? void provisionally(from, true, (source, row) => {
+        if (row === null) throw fsError('ENOENT', 'copyfile', pathOf(from));
+        return provisionally(to, true, (target, there) => holder!.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
+      })
+      : bySessionCopy(from, to, options)));
   };
   const bySessionRename = fs.rename;
   fs.rename = (from, to) => {
