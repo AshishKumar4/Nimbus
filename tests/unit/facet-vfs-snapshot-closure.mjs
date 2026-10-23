@@ -12,9 +12,9 @@ import {
 import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import {
   BUNDLE_MAX_ENCODED_BYTES,
-  CWD_SNAPSHOT_MAX_FILE_BYTES,
+  LAUNCH_GUESS_MAX_BYTES,
+  LAUNCH_GUESS_MAX_ENTRIES,
   VFS_BUNDLE_MAX_BYTES,
-  VFS_BUNDLE_MAX_FILES,
 } from '../../packages/core/src/constants.ts';
 import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
@@ -139,10 +139,14 @@ assert.equal(
   }
 }
 
+// Optional greedy content is bounded by the map's bytes, not by a count of
+// files: 2,100 packages of two files each (4,200, past the 4,000 the map once
+// counted) all ride along when their bytes fit.
 {
   const cwd = 'home/user';
+  const PACKAGES = 2100;
   const optionalFiles = {};
-  for (let index = 0; index < VFS_BUNDLE_MAX_FILES / 2 + 100; index++) {
+  for (let index = 0; index < PACKAGES; index++) {
     const packageRoot = `${cwd}/node_modules/optional-${index}`;
     optionalFiles[`${packageRoot}/package.json`] = JSON.stringify({
       name: `optional-${index}`,
@@ -153,34 +157,21 @@ assert.equal(
   // The oversample follows dependency edges: the project declares them all.
   optionalFiles[`${cwd}/package.json`] = JSON.stringify({
     name: 'app',
-    dependencies: Object.fromEntries(Array.from({ length: VFS_BUNDLE_MAX_FILES / 2 + 100 }, (_, index) => [`optional-${index}`, '*'])),
+    dependencies: Object.fromEntries(Array.from({ length: PACKAGES }, (_, index) => [`optional-${index}`, '*'])),
   });
   const requiredPath = `${globalModules}/required/index.js`;
   const bundle = { [requiredPath]: 'x'.repeat(VFS_BUNDLE_MAX_BYTES + 1) };
-  const budget = { totalBytes: 0, fileCount: 0 };
+  const budget = { totalBytes: 0 };
   const overfull = launchFs(optionalFiles);
   (await greedyAddMainEntries(overfull.fs, cwd, bundle, budget));
 
   assert.equal(bundle[requiredPath].length, VFS_BUNDLE_MAX_BYTES + 1);
-  assert.equal(budget.fileCount, 0, 'an overfull required closure leaves no room for optional admission');
+  assert.deepEqual(Object.keys(bundle), [requiredPath], 'an overfull required closure leaves no room for optional admission');
   assert.equal(overfull.reads.some(path => path.endsWith('/index.js')), false, 'optional code is not read when no bytes remain');
-  // Exercise the unchanged count ceiling separately, with byte headroom.
   const smallBundle = { [requiredPath]: 'module.exports = 1;' };
   await greedyAddMainEntries(launchFs(optionalFiles).fs, cwd, smallBundle, budget);
-  assert.equal(
-    budget.fileCount,
-    VFS_BUNDLE_MAX_FILES,
-    'optional greedy content retains the existing file-count ceiling',
-  );
-  assert.ok(
-    budget.totalBytes <= VFS_BUNDLE_MAX_BYTES,
-    'optional greedy content retains the existing raw-byte ceiling',
-  );
-  assert.equal(
-    Object.keys(smallBundle).length,
-    VFS_BUNDLE_MAX_FILES + 1,
-    'the optional budget is independent from required closure content',
-  );
+  assert.equal(Object.keys(smallBundle).length, 2 * PACKAGES + 1, 'every optional file whose bytes fit is admitted');
+  assert.ok(budget.totalBytes <= VFS_BUNDLE_MAX_BYTES, 'optional greedy content keeps the raw-byte ceiling');
 }
 
 
@@ -204,29 +195,37 @@ assert.equal(
   assert.doesNotThrow(() => assertStagedBundleFitsRpcPayload(JSON.stringify(fits), fits));
 }
 
-// The working-tree sweep guesses at what a program might read. One guessed
-// file must not take the whole budget: that is what every later invocation
-// then carries while the supervisor still holds the cached copy.
+// The working-tree sweep guesses at what a program might read, so what it
+// stages may cost a rebuild no more than one miss does (LAUNCH_GUESS_MAX_BYTES,
+// LAUNCH_GUESS_MAX_ENTRIES): one file past the bound is left out, and two that
+// fit alone are not both taken. Small files ride along past the 512 entries
+// the sweep once stopped at.
 {
   const cwd = 'home/user';
+  const half = Math.floor(LAUNCH_GUESS_MAX_BYTES * 0.6);
   const files = {
     [`${cwd}/index.js`]: 'module.exports = 1;',
     [`${cwd}/small.json`]: '{"a":1}',
-    [`${cwd}/data.bin`]: 'D'.repeat(CWD_SNAPSHOT_MAX_FILE_BYTES + 1),
+    [`${cwd}/data.bin`]: 'D'.repeat(LAUNCH_GUESS_MAX_BYTES + 1),
+    [`${cwd}/halves/a.bin`]: 'A'.repeat(half),
+    [`${cwd}/halves/b.bin`]: 'B'.repeat(half),
   };
+  for (let index = 0; index < 1000; index++) files[`${cwd}/tree/d${index % 20}/f${index}.txt`] = `${index}`;
   const snapshot = await buildPrefetchBundle(
     launchFs(files).fs, { cwd, entryCode: '', esbuild: identityEsbuild },
   );
 
+  assert.equal(snapshot.bundle[`${cwd}/data.bin`], undefined, 'the working-tree sweep skips a file past the guess bound');
   assert.equal(
-    snapshot.bundle[`${cwd}/data.bin`],
-    undefined,
-    'the working-tree sweep skips a file past the per-file ceiling',
+    [`${cwd}/halves/a.bin`, `${cwd}/halves/b.bin`].filter((path) => snapshot.bundle[path] !== undefined).length,
+    1,
+    'the sweep\'s guesses together stay within the guess bound',
   );
+  assert.equal(snapshot.bundle[`${cwd}/small.json`], files[`${cwd}/small.json`], 'ordinary project files still ride along');
   assert.equal(
-    snapshot.bundle[`${cwd}/small.json`],
-    files[`${cwd}/small.json`],
-    'ordinary project files still ride along',
+    Object.keys(snapshot.bundle).filter((path) => path.startsWith(`${cwd}/tree/`)).length,
+    1000,
+    `a tree of 1,000 small files rides along whole, within the sweep's ${LAUNCH_GUESS_MAX_ENTRIES} entries`,
   );
 }
 
