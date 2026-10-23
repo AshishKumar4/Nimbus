@@ -84,8 +84,8 @@ await runScenarios(import.meta.path, {
     const served = Promise.withResolvers();
     const release = Promise.withResolvers();
     const { authority, probe } = await boot((forward) => ({
-      writeFile: async (...args) => {
-        const answer = await forward('writeFile', args);
+      writeBatchStream: async (...args) => {
+        const answer = await forward('writeBatchStream', args);
         served.resolve();
         await release.promise;
         return answer;
