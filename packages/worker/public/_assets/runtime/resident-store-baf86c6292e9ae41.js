@@ -6507,12 +6507,19 @@ var __nimbusResidentModule = (() => {
           return false;
         if (source === null)
           throw fsError2("ENOENT", "rename", path);
-        if (source.type === "directory" && (target !== null || within2(to, from)))
-          return false;
-        if (target !== null && (target.type === "directory" || source.type === "directory"))
-          return false;
         if (from === to)
           return true;
+        if (source.type === "directory" && within2(to, from))
+          throw fsError2("EINVAL", "rename", path);
+        if (source.type === "directory" && target !== null && target.type === "directory") {
+          const listed = provisional2.children(to, host2.children(to));
+          if (listed !== void 0 && listed.length > 0)
+            throw fsError2("ENOTEMPTY", "rename", path);
+        }
+        if (source.type === "directory" && target !== null)
+          return false;
+        if (target !== null && target.type === "directory")
+          return false;
         if (!removable(from, source, path, "rename") || (target === null ? writableParent(to, path, "rename") === void 0 : !removable(to, target, path, "rename")))
           return false;
         host2.drain();
@@ -10532,7 +10539,11 @@ var __nimbusResidentModule = (() => {
     };
     const walkFor = (path, follow) => {
       const crossed = [];
-      return after2(resolve(path, follow, false, crossed), (key) => typeof key === "string" && key !== "" ? { key, crossed } : DELEGATE);
+      return after2(resolve(path, follow, false, crossed), (key) => {
+        if (key === null)
+          throw fsError2("ELOOP", "open", pathOf(path));
+        return typeof key === "string" && key !== "" ? { key, crossed } : DELEGATE;
+      });
     };
     const decidable = (key, ...walks) => {
       if (onMount(key))
@@ -10815,7 +10826,7 @@ var __nimbusResidentModule = (() => {
         }), () => openOnSession(path, flags));
       }
       if (!readOnly && holder !== null) {
-        const local = decide(() => after2(walkFor(path, true), (walk) => walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE : after2(holder.open(walk.key, typeof path === "string" ? path : path.path, flags), (handle) => handle === void 0 ? DELEGATE : heldOpen(handle))));
+        const local = decide(() => after2(walkFor(path, openFollows(openFlags(flags))), (walk) => walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE : after2(holder.open(walk.key, typeof path === "string" ? path : path.path, flags), (handle) => handle === void 0 ? DELEGATE : heldOpen(handle))));
         return after2(local, (handle) => handle === DELEGATE ? openOnSession(path, flags) : handle);
       }
       return openOnSession(path, flags);
@@ -10872,7 +10883,7 @@ var __nimbusResidentModule = (() => {
     const openByNumber = (path, flags) => {
       if (flags.directory)
         throw NOT_NOW;
-      return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
+      return heldOpen(provisionally(path, openFollows(openFlags(flags)), (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
     };
     const readOwn = (handleId, offset, length) => {
       const desc = holder.provisional.descriptor(handleId);
@@ -10937,7 +10948,7 @@ var __nimbusResidentModule = (() => {
         const through = () => {
           if (holder === null || !store.ready() || flags.directory)
             return DELEGATE;
-          return after2(walkFor(path, flags.followSymlinks !== false), (walk) => {
+          return after2(walkFor(path, openFollows(openFlags(flags))), (walk) => {
             if (walk === DELEGATE)
               return DELEGATE;
             const there = ownEntryAt(walk.key);

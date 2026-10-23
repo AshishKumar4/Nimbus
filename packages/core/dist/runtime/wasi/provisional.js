@@ -1574,12 +1574,21 @@ export function provisional(host) {
                 return false;
             if (source === null)
                 throw fsError('ENOENT', 'rename', path);
-            if (source.type === 'directory' && (target !== null || within(to, from)))
-                return false;
-            if (target !== null && (target.type === 'directory' || source.type === 'directory'))
-                return false;
+            // rename(2) to the name it has leaves it as it is.
             if (from === to)
                 return true;
+            // A directory into its own subtree, and onto a directory the view lists non-empty, as rename(2) refuses them.
+            if (source.type === 'directory' && within(to, from))
+                throw fsError('EINVAL', 'rename', path);
+            if (source.type === 'directory' && target !== null && target.type === 'directory') {
+                const listed = provisional.children(to, host.children(to));
+                if (listed !== undefined && listed.length > 0)
+                    throw fsError('ENOTEMPTY', 'rename', path);
+            }
+            if (source.type === 'directory' && target !== null)
+                return false;
+            if (target !== null && target.type === 'directory')
+                return false;
             if (!removable(from, source, path, 'rename') || (target === null ? writableParent(to, path, 'rename') === undefined : !removable(to, target, path, 'rename')))
                 return false;
             // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves,
