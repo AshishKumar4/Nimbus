@@ -5,6 +5,9 @@
 //     `node -e 0`: a tree with nothing, one 1 MiB file, one 2 MiB file, and
 //     400 files of 1 KiB in 20 directories, rotated each round. The map's
 //     file count (NIMBUS_DEBUG) shows what was staged.
+//   walk: what the walk over a working tree costs a launch that builds its
+//     map: the same trees, each launch after a change in its tree (a feed
+//     position the cached map predates), so every launch walks it again.
 //   rerun: what a synchronous miss costs: a one-shot reading a file no run
 //     read before (it stops and runs again as a resident, D2.1), then the
 //     same command twice more (its map rebuilt with the learned file, then
@@ -13,6 +16,8 @@
 import { mintSession, deleteSession, Terminal, heredocCommand, stripAnsi } from '../../_driver.mjs';
 
 const ROUNDS = Number(process.env.ROUNDS ?? 12);
+// The arms this run measures (stage and rerun were measured in verdict 20261023T053444-be8bb0afe5d6).
+const ARMS = new Set((process.env.ARMS ?? 'walk').split(','));
 const TREES = {
   none: [],
   'one 1 MiB': [['data.bin', 1024 * 1024]],
@@ -60,9 +65,17 @@ try {
   for (let round = 1; round <= ROUNDS; round++) {
     for (let k = 0; k < names.length; k++) {
       const name = names[(k + round) % names.length];
-      const r = await timed(t, `cd ${dirOf(name)} && node -e 0`);
-      out({ kind: 'stage', round, tree: name, ms: r.ms, exit: r.exit, mapFiles: mapFiles(r.output) });
+      if (ARMS.has('stage')) {
+        const r = await timed(t, `cd ${dirOf(name)} && node -e 0`);
+        out({ kind: 'stage', round, tree: name, ms: r.ms, exit: r.exit, mapFiles: mapFiles(r.output) });
+      }
+      if (ARMS.has('walk')) {
+        await t.run(`echo ${round} > ${dirOf(name)}/.bump`, 30_000);
+        const r = await timed(t, `cd ${dirOf(name)} && node -e 0`);
+        out({ kind: 'walk', round, tree: name, ms: r.ms, exit: r.exit });
+      }
     }
+    if (!ARMS.has('rerun')) continue;
     const file = `/home/user/d3m/data/f${round}.txt`;
     await t.run(`head -c 1024 /dev/urandom > ${file}`, 30_000);
     const runs = [];
