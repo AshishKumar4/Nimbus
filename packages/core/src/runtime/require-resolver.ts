@@ -49,6 +49,7 @@ import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { moduleMapEntryBytes } from '../_shared/commonjs-cell.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { fileText, requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
@@ -343,7 +344,7 @@ export async function prefetchForRequire(
 
   function fits(path: string, bytes: number): boolean {
     if (!policy || policy.held[path] !== undefined) return true;
-    if (additionalBytes + bytes > policy.maxAdditionalBytes) declined = { kind: 'dependency-closure-declined', path, reason: 'bytes' };
+    if (additionalBytes + bytes + moduleMapEntryBytes(path) > policy.maxAdditionalBytes) declined = { kind: 'dependency-closure-declined', path, reason: 'bytes' };
     return declined === null;
   }
 
@@ -390,7 +391,7 @@ export async function prefetchForRequire(
     if (policy && held === undefined) {
       const actual = utf8Length(content);
       if (!fits(path, actual)) return null;
-      additionalBytes += actual;
+      additionalBytes += actual + moduleMapEntryBytes(path);
     }
     if (counted) bytesSeen += size;
     bundle[path] = content;

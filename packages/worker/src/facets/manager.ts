@@ -28,6 +28,7 @@ import {
   commonJsEntryModuleName,
   declaresWrapperBinding,
   ENTRY_CHECKED,
+  moduleMapEntryBytes,
   runtimeCodeModuleName,
   runtimeExpressionModule,
   runtimeFunctionModule,
@@ -228,7 +229,7 @@ import {
   CF_COMPAT_DATE,
   DEFAULT_HOME,
   GUEST_COMPAT_FLAGS,
-  VFS_BUNDLE_MAX_BYTES, LAUNCH_GUESS_MAX_BYTES, LAUNCH_GUESS_MAX_ENTRIES,
+  VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
   FS_LIST_PAGE_LIMIT,
@@ -2992,6 +2993,11 @@ function _bundleCellLength(cell: string | Uint8Array): number {
   return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
 
+/** What the file at `path` weighs in the map: its content, and what the map spends naming it (moduleMapEntryBytes). */
+function _bundleEntryLength(path: string, cell: string | Uint8Array): number {
+  return _bundleCellLength(cell) + moduleMapEntryBytes(path);
+}
+
 /**
  * Pre-read admission check for a bundle candidate: refuse BEFORE reading
  * when the file's on-disk size already exceeds the remaining bundle budget
@@ -3000,8 +3006,8 @@ function _bundleCellLength(cell: string | Uint8Array): number {
  * on trees with several 5–10 MiB artifacts that read alone was the memory
  * pressure that reset the isolate.
  *
- * `perFileCeiling` is a guessing pass's (LAUNCH_GUESS_MAX_BYTES); omit
- * it for budget-only checks.
+ * `perFileCeiling` is the pass's own cap (e.g. CWD_SNAPSHOT_MAX_FILE_BYTES,
+ * BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES); omit it for budget-only checks.
  */
 async function _bundleAdmits(
   vfs: LaunchFs,
@@ -3013,7 +3019,7 @@ async function _bundleAdmits(
   if (stat === null) return false;
   const size = stat.size;
   if (perFileCeiling !== undefined && size > perFileCeiling) return false;
-  return budgetState.totalBytes + size <= VFS_BUNDLE_MAX_BYTES;
+  return budgetState.totalBytes + size + moduleMapEntryBytes(path) <= VFS_BUNDLE_MAX_BYTES;
 }
 
 /** What a bundle currently weighs, and so what one more pass over it costs. */
@@ -3610,7 +3616,7 @@ export async function greedyAddMainEntries(
     const stripped = path.replace(/^\/+/, '');
     if ((isBundleModuleCandidate(stripped) || stripped.endsWith('.cjs')) && !isNativeBinPath(stripped)) {
       if (independent.has(stripped)) return false;
-      if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, LAUNCH_GUESS_MAX_BYTES))) return false;
+      if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))) return false;
       const closure = await prefetchForRequire(filesOf(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')),
         '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
           purpose: 'dependency-closure', held: bundle,
@@ -3622,7 +3628,7 @@ export async function greedyAddMainEntries(
         if (bundle[member] !== undefined) continue;
         bundle[member] = cell;
         rawBytes += _bundleCellRawBytes(cell);
-        budgetState.totalBytes += _bundleCellLength(cell);
+        budgetState.totalBytes += _bundleEntryLength(member, cell);
         added++;
       }
       groups.push({ root: stripped, members: new Set(Object.keys(closure.bundle)) });
@@ -3632,13 +3638,15 @@ export async function greedyAddMainEntries(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped))) return false;
-      // This is a guess at what a program might require, bounded as every
-      // guess is (LAUNCH_GUESS_MAX_BYTES): a multi-MiB main entry is an
-      // alternative bundle (typescript's 8.69 MiB `lib/typescript.js` beside
-      // the `lib/tsc.js` that actually runs), and a guess may cost a rebuild
-      // no more than the miss it saves. Literal dependencies use the
-      // closure's byte allowance, not this speculative-root ceiling.
-      if (!(await _bundleAdmits(vfs, stripped, budgetState, LAUNCH_GUESS_MAX_BYTES))) return false;
+      // This is a guess at what a program might require, and the same
+      // per-file ceiling the entry-package walk applies bounds it: a
+      // multi-MiB main entry is an alternative bundle (typescript's 8.69 MiB
+      // `lib/typescript.js` beside the `lib/tsc.js` that actually runs), and
+      // one guess must not spend a third of the budget — and a third of the
+      // supervisor's headroom — on every invocation that never reads it.
+      // Literal dependencies use the closure's byte allowance, not this
+      // speculative-root per-file ceiling.
+      if (!(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))) return false;
       // A guess must not be a native binary. Nothing in a Workers isolate can
       // load a `.node` addon or a `.exe` — the ABI policy classifies them
       // native-unsupported and the installer says so at install time — so
@@ -3651,7 +3659,7 @@ export async function greedyAddMainEntries(
       const stat = await filesOf(vfs).stat(stripped);
       if (stat === null || rawBytes + stat.size > bound) return false;
       const content = (await _readBundleCell(vfs, stripped));
-      const cellLen = _bundleCellLength(content);
+      const cellLen = _bundleEntryLength(stripped, content);
       const raw = _bundleCellRawBytes(content);
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES || rawBytes + raw > bound) return false;
       bundle[stripped] = content;
@@ -3980,7 +3988,7 @@ async function addStaticReads(
         if (!(await _bundleAdmits(vfs, key, budgetState))) continue;
         // hardening-r5: preserve binary content as Uint8Array.
         const content = await _readBundleCell(vfs, key);
-        const cellLen = _bundleCellLength(content);
+        const cellLen = _bundleEntryLength(key, content);
         if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
         bundle[key] = content;
         budgetState.totalBytes += cellLen;
@@ -4100,7 +4108,7 @@ export async function addBinTargetSiblings(
       const stat = await filesOf(vfs).lstat(child).catch(() => null);
       if (stat === null) continue;
       const size = stat.size;
-      if (size > LAUNCH_GUESS_MAX_BYTES) continue;
+      if (size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES) continue;
       candidates.push({ path: child, size });
     }
   }
@@ -4119,11 +4127,11 @@ export async function addBinTargetSiblings(
   let added = 0;
   for (const candidate of candidates) {
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) break;
-    if (candidate.size > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes) continue;
+    if (candidate.size + moduleMapEntryBytes(candidate.path) > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes) continue;
     // hardening-r5: preserve binary content as Uint8Array.
     let content: string | Uint8Array;
     try { content = (await _readBundleCell(vfs, candidate.path)); } catch { continue; }
-    const cellLen = _bundleCellLength(content);
+    const cellLen = _bundleEntryLength(candidate.path, content);
     // A cell that does not fit must not abandon the walk: smallest-first
     // ordering means everything after it is smaller and may still fit.
     if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
@@ -4279,10 +4287,10 @@ export async function addObservedReads(
 
   let added = 0;
   for (const candidate of candidates) {
-    if (budgetState.totalBytes + candidate.size > VFS_BUNDLE_MAX_BYTES) continue;
+    if (budgetState.totalBytes + candidate.size + moduleMapEntryBytes(candidate.path) > VFS_BUNDLE_MAX_BYTES) continue;
     let content: string | Uint8Array;
     try { content = (await _readBundleCell(vfs, candidate.path)); } catch { continue; }
-    const cellLen = _bundleCellLength(content);
+    const cellLen = _bundleEntryLength(candidate.path, content);
     if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
     const raw = _bundleCellRawBytes(content);
     if (bytes + raw > room) continue;
@@ -4316,7 +4324,7 @@ export async function addObservedReads(
     if ('kind' in closure) continue;
     for (const [dep, content] of Object.entries(closure.bundle)) {
       if (bundle[dep] !== undefined) { requiredPaths.add(dep); continue; }
-      const cellLen = _bundleCellLength(content);
+      const cellLen = _bundleEntryLength(dep, content);
       const raw = _bundleCellRawBytes(content);
       bundle[dep] = content;
       requiredPaths.add(dep);
@@ -4396,6 +4404,26 @@ function _isLoadableModuleCell(path: string): boolean {
     || ext === '.wasm' || ext === '' || bundleCompiledLoader(path) !== null;
 }
 
+/**
+ * Per-file ceiling for the speculative passes over installed packages: the
+ * entry-package walk (`addBinTargetSiblings`) and the main-entry oversample
+ * (`greedyAddMainEntries`).
+ *
+ * Everything the entry package needs in order to *run* arrives through the
+ * require closure, which is uncapped and never evicted. These passes exist
+ * only to catch what the static walker cannot see — data files, and modules
+ * reached by a computed require — and those are small. Multi-MiB cells in a
+ * package tree are overwhelmingly alternative bundles — typescript ships an
+ * 8.69 MiB `lib/typescript.js` that `tsc` never reads — rather than data.
+ *
+ * So one speculative guess must not spend the budget every later invocation
+ * then carries: the same reasoning as `CWD_SNAPSHOT_MAX_FILE_BYTES`, applied
+ * to the package tree. A miss this causes is loud and self-repairing: the
+ * facet reports the unstaged read and the next build stages it from the
+ * residency ledger, which has no per-file rule.
+ */
+const BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES = 4 * 1024 * 1024;
+
 function shouldIncludeBinPackageFile(
   pkgRoot: string,
   path: string,
@@ -4452,18 +4480,17 @@ async function addCwdProjectFiles(
   budgetState: { totalBytes: number },
 ): Promise<{ added: number }> {
   const root = cwdProjectRoot(cwd);
+  const MAX_PROJECT_FILES = 512;
   let added = 0;
   let visited = 0;
-  // What the walk has staged: guesses, which together cost a rebuild no more than one miss.
-  let guessed = 0;
   const queue: string[] = [root];
 
-  while (queue.length > 0 && visited < LAUNCH_GUESS_MAX_ENTRIES) {
+  while (queue.length > 0 && visited < MAX_PROJECT_FILES) {
     const dir = queue.shift()!;
     let entries: RuntimeVfsDirEntry[];
     try { entries = (await vfs.readdir(dir)); } catch { continue; }
     for (const e of entries) {
-      if (visited >= LAUNCH_GUESS_MAX_ENTRIES) break;
+      if (visited >= MAX_PROJECT_FILES) break;
       visited++;
       if (e.name === '.' || e.name === '..') continue;
       const isDirectory = (await launchEntryType(vfs, dir, e)) === 'directory';
@@ -4475,16 +4502,16 @@ async function addCwdProjectFiles(
       }
       if (bundle[child] !== undefined) continue;
       if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return { added };
-      // Skip a file past what guessing may still spend before reading it:
-      // this walk guesses at what the program might read.
-      if (!(await _bundleAdmits(vfs, child, budgetState, LAUNCH_GUESS_MAX_BYTES - guessed))) continue;
+      // Skip an oversized file before reading it: this walk guesses at what
+      // the program might read, and one guess must not spend the budget (or
+      // the supervisor's headroom) that every later invocation then carries.
+      if (!(await _bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES))) continue;
       let content: string | Uint8Array;
       try { content = (await _readBundleCell(vfs, child)); } catch { continue; }
-      const cellLen = _bundleCellLength(content);
-      if (guessed + cellLen > LAUNCH_GUESS_MAX_BYTES) continue;
+      if (_bundleCellLength(content) > CWD_SNAPSHOT_MAX_FILE_BYTES) continue;
+      const cellLen = _bundleEntryLength(child, content);
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return { added };
       bundle[child] = content;
-      guessed += cellLen;
       budgetState.totalBytes += cellLen;
       added++;
     }

@@ -236,9 +236,6 @@ export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 // workerd's per-module text size (BUNDLE_MAX_ENCODED_BYTES, JSON-encoded UTF-8,
 // which manager.ts measures with TextEncoder): a map over it is partitioned
 // into side modules, each below it.
-//
-// The raw file cap bounds optional snapshot enrichment only.
-export const VFS_BUNDLE_MAX_FILES = 4000;
 export const VFS_BUNDLE_MAX_BYTES = ONE_SHOT_MODULE_MAP_MAX_BYTES;
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-encoded UTF-8
 

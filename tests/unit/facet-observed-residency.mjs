@@ -67,7 +67,7 @@ import { stagedAssets } from './lib/staged-assets.mjs';
   )).fs;
   const bundle = {};
   const requiredPaths = new Set();
-  const budgetState = { totalBytes: 0, fileCount: 0 };
+  const budgetState = { totalBytes: 0 };
   const observed = new Set([
     'home/user/pkg/huge.bin',
     'home/user/pkg/CHANGELOG.md',
@@ -105,7 +105,6 @@ import { stagedAssets } from './lib/staged-assets.mjs';
     ],
     'observed paths are admitted smallest-first',
   );
-  assert.equal(budgetState.fileCount, 3);
 }
 
 // A miss on a path the build already staged as speculative, then evicted:
@@ -124,7 +123,7 @@ import { stagedAssets } from './lib/staged-assets.mjs';
   const path = `${dir}/index.js`;
   const bundle = { [path]: vfs.readFileString(path) };
   const requiredPaths = new Set();
-  await addObservedReads(processBridge(raw, vfs), new Set([path]), bundle, requiredPaths, { totalBytes: 0, fileCount: 0 });
+  await addObservedReads(processBridge(raw, vfs), new Set([path]), bundle, requiredPaths, { totalBytes: 0 });
   assert.ok(requiredPaths.has(path), 'an observed path already staged is promoted to required');
   for (const dep of [`${dir}/constants.js`, `${dir}/smart-clone.js`]) {
     assert.ok(dep in bundle && requiredPaths.has(dep), `${dep} comes with it, as required`);
