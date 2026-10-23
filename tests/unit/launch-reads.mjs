@@ -26,7 +26,7 @@ await fs.readFile('/home/user/app/index.js');
 await fs.stat('/home/user/app/lib.js');
 await fs.stat('/home/user/app/lib/index.js');
 await fs.readdir('/home/user/app/lib');
-await fs.acquire(null, 0);
+await fs.acquire(null);
 const reads = recorded.reads();
 assert.deepEqual([...reads.paths].sort(), ['home/user/app/index.js', 'home/user/app/lib', 'home/user/app/lib.js', 'home/user/app/lib/index.js'],
   'each path read, stat\'ed or probed (found or not) and each directory listed, by its name without slashes');
