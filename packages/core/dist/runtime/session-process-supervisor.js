@@ -957,9 +957,14 @@ export class SessionProcessSupervisor {
         }
         box.taker?.(null);
     }
-    /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
+    /**
+     * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
+     * null: one handed to it that it has not said it has (it asks again once it
+     * takes one, nextSignal), else the first that waits in its box.
+     */
     untakenSignal(pid) {
-        return this.signalBoxes.get(pid)?.queued[0] ?? null;
+        const box = this.signalBoxes.get(pid);
+        return box?.handed?.signal ?? box?.queued[0] ?? null;
     }
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid, signal) {
@@ -1038,18 +1043,25 @@ export class SessionProcessSupervisor {
     /**
      * `reason`'s signal to the foreground job of the shell `pid`, as a
      * terminal's key after the first (which the job's command took as its
-     * abort): each process below the shell marked foreground (setForeground),
-     * with no foreground process between it and the shell, and its group
-     * ({@link signalGroup}). A background job is not marked, and is not sent it.
+     * abort): each running process below the shell whose output is the
+     * terminal's (setForeground) and that is not inside one of its
+     * `background` jobs, the topmost of each such chain with its group
+     * ({@link signalGroup}). A server an earlier command left running has
+     * given the terminal back, and is not sent it.
      */
-    signalForeground(pid, reason) {
-        const below = (entry) => this.lineage(entry.pid).slice(1);
+    signalForeground(pid, reason, background) {
+        const ownsTerminal = (entry) => entry.state === 'running' && entry.foreground === true;
         const leaders = this.getAll().filter((entry) => {
-            if (entry.state !== 'running' || entry.foreground !== true)
+            if (!ownsTerminal(entry))
                 return false;
-            const ancestors = below(entry);
-            const at = ancestors.indexOf(pid);
-            return at >= 0 && ancestors.slice(0, at).every((ancestor) => this.table.get(ancestor)?.foreground !== true);
+            const above = this.lineage(entry.pid).slice(1);
+            const shell = above.indexOf(pid);
+            if (shell < 0)
+                return false;
+            return above.slice(0, shell).every((ancestor) => {
+                const entry = this.table.get(ancestor);
+                return !background.has(ancestor) && (entry === undefined || !ownsTerminal(entry));
+            });
         });
         for (const leader of leaders)
             this.signalGroup(leader.pid, reason);

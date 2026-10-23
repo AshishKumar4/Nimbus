@@ -456,7 +456,11 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * ask past goes back to the front.
      */
     parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
-    /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
+    /**
+     * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
+     * null: one handed to it that it has not said it has (it asks again once it
+     * takes one, nextSignal), else the first that waits in its box.
+     */
     untakenSignal(pid: number): ProcessSignalName | null;
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid: number, signal: ProcessSignalName): boolean;
@@ -485,11 +489,13 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     /**
      * `reason`'s signal to the foreground job of the shell `pid`, as a
      * terminal's key after the first (which the job's command took as its
-     * abort): each process below the shell marked foreground (setForeground),
-     * with no foreground process between it and the shell, and its group
-     * ({@link signalGroup}). A background job is not marked, and is not sent it.
+     * abort): each running process below the shell whose output is the
+     * terminal's (setForeground) and that is not inside one of its
+     * `background` jobs, the topmost of each such chain with its group
+     * ({@link signalGroup}). A server an earlier command left running has
+     * given the terminal back, and is not sent it.
      */
-    signalForeground(pid: number, reason: SignalAbortReason): void;
+    signalForeground(pid: number, reason: SignalAbortReason, background: ReadonlySet<number>): void;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {
