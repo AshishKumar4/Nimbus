@@ -28,14 +28,15 @@ import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsKey, nsRowAt, type Namespace } from './namespace.js';
 import {
-  arrayIncludes, arrayIsArray, NumberOf, promiseFinally, promiseResolve, promiseThen, SafeMap, stringOf, stringStartsWith, Uint8ArrayConstructor,
+  arrayCopy, arrayIncludes, arrayIsArray, mapKeyList, NumberOf, objectHasOwn, ownValue, promiseAll, promiseFinally, promiseResolve, promiseThen, SafeList,
+  SafeMap, stringOf, stringStartsWith, Uint8ArrayConstructor,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import type { Pages } from './pages.js';
-import type { ResidentCred } from './permissions.js';
+import { groupsOf, type ResidentCred } from './permissions.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import type { Sync } from './sync.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE, type ResidentTables } from './tables.js';
-import type { Transport } from './transport.js';
+import type { Transport, WantedFile } from './transport.js';
 
 /** A row's exact type, as readdir's d_type names it: a file's by its mode's format bits (a device's, a FIFO's, a socket's). */
 function direntTypeOfRow(kind: number, mode: number): RuntimeVfsDirEntry['type'] {
@@ -109,8 +110,12 @@ export function createView(
     const cursor = coherence.cursor();
     if (cursor === null || answer.poison === true) return answer;
     if (notAfter(answer.position, cursor)) return { ...answer, position: cursor, paths: [] };
-    const paths = answer.paths.filter((entry) => entry.rev > floorFor(answer.position, cursor, entry.path));
-    return paths.length === answer.paths.length ? answer : { ...answer, paths };
+    const news = new SafeList<VfsAcquireResult['paths'][number]>();
+    for (let i = 0; i < answer.paths.length; i++) {
+      const entry = answer.paths[i];
+      if (entry.rev > floorFor(answer.position, cursor, entry.path)) news[news.length] = entry;
+    }
+    return news.length === answer.paths.length ? answer : { ...answer, paths: arrayCopy(news) };
   };
 
   /**
@@ -239,7 +244,7 @@ export function createView(
         let repaired = null;
         try { repaired = await sync.synchronize(supervisor); }
         catch { repaired = null; }
-        if (!repaired || !repaired.cursor) {
+        if (!repaired || !ownValue(repaired, 'cursor')) {
           // The pass could not vouch for a single row (a supervisor replaced
           // mid-enumeration, a listing that came back short, an authority it
           // could not reach). A row that cannot be dated is not served: an
@@ -252,7 +257,7 @@ export function createView(
           try { repaired = await sync.synchronize(supervisor); }
           catch { repaired = null; }
         }
-        repairOwed = !(repaired && repaired.cursor);
+        repairOwed = !(repaired && ownValue(repaired, 'cursor'));
       };
 
       const repair = (answer: VfsAcquireResult | null): Promise<void> => {
@@ -274,19 +279,25 @@ export function createView(
        * running, then settles held or not: following every newer refetch
        * would hold each resumption while a peer rewrites faster than a read.
        */
-      const refetch = (keys: readonly string[]): Promise<void>[] => {
-        if (keys.length === 0) return [];
+      const refetch = (keys: readonly string[]): SafeList<Promise<void>> => {
+        const done = new SafeList<Promise<void>>();
+        if (keys.length === 0) return done;
         const read = promiseThen(sync.refillFromNamespace(supervisor, keys), undefined, () => undefined);
         const t = coherence.require();
-        return keys.map((k) => {
+        for (let i = 0; i < keys.length; i++) {
+          const k = keys[i];
           const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: promiseResolve() };
           record.done = promiseFinally(promiseThen(promiseThen(read, () => {
             const newer = refetching.get(k);
-            return Promise.all([newer !== undefined && newer !== record ? newer.read : undefined, repairing ?? undefined]);
+            const waits = new SafeList<unknown>();
+            waits[0] = newer !== undefined && newer !== record ? newer.read : undefined;
+            waits[1] = repairing ?? undefined;
+            return promiseAll(waits);
           }), () => undefined, () => undefined), () => { if (refetching.get(k) === record) refetching.delete(k); });
           refetching.set(k, record);
-          return record.done;
-        });
+          done[i] = record.done;
+        }
+        return done;
       };
 
       /**
@@ -301,7 +312,8 @@ export function createView(
        * the rows the listing vouched for.
        */
       const enumerated = async (first: VfsAcquireResult | null, lease: ResidentBarrierOptions['lease']): Promise<ResidentBarrier> => {
-        const joined = [...refetching.values()].map((record) => record.done);
+        const joined = new SafeList<Promise<void>>();
+        refetching.forEach((record) => { joined[joined.length] = record.done; });
         let answer = first;
         let namespaceAsked = false;
         let repaired = false;
@@ -335,9 +347,22 @@ export function createView(
         // What it held and the delta dropped, fetched again at its new
         // revision; a refetch in flight that its delta overtook (a file
         // rewritten again), once more; and every refetch it found in flight.
-        const named = answer!.paths.map((entry) => nsKey(entry.path));
-        const overtaken = [...refetching.keys()].filter((k) => !arrayIncludes(applied.dropped, k) && named.some((at) => at === k || at === '' || stringStartsWith(k, at + '/')));
-        await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
+        const named = new SafeList<string>();
+        for (let i = 0; i < answer!.paths.length; i++) named[i] = nsKey(answer!.paths[i].path);
+        const again = new SafeList<string>();
+        for (let i = 0; i < applied.dropped.length; i++) again[again.length] = applied.dropped[i];
+        const fetching = mapKeyList(refetching);
+        for (let i = 0; i < fetching.length; i++) {
+          const k = fetching[i];
+          if (arrayIncludes(applied.dropped, k)) continue;
+          for (let j = 0; j < named.length; j++) {
+            const at = named[j];
+            if (at === k || at === '' || stringStartsWith(k, at + '/')) { again[again.length] = k; break; }
+          }
+        }
+        const waits = refetch(again);
+        for (let i = 0; i < joined.length; i++) waits[waits.length] = joined[i];
+        await promiseAll(waits);
         return answer!.readLease ? { landed: true, applied: !repaired, readLease: answer!.readLease } : { landed: true, applied: !repaired };
       };
 
@@ -353,7 +378,7 @@ export function createView(
 
       const view: ResidentNamespace = {
         device: NumberOf(device),
-        cred: { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: (cred.groups || []).map(Number) },
+        cred: { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: arrayCopy(groupsOf(cred)) },
         ready: () => namespace.ready(),
         entry(k) {
           // Under a directory whose relist is on its way, no row is answered, nor any absence.
@@ -384,7 +409,7 @@ export function createView(
             if (stamped !== undefined && stamped !== RK_OWN_WRITE && stamped < revision) return undefined;
           }
           const cell = cells.get(k);
-          if (cell === undefined || (typeof cell === 'object' && 'error' in cell)) return undefined;
+          if (cell === undefined || (typeof cell === 'object' && objectHasOwn(cell, 'error'))) return undefined;
           return typeof cell === 'string' ? encoder.encode(cell) : cell;
         },
         async fill(k, entry) {
@@ -399,14 +424,22 @@ export function createView(
         async fillMany(files) {
           const cursor = coherence.cursor();
           if (cursor === null || files.length === 0) return;
-          await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
+          const wanted = new SafeList<WantedFile>();
+          for (let i = 0; i < files.length; i++) {
+            const k = files[i][0];
+            const entry = files[i][1];
+            wanted[i] = { path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry };
+          }
+          await transport.fetchFiles(supervisor, wanted);
         },
         acquireArgs: () => argsNow(),
         repairOwed: () => repairOwed,
         async barrier(options = {}) {
-          const standIn = options.answer === undefined ? delivered(options.delivered) : null;
-          const answer = options.answer !== undefined ? current(options.answer) : standIn ?? await acquire(options.lease);
-          const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+          const given = ownValue(options, 'answer');
+          const lease = ownValue(options, 'lease');
+          const standIn = given === undefined ? delivered(ownValue(options, 'delivered')) : null;
+          const answer = given !== undefined ? current(given) : standIn ?? await acquire(lease);
+          const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, lease);
           return standIn === null ? result : { ...result, fromDelivery: true };
         },
         cursor: () => coherence.cursor(),

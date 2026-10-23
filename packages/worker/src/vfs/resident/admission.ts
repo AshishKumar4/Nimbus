@@ -16,7 +16,7 @@ import { residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import {
-  arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, PromiseConstructor, promiseFinally, promiseResolve, promiseThen, SafeList, SafeMap,
+  arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, ownField, PromiseConstructor, promiseFinally, promiseResolve, promiseThen, SafeList, SafeMap,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 
@@ -231,11 +231,14 @@ export function createAdmission(coherence: Coherence): Admission {
     },
     setStorage(storage, given) {
       supervisor = given || null;
-      const allowance = storage as { facet?: unknown; grant?: unknown; available?: unknown } | null | undefined;
-      available = allowance && typeof allowance.available === 'number' ? allowance.available : null;
-      if (!allowance || typeof allowance.facet !== 'string' || typeof allowance.grant !== 'number') return;
-      facet = allowance.facet;
-      cap = dbBytes() + allowance.grant;
+      const allowance = typeof storage === 'object' && storage !== null ? storage : null;
+      const given = allowance === null ? undefined : ownField(allowance, 'available');
+      available = typeof given === 'number' ? given : null;
+      const named = allowance === null ? undefined : ownField(allowance, 'facet');
+      const grant = allowance === null ? undefined : ownField(allowance, 'grant');
+      if (typeof named !== 'string' || typeof grant !== 'number') return;
+      facet = named;
+      cap = dbBytes() + grant;
     },
     storageCap() { return cap; },
     get available() { return available; },
@@ -276,13 +279,14 @@ export function createAdmission(coherence: Coherence): Admission {
     ensureRoom,
     /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
     async roomForPushed(result) {
-      const answer = result as { paths?: unknown } | null | undefined;
-      if (cap === null || !answer || !arrayIsArray(answer.paths)) return;
-      const paths = answer.paths as ({ bytes?: unknown } | null | undefined)[];
+      const listed = cap === null || typeof result !== 'object' || result === null ? undefined : ownField(result, 'paths');
+      if (cap === null || !arrayIsArray(listed)) return;
+      const paths = listed as unknown[];
       let bytes = 0;
       for (let i = 0; i < paths.length; i++) {
         const entry = paths[i];
-        if (entry && entry.bytes != null) bytes += residentCellCost(residentBytes(entry.bytes));
+        const held = typeof entry === 'object' && entry !== null ? ownField(entry, 'bytes') : undefined;
+        if (held != null) bytes += residentCellCost(residentBytes(held));
       }
       if (bytes > 0) await ensureRoom(bytes);
     },

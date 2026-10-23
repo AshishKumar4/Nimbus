@@ -16,7 +16,7 @@ import type { Coherence } from './coherence.js';
 import type { Learning, Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { rootOf } from '@nimbus-sh/core/runtime/feed-position.js';
-import { arrayIsArray, mathFloor, mathMax, mathMin, typedArrayByteLength } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayCopy, arrayIsArray, mathFloor, mathMax, mathMin, SafeList, typedArrayByteLength } from '@nimbus-sh/core/_shared/primordials.js';
 
 export interface Pages {
   /**
@@ -93,8 +93,8 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
     // epoch costs nothing.
     const epoch = rootOf(cursor).epoch;
     const keyed = epoch + '\u0000' + k;
-    const out: Uint8Array[] = new Array(last - first + 1);
-    const missing: number[] = [];
+    const out = new SafeList<Uint8Array>(last - first + 1);
+    const missing = new SafeList<number>();
     for (let part = first; part <= last; part++) {
       const page = get(keyed, rev, part);
       if (page !== undefined) out[part - first] = page;
@@ -102,15 +102,19 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
     }
     const perBatch = mathMax(1, mathMin(FS_READ_BATCH_PATH_LIMIT, mathFloor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
     for (let at = 0; at < missing.length; at += perBatch) {
-      const batch = missing.slice(at, at + perBatch);
-      const ranges = batch.map((part) => {
-        const offset = part * RESIDENT_PAGE_BYTES;
-        return { path: '/' + k, offset, length: mathMin(RESIDENT_PAGE_BYTES, mathMax(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
-      });
+      const batch = new SafeList<number>();
+      for (let i = at; i < missing.length && i < at + perBatch; i++) batch[batch.length] = missing[i];
+      const ranges = new SafeList<{ path: string; offset: number; length: number; expectedEpoch: string; expectedRevision: number }>();
+      let room = 0;
+      for (let i = 0; i < batch.length; i++) {
+        const offset = batch[i] * RESIDENT_PAGE_BYTES;
+        ranges[i] = { path: '/' + k, offset, length: mathMin(RESIDENT_PAGE_BYTES, mathMax(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
+        room += ranges[i].length + RESIDENT_ROW_BYTES;
+      }
       // N18: room asked for first; a page the ledger will not admit is still read, only not held.
-      await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+      await admission.ensureRoom(room);
       let results;
-      try { results = await supervisor.fsReadBatch(ranges); }
+      try { results = await supervisor.fsReadBatch(arrayCopy(ranges)); }
       catch { return null; }
       if (!arrayIsArray(results) || results.length !== ranges.length) return null;
       for (let i = 0; i < batch.length; i++) {

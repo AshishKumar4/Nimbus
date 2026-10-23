@@ -34,8 +34,8 @@ import type { ResidentSupervisor } from './supervisor.js';
 import { NS_FILE, RK_OWN_WRITE, type NsRow } from './tables.js';
 import { messageOf, type FillReport, type Transport, type WantedFile } from './transport.js';
 import {
-  arrayIncludes, arrayIsArray, Error, mathCeil, mathMax, objectAssign, objectKeys, SafeMap, SafeSet, stringEndsWith, stringIncludes, stringOf,
-  stringSlice, stringStartsWith,
+  arrayIncludes, arrayIsArray, Error, mathCeil, mathMax, objectAssign, objectKeys, ownValue, SafeList, SafeMap, SafeSet, stringCharCodeAt, stringEndsWith,
+  stringIncludes, stringOf, stringSlice, stringSplit, stringStartsWith,
 } from '@nimbus-sh/core/_shared/primordials.js';
 
 /** Dependencies and VCS state: written in bulk, read through the module map or not at all. */
@@ -98,7 +98,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
    * is fetched with the plan.
    * Null: no such rule (a resident's plan names its manifests itself).
    */
-  let manifests: Map<string, unknown> | null = null;
+  let manifests: SafeMap<string, unknown> | null = null;
   const isManifest = (path: string): boolean => (path === 'package.json' || stringEndsWith(path, '/package.json')) && !stringIncludes(('/' + path), '/.git/');
 
   const pushable = (path: string): boolean => {
@@ -106,7 +106,10 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       const root = pushRoots[i];
       if (root !== '' && path !== root && !stringStartsWith(path, root + '/')) continue;
       const rest = root === '' ? path : stringSlice(path, root.length + 1);
-      if (!rest.split('/').some((seg) => arrayIncludes(PUSH_EXCLUDE, seg))) return true;
+      const segments = stringSplit(rest, '/');
+      let excluded = false;
+      for (let j = 0; j < segments.length && !excluded; j++) excluded = arrayIncludes(PUSH_EXCLUDE, segments[j]);
+      if (!excluded) return true;
     }
     return false;
   };
@@ -246,7 +249,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // complete enumeration: a truncated one cannot tell a path that was removed
     // from one that was never walked.
     const judgeable = listing.complete;
-    const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
+    let describable = judgeable;
+    for (let i = 0; describable && i < listing.names.length; i++) describable = nsDescribes(listing.names[i].stat);
     // May a held revision of `path` be COMPARED with a listed one? Only on one
     // clock: its feed in one incarnation. Across a restart the clocks are
     // unrelated, and an untouched path lists at rev 0, which would vouch for anything.
@@ -286,7 +290,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       // says this credential may read them (a chmod or chown moves the
       // revision and no byte). Equal keys are equal bytes, so this needs no
       // comparable clock.
-      if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey && namespace.readable(entry.stat)) {
+      if (entry !== undefined && row.ckey !== null && ownValue(entry, 'ckey') != null && row.ckey === ownValue(entry, 'ckey') && namespace.readable(ownValue(entry, 'stat'))) {
         t.fileSetRev(row.path, entry.rev);
         current.add(row.path);
         rekeyed++;
@@ -300,7 +304,10 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // own. Dated: kept only where the listing proves it current; otherwise it
     // goes, and is fetched again like any dropped row, so a sync read of it is
     // a miss rather than bytes the authority has replaced.
-    for (const [path, rev] of cells.heldRevisions()) {
+    const heldRevisions = cells.heldRevisions();
+    for (let i = 0; i < heldRevisions.length; i++) {
+      const path = heldRevisions[i][0];
+      const rev = heldRevisions[i][1];
       if (current.has(path)) continue;
       const entry = listed.get(path);
       if (rev === RK_OWN_WRITE) {
@@ -345,7 +352,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         // where the listing says this credential may read them; otherwise the
         // session is asked, and answers.
         const copy = manifests.get(file.path);
-        if (arrayIsArray(copy) && file.ckey !== null && copy[0] === file.ckey && namespace.readable(file.stat)) copied[copied.length] = { file, text: stringOf(copy[1]) };
+        const ckey = ownValue(file, 'ckey');
+        if (arrayIsArray(copy) && ckey !== null && copy[0] === ckey && namespace.readable(ownValue(file, 'stat'))) copied[copied.length] = { file, text: stringOf(copy[1]) };
         else fetch[fetch.length] = file;
         continue;
       }
@@ -355,7 +363,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     // Reserve mandatory metadata growth while optional data is fetched, but
     // retain the existing namespace publication order across the await.
     const heap = coherence.heap;
-    const namespaceGrowth = admission.inHeap && describable && heap !== null ? mathMax(0, listing.namespaceBytes! - heap.nsBytes()) : 0;
+    const namespaceGrowth = admission.inHeap && describable && heap !== null ? mathMax(0, ownValue(listing, 'namespaceBytes')! - heap.nsBytes()) : 0;
     const refused = admission.namespaceRefusal(namespaceGrowth);
     if (refused !== null) namespace.refuse(t, refused);
     const giveBack = admission.reserveNamespace(namespaceGrowth);
@@ -368,7 +376,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       if (copiedBytes > 0) await admission.ensureRoom(copiedBytes);
       for (let i = 0; i < copied.length; i++) {
         const { file, text } = copied[i];
-        if (!cells.put(t, file.path, text, file.rev, file.ckey)) fetch[fetch.length] = file;
+        if (!cells.put(t, file.path, text, file.rev, ownValue(file, 'ckey'))) fetch[fetch.length] = file;
       }
       filled = await transport.fetchFiles(supervisor, fetch);
     }
@@ -438,13 +446,15 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       coherence.unseal();
       return null;
     }
-    for (const path of objectKeys(bundle || {})) {
+    const paths = objectKeys(bundle || {});
+    for (let i = 0; i < paths.length; i++) {
+      const path = paths[i];
       cells.put(t, path, bundle![path]!, feedFor(moduleCursor, path).cursor);
     }
     return cells.admit({ poison: false, paths: [], position: moduleCursor }).cursor;
   };
 
-  const fail = (pass: SyncReport | null): string | null => (pass && (pass.skipped || pass.incomplete)) || null;
+  const fail = (pass: SyncReport | null): string | null => (pass && (ownValue(pass, 'skipped') || ownValue(pass, 'incomplete'))) || null;
 
   return {
     /**
@@ -495,7 +505,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         let pass: SyncReport | null = null;
         try { pass = await synchronize(supervisor); }
         catch (e) { failure = messageOf(e); }
-        if (pass && pass.cursor) return { cursor: await catchUp(supervisor, pass.cursor), failure: null };
+        const passed = pass === null ? undefined : ownValue(pass, 'cursor');
+        if (passed) return { cursor: await catchUp(supervisor, passed), failure: null };
         failure = 'a kept store could not be reconciled ('
           + (failure || fail(pass) || 'the listing vouched for nothing')
           + '); it was emptied and this launch booted from its own snapshot';
@@ -509,7 +520,8 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       let bytes = moduleBytes;
       if (typeof bytes !== 'number') {
         bytes = 0;
-        for (const path of objectKeys(bundle || {})) bytes += residentCellCost(bundle![path]);
+        const paths = objectKeys(bundle || {});
+        for (let i = 0; i < paths.length; i++) bytes += residentCellCost(bundle![paths[i]]);
       }
       if (!(await admission.ensureRoom(bytes))) {
         throw objectAssign(new Error(
@@ -525,22 +537,38 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       let pass: SyncReport | null = null;
       try { pass = await synchronize(supervisor); }
       catch (e) { failure = messageOf(e); }
-      if (pass && pass.cursor) return { cursor: await catchUp(supervisor, pass.cursor), failure };
+      const passed = pass === null ? undefined : ownValue(pass, 'cursor');
+      if (passed) return { cursor: await catchUp(supervisor, passed), failure };
       return { cursor: adopted, failure: failure || fail(pass) };
     },
     setPushRoots(roots) {
-      pushRoots = (arrayIsArray(roots) ? roots : []).map((r) => stringOf(r).replace(/^\/+|\/+$/g, ''));
+      const given = arrayIsArray(roots) ? roots : [];
+      const trimmed = new SafeList<string>();
+      for (let i = 0; i < given.length; i++) {
+        // Its slashes at either end dropped (/^\/+|\/+$/g).
+        const root = stringOf(given[i]);
+        let from = 0;
+        let to = root.length;
+        while (from < to && stringCharCodeAt(root, from) === 0x2f) from++;
+        while (to > from && stringCharCodeAt(root, to - 1) === 0x2f) to--;
+        trimmed[i] = stringSlice(root, from, to);
+      }
+      pushRoots = trimmed;
     },
     pushable,
     acquireOptions,
     applyAcquire,
     setPlan(paths) {
-      plan = new SafeSet(arrayIsArray(paths) ? paths.map((p) => nsKey(p)) : []);
+      plan = new SafeSet<string>();
+      if (arrayIsArray(paths)) for (let i = 0; i < paths.length; i++) plan.add(nsKey(paths[i]));
     },
     setManifests(given) {
-      const files = given && typeof given === 'object' && (given as { files?: unknown }).files && typeof (given as { files?: unknown }).files === 'object'
-        ? (given as { files: Record<string, unknown> }).files : null;
-      manifests = files === null ? null : new SafeMap(Object.entries(files));
+      const listed = given && typeof given === 'object' ? ownValue(given as { files?: unknown }, 'files') : undefined;
+      const files = listed && typeof listed === 'object' ? listed as Record<string, unknown> : null;
+      if (files === null) { manifests = null; return; }
+      manifests = new SafeMap<string, unknown>();
+      const names = objectKeys(files);
+      for (let i = 0; i < names.length; i++) manifests.set(names[i], files[names[i]]);
     },
     adoptModuleBundle,
     synchronize,
@@ -556,7 +584,11 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
       if (cursor === null) return { requested: 0, filled: 0, failed: 0, bytes: 0 };
       const fetch: WantedFile[] = [];
       const seen = new SafeSet<string>();
-      for (const path of [...dropped, ...plan]) {
+      const asked = new SafeList<string>();
+      for (let i = 0; i < dropped.length; i++) asked[asked.length] = dropped[i];
+      plan.forEach((path) => { asked[asked.length] = path; });
+      for (let i = 0; i < asked.length; i++) {
+        const path = asked[i];
         if (seen.has(path)) continue;
         seen.add(path);
         if (cells.has(path)) continue;

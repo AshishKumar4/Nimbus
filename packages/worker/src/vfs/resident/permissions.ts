@@ -5,7 +5,7 @@
  */
 
 import { posixAccess, type PosixNodeType } from '@nimbus-sh/core/vfs/posix-access.js';
-import { arrayIsArray, NumberOf } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayIsArray, NumberOf, ownValue, SafeList } from '@nimbus-sh/core/_shared/primordials.js';
 
 /** The credential a process runs as, as its launch carries it. */
 export interface ResidentCred {
@@ -22,7 +22,13 @@ export interface ModeMeta {
   readonly gid?: unknown;
 }
 
-const groupsOf = (cred: ResidentCred): number[] => (arrayIsArray(cred.groups) ? cred.groups.map(Number) : []);
+/** The credential's groups, as numbers. */
+export const groupsOf = (cred: ResidentCred): readonly number[] => {
+  const groups = ownValue(cred, 'groups');
+  const out = new SafeList<number>();
+  if (arrayIsArray(groups)) for (let i = 0; i < groups.length; i++) out[i] = NumberOf(groups[i]);
+  return out;
+};
 
 /**
  * Whether the namespace's credential may `want` (r=4, w=2, x=1) what `meta`
@@ -34,7 +40,7 @@ const groupsOf = (cred: ResidentCred): number[] => (arrayIsArray(cred.groups) ? 
 export function namespaceAllows(cred: ResidentCred | null, meta: ModeMeta | undefined, type: PosixNodeType, want: number): boolean {
   if (!cred) return true;
   return posixAccess(
-    { mode: NumberOf(meta?.mode), uid: NumberOf(meta?.uid), gid: NumberOf(meta?.gid), type },
+    { mode: NumberOf(meta === undefined ? undefined : ownValue(meta, 'mode')), uid: NumberOf(meta === undefined ? undefined : ownValue(meta, 'uid')), gid: NumberOf(meta === undefined ? undefined : ownValue(meta, 'gid')), type },
     want,
     { uid: NumberOf(cred.uid), gid: NumberOf(cred.gid), groups: groupsOf(cred) },
   );
