@@ -44,7 +44,7 @@ import { FACET_ERROR_KEY } from '@nimbus-sh/core/runtime/facet-host.js';
 import { SupervisorLoadWaitError, acquireSupervisorLoad, reclaimableSupervisorAllocation, tryAcquireSupervisorLoad, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { hostWasmIdentity } from './host-wasm.js';
-import { ENTERED_FAILURE_SOURCE, RUN_ENTERED, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
+import { ENTERED_FAILURE_SOURCE, enteredFailure, RUN_ENTERED, TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 /** Result ownership shared by guest tasks that call the supervisor. */
 const FACET_RPC_PREAMBLE = [
     'const __nimbusDisposeRpcResult = (value) => {',
@@ -637,7 +637,7 @@ export class IsolatePool {
                         return await runOnce(null);
                     }
                     if (err instanceof Error) {
-                        throw Object.assign(new ExecutionError(err.message, err.stack), { [RUN_ENTERED]: Reflect.get(err, RUN_ENTERED) === true });
+                        throw Object.assign(new ExecutionError(err.message, err.stack), { [RUN_ENTERED]: enteredFailure(err) });
                     }
                     throw new ExecutionError(String(err));
                 }
@@ -732,7 +732,8 @@ export class IsolatePool {
                     this.slotGenerations.set(slotIndex, generation);
                     throw lastError;
                 }
-                if (cause === 'clone_refused' && !retriedCloneRefusal) {
+                // A task that threw those words itself ran: only a refusal to clone its call into the worker is retried.
+                if (cause === 'clone_refused' && !retriedCloneRefusal && !enteredFailure(lastError)) {
                     retriedCloneRefusal = true;
                     const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
                     this.slotGenerations.set(slotIndex, generation);

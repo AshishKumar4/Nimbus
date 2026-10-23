@@ -33,7 +33,7 @@ import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
-import { RUN_ENTERED } from './task-body-error.js';
+import { enteredFailure } from './task-body-error.js';
 import { withResolvers } from './turn-budget.js';
 export { DO_DYNAMIC_WORKER_LIMIT };
 /**
@@ -840,7 +840,7 @@ function claimedWidth(entry) {
  * entered (RUN_ENTERED), which may say anything and must not run again.
  */
 export function refusedStart(error) {
-    return classifyError(error) === 'dynamic_worker_cap' && Reflect.get(Object(error), RUN_ENTERED) !== true;
+    return classifyError(error) === 'dynamic_worker_cap' && !enteredFailure(error);
 }
 /**
  * Name the per-DO accounting on a refusal at the Dynamic Worker limit; hand
