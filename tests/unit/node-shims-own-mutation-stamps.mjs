@@ -377,6 +377,9 @@ const scenarios = {
     failing = true;
     await assert.rejects(() => fh.write('X', 0), /EIO/, 'race/throw: the caller is told');
     failing = false;
+    // The next boundary reports the lost write once, caught or not (as resident-node-request-vfs-durability.mjs's
+    // 'a caught failure of an awaited write surfaces at the next boundary, once' pins); the close is clean after it.
+    await assert.rejects(() => globalThis.__nimbusProcessFs.flush(), /EIO/, 'race/throw: the next boundary reports the lost write, once');
     await fh.close();
     assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'KEEP', 'race/throw: the async read still works');
   },

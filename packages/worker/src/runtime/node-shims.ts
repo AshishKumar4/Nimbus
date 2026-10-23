@@ -1514,6 +1514,17 @@ const __fsMod = (() => {
   function _asyncRead(syscall, p, run) {
     return __nimbusTrackOp(_awaited(syscall, p, run));
   }
+  /**
+   * An awaited change through an open descriptor, decided in the caller's own turn: its place in the process's log
+   * is the call's place, so a synchronous change made after it is logged after it. Answered once the session has it;
+   * its refusal is the call's. Not queued behind the path's pending awaited calls (_inCallOrder).
+   */
+  function _asyncDecided(syscall, p, run) {
+    return __nimbusTrackOp((async () => {
+      try { return await run(_rf()); }
+      catch (error) { throw _rfError(error, syscall, p); }
+    })());
+  }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
   /** A path's string as the filesystem takes it, from Node's argument forms. */
@@ -2076,7 +2087,7 @@ const __fsMod = (() => {
       // offset, length, position }).
       const norm = _normWriteArgs(buffer, offset, length, position);
       const pos = _isCurrentPos(norm.pos) ? null : Math.max(0, Number(norm.pos));
-      const written = await _async("write", this._path, async (fs) => {
+      const written = await _asyncDecided("write", this._path, async (fs) => {
         const n = await fs.write(this._id, pos, norm.bytes);
         if (this._flags.sync) await fs.fsync(this._id);
         return n;

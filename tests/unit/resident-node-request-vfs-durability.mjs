@@ -399,7 +399,7 @@ async function truncateThenFull() {
   authority.kfs.writeFile(path, 'abcdef');
   const gate = gateOf();
   const { fs, ops } = nodeOnSession(authority, { gate });
-  const truncate = gate.arm(['fsTruncate']);
+  const truncate = gate.arm();
   const truncating = fs.promises.truncate(path, 3);
   await truncate.held;
   fs.writeFileSync(path, 'newer');
