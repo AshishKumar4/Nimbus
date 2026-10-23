@@ -4,10 +4,10 @@
 // filesystem over an enumerated store), given its program's residency
 // (ResidentDelegation.residency):
 //
-//   - R1, the program's misses: a read it was refused (not resident) stays
-//     its miss until its own awaited read of that name answers it (a content
-//     read for a refused content read, any read for a refused metadata one),
-//     or the view knows the name absent. A background fill, a later
+//   - R1, the program's misses: a read of a file's bytes it was refused (not
+//     resident) stays its miss until its own awaited read of that name's
+//     bytes answers it, or the view knows the name absent; a refused stat or
+//     listing is no miss. A background fill, a later
 //     synchronous answer, an awaited stat after a refused content read: none
 //     clears it. Each is told once, as it happens; misses() is what is left.
 //   - R2, the fault-in: a refused content read fetches the file, one fetch
@@ -155,7 +155,7 @@ await runScenarios(import.meta.path, {
     assert.deepEqual(await e.fs.misses(), [key(`${APP}/d.txt`)]);
   },
 
-  async 'a refused metadata read is cleared by the program\'s awaited metadata answer'() {
+  async 'a refused stat is no miss; a refused read of the bytes on a mount the session answers is, until its awaited read'() {
     const plain = new MemoryVFS();
     plain.writeFile('/a', enc.encode('PLAIN'));
     // A mount that states no change model: only the session answers for it.
@@ -163,13 +163,13 @@ await runScenarios(import.meta.path, {
     const { e, told } = await boot({ seed(authority) { authority.files.vfs.mount('/mnt/plain', unfed); } });
     assert.throws(() => e.sync.stat('/mnt/plain/a'), { code: 'EAGAIN' });
     assert.throws(() => e.sync.stat('/mnt/plain/none'), { code: 'EAGAIN' });
+    assert.deepEqual(await e.fs.misses(), [], 'what a name is, refused, reads no bytes');
     assert.throws(() => e.sync.readFile('/mnt/plain/a'), { code: 'EAGAIN' });
-    assert.deepEqual(told, ['mnt/plain/a', 'mnt/plain/none'], 'a name refused twice is one miss');
-    assert.deepEqual(await e.fs.misses(), ['mnt/plain/a', 'mnt/plain/none']);
-    // An awaited stat answers a refused stat (absence included), not the refused read of its bytes.
+    assert.throws(() => e.sync.readFile('/mnt/plain/a'), { code: 'EAGAIN' });
+    assert.deepEqual(told, ['mnt/plain/a'], 'a read refused twice is one miss');
+    assert.deepEqual(await e.fs.misses(), ['mnt/plain/a']);
     assert.equal(Number((await e.fs.stat('/mnt/plain/a')).size), 5);
-    assert.equal(await e.fs.stat('/mnt/plain/none'), null);
-    assert.deepEqual(await e.fs.misses(), ['mnt/plain/a'], 'the content read still stands');
+    assert.deepEqual(await e.fs.misses(), ['mnt/plain/a'], 'an awaited stat does not answer the read of its bytes');
     assert.equal(text(await e.fs.readFile('/mnt/plain/a')), 'PLAIN');
     assert.deepEqual(await e.fs.misses(), []);
   },

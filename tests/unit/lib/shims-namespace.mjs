@@ -243,7 +243,11 @@ export function listAuthority(rawVfs) {
   };
   walk('');
   globalThis.__nimbusTestAuthorityListing = out;
-  // The session's root, as a launch carries it (FacetVfsState.root): its device is the one the process's view answers for.
-  globalThis.__nimbusTestRoot = { ...statOf(''), revision: Number(rawVfs.revision()) || 0 };
+  // The session's root, as a launch carries it (FacetVfsState.root; SQLite keeps no row for it, the bridge's rootStat):
+  // its device is the one the process's view answers for.
+  globalThis.__nimbusTestRoot = {
+    dev: rawVfs.deviceId, ino: 1, nlink: 1, type: 'directory', size: 0, atime: 0, mtime: 0, ctime: 0, mode: 0o40755, uid: 0, gid: 0,
+    revision: Number(rawVfs.revision()) || 0,
+  };
   return out;
 }

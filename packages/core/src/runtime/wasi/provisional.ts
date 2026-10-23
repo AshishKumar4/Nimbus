@@ -368,7 +368,8 @@ export interface Provisional {
   rmdir(key: string, path: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
   symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
   rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
-  setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+  /** `link`: the link at `key` itself (lchown, lutimes), its own attributes, not what it names. */
+  setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined, awaited?: boolean, link?: boolean): boolean | Promise<unknown>;
   /**
    * Copy the file `source` names at `from` to `to`, its bytes read only as
    * these decisions read any (bytesOf for a file they hold, else the store's
@@ -466,11 +467,32 @@ export function provisional(host: ProvisionalHost): Provisional {
       : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
   };
 
+  /**
+   * The view's name for what `key` names beneath a directory this process
+   * moved (its Inode's origin, until the view has the move), or undefined
+   * where no directory above `key` was moved here.
+   */
+  const viewNameBeneathMoved = (key: string): string | undefined => {
+    for (let at = key.lastIndexOf('/'); at > 0; at = key.lastIndexOf('/', at - 1)) {
+      const dir = key.slice(0, at);
+      if (!layer.has(dir)) continue;
+      const inode = layer.get(dir)!;
+      if (inode === null || inode.local) return undefined;
+      if (inode.origin !== dir) return inode.origin + key.slice(at);
+    }
+    return undefined;
+  };
+
   const provisionalEntry = (key: string, known?: ResidentEntry | null): ResidentEntry | null | undefined => {
     if (layer.size === 0 && touched.size === 0) return undefined;
     if (layer.has(key)) {
       const inode = layer.get(key)!;
       return inode === null ? null : entryOf(inode);
+    }
+    // Beneath a directory moved here: what the view has beneath it where it was.
+    if (layer.size > 0) {
+      const viewed = viewNameBeneathMoved(key);
+      if (viewed !== undefined) return host.row(viewed);
     }
     // A file whose content this process changed, at any name the view has it at.
     if (touched.size > 0) {
@@ -1469,12 +1491,15 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     children: (key, base) => {
       if (layer.size === 0) return base;
+      // A directory moved here lists what the view lists where it was, until the view has the move.
+      const dir = layer.get(key);
+      const origin = dir === undefined ? viewNameBeneathMoved(key) : dir === null || dir.local || dir.origin === key ? undefined : dir.origin;
+      const viewed = origin === undefined ? base : host.children(origin);
       const made = added.get(key);
       const gone = removed.get(key);
-      if (made === undefined && gone === undefined) return base;
+      if (made === undefined && gone === undefined) return viewed;
       // A directory made here has no names but the ones made in it: what the view lists at its name is another's.
-      const dir = layer.get(key);
-      const listed = dir && dir.local ? [] : base;
+      const listed = dir && dir.local ? [] : viewed;
       if (listed === undefined) return undefined;
       const out = new Map<string, RuntimeVfsDirEntry['type']>();
       for (const child of listed) if (!gone?.has(child.name)) out.set(child.name, child.type);
@@ -1765,9 +1790,12 @@ export function provisional(host: ProvisionalHost): Provisional {
       return answer ?? true;
     },
 
-    setattr: (key, path, attrs, row, awaited) => {
+    setattr: (key, path, attrs, row, awaited, link = false) => {
       if (row === undefined) return false;
-      const syscall = 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime';
+      // A link's own: its owner (lchown), or times it names (lutimes, which has no "now"); no mode (there is no lchmod).
+      const own = link && row !== null && row.type === 'symlink';
+      if (own && ('mode' in attrs || ('atime' in attrs && (typeof attrs.atime !== 'number' || typeof attrs.mtime !== 'number')))) return false;
+      const syscall = 'mode' in attrs ? 'chmod' : 'uid' in attrs ? (link ? 'lchown' : 'chown') : (link ? 'lutime' : 'utime');
       if (row === null) throw fsError('ENOENT', syscall, path);
       judgeAttrs(row, attrs, syscall, path);
       host.drain();
@@ -1780,7 +1808,10 @@ export function provisional(host: ProvisionalHost): Provisional {
         throw error;
       }
       host.count(key);
-      const answer = loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) }, awaited);
+      const logged: ProcessFsOp = !own ? { type: 'setattr', path: key, attrs, ...expecting(row) }
+        : 'uid' in attrs ? { type: 'call', call: { call: 'lchown', path: key, uid: attrs.uid, gid: attrs.gid } }
+        : { type: 'call', call: { call: 'lutimes', path: key, atime: (attrs as { atime: number }).atime, mtime: (attrs as { mtime: number }).mtime } };
+      const answer = loggedOn([fold(inode, op)], logged, awaited);
       fit(inode);
       return answer ?? true;
     },
