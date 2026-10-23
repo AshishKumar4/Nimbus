@@ -36,13 +36,6 @@ export interface WrappedCommonJsCell {
  * valid inside a function).
  */
 export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
-/**
- * What a module map spends to carry the file at `key` beside its content,
- * each part at its largest: the cell's row (CommonJsCellRow), its module's
- * name and wrapper, and its key where it rides as data. Charged with the
- * content, the map's byte bound bounds how many files it can name.
- */
-export declare function moduleMapEntryBytes(key: string): number;
 /** The module beside a staged ES module that holds its ColumnMap (core runtime/native-esm.ts), read by its frames. */
 export declare function columnMapModuleName(name: string): string;
 /**

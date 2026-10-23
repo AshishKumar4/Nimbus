@@ -57,6 +57,7 @@ export declare const VFS_DELIVERY_TOMBSTONE_RETENTION_MS: number;
 export declare const VFS_DELIVERY_TOMBSTONE_LIMIT = 65536;
 export declare const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 export declare const ON_DEMAND_SLICE_CAP_BYTES: number;
+export declare const VFS_BUNDLE_MAX_FILES = 4000;
 export declare const VFS_BUNDLE_MAX_BYTES: number;
 export declare const BUNDLE_MAX_ENCODED_BYTES: number;
 export declare const PREFETCH_CACHE_MAX_BYTES: number;

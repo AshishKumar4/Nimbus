@@ -623,6 +623,7 @@ export declare function retainWithinBound(bound: number, rawTotal: number, indep
 }>;
 export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
+    fileCount: number;
 }, requiredPaths?: ReadonlySet<string>, options?: {
     maxBundleBytes?: number;
     pacer?: TurnBudget;
@@ -695,6 +696,7 @@ export declare function speculativePackageDirs(vfs: LaunchFs, cwdStripped: strin
  */
 export declare function addBinTargetSiblings(vfs: LaunchFs, scriptPath: string | undefined, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
+    fileCount: number;
 }, bundleProfile: FacetBundleProfile): Promise<{
     added: number;
     wasmPaths: string[];
@@ -761,6 +763,7 @@ staticRefs?: (path: string) => Promise<StaticFsRefs | null>): Promise<WasmImageR
  */
 export declare function addObservedReads(vfs: LaunchFs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
     totalBytes: number;
+    fileCount: number;
 }, room?: number, pacer?: TurnBudget): Promise<{
     added: number;
     bytes: number;
@@ -822,10 +825,9 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
- * The static walker supplies the complete known require closure. A byte
- * budget, charging each file's naming bytes with its content, bounds
- * optional enrichment for dynamic require and synchronous filesystem
- * patterns without removing required files.
+ * The static walker supplies the complete known require closure. Separate
+ * file and byte budgets bound optional enrichment for dynamic require and
+ * synchronous filesystem patterns without removing required files.
  *
  * Optional files are evicted against the exact JSON-encoded payload size.
  * If required content still exceeds the per-module encoded ceiling, Worker

@@ -37,7 +37,6 @@ import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
-import { moduleMapEntryBytes } from '../_shared/commonjs-cell.js';
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { fileText, requireFsOverBridge } from './require-resolution.js';
 export { requireWrapperCalls } from './require-wrappers.js';
@@ -148,6 +147,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     let closureExceeded = null;
     let declined = null;
     let additionalBytes = 0;
+    let additionalFiles = 0;
     // The phase-2 unit staged whole or not at all (an optional learned root):
     // what it staged, and whether the bound cut its closure.
     let unit = null;
@@ -198,7 +198,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     function fits(path, bytes) {
         if (!policy || policy.held[path] !== undefined)
             return true;
-        if (additionalBytes + bytes + moduleMapEntryBytes(path) > policy.maxAdditionalBytes)
+        if (additionalFiles >= policy.maxAdditionalFiles)
+            declined = { kind: 'dependency-closure-declined', path, reason: 'files' };
+        else if (additionalBytes + bytes > policy.maxAdditionalBytes)
             declined = { kind: 'dependency-closure-declined', path, reason: 'bytes' };
         return declined === null;
     }
@@ -262,7 +264,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const actual = utf8Length(content);
             if (!fits(path, actual))
                 return null;
-            additionalBytes += actual + moduleMapEntryBytes(path);
+            additionalBytes += actual;
+            additionalFiles++;
         }
         if (counted)
             bytesSeen += size;

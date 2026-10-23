@@ -95,11 +95,12 @@ export interface DependencyClosurePolicy {
     purpose: 'dependency-closure';
     held: Readonly<Record<string, string | Uint8Array>>;
     maxAdditionalBytes: number;
+    maxAdditionalFiles: number;
 }
 export interface DependencyClosureDeclined {
     kind: 'dependency-closure-declined';
     path: string;
-    reason: 'bytes' | 'unreadable';
+    reason: 'bytes' | 'files' | 'unreadable';
 }
 export type DependencyClosureOutcome = PrefetchOutcome | DependencyClosureDeclined;
 /** Error form of `ClosureBoundExceeded` for callers that cannot return it. */

@@ -20,7 +20,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
 import { buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 import { RESIDENCY_MISS_REPORT_SOURCE } from '../loaders/compiled-bodies.generated.js';
-import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, ENTRY_CHECKED, moduleMapEntryBytes, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, ENTRY_CHECKED, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
@@ -101,7 +101,7 @@ import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { REPL_IMPORT } from '@nimbus-sh/core/runtime/js-repl-names.js';
@@ -2275,10 +2275,6 @@ function _bundleCellRawBytes(cell) {
 function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
-/** What the file at `path` weighs in the map: its content's UTF-8 bytes, and what the map spends naming it (moduleMapEntryBytes). */
-function _bundleEntryLength(path, cell) {
-    return _bundleCellRawBytes(cell) + moduleMapEntryBytes(path);
-}
 /**
  * Pre-read admission check for a bundle candidate: refuse BEFORE reading
  * when the file's on-disk size already exceeds the remaining bundle budget
@@ -2297,7 +2293,7 @@ async function _bundleAdmits(vfs, path, budgetState, perFileCeiling) {
     const size = stat.size;
     if (perFileCeiling !== undefined && size > perFileCeiling)
         return false;
-    return budgetState.totalBytes + size + moduleMapEntryBytes(path) <= VFS_BUNDLE_MAX_BYTES;
+    return budgetState.totalBytes + size <= VFS_BUNDLE_MAX_BYTES;
 }
 /** What a bundle currently weighs, and so what one more pass over it costs. */
 function _bundleWeight(bundle) {
@@ -2863,8 +2859,8 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                 return false;
             const closure = await prefetchForRequire(filesOf(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')), '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
                 purpose: 'dependency-closure', held: bundle,
-                // What both the raw bound and the enrichment's naming-inclusive budget still allow.
-                maxAdditionalBytes: Math.max(0, Math.min(bound - rawBytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
+                maxAdditionalBytes: Math.max(0, bound - rawBytes),
+                maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
             }, undefined, options.conditions);
             if ('kind' in closure || closure.bundle[stripped] === undefined)
                 return false;
@@ -2876,13 +2872,16 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                     continue;
                 bundle[member] = cell;
                 rawBytes += _bundleCellRawBytes(cell);
-                budgetState.totalBytes += _bundleEntryLength(member, cell);
+                budgetState.totalBytes += _bundleCellLength(cell);
+                budgetState.fileCount++;
                 added++;
             }
             groups.push({ root: stripped, members: new Set(Object.keys(closure.bundle)) });
             return true;
         }
         if (stripped in bundle)
+            return false;
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
             return false;
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return false;
@@ -2913,13 +2912,14 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
             if (stat === null || rawBytes + stat.size > bound)
                 return false;
             const content = (await _readBundleCell(vfs, stripped));
-            const cellLen = _bundleEntryLength(stripped, content);
+            const cellLen = _bundleCellLength(content);
             const raw = _bundleCellRawBytes(content);
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES || rawBytes + raw > bound)
                 return false;
             bundle[stripped] = content;
             rawBytes += raw;
             budgetState.totalBytes += cellLen;
+            budgetState.fileCount++;
             added++;
             return true;
         }
@@ -3077,7 +3077,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
     // 9.2 MB wasm image the launch would compile): a guess does not guess those.
     const followed = new Set();
     for (let i = 0; i < deferred.length; i++) {
-        if (rawBytes >= bound)
+        if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
             break;
         const target = await resolveDeferredImport(filesOf(vfs), deferred[i], options.pacer?.spend.bind(options.pacer), options.conditions);
         // Its own package: where the deferral lands, not how it is spelled.
@@ -3237,7 +3237,7 @@ const STATIC_ABSOLUTE_LITERALS = {
  */
 async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selection) {
     for (const [path, source] of sources) {
-        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES || budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             return;
         if (!selection.mayName(source))
             continue;
@@ -3248,7 +3248,7 @@ async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selecti
             const key = stripLeadingSlashes(named);
             if (bundle[key] !== undefined)
                 continue;
-            if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES || budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
                 return;
             try {
                 if (!(await filesOf(vfs).exists(key)) || (await filesOf(vfs).isDirectory(key)))
@@ -3257,11 +3257,12 @@ async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selecti
                     continue;
                 // hardening-r5: preserve binary content as Uint8Array.
                 const content = await _readBundleCell(vfs, key);
-                const cellLen = _bundleEntryLength(key, content);
+                const cellLen = _bundleCellLength(content);
                 if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                     continue;
                 bundle[key] = content;
                 budgetState.totalBytes += cellLen;
+                budgetState.fileCount++;
             }
             catch { /* missing, unreadable, or gone since */ }
         }
@@ -3335,8 +3336,9 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
     // `npm create vite@latest test-vite -- --template vanilla`).
     //
     // 1000 covers the documented create-* family (create-vite ~316, create-
-    // nuxt ~700, create-react-router ~400). The map's bytes
-    // (VFS_BUNDLE_MAX_BYTES) still bound what it stages of a pathological tree.
+    // nuxt ~700, create-react-router ~400). Still well below the optional
+    // enrichment budget of 4000 files / 24 MiB, which retains the defense
+    // against pathological package trees.
     //
     // for the prior wave's empirical investigation (243 manifest entries,
     // only 140/243 readable pre-bump on prod 11df6ca).
@@ -3406,9 +3408,11 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
     candidates.sort((a, b) => a.size - b.size);
     let added = 0;
     for (const candidate of candidates) {
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+            break;
         if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
             break;
-        if (candidate.size + moduleMapEntryBytes(candidate.path) > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)
+        if (candidate.size > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)
             continue;
         // hardening-r5: preserve binary content as Uint8Array.
         let content;
@@ -3418,13 +3422,14 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
         catch {
             continue;
         }
-        const cellLen = _bundleEntryLength(candidate.path, content);
+        const cellLen = _bundleCellLength(content);
         // A cell that does not fit must not abandon the walk: smallest-first
         // ordering means everything after it is smaller and may still fit.
         if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
             continue;
         bundle[candidate.path] = content;
         budgetState.totalBytes += cellLen;
+        budgetState.fileCount++;
         added++;
     }
     return { added, wasmPaths };
@@ -3573,7 +3578,9 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     candidates.sort((a, b) => a.size - b.size);
     let added = 0;
     for (const candidate of candidates) {
-        if (budgetState.totalBytes + candidate.size + moduleMapEntryBytes(candidate.path) > VFS_BUNDLE_MAX_BYTES)
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+            break;
+        if (budgetState.totalBytes + candidate.size > VFS_BUNDLE_MAX_BYTES)
             continue;
         let content;
         try {
@@ -3582,7 +3589,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         catch {
             continue;
         }
-        const cellLen = _bundleEntryLength(candidate.path, content);
+        const cellLen = _bundleCellLength(content);
         if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
             continue;
         const raw = _bundleCellRawBytes(content);
@@ -3592,6 +3599,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         requiredPaths.add(candidate.path);
         bytes += raw;
         budgetState.totalBytes += cellLen;
+        budgetState.fileCount++;
         added++;
     }
     // A module brings what it loads synchronously, its closure staged whole or
@@ -3614,6 +3622,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
             // UTF-8 bytes, which bound both the raw bytes `room` counts and the
             // cell lengths the bundle's own cap counts.
             maxAdditionalBytes: Math.max(0, Math.min(room - bytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
+            maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
         });
         if ('kind' in closure)
             continue;
@@ -3622,12 +3631,13 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
                 requiredPaths.add(dep);
                 continue;
             }
-            const cellLen = _bundleEntryLength(dep, content);
+            const cellLen = _bundleCellLength(content);
             const raw = _bundleCellRawBytes(content);
             bundle[dep] = content;
             requiredPaths.add(dep);
             bytes += raw;
             budgetState.totalBytes += cellLen;
+            budgetState.fileCount++;
             added++;
         }
     }
@@ -3786,6 +3796,8 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
             }
             if (bundle[child] !== undefined)
                 continue;
+            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+                return { added };
             if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
                 return { added };
             // Skip an oversized file before reading it: this walk guesses at what
@@ -3800,13 +3812,14 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
             catch {
                 continue;
             }
-            if (_bundleCellLength(content) > CWD_SNAPSHOT_MAX_FILE_BYTES)
+            const cellLen = _bundleCellLength(content);
+            if (cellLen > CWD_SNAPSHOT_MAX_FILE_BYTES)
                 continue;
-            const cellLen = _bundleEntryLength(child, content);
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return { added };
             bundle[child] = content;
             budgetState.totalBytes += cellLen;
+            budgetState.fileCount++;
             added++;
         }
     }
@@ -3953,10 +3966,9 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
- * The static walker supplies the complete known require closure. A byte
- * budget, charging each file's naming bytes with its content, bounds
- * optional enrichment for dynamic require and synchronous filesystem
- * patterns without removing required files.
+ * The static walker supplies the complete known require closure. Separate
+ * file and byte budgets bound optional enrichment for dynamic require and
+ * synchronous filesystem patterns without removing required files.
  *
  * Optional files are evicted against the exact JSON-encoded payload size.
  * If required content still exceeds the per-module encoded ceiling, Worker
@@ -4164,7 +4176,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     for (const path of closurePaths)
         room -= _bundleCellRawBytes(bundle[path]);
     let truncated = false;
-    const budgetState = { totalBytes: 0 };
+    const budgetState = { totalBytes: 0, fileCount: 0 };
     const emits = new Map();
     const codeOnly = new Set();
     // Each enrichment pass below re-scans the bundle accumulated so far, so a
