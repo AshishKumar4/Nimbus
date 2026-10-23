@@ -432,6 +432,10 @@ const GAPS = {
     lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
     shows: 'sync stat x answered null',
   },
+  'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [node]': {
+    lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (the nested-mount gap\'s class; closed by the cutover)',
+    shows: 'at rest, sync readFile z answered {"code":"EAGAIN"}',
+  },
   'a name beneath a mount with no feed made over directories the process read is the session\'s (8474) [node]': {
     lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (the nested-mount gap\'s class; closed by the cutover)',
     shows: 'at rest, sync readFile d/e answered {"code":"EAGAIN"}',
