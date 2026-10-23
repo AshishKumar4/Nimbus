@@ -25,15 +25,24 @@ const dir = mkdtempSync(join(tmpdir(), 'node-own-attributes-'));
 realProcess.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const authority = createAuthority();
-const kernel = authority.rawVfs.as(CRED_KERNEL);
 authority.kfs.writeFile('home/user/shared.txt', 'shared');
 
-// Another principal changes shared.txt's mode when the program asks (a
-// readlink of /home/user/peer-chmod, which is not there).
+// Another principal changes shared.txt's mode once the program's own chmod
+// has landed, at the program's next call into the session. A peer's change
+// waits for the read lease of a process reading the file to be recalled
+// (withRecall), as a peer's does; the raw kernel handle does not wait.
 const serve = authority.host.supervisorOp.bind(authority.host);
-authority.host.supervisorOp = (envelope) => {
-  if (envelope.op === 'readlink' && envelope.args?.[0] === '/home/user/peer-chmod') kernel.chmod('home/user/shared.txt', 0o640);
-  return serve(envelope);
+const peer = authority.peerAs(CRED_KERNEL);
+const peerOutcome = [];
+let armed = false;
+authority.host.supervisorOp = async (envelope) => {
+  if (armed && envelope.op !== 'writeBatchStream') {
+    armed = false;
+    await peer.chmod('home/user/shared.txt', 0o640).then(() => peerOutcome.push('ok'), (error) => peerOutcome.push(error.code ?? String(error)));
+  }
+  const answer = await serve(envelope);
+  if (envelope.op === 'writeBatchStream' && peerOutcome.length === 0) armed = true;
+  return answer;
 };
 
 const program = `
@@ -99,6 +108,8 @@ try {
 }
 assert.equal(body.exitCode, 0, JSON.stringify(body));
 const seen = JSON.parse(body.stdout);
+assert.deepEqual(peerOutcome, ['ok'], 'the peer\'s change was made');
+assert.equal(authority.rawVfs.as(CRED_KERNEL).stat('home/user/shared.txt').mode & 0o777, 0o640, 'the session holds the peer\'s change');
 assert.equal(seen.ownMode, '600', 'its own chmod shows at once');
 assert.equal(seen.peerMode, '640', "a later change by another shows once the program's own has landed");
 assert.deepEqual([seen.againMode, seen.againRecent], ['644', true], 'a file removed and made again has a new file\'s mode and times');

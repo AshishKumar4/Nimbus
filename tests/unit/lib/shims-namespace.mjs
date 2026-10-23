@@ -106,7 +106,7 @@ const SEED = `
     names.set(k, { ...base, ...record, type });
   }
   const t = __resident.coherence.tables("test");
-  for (const [k, stat] of names) __resident.namespace.put(t, k, stat, cursorRev, stat.linkTarget ?? stat.target);
+  for (const [k, stat] of names) __resident.namespace.put(t, k, stat, stat.revision ?? cursorRev, stat.linkTarget ?? stat.target);
   __resident.namespace.markReady(t, true);
   if (typeof __vfsBundle !== "undefined") __vfsBundle = __resident.bundle;
 })();
@@ -229,7 +229,7 @@ export function listAuthority(rawVfs) {
       type: st.type, size: Number(st.size) || 0, mode: Number(st.mode) || 0,
       uid: Number(st.uid) || 0, gid: Number(st.gid) || 0,
       atime: Number(st.atime) || 0, mtime: Number(st.mtime) || 0, ctime: Number(st.ctime) || 0, ino: Number(st.ino) || 0,
-      dev: Number(st.dev) || 0, nlink: Number(st.nlink) || 1,
+      dev: Number(st.dev) || 0, nlink: Number(st.nlink) || 1, revision: Number(fs.revision(k)) || 0,
     };
   };
   const walk = (dir) => {

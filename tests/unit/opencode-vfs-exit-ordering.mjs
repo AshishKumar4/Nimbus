@@ -86,12 +86,16 @@ if (mode) {
     const answer = await run;
 
     assert.equal(authority.read('home/user/out.txt'), 'durable', `${mode}: the program's file is in the session`);
+    // Each wave the program's writes take is held and answered in turn: the exit comes after the last.
+    const writes = events.filter((event) => event === 'write').length;
+    const pairs = Array.from({ length: writes }, () => ['write', 'write answered']).flat();
+    assert.ok(writes > 0, `${mode}: the program's write reached the session`);
     if (mode === 'oneshot') {
-      assert.deepEqual(events, ['write', 'write answered'], 'the one-shot runner reports no exit of its own');
+      assert.deepEqual(events, pairs, 'the one-shot runner reports no exit of its own');
       const result = await answer.json();
       assert.equal(result.exitCode, code, `the run answers the program's exit code (${JSON.stringify(result)})`);
     } else {
-      assert.deepEqual(events, ['write', 'write answered', `reportExit ${code}`], `${mode}: the exit is reported once the write is answered`);
+      assert.deepEqual(events, [...pairs, `reportExit ${code}`], `${mode}: the exit is reported once every write is answered`);
     }
     realStdout(`EXIT-ORDERING-OK ${mode}\n`);
     realExit(0);

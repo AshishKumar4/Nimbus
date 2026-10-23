@@ -642,7 +642,8 @@ try {
     ].join('\n');
     await write(`${W}/effect.js`, EFFECT);
     const effect = await run(`(sleep 2; echo late) | node ${W}/effect.js`, 120_000);
-    check(effect.status === 1 && /ERR_NIMBUS_SYNC_STDIN/.test(effect.stdout) && /writeFile/.test(effect.stdout) && !/child: got/.test(effect.stdout),
+    // The effect named by the call that made it and the file it changed (Node's own writeFile opens it).
+    check(effect.status === 1 && /ERR_NIMBUS_SYNC_STDIN/.test(effect.stdout) && /\((?:open|writeFile) home\/user\/w\/effect\.txt\)/.test(effect.stdout) && !/child: got/.test(effect.stdout),
       `effect then read: the precise error, exit 1\n${effect.stdout}`);
 
     // Through a shell pipe: the read waits for the writer, and output of a

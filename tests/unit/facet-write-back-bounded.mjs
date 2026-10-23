@@ -3,75 +3,44 @@
 // write-back carries them all to the authority at once. Unbounded, a
 // 10-directory, 250-file seed issued ~250 concurrent writeFile RPCs; live,
 // some never reached the session DO and never settled, so the process printed
-// its last line and never exited. The write-back keeps at most 6 in flight,
-// and every file still lands.
+// its last line and never exited. The write-back keeps at most 6 waves in
+// flight, and every file still lands.
 
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { processBridge } from './lib/process-bridge.mjs';
+import { observed, sessionShims } from './lib/session-shims.mjs';
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = processBridge(rawVfs, vfs);
 const dec = new TextDecoder();
-
 const cwd = '/home/user/app';
-vfs.mkdir(cwd, { recursive: true });
+const authority = createAuthority();
+authority.kfs.mkdir(cwd.slice(1), { recursive: true, mode: 0o755 });
+const bridge = observed(processBridge(authority.rawVfs, authority.rawVfs.as(CRED_KERNEL)));
 
 // The raw timer: the latency is the authority's, not a resumption of the program.
 const rawSetTimeout = globalThis.setTimeout;
 const wait = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
 const slow = (fn) => async (...args) => { await wait(5); return fn(...args); };
 
-let writesInFlight = 0;
-let maxWritesInFlight = 0;
-const supervisor = {
-  readFile: slow(async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; }),
-  writeFile: async (p, c) => {
-    writesInFlight++;
-    maxWritesInFlight = Math.max(maxWritesInFlight, writesInFlight);
-    try { await wait(5); return bridge.writeFile(p, c); } finally { writesInFlight--; }
-  },
-  stat: slow((p) => bridge.stat(p)),
-  lstat: slow((p) => bridge.stat(p, { followSymlinks: false })),
-  readdir: slow((p) => bridge.readdir(p)),
-  exists: slow(async (p) => (await bridge.stat(p)) !== null),
-  mkdir: slow((p, o) => bridge.mkdir(p, o ?? { recursive: true })),
-  fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
-  fsAcquire: slow((position) => bridge.acquire(position)),
-};
-// Its process's waves reach these calls (lib/wave-supervisor.mjs).
-waveSupervisor(supervisor);
-
-globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
-globalThis.__nimbusRawSetTimeout = rawSetTimeout;
-globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
+let wavesInFlight = 0;
+let maxWavesInFlight = 0;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});
 
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n' + ENTRYPOINT_EVENT_LOOP
-  + '\n;return { fs: __fsMod, runToExit: __nimbusRunEntrypointToExit, drain: __nimbusDrainVfsWrites };',
-);
-const { fs, runToExit, drain } = (declareNamespace({ metadata: { 'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { 'home/user/app': [] } }), factory(
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+const { fs, runToExit, rf } = sessionShims(authority, {
   cwd,
-  [],
-  {},
-  `${cwd}/seed.js`,
-  cwd,
-));
+  overrides: (call) => ({
+    fsAcquire: slow((...args) => call('fsAcquire', args)),
+    fsReadBatch: slow((...args) => call('fsReadBatch', args)),
+    writeBatchStream: async (...args) => {
+      wavesInFlight++;
+      maxWavesInFlight = Math.max(maxWavesInFlight, wavesInFlight);
+      try { await wait(5); return await call('writeBatchStream', args); } finally { wavesInFlight--; }
+    },
+  }),
+  tail: `\n${ENTRYPOINT_EVENT_LOOP}\n;return { fs: __fsMod, runToExit: __nimbusRunEntrypointToExit };`,
+});
 
 const DIRS = 'abcdefghij'.split('');
 const PER_DIR = 25;
@@ -80,10 +49,11 @@ for (const d of DIRS) {
   for (let i = 0; i < PER_DIR; i++) fs.writeFileSync(`${cwd}/seed/${d}/f${i}.txt`, `${d}${i}`);
 }
 
+// The run's end: what the process holds is sent and answered (the exit's settle).
 const loop = await runToExit(undefined, 20_000);
-await drain(supervisor);
 assert.equal(loop.pending, 0, 'the loop must end because the work is done');
-assert.ok(maxWritesInFlight <= 6, `at most 6 write-backs in flight (saw ${maxWritesInFlight})`);
+assert.deepEqual(await rf.settle(), [], 'everything the program wrote was sent, and none was refused');
+assert.ok(maxWavesInFlight <= 6, `at most 6 write-back waves in flight (saw ${maxWavesInFlight})`);
 
 for (const d of DIRS) {
   const names = (await bridge.readdir(`${cwd}/seed/${d}`)).map((e) => e.name);

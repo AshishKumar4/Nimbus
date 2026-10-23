@@ -275,6 +275,17 @@ const SCENARIOS = {
     assert.equal(await e.authority.peer.readlink(`${APP.slice(1)}/p/link`), 'b.txt');
     await until(() => !sessionHas(e, `${APP}/p/empty`), 'the session has the rmdir');
   },
+  async 'a name unlinked and then copied onto by the session is the copy'(e) {
+    await e.authority.peer.writeFile(`${APP.slice(1)}/src.txt`, 'SOURCE');
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/d.txt`, enc.encode('OLD'));
+    await e.fs.unlink(`${APP}/d.txt`);
+    // Its source unread: the session copies it.
+    await e.fs.copyFile(`${APP}/src.txt`, `${APP}/d.txt`);
+    assert.ok((await e.fs.readdir(APP)).some((entry) => entry.name === 'd.txt'), 'the copy is listed');
+    assert.equal(dec.decode(await e.fs.readFile(`${APP}/d.txt`)), 'SOURCE');
+  },
+
   async 'a synchronous change is seen until the view has the session\'s, and the session\'s after'(e) {
     await e.fs.readdir(APP);
     e.sync.writeFile(`${APP}/r.txt`, enc.encode('MINE'));

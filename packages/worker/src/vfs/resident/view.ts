@@ -410,6 +410,12 @@ export function createView(
         cursor: () => coherence.cursor(),
         reserve: (bytes) => admission.pin(bytes),
         release: (bytes) => admission.unpin(bytes),
+        keep(k, revision, bytes) {
+          const row = nsRowAt(coherence.require(), k);
+          if (row === undefined || row.rev !== revision || view.content(k, revision) !== undefined) return;
+          // A copy: the process's own buffer is its decisions', given back as they retire.
+          cells.keep(coherence.require(), k, new Uint8Array(bytes), revision);
+        },
         // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
         onAdmitted(listener) {
           namespace.onPut(listener);

@@ -14,15 +14,22 @@
 // - autoDestroy: false keeps a stream open, emitClose: false destroys it
 //   without 'close', and an fs stream reads them from autoClose/emitClose.
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 
-const factory = new Function('__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO', 'stdin',
-  'let stdout="",stderr="";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + ';return builtins;');
 const SOURCE = 'copied through a pipe — Grüße ✓\n';
-const builtins = factory({ 'home/user/site/hello.txt': SOURCE }, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  '/home/user', [], {}, '/home/user/copy.js', '/home/user', [], '');
-const { fs, stream } = builtins;
+const authority = createAuthority();
+authority.kfs.mkdir('home/user/site', { recursive: true, mode: 0o755 });
+authority.kfs.writeFile('home/user/site/hello.txt', SOURCE);
+
+import { recording } from './lib/session-shims.mjs';
+const checks = recording();
+const { fs, stream } = sessionShims(authority, {
+  cwd: '/home/user',
+  // A launch's cell runtime defines this stack reader; a standalone factory has none, and a builtin the shims load at start reads it.
+  head: 'function __nimbusStackSites() { return []; }',
+  tail: ';return builtins;',
+});
 
 const withTimeout = (promise, ms, label) => Promise.race([
   promise,
@@ -41,7 +48,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     fs.createReadStream('/home/user/site/hello.txt').pipe(out);
   });
   assert.deepEqual(await withTimeout(copied, 5000, "pipe to fs.createWriteStream, waiting on 'close'"), ['finish', 'close']);
-  assert.equal(fs.readFileSync('/home/user/site/copy.txt', 'utf8'), SOURCE, 'the file is written when it closes');
+  await checks.check('the file is written when it closes', () => assert.equal(fs.readFileSync('/home/user/site/copy.txt', 'utf8'), SOURCE));
 }
 
 // ── autoDestroy: false keeps a finished writable open ──────────────────────
@@ -186,7 +193,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     { events: ['finish'], destroyed: true }, 'emitClose: false closes a write stream silently');
   assert.deepEqual(await lifecycle(new fs.WriteStream(target('class'), { autoClose: false }), write),
     { events: ['finish'], destroyed: false }, 'fs.WriteStream reads autoClose too');
-  assert.equal(fs.readFileSync(target('kept'), 'utf8'), 'x');
+  await checks.check('a file written and closed is read back', () => assert.equal(fs.readFileSync(target('kept'), 'utf8'), 'x'));
 }
 
+checks.finish();
 console.log('node-shims-write-stream-close: ok');

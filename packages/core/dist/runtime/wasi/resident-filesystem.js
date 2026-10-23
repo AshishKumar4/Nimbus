@@ -78,6 +78,8 @@ function extensionOf(name) {
 const DELEGATE = Symbol('delegate');
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
 const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 };
+/** A directory the listing could not name, as node's walk passes it (ResidentDelegation.walkedMounts): searchable by anyone. */
+const PASSED_THROUGH = { type: 'directory', mode: 0o40555, uid: 0, gid: 0 };
 /**
  * The session's calls that can change a name or an access: before one, the
  * files this process holds open write through (DelegationHolder.changing),
@@ -287,7 +289,8 @@ export function residentFilesystem(session, resident, delegation) {
                 content: (key, revision) => resident.content(key, revision),
                 reserve: (bytes) => resident.reserve(bytes),
                 release: (bytes) => resident.release(bytes),
-                mounted: (key) => mountedName(key),
+                ...(resident.keep === undefined ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) }),
+                mounted: (key) => walkedMounts && mountedName(key),
                 unreported: (key) => walkedMounts && unreportedName(key),
             },
             isHomeRoot: delegation.isHomeRoot,
@@ -366,8 +369,15 @@ export function residentFilesystem(session, resident, delegation) {
                 continue;
             }
             const entry = store.entry(key);
-            if (entry === undefined)
-                return { missing: key };
+            if (entry === undefined) {
+                // Node's walk passes a directory the launch's listing could not name (a device that resolves
+                // its own paths shows only what its user consented to, as the session hands it the whole
+                // name): a name beneath it is answered where the listing named it, else missing.
+                if (!walkedMounts)
+                    return { missing: key };
+                step = walk.next(PASSED_THROUGH);
+                continue;
+            }
             if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
                 return DELEGATE;
             step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
@@ -657,10 +667,7 @@ export function residentFilesystem(session, resident, delegation) {
      * namespace makes above a fed mount point is answered too. A moving
      * feed's (not fixed) not while a read lease is trusted.
      */
-    const answerable = (key, entry) => {
-        const fed = fedRow(key, entry);
-        return fed === true || (fed === undefined && walkedMounts);
-    };
+    const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
     const walkedMounts = delegation?.walkedMounts === true;
     /**
      * Whether `entry` at `key`, a row off the session's own device, is a fed
@@ -1239,6 +1246,28 @@ export function residentFilesystem(session, resident, delegation) {
         return done;
     };
     /**
+     * A change an awaited caller makes that the session would otherwise make by
+     * name (a whole-file write, mkdir -p, a copy): decided here as a caller
+     * that cannot wait decides it (`decided`), then answered once the session
+     * has everything this process logged (its refusal thrown) and a barrier
+     * begun after it landed, as the session's own change by name is (shown),
+     * so it travels in the process's waves (a stopped run's are put back:
+     * SqliteVFS restoreRun) as the program's own change. The session's
+     * (`session`) where this view cannot decide it.
+     */
+    const decidedThenSent = (decided, session) => {
+        if (now || holder === null)
+            return session();
+        let value;
+        try {
+            value = decided();
+        }
+        catch {
+            return session();
+        }
+        return shown(holder.flush().then(() => value));
+    };
+    /**
      * A change by name no held subtree decided, at `keys` (where each name's
      * walk led; undefined where it led nowhere the view places): the
      * provisional decisions' (`decided`, given the row the view has at each
@@ -1714,9 +1743,11 @@ export function residentFilesystem(session, resident, delegation) {
                 return DELEGATE;
             return holder.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
         }));
+        const decided = () => provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0));
         return after(local, (done) => (done !== DELEGATE ? done
-            : now && options?.createParents !== true ? provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0))
-                : bySessionWriteFile(path, bytes, options)));
+            : options?.createParents === true ? bySessionWriteFile(path, bytes, options)
+                : now ? decided()
+                    : decidedThenSent(decided, () => bySessionWriteFile(path, bytes, options))));
     };
     const bySessionMkdir = fs.mkdir;
     fs.mkdir = (path, options) => {
@@ -1724,8 +1755,11 @@ export function residentFilesystem(session, resident, delegation) {
             return bySessionMkdir(path, options);
         // A caller that cannot wait makes each missing directory on the way, as
         // mkdir -p does; any other asks the session to.
-        if (options?.recursive)
-            return now && typeof path === 'string' ? mkdirParents(path, options) : bySessionMkdir(path, options);
+        if (options?.recursive) {
+            if (typeof path !== 'string')
+                return bySessionMkdir(path, options);
+            return now ? mkdirParents(path, options) : decidedThenSent(() => mkdirParents(path, options), () => bySessionMkdir(path, options));
+        }
         const mode = options?.mode ?? 0o777;
         let named;
         const local = decide(() => after(walkFor(path, false), (walk) => {
@@ -1837,13 +1871,14 @@ export function residentFilesystem(session, resident, delegation) {
                 return holder.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? undefined : DELEGATE;
             }))));
         // A caller that cannot wait copies what this view holds of the source, as it reads it.
+        const decided = () => void provisionally(from, true, (source, row) => {
+            if (row === null)
+                throw fsError('ENOENT', 'copyfile', pathOf(from));
+            return provisionally(to, true, (target, there) => holder.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
+        });
         return after(local, (done) => (done !== DELEGATE ? undefined
-            : now ? void provisionally(from, true, (source, row) => {
-                if (row === null)
-                    throw fsError('ENOENT', 'copyfile', pathOf(from));
-                return provisionally(to, true, (target, there) => holder.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
-            })
-                : bySessionCopy(from, to, options)));
+            : now ? decided()
+                : decidedThenSent(decided, () => bySessionCopy(from, to, options))));
     };
     const bySessionRename = fs.rename;
     fs.rename = (from, to) => {

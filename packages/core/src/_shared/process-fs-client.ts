@@ -290,6 +290,8 @@ export interface ProcessFsClient {
   noteFailure(failure: ProcessFsFailure): void;
   /** Bytes logged and not yet answered. */
   readonly pendingBytes: number;
+  /** The process has ended (its session refused it, or its invocation ran out of subrequests): what is logged now is refused. */
+  readonly ended: boolean;
   /**
    * The grant a mutation at `key` is decided under now (held, not shared),
    * or undefined: the session decides it. Counts the mutation toward taking
@@ -992,6 +994,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const lostEpoch = (entries: Entry[], message: string, writer: string | null): void => {
     for (const entry of entries) {
       counters.lost++;
+      // A caller that awaited it is told, and its fate is a durability failure besides, caught or not.
+      if (!entry.acknowledged) failures.push({ op: entry.name, path: entry.paths[0] ?? '', errno: 'EIO', message });
       fail(entry, 'EIO', message);
     }
     forget(entries[entries.length - 1]!.jid, false);
@@ -1628,6 +1632,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       failures.push(failure);
     },
     get pendingBytes() { return pendingBytes; },
+    get ended() { return processGone !== null; },
     stats() { return { ...counters }; },
   };
   return client;

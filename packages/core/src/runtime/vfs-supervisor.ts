@@ -1,7 +1,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
-import type { ProcessFsSession } from '../_shared/process-fs-client.js';
+import type { ProcessFsGrantSession, ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WasiSupervisorStub } from './wasi/types.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
 import { FILESYSTEM_METHODS, refusalData, supervisorRefusalError, type SupervisorRefusal } from './filesystem-methods.js';
@@ -90,8 +90,13 @@ interface AnsweringStub {
   answer(method: SupervisorAnsweredMethod, args: unknown[]): Promise<SupervisorAnswer>;
 }
 
-/** What answeringSupervisor's own carries: a supervisor already answering, which a second pass hands back as it is. */
-const ANSWERING: unique symbol = Symbol('answering supervisor');
+/**
+ * What answeringSupervisor's own carries: a supervisor already answering,
+ * which a second pass hands back as it is. Registered, not made: the
+ * launch's copy of this module and the store bundle's (vfs/resident) agree
+ * on it, or the second would answer through the first's `answer` again.
+ */
+const ANSWERING: unique symbol = Symbol.for('nimbus.answering-supervisor');
 
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it, nor has one already answering. */
 function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {
@@ -188,19 +193,21 @@ interface WaveSender {
  * (supervisorFilesystem over the same stub). Each wave call is told to `live`
  * as it is made, as the authority tells its own.
  */
-export function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown): ProcessFsSession {
+export function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown, holdsGrants = true): ProcessFsSession {
   const waves = stub as unknown as WaveSender;
+  const grants: ProcessFsGrantSession = {
+    acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+    release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+    awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+    recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+  };
   return {
     // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
     openWriter: (first) => toldLive(waves.openWaveWriter(first), live),
     writeBatchStream: (stream, fence, owner) => toldLive(owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner), live),
     retireWriter: async (writer) => { await toldLive(waves.retireWaveWriter(writer), live); },
     published: async (escape) => { await toldLive(escape ? waves.fsPublished({ escape: true }) : waves.fsPublished(), live); },
-    grants: {
-      acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-      release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-      awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-      recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-    },
+    // A process that cannot answer a recall (holdsGrants false) holds none: the session decides each of its changes.
+    ...(holdsGrants ? { grants } : {}),
   };
 }

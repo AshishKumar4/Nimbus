@@ -6,7 +6,7 @@
  */
 import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { arrayCopy, arrayIsArray, Error, mathCeil, mathMax, mathMin, NumberOf, numberIsSafeInteger, objectHasOwn, ownField, reflectApply, reflectGet, SafeList, SafeMap, SafeSet, stringOf, stringStartsWith, typedArrayByteLength, TypeError, } from '@nimbus-sh/core/_shared/primordials.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
+import { namespaceRowBytes, residentBytes, residentCellCost, residentChunkCost } from './cell-cost.js';
 import { nsDescribes, nsKey } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
@@ -276,12 +276,25 @@ export function createTransport(coherence, admission, namespace, cells) {
                 batch[batch.length] = range;
                 at++;
             }
-            // N18: room for the batch first; what the ledger will not admit is read
-            // through the session instead of held.
-            if (!(await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES))) {
-                for (let i = 0; i < batch.length; i++)
+            // N18: room for the batch first, as each chunk it writes is admitted
+            // (residentChunkCost); what the ledger will not admit is read through
+            // the session instead of held.
+            let room = 0;
+            for (let i = 0; i < batch.length; i++)
+                room += residentChunkCost(batch[i].length);
+            if (!(await admission.ensureRoom(room))) {
+                // What was granted admits the batch's front, in order, as a fill of each would be; the rest is not held.
+                let admitted = 0;
+                for (let fits = 0; admitted < batch.length; admitted++) {
+                    fits += residentChunkCost(batch[admitted].length);
+                    if (!admission.fits(fits, false))
+                        break;
+                }
+                for (let i = admitted; i < batch.length; i++)
                     failedPaths.add(batch[i].path);
-                continue;
+                if (admitted === 0)
+                    continue;
+                batch.length = admitted;
             }
             let results;
             try {

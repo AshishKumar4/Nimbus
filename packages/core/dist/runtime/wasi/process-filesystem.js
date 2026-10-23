@@ -18,12 +18,12 @@ export function isHomeDirectory(key) {
  */
 export function processFilesystem(supervisor, view, options = {}) {
     const authority = supervisorFilesystem(supervisor);
-    const { journalSql, ...delegation } = options;
+    const { journalSql, holdsGrants, ...delegation } = options;
     // Its refusals rethrown as the errors they are, as the authority's are.
     const directories = answeringSupervisor(supervisor);
     return residentFilesystem(authority, view, {
         ...delegation,
-        session: supervisorSession(supervisor, authority),
+        session: supervisorSession(supervisor, authority, undefined, holdsGrants !== false),
         isHomeRoot: isHomeDirectory,
         ...(typeof directories.fsReadDirectories === 'function' ? { readDirectories: (request) => directories.fsReadDirectories(request) } : {}),
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),

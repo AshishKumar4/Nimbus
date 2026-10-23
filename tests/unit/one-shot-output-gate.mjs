@@ -43,14 +43,14 @@ const generated = await generateEntrypointCode(program, { bundle: {} }, false, s
 const file = writeModuleSet(join(dir, 'entry'), generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
 const mod = await import(file);
 const authority = createAuthority();
-const files = () => {
-  try { return authority.kfs.readdir('home/user/out').length; } catch { return 0; }
+const files = async () => {
+  try { return (await authority.peer.readdir('home/user/out')).length; } catch { return 0; }
 };
 const events = [];
 const { supervisor } = withNamespace({
-  stdout: async (bytes) => { events.push(['stdout', new TextDecoder().decode(bytes), files()]); },
-  stderr: async (bytes) => { events.push(['stderr', new TextDecoder().decode(bytes), files()]); },
-  reportExit: async (code) => { events.push(['exit', code, files()]); },
+  stdout: async (bytes) => { events.push(['stdout', new TextDecoder().decode(bytes), await files()]); },
+  stderr: async (bytes) => { events.push(['stderr', new TextDecoder().decode(bytes), await files()]); },
+  reportExit: async (code) => { events.push(['exit', code, await files()]); },
 }, authority);
 // The session's answers to the write waves are held until `open`.
 let open;
@@ -73,7 +73,7 @@ const run = mod.default.fetch(request, { SUPERVISOR: held }).then((response) => 
 // The program has written and printed; its writes are not answered. Were it
 // to die now, they would be lost: its ECHO must not be out.
 await sleep(300);
-assert.equal(files() < 40, true, 'the writes were answered while the session held them');
+assert.equal((await files()) < 40, true, 'the writes were answered while the session held them');
 assert.deepEqual(events.filter(([kind]) => kind === 'stdout'), [], `an output left ahead of the writes before it: ${JSON.stringify(events)}`);
 
 open();

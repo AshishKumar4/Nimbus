@@ -114,6 +114,12 @@ export interface ProvisionalHost {
    * has none of that file.
    */
   absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
+  /**
+   * The bytes this process made of the file at `key`, which the session holds
+   * at `row`'s revision (the last change it made of them was answered at it):
+   * the view may keep them as its content there, as a fill of it would.
+   */
+  keep?(key: string, row: ResidentEntry, bytes: Uint8Array): void;
   /** Whether `key` is on a mount: what is decided there names no file of this filesystem it expects (a wave refuses an expectation there). */
   mounted?(key: string): boolean;
   /** Whether the view never hears of a change at `key` (a mount with no change feed): what is decided there stays this process's. */
@@ -239,6 +245,8 @@ interface InodeRecord {
   answered: boolean;
   /** Barriers begun when it was answered: one begun after retires it. */
   answeredAt: number;
+  /** The session's revision right after it, where its answer says (ProcessFsAnswer.mutation): its file's, as it made it. */
+  after?: number;
   /** Gone from its inode's records (refused, retired or moved): its answer says nothing more. */
   gone?: true;
 }
@@ -246,6 +254,8 @@ interface InodeRecord {
 /** An inode with none: one shared empty list each, frozen, until it has one of its own. */
 const NO_RECORDS = Object.freeze([]) as readonly InodeRecord[] as InodeRecord[];
 const NO_RETAINED = Object.freeze([]) as readonly string[] as string[];
+/** What a whole-file write on a mount answers in place of a descriptor: it was logged as one writeFile, nothing opened. */
+const WHOLE_WRITTEN: unique symbol = Symbol('written whole');
 
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
 interface NameRecord {
@@ -792,6 +802,15 @@ export function provisional(host: ProvisionalHost): Provisional {
    * fate to `settle`: refused only where the session never applied it (an
    * unknown fate counts as answered: only a fresh barrier retires it).
    */
+  /**
+   * What an answer's handler meets logging after the process ended (a close
+   * of what it kept): the client refuses it, as it refuses everything now,
+   * and settle reports the process's end. Any other error is the handler's.
+   */
+  const endedOnly = (error: unknown): void => {
+    if (!host.client.ended) throw error;
+  };
+
   const logged = (op: ProcessFsOp, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, awaited = false): Promise<unknown> | undefined => {
     host.drain();
     const settled = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
@@ -801,7 +820,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (awaited) {
       // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
       const answer = host.client.submit(op);
-      void answer.then((answered) => settled(false, answered), () => settled(true, undefined));
+      void answer.then((answered) => settled(false, answered), () => settled(true, undefined)).catch(endedOnly);
       return answer;
     }
     settles(host.client.submit(op, { acknowledged: true }), settle);
@@ -813,7 +832,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     void answer.then(
       (answered) => { settle(answered.failed?.refused === true, answered); host.sent(); },
       () => { settle(false, undefined); host.sent(); },
-    );
+    ).catch(endedOnly);
   };
 
   /** `inode`'s fold again from its baseline: what it is with the records it has now. */
@@ -828,12 +847,13 @@ export function provisional(host: ProvisionalHost): Provisional {
    * inode folds again; an answered one is stamped, and stays until the view
    * has its outcome (retire).
    */
-  const settleRecords = (records: readonly InodeRecord[], refused: boolean): void => {
+  const settleRecords = (records: readonly InodeRecord[], refused: boolean, after?: number): void => {
     if (!refused) {
       for (const record of records) {
         if (record.gone) continue;
         record.answered = true;
         record.answeredAt = barriers;
+        if (after !== undefined) record.after = after;
       }
       return;
     }
@@ -857,7 +877,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** Log the op that made `records`, their fate its. */
   const loggedOn = (records: readonly InodeRecord[], op: ProcessFsOp, awaited = false): Promise<unknown> | undefined =>
-    logged(op, (refused) => settleRecords(records, refused), awaited);
+    logged(op, (refused, answer) => settleRecords(records, refused, answer?.mutation?.after), awaited);
 
   /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
   const extended = (record: InodeRecord, data: Uint8Array, at: number): void => {
@@ -956,7 +976,8 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** The parent of `key`, when the process may make a name in it: a known, writable, searchable directory of the session's filesystem. */
   const writableParent = (key: string, path: string, syscall: string): ResidentEntry | undefined => {
     const parent = rowAt(parentKey(key));
-    if (parent === undefined || parent === null || parent.dev !== host.device) return undefined;
+    // On this filesystem, or on a mount the host decides on (ProvisionalHost.mounted).
+    if (parent === undefined || parent === null || (parent.dev !== host.device && host.mounted?.(key) !== true)) return undefined;
     if (parent.type !== 'directory') throw fsError('ENOTDIR', syscall, path);
     if (!modeAllows(parent, 3, host.cred)) throw fsError('EACCES', syscall, path);
     return parent;
@@ -1096,7 +1117,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       sessions.delete(description);
     }
     closeRetained(inode);
-    settleRecords(records, refused);
+    settleRecords(records, refused, answer?.mutation?.after);
     fit(inode);
     release(inode);
   };
@@ -1205,7 +1226,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const record = recorded(desc.inode, op, desc.description);
     desc.lastRecord = record;
     desc.lastAnswer = answer;
-    settles(answer, (refused) => settleRecords([record], refused));
+    settles(answer, (refused, answered) => settleRecords([record], refused, answered?.mutation?.after));
   };
 
   /**
@@ -1274,7 +1295,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * description of its own, then `bytes` written by it and, with `close`,
    * closed. `chmod`: the mode its open sets (a copy's keepMode).
    */
-  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number, awaited = false): RuntimeFileHandle | undefined => {
+  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number, awaited = false): RuntimeFileHandle | typeof WHOLE_WRITTEN | undefined => {
     // Its own bytes: what it logs and what it folds, whatever the caller does with its buffer after.
     const bytes = given === null ? null : owned(given);
     const read = flags.read === true;
@@ -1342,6 +1363,24 @@ export function provisional(host: ProvisionalHost): Provisional {
       target.reserved += (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
     } else {
       target = inode!;
+    }
+    // A whole file written at once goes as one write of it: the session makes it whole or refuses it whole (no
+    // empty file its create left where the bytes were refused), and a mount's backend is asked once.
+    if (close && bytes !== null && chmod === undefined) {
+      const records = ops.map((op) => fold(target, op));
+      const whole: ProcessFsOp = { type: 'call', call: { call: 'writeFile', path: key, mode: asked, umask, data: bytes } };
+      const settled = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
+        settleRecords(records, refused, answer?.mutation?.after);
+        fit(target);
+        release(target);
+      };
+      if (row === null) loggedName(whole, [key], nameCost([key]), () => place(key, target), settled);
+      else {
+        host.count(key);
+        logged(whole, settled);
+      }
+      fit(target);
+      return WHOLE_WRITTEN;
     }
     target.answers++;
     // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
@@ -1519,6 +1558,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // One that makes or empties its file, or may write it, is opened at the session as here.
       if (write || flags.truncate || (row === null && flags.create)) {
         const handle = openToWrite(key, path, flags, row, null, false, undefined, awaited);
+        if (handle === WHOLE_WRITTEN) throw new Error('internal: an open with nothing to write was written whole');
         if (handle !== undefined) descOf(handle.id).write = write;
         return handle;
       }
@@ -1866,6 +1906,8 @@ export function provisional(host: ProvisionalHost): Provisional {
         nameRecords.splice(0, nameRecords.length, ...kept);
         replay();
       }
+      // The bytes the view may keep of what retires (keep), once what they held is given back.
+      const keeping: [string, ResidentEntry, Uint8Array][] = [];
       // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
       for (const inode of [...loose]) {
         if (host.unreported?.(inode.key) === true) continue;
@@ -1906,6 +1948,13 @@ export function provisional(host: ProvisionalHost): Provisional {
             inode.state = null;
           }
         } else if (inode.records.length === retired.length) {
+          // What it made of the bytes, whole, is the session's at the revision its last change was answered at:
+          // the view's still where its row is at that revision.
+          const last = retired[retired.length - 1]!;
+          if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision === last.after
+            && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
+            keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
+          }
           dropRecords(inode, new Set(retired));
           // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
           inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
@@ -1934,6 +1983,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         fit(inode);
         release(inode);
       }
+      for (const [key, row, bytes] of keeping) host.keep?.(key, row, bytes);
       activity();
     },
   };

@@ -19,7 +19,8 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult, type SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { RunnerSpec } from '../facets/runners.js';
+import { type SessionRunnerOptions, type SessionRunnerResult, type SessionRunnerRunOptions, type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult, type SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, SpawnedWorker } from '../facets/manager.js';
 import { type GenerationContext } from '@nimbus-sh/fabric/generation.js';
@@ -33,6 +34,8 @@ export interface ProgrammaticShell {
 }
 type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
+    runnerRun(owner: string, id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+    runnerClose(owner: string, id: string): boolean;
     kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
     closeLaunches(): Promise<void>;
     hasResidentProcess(pid: number): boolean;
@@ -138,6 +141,21 @@ export declare function rpcExecStream(self: ProgrammaticHost, command: string, o
  */
 export declare function rpcStartProcess(self: ProgrammaticHost, command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
 export declare function rpcRunCode(self: ProgrammaticHost, code: string, options?: SessionRunCodeOptions): Promise<ExecOutput>;
+/** What running and closing a session's runners asks of it. */
+export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager'>;
+/**
+ * Run `code` in runner `id` of `owner` (FacetManager.runnerRun): a hosted
+ * session's scope has runners of its own; every other caller, the
+ * workspace's (''). A runner made at this call takes the session shell's
+ * cwd and exported environment for what `runner` leaves out, as a named
+ * shell starts from them, and runs as the session's user unless the caller
+ * names another.
+ */
+export declare function rpcRunnerRun(self: RunnersHost, owner: string, id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+/** End runner `id` of `owner` (FacetManager.runnerClose): whether there was one. */
+export declare function rpcRunnerClose(self: RunnersHost, owner: string, id: string): Promise<{
+    closed: boolean;
+}>;
 export declare function rpcInstallRuntime(self: ProgrammaticHost, spec: string, options?: SessionRuntimeInstallOptions): Promise<{
     spec: string;
     exitCode: number;

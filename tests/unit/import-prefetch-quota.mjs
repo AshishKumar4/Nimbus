@@ -10,81 +10,54 @@
 // review of the prefetch).
 //
 // Now one quota is charged at the repair and read boundary, before any data
-// I/O: a file when its repair would be issued, its raw size from the stat
+// I/O: a file when its repair would be issued, its raw size from the listing
 // before its bytes are read, a manifest like a module. Past it nothing more
 // is issued, and the rejection comes once the fetches it admitted have
-// landed.
+// landed. A file that changed after its listing is fetched at the listing's
+// revision: the session refuses that read, so the fetch does not land, and
+// the import fails by name (ERR_NIMBUS_PREFETCH_UNREADABLE) with nothing read
+// past the quota.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
+import { createAuthority } from './lib/resident-body.mjs';
+import { sessionShims } from './lib/session-shims.mjs';
 
+// The raw timer: the authority's latency is its own, not a resumption of the program.
+const rawSetTimeout = globalThis.setTimeout;
 const LEAVES = 5000;
 const BOUND_FILES = 4096;
 
-function world(files, { afterStat } = {}) {
-  const harness = createSqliteVfsTestHarness();
-  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  const vfs = rawVfs.as(CRED_KERNEL);
-  const bridge = processBridge(rawVfs, vfs);
-  const enc = new TextEncoder();
-  const metadata = {};
-  const manifest = {};
+/** A process over `files` (path -> text) on a session that holds them; `io` counts the data reads it is asked for. */
+function world(files) {
+  const authority = createAuthority();
   for (const [path, body] of Object.entries(files)) {
-    const dir = path.slice(0, path.lastIndexOf('/'));
-    vfs.mkdir('/' + dir, { recursive: true });
-    vfs.writeFile('/' + path, enc.encode(body));
-    metadata[path] = { type: 'file', size: enc.encode(body).length, mode: 0o644, uid: 1000, gid: 1000 };
-    (manifest[dir] ??= []).push(path.slice(dir.length + 1));
-    for (let at = dir; at.includes('/'); at = at.slice(0, at.lastIndexOf('/'))) {
-      metadata[at] ??= { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 };
-      const parent = at.slice(0, at.lastIndexOf('/'));
-      const name = at.slice(parent.length + 1);
-      if (!(manifest[parent] ??= []).includes(name)) manifest[parent].push(name);
-    }
+    authority.kfs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
+    authority.kfs.writeFile(path, body);
   }
-  // The authority, counting data reads: issued, and in flight.
-  const io = { reads: 0, inFlight: 0, readPaths: [], bytes: 0 };
-  const supervisor = {
-    readFile: async (path) => { const bytes = await bridge.readFile(path); return bytes ? new TextDecoder().decode(bytes) : null; },
-    stat: async (path) => {
-      const found = await bridge.stat(path);
-      if (afterStat) afterStat(path, (body) => vfs.writeFile(path, enc.encode(body)));
-      return found;
-    },
-    lstat: (path) => bridge.stat(path, { followSymlinks: false }),
-    readdir: (path) => bridge.readdir(path),
-    exists: async (path) => (await bridge.stat(path)) !== null,
-    fsReadRange: async (path, offset, length) => {
-      io.reads++;
-      io.inFlight++;
-      io.readPaths.push(path);
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 1));
-        const bytes = await bridge.readRange(path, offset, length);
-        io.bytes += bytes ? bytes.byteLength : 0;
-        return bytes;
-      } finally {
-        io.inFlight--;
-      }
-    },
-  };
-  const factory = new Function(
-    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
-      + '\n;return { hydrated: __nimbusHydrated, read: __readFileOr, resolveFrom: __resolveFrom,'
-      + ' quota: (specifier, limits) => typeof __nimbusPrefetchQuota === "function" ? __nimbusPrefetchQuota(specifier, limits) : __nimbusPrefetchBudget(specifier) };',
-  );
-  declareNamespace({ metadata, manifest });
-  const shims = factory({}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user/app', [], {}, '/home/user/app/entry.js', '/home/user/app');
-  return { ...shims, io };
+  const io = { reads: 0, inFlight: 0, bytes: 0 };
+  const shims = sessionShims(authority, {
+    cwd: '/home/user/app',
+    overrides: (call) => ({
+      fsReadBatch: async (requests) => {
+        io.reads += requests.filter((request) => request.lstat !== true).length;
+        io.inFlight++;
+        try {
+          await new Promise((resolve) => rawSetTimeout(resolve, 1));
+          const answers = await call('fsReadBatch', [requests]);
+          for (const answer of answers) io.bytes += answer?.bytes?.byteLength ?? 0;
+          return answers;
+        } finally {
+          io.inFlight--;
+        }
+      },
+    }),
+    tail: '\n;return { hydrated: __nimbusHydrated, read: __readFileOr, resolveFrom: __resolveFrom,'
+      + ' quota: (specifier, limits) => __nimbusPrefetchQuota(specifier, limits) };',
+  });
+  return { ...shims, authority, io };
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+const settle = () => new Promise((resolve) => rawSetTimeout(resolve, 30));
 const rejection = async (promise) => {
   try { await promise; } catch (error) { return error; }
   return null;
@@ -122,43 +95,32 @@ const rejection = async (promise) => {
   assert.equal(io.inFlight, 0);
 }
 
-// ── a file that grows between its stat and its read is charged as it is read ──
+// ── a file that grows between its listing and its read is not read past the quota ──
 // (DustyPanther's fourth recheck: the quota charged the stat's size, and the
-// read then took the file as it found it, whole.)
+// read then took the file as it found it, whole.) The listing carries 1 KiB;
+// the file is 1 MiB by the time it is read, so its fetch is refused.
 {
   const path = 'home/user/app/node_modules/growing/index.js';
-  let grown = false;
-  const { hydrated, read, quota, io } = world({ [path]: 'x'.repeat(1024) }, {
-    afterStat: (statted, write) => {
-      if (grown || statted !== '/' + path) return;
-      grown = true;
-      write('y'.repeat(1024 * 1024));
-    },
-  });
+  const { hydrated, read, quota, io, authority } = world({ [path]: 'x'.repeat(1024) });
+  await authority.peer.writeFile(path, 'y'.repeat(1024 * 1024));
   const error = await rejection(hydrated(() => read(path, null), quota('growing', { bytes: 200 * 1024 })));
-  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `1 MiB read past a 200 KiB quota, admitted at its 1 KiB stat: ${error}`);
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_UNREADABLE', `a 1 MiB file read after its 1 KiB listing: its fetch did not land: ${error}`);
   assert.ok(io.bytes <= 200 * 1024, `no more than the quota was read (${io.bytes} bytes)`);
   assert.equal(io.inFlight, 0);
 }
 
-// ── many files growing at once: each range is charged before it is issued ──
+// ── many files growing at once: no range is read past the quota ──
 // (DustyPanther, fifth recheck: the first range was charged as it arrived, so
 // files admitted small that grew could each overshoot by a range.)
 {
   const files = {};
   for (let i = 0; i < 10; i++) files[`home/user/app/node_modules/swell/f${i}.js`] = 'x'.repeat(1024);
-  const grown = new Set();
-  const { hydrated, read, quota, io } = world(files, {
-    afterStat: (statted, write) => {
-      if (grown.has(statted) || !statted.includes('/swell/')) return;
-      grown.add(statted);
-      write('y'.repeat(64 * 1024));
-    },
-  });
+  const { hydrated, read, quota, io, authority } = world(files);
+  for (const name of Object.keys(files)) await authority.peer.writeFile(name, 'y'.repeat(64 * 1024));
   const names = Object.keys(files);
   const QUOTA = 40 * 1024;
   const error = await rejection(hydrated(() => names.map((k) => read(k, null)), quota('swell', { bytes: QUOTA })));
-  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `ten files grown to 64 KiB exceed a 40 KiB quota: ${error}`);
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_UNREADABLE', `ten files grown to 64 KiB after their listing: their fetches did not land: ${error}`);
   assert.ok(io.bytes <= QUOTA, `no more than the quota was read (${io.bytes} bytes)`);
   assert.equal(io.inFlight, 0);
 }
