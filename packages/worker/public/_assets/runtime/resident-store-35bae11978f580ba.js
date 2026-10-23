@@ -10907,7 +10907,7 @@ var __nimbusResidentModule = (() => {
           }
           counts.lookups++;
           const target = spelled[spelled.length - 1];
-          return promiseThen(store.lookup(keys, content && keys[keys.length - 1] === target), (known) => {
+          return promiseThen(store.lookup(arrayCopy(keys), content && keys[keys.length - 1] === target), (known) => {
             if (known)
               foundIn.set(parent, !!store.entry(walked.missing));
             return known ? attempt(asked + 1) : DELEGATE;
