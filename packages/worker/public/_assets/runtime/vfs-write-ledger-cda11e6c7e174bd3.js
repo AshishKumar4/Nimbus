@@ -835,7 +835,7 @@ var __nimbusProcessFsModule = (() => {
       return "rpc_timeout";
     if (m.includes("too many subrequests"))
       return "subrequest_cap";
-    if (m.includes("dynamic worker concurrency limit exceeded"))
+    if (m.includes("dynamic worker concurrency limit") || m.includes("too many dynamic workers"))
       return "dynamic_worker_cap";
     if (m.includes("exceededmemory"))
       return "oom";
