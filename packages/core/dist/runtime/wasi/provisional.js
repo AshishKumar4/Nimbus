@@ -492,6 +492,15 @@ export function provisional(host) {
      * fate to `settle`: refused only where the session never applied it (an
      * unknown fate counts as answered: only a fresh barrier retires it).
      */
+    /**
+     * What an answer's handler meets logging after the process ended (a close
+     * of what it kept): the client refuses it, as it refuses everything now,
+     * and settle reports the process's end. Any other error is the handler's.
+     */
+    const endedOnly = (error) => {
+        if (!host.client.ended)
+            throw error;
+    };
     const logged = (op, settle, awaited = false) => {
         host.drain();
         const settled = (refused, answer) => {
@@ -501,7 +510,7 @@ export function provisional(host) {
         if (awaited) {
             // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
             const answer = host.client.submit(op);
-            void answer.then((answered) => settled(false, answered), () => settled(true, undefined));
+            void answer.then((answered) => settled(false, answered), () => settled(true, undefined)).catch(endedOnly);
             return answer;
         }
         settles(host.client.submit(op, { acknowledged: true }), settle);
@@ -509,7 +518,7 @@ export function provisional(host) {
     };
     /** `settle` told an acknowledged entry's answer once it comes: refused, or not. */
     const settles = (answer, settle) => {
-        void answer.then((answered) => { settle(answered.failed?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); });
+        void answer.then((answered) => { settle(answered.failed?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); }).catch(endedOnly);
     };
     /** `inode`'s fold again from its baseline: what it is with the records it has now. */
     const refold = (inode) => {
@@ -1681,6 +1690,8 @@ export function provisional(host) {
                 nameRecords.splice(0, nameRecords.length, ...kept);
                 replay();
             }
+            // The bytes the view may keep of what retires (keep), once what they held is given back.
+            const keeping = [];
             // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
             for (const inode of [...loose]) {
                 if (host.unreported?.(inode.key) === true)
@@ -1735,7 +1746,7 @@ export function provisional(host) {
                     const last = retired[retired.length - 1];
                     if (rewritten && inode.state?.bytes && last.after !== undefined && seen.row.type === 'file' && seen.row.revision === last.after
                         && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
-                        host.keep?.(seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size));
+                        keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
                     }
                     dropRecords(inode, new Set(retired));
                     // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
@@ -1771,6 +1782,8 @@ export function provisional(host) {
                 fit(inode);
                 release(inode);
             }
+            for (const [key, row, bytes] of keeping)
+                host.keep?.(key, row, bytes);
             activity();
         },
     };

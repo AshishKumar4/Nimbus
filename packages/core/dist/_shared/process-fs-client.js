@@ -363,9 +363,6 @@ export function processFsClient(options) {
             entry.resolve({ failed: { errno, message, ...(refused ? { refused: true } : {}) } });
         }
         else {
-            // Its caller is told; a fate the session cannot answer is a durability failure besides, caught or not.
-            if (!refused)
-                failures.push({ op: entry.name, path, errno, message });
             entry.reject(fsError(errno, message, path));
         }
     };
@@ -632,6 +629,9 @@ export function processFsClient(options) {
     const lostEpoch = (entries, message, writer) => {
         for (const entry of entries) {
             counters.lost++;
+            // A caller that awaited it is told, and its fate is a durability failure besides, caught or not.
+            if (!entry.acknowledged)
+                failures.push({ op: entry.name, path: entry.paths[0] ?? '', errno: 'EIO', message });
             fail(entry, 'EIO', message);
         }
         forget(entries[entries.length - 1].jid, false);
@@ -1344,6 +1344,7 @@ export function processFsClient(options) {
             failures.push(failure);
         },
         get pendingBytes() { return pendingBytes; },
+        get ended() { return processGone !== null; },
         stats() { return { ...counters }; },
     };
     return client;

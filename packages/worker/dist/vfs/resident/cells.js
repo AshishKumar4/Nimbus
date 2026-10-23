@@ -20,7 +20,7 @@
  * of one.
  */
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, residentChunkCost, textChunkEnds } from './cell-cost.js';
 import { nsDescribes, prefixEnd } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
 import { arrayCopy, arrayIsArray, Error, mathCeil, mathMax, mathMin, newTextEncoder, NumberOf, objectCreate, objectHasOwn, ownField, Proxy, reflectSetPrototypeOf, SafeList, SafeMap, SafeSet, stringOf, stringSlice, stringStartsWith, typedArrayBuffer, typedArrayByteLength, textEncoderEncode, typedArrayByteOffset, typedArraySet, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
@@ -129,7 +129,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
         }
         unheld.delete(path);
     };
-    const hold = (path, cell) => {
+    const hold = (path, cell, rev = RK_OWN_WRITE) => {
         forgetHeld(path);
         const size = cellSize(cell);
         const limit = admission.heldLimit(FACET_OWN_WRITE_MEMORY_BYTES);
@@ -146,7 +146,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 unheld.add(oldest);
             });
         }
-        held.set(path, { cell, rev: RK_OWN_WRITE });
+        held.set(path, { cell, rev });
         admission.addHeld(size);
     };
     const head = (path) => coherence.require().fileHead(path);
@@ -222,7 +222,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
             return false;
         if (part === 0)
             admission.release(path);
-        if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096))
+        if (!admission.fits(residentChunkCost(typedArrayByteLength(bytes))))
             return false;
         t.chunkSetBin(path, part, bytes);
         return true;
@@ -550,6 +550,10 @@ export function createCells(coherence, admission, namespace, observeRead) {
         },
         get,
         put,
+        keep(t, path, bytes, rev) {
+            if (!put(t, path, bytes, rev))
+                hold(path, bytes, rev);
+        },
         putChunk,
         publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
             if (filling.get(path) !== fill)
@@ -617,7 +621,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * What a row is dated at: its revision, RK_OWN_WRITE for this facet's own
          * unacknowledged bytes, or undefined when the path is not held.
          */
-        provenance: (path) => coherence.require().fileRev(path),
+        provenance: (path) => coherence.require().fileRev(path) ?? held.get(path)?.rev,
         /**
          * Date this facet's own bytes with the revision the authority acknowledged
          * them at: the revision a flushed write produced, or the one an own mutation's

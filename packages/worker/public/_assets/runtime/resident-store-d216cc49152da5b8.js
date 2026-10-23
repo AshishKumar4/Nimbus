@@ -327,11 +327,15 @@ var __nimbusResidentModule = (() => {
     } while (at < text.length);
     return arrayCopy(ends);
   }
+  var SQLITE_PAGE_BYTES = 4096;
   function residentCellCost(cell) {
     const isText = typeof cell === "string";
     const size = isText ? utf8Length2(cell) : typedArrayByteLength(residentBytes(cell));
     const chunks = isText ? textChunkEnds(cell).length : mathMax(1, mathCeil(size / RESIDENT_CHUNK_BYTES));
-    return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + SQLITE_PAGE_BYTES;
+  }
+  function residentChunkCost(size) {
+    return mathCeil(size * 1.01) + RESIDENT_ROW_BYTES + SQLITE_PAGE_BYTES;
   }
   function residentFileCost(size) {
     const chunks = mathMax(1, mathCeil(size / (TEXT_CHUNK_UNITS - 1)));
@@ -464,7 +468,7 @@ var __nimbusResidentModule = (() => {
         return available;
       },
       pin(bytes) {
-        if (inHeap ? !fits(bytes, false) : pinnedBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
+        if (inHeap ? !fits(bytes, false) : pinnedBytes + heldBytes + bytes > FACET_OWN_WRITE_MEMORY_BYTES) return false;
         pinnedBytes += bytes;
         return true;
       },
@@ -478,7 +482,7 @@ var __nimbusResidentModule = (() => {
         heldBytes += bytes;
       },
       heldLimit(maxBytes) {
-        return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
+        return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : mathMax(0, maxBytes - pinnedBytes);
       },
       namespaceRefusal(bytes) {
         return refusal(dbBytes() + bytes);
@@ -1938,7 +1942,7 @@ var __nimbusResidentModule = (() => {
       }
       unheld.delete(path);
     };
-    const hold = (path, cell) => {
+    const hold = (path, cell, rev = RK_OWN_WRITE) => {
       forgetHeld(path);
       const size = cellSize(cell);
       const limit = admission.heldLimit(FACET_OWN_WRITE_MEMORY_BYTES);
@@ -1954,7 +1958,7 @@ var __nimbusResidentModule = (() => {
           unheld.add(oldest);
         });
       }
-      held.set(path, { cell, rev: RK_OWN_WRITE });
+      held.set(path, { cell, rev });
       admission.addHeld(size);
     };
     const head = (path) => coherence.require().fileHead(path);
@@ -2003,7 +2007,7 @@ var __nimbusResidentModule = (() => {
     const putChunk = (t, path, part, bytes, fill) => {
       if (filling.get(path) !== fill) return false;
       if (part === 0) admission.release(path);
-      if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
+      if (!admission.fits(residentChunkCost(typedArrayByteLength(bytes)))) return false;
       t.chunkSetBin(path, part, bytes);
       return true;
     };
@@ -2243,6 +2247,9 @@ var __nimbusResidentModule = (() => {
       },
       get,
       put,
+      keep(t, path, bytes, rev) {
+        if (!put(t, path, bytes, rev)) hold(path, bytes, rev);
+      },
       putChunk,
       publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
         if (filling.get(path) !== fill) return false;
@@ -2304,7 +2311,7 @@ var __nimbusResidentModule = (() => {
        * What a row is dated at: its revision, RK_OWN_WRITE for this facet's own
        * unacknowledged bytes, or undefined when the path is not held.
        */
-      provenance: (path) => coherence.require().fileRev(path),
+      provenance: (path) => coherence.require().fileRev(path) ?? held.get(path)?.rev,
       /**
        * Date this facet's own bytes with the revision the authority acknowledged
        * them at: the revision a flushed write produced, or the one an own mutation's
@@ -2833,7 +2840,7 @@ var __nimbusResidentModule = (() => {
           keep(k, revision, bytes) {
             const row = nsRowAt(coherence.require(), k);
             if (row === void 0 || row.rev !== revision || view.content(k, revision) !== void 0) return;
-            cells.put(coherence.require(), k, new Uint8Array(bytes), revision);
+            cells.keep(coherence.require(), k, new Uint8Array(bytes), revision);
           },
           // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
           onAdmitted(listener) {
@@ -3118,9 +3125,17 @@ var __nimbusResidentModule = (() => {
           batch[batch.length] = range;
           at++;
         }
-        if (!await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES)) {
-          for (let i = 0; i < batch.length; i++) failedPaths.add(batch[i].path);
-          continue;
+        let room = 0;
+        for (let i = 0; i < batch.length; i++) room += residentChunkCost(batch[i].length);
+        if (!await admission.ensureRoom(room)) {
+          let admitted = 0;
+          for (let fits = 0; admitted < batch.length; admitted++) {
+            fits += residentChunkCost(batch[admitted].length);
+            if (!admission.fits(fits, false)) break;
+          }
+          for (let i = admitted; i < batch.length; i++) failedPaths.add(batch[i].path);
+          if (admitted === 0) continue;
+          batch.length = admitted;
         }
         let results;
         try {
@@ -5525,6 +5540,10 @@ var __nimbusResidentModule = (() => {
       removeInode(inode);
       activity();
     };
+    const endedOnly = (error) => {
+      if (!host2.client.ended)
+        throw error;
+    };
     const logged = (op, settle, awaited = false) => {
       host2.drain();
       const settled = (refused, answer) => {
@@ -5533,7 +5552,7 @@ var __nimbusResidentModule = (() => {
       };
       if (awaited) {
         const answer = host2.client.submit(op);
-        void answer.then((answered) => settled(false, answered), () => settled(true, void 0));
+        void answer.then((answered) => settled(false, answered), () => settled(true, void 0)).catch(endedOnly);
         return answer;
       }
       settles(host2.client.submit(op, { acknowledged: true }), settle);
@@ -5546,7 +5565,7 @@ var __nimbusResidentModule = (() => {
       }, () => {
         settle(false, void 0);
         host2.sent();
-      });
+      }).catch(endedOnly);
     };
     const refold = (inode) => {
       if (inode.base === null)
@@ -6578,6 +6597,7 @@ var __nimbusResidentModule = (() => {
           nameRecords.splice(0, nameRecords.length, ...kept);
           replay();
         }
+        const keeping = [];
         for (const inode of [...loose]) {
           if (host2.unreported?.(inode.key) === true)
             continue;
@@ -6620,7 +6640,7 @@ var __nimbusResidentModule = (() => {
           } else if (inode.records.length === retired.length) {
             const last = retired[retired.length - 1];
             if (rewritten && inode.state?.bytes && last.after !== void 0 && seen.row.type === "file" && seen.row.revision === last.after && seen.row.size === inode.state.size && inode.state.bytes.byteLength >= inode.state.size) {
-              host2.keep?.(seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size));
+              keeping.push([seen.name, seen.row, inode.state.bytes.subarray(0, inode.state.size)]);
             }
             dropRecords(inode, new Set(retired));
             inode.row = (retired.length > 0 ? host2.absorb(seen.name, entryOf(inode)) : void 0) ?? seen.row;
@@ -6651,6 +6671,8 @@ var __nimbusResidentModule = (() => {
           fit(inode);
           release(inode);
         }
+        for (const [key, row, bytes] of keeping)
+          host2.keep?.(key, row, bytes);
         activity();
       }
     };
@@ -7882,8 +7904,6 @@ var __nimbusResidentModule = (() => {
         failures.push({ op: entry.name, path, errno: errno2, message });
         entry.resolve({ failed: { errno: errno2, message, ...refused ? { refused: true } : {} } });
       } else {
-        if (!refused)
-          failures.push({ op: entry.name, path, errno: errno2, message });
         entry.reject(fsError3(errno2, message, path));
       }
     };
@@ -8097,6 +8117,8 @@ var __nimbusResidentModule = (() => {
     const lostEpoch = (entries, message, writer) => {
       for (const entry of entries) {
         counters.lost++;
+        if (!entry.acknowledged)
+          failures.push({ op: entry.name, path: entry.paths[0] ?? "", errno: "EIO", message });
         fail2(entry, "EIO", message);
       }
       forget(entries[entries.length - 1].jid, false);
@@ -8702,6 +8724,9 @@ var __nimbusResidentModule = (() => {
       },
       get pendingBytes() {
         return pendingBytes;
+      },
+      get ended() {
+        return processGone !== null;
       },
       stats() {
         return { ...counters };
@@ -9997,7 +10022,7 @@ var __nimbusResidentModule = (() => {
           reserve: (bytes) => resident.reserve(bytes),
           release: (bytes) => resident.release(bytes),
           ...resident.keep === void 0 ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) },
-          mounted: (key) => mountedName(key),
+          mounted: (key) => walkedMounts && mountedName(key),
           unreported: (key) => walkedMounts && unreportedName(key)
         },
         isHomeRoot: delegation.isHomeRoot,

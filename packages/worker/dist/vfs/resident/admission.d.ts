@@ -34,7 +34,8 @@ export interface Admission {
      * `bytes` held in the isolate's heap beside the store, whatever backs its
      * tables (a process's decided bytes, a descriptor's pinned content): a
      * one-shot's share the store's one budget; a facet's have their own bound
-     * (FACET_OWN_WRITE_MEMORY_BYTES). False where they do not fit.
+     * (FACET_OWN_WRITE_MEMORY_BYTES), with the own bytes the cells hold. False
+     * where they do not fit.
      */
     pin(bytes: number): boolean;
     unpin(bytes: number): void;

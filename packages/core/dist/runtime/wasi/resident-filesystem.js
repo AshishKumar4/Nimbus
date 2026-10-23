@@ -290,7 +290,7 @@ export function residentFilesystem(session, resident, delegation) {
                 reserve: (bytes) => resident.reserve(bytes),
                 release: (bytes) => resident.release(bytes),
                 ...(resident.keep === undefined ? {} : { keep: (key, revision, bytes) => resident.keep(key, revision, bytes) }),
-                mounted: (key) => mountedName(key),
+                mounted: (key) => walkedMounts && mountedName(key),
                 unreported: (key) => walkedMounts && unreportedName(key),
             },
             isHomeRoot: delegation.isHomeRoot,

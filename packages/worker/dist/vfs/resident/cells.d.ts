@@ -63,6 +63,12 @@ export interface Cells {
     /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
     put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
     /**
+     * The process's own bytes of `path`, which the session holds at `rev`:
+     * stored as a fill of them would be, else held in the heap within the
+     * process's own-write bound (FACET_OWN_WRITE_MEMORY_BYTES), dated at `rev`.
+     */
+    keep(t: ResidentTables, path: string, bytes: Uint8Array, rev: number): void;
+    /**
      * A fill about to ask for `paths`: each one's chunk rows are its own, over
      * the head as it stands, until another fill begins for it or anything
      * changes its rows (rowsChanged).
