@@ -12,10 +12,10 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { facetStorage } from './lib/fake-do-kv.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { createAuthority, facetSql, facetSupervisor, launchResident, runScenarios, sleep } from './lib/resident-body.mjs';
+import { createAuthority, facetSupervisor, launchResident, runScenarios, sleep } from './lib/resident-body.mjs';
 import { observeWaves, shimsOnSession } from './lib/shims-on-session.mjs';
 
 const PORT = 4387;
@@ -289,6 +289,10 @@ async function zeroByteWrite() {
   const result = await handle.write(new Uint8Array(0), 0, 0, 10);
   assert.equal(result.bytesWritten, 0);
   await globalThis.__nimbusProcessFs.flush();
+  assert.equal(await authority.peer.readFileString(path), 'base', 'a zero-byte positional write leaves the file its content');
+  assert.equal((await authority.peer.stat(path)).size, 4, 'and its size');
+  assert.equal(await fs.promises.readFile(path, 'utf8'), 'base');
+  assert.equal(fs.readFileSync(path, 'utf8'), 'base');
   assert.equal(log.calls.fsWrite ?? 0, 0, 'a zero-byte write makes no write call');
   assert.equal(log.calls.fsWriteRange ?? 0, 0, 'and no ranged write call');
   assert.deepEqual(
@@ -296,8 +300,6 @@ async function zeroByteWrite() {
     [],
     'and the session receives no data for it',
   );
-  assert.equal(await fs.promises.readFile(path, 'utf8'), 'base', 'the file keeps its content');
-  assert.equal(fs.readFileSync(path, 'utf8'), 'base');
   const one = new Uint8Array(1);
   const read = await handle.read(one, 0, 1, null);
   assert.equal(read.bytesRead, 1);
@@ -597,42 +599,61 @@ http.createServer(async (req, res) => {
 }).listen(${PORT});
 `;
 
-async function cleanMutations() {
+/** The CLEAN program's process, warm: its clean handle open and its file written. */
+async function cleanProcess(authority, gate, fail = () => null) {
+  const { proc } = await residentOnSession(authority, CLEAN, { gate, fail });
+  assert.equal((await proc.handleHttpRequest(request('warm'))).status, 200);
+  return proc;
+}
+
+async function cleanRangeHoldsResponse() {
   const authority = createAuthority();
   const gate = gateOf();
-  let failTruncate = false;
-  const { proc } = await residentOnSession(authority, CLEAN, {
-    gate,
-    fail: (name) => (failTruncate && name === 'fsTruncate' ? EIO('injected clean truncate failure') : null),
-  });
-  assert.equal((await proc.handleHttpRequest(request('warm'))).status, 200);
-
+  const proc = await cleanProcess(authority, gate);
   const range = gate.arm(MUTATIONS);
-  let rangeReturned = false;
-  const rangeResponse = proc.handleHttpRequest(request('range')).then((response) => {
-    rangeReturned = true;
-    return response;
+  let returned = false;
+  const response = proc.handleHttpRequest(request('range')).then((answer) => {
+    returned = true;
+    return answer;
   });
   await range.held;
   await sleep(10);
-  assert.equal(rangeReturned, false, 'a response is not sent while its ranged write is in flight');
+  assert.equal(returned, false, 'a response is not sent while its ranged write is in flight');
   range.release();
-  assert.equal((await rangeResponse).status, 200);
+  assert.equal((await response).status, 200);
   assert.equal(await authority.peer.readFileString('/home/user/clean-range.txt'), 'R');
+}
 
+async function cleanTruncateHoldsResponse() {
+  const authority = createAuthority();
+  const gate = gateOf();
+  const proc = await cleanProcess(authority, gate);
   const truncate = gate.arm(['fsTruncate']);
-  let truncateReturned = false;
-  const truncateResponse = proc.handleHttpRequest(request('truncate')).then((response) => {
-    truncateReturned = true;
-    return response;
+  let returned = false;
+  const response = proc.handleHttpRequest(request('truncate')).then((answer) => {
+    returned = true;
+    return answer;
   });
   await truncate.held;
   await sleep(10);
-  assert.equal(truncateReturned, false, 'a response is not sent while its truncate is in flight');
+  assert.equal(returned, false, 'a response is not sent while its truncate is in flight');
+  truncate.release();
+  assert.equal((await response).status, 200);
+  assert.equal(await authority.peer.readFileString('/home/user/clean-truncate.txt'), 'ab');
+}
+
+async function cleanTruncateFailureRejects() {
+  const authority = createAuthority();
+  const gate = gateOf();
+  let failTruncate = false;
+  const proc = await cleanProcess(authority, gate, (name) => (failTruncate && name === 'fsTruncate' ? EIO('injected clean truncate failure') : null));
+  const truncate = gate.arm(['fsTruncate']);
   failTruncate = true;
+  const response = proc.handleHttpRequest(request('truncate'));
+  await truncate.held;
   truncate.release();
   await assert.rejects(
-    truncateResponse,
+    response,
     /injected clean truncate failure/,
     'a floated clean mutation failure rejects the response instead of returning 200',
   );
@@ -696,7 +717,7 @@ async function oneShot() {
     },
   };
   const manager = new FacetManager(
-    { id: { toString: () => 'one-shot-exit-ordering' }, waitUntil() {}, storage: facetStorage(facetSql()) },
+    createFacetCtx(createFacetWorld(() => ({})), 'one-shot-exit-ordering'),
     env,
     new SessionProcessSupervisor(),
     new PortRegistry(),
@@ -744,7 +765,9 @@ await runScenarios(import.meta.path, {
   'an identical write made while an older one is in flight is sent too': () => writeDuringFlight('same-race', 'after-same-race', ['same', 'same', 'after-same-race']),
   'a durability failure rejects the request instead of answering it': failureRejectsRequest,
   'a failed report of generated code neither fails the response nor skips its writes': codegenFailureNotFatal,
-  'a clean ranged write and truncate hold the response until the session has them': cleanMutations,
+  'a clean ranged write holds the response until the session has it': cleanRangeHoldsResponse,
+  'a clean truncate in flight holds the response until the session has it': cleanTruncateHoldsResponse,
+  'a clean truncate that fails rejects the response, caught or not': cleanTruncateFailureRejects,
   'an append that fails after process.exit intent fails the start, reporting no exit': exitIntent,
   'a one-shot run\'s failed append drain reports only its final code': oneShot,
 });
