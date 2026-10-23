@@ -116,7 +116,7 @@ export function createPages(coherence, admission, namespace) {
                     put(keyed, rev, batch[i], bytes);
             }
         }
-        return { pages: out, fetched: missing.length };
+        return { pages: arrayCopy(out), fetched: missing.length };
     };
     return {
         async read(supervisor, k, rev, size, first, last) {
