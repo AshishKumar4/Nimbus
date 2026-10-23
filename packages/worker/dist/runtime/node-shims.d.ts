@@ -20,10 +20,10 @@
  *     (node-lib-source.ts) over node-lib-host.ts
  *   - util, url, string_decoder, readline, tty, timers
  *
- * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
- * async reads use the supervisor bridge as their source of truth whenever it
- * is available. Sync writes stay in __vfsWrites until an async observation or
- * process completion flushes them to the supervisor.
+ * VFS access: every fs call goes through the process's filesystem (core
+ * runtime/wasi/resident-filesystem.ts) over the launch's store: a synchronous
+ * call through its synchronous face, an asynchronous one through the
+ * filesystem itself (__nimbusStartProcessFilesystem).
  */
 /**
  * The shims reach the platform's Node builtins through one provider,

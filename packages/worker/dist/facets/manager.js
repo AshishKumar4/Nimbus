@@ -36,7 +36,7 @@ import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
-import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { NODE_ROOT_STAT_SOURCE, serializeFacetVfsCursor } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { base64, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
@@ -652,16 +652,14 @@ const RESIDENCY_MISS_REPORT = `
 // What the next launch of this entry must stage, kept apart because they are
 // staged differently: files read synchronously and not answered (data), and
 // modules the program tried to execute that the map lacked (graph roots).
-function __nimbusDataReadMisses() {
-  return [...(globalThis.__nimbusVfsResidencyMisses || [])];
+// The data reads wait for the fetches their misses started (ResidentFilesystem.misses).
+async function __nimbusDataReadMisses() {
+  return typeof globalThis.__nimbusProgramMisses === "function" ? [...await globalThis.__nimbusProgramMisses()] : [];
 }
 function __nimbusExecutedModuleMisses() {
   return [...(globalThis.__nimbusModuleMisses || [])];
 }
 const { residencyMissReport: __nimbusResidencyMissText } = ${RESIDENCY_MISS_REPORT_SOURCE};
-function __nimbusResidencyMissReport() {
-  return __nimbusResidencyMissText(__nimbusDataReadMisses());
-}
 `;
 /**
  * Detect whether a facet bundle imports node:sqlite. When true, the
@@ -930,7 +928,6 @@ function __nimbusInstallNodeNavigator(__version) {
  */
 function nodeProgramRuntime(sources, esModule) {
     return moduleSource `
-    const __vfsBundle = __resident.bundle;
 ${PENDING_IO_SOURCE}
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;
@@ -1014,11 +1011,10 @@ ${PENDING_IO_SOURCE}
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${nodeFacetSource(sources, "ledger")}
-    const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
 ${nodeFacetSource(sources, "shims")}
+    __nimbusStartProcessFilesystem(__nimbusRootStat);
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -1125,7 +1121,6 @@ export default {
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
     const __MODULE_VFS_CURSOR = vfsCursor || null;
-${VFS_CURSOR_SEED_SOURCE}
     // A user-invoked program has no wall-clock lifetime: the drain runs the
     // entrypoint's event loop until Node would exit, and only a kill (Ctrl-C)
     // ends it early.
@@ -1154,15 +1149,13 @@ ${VFS_CURSOR_SEED_SOURCE}
     __resident.sync.setPlan(dataPlan);
     __resident.sync.setManifests(manifests);
     __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
+${NODE_ROOT_STAT_SOURCE}
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
     const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
-    if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
-    }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || await __nimbusRootFailure();
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
@@ -1226,10 +1219,8 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     // Sited before the drain, like the lifetime-limit diagnostic above, so
     // the queued stderr write is one of the writes the drain settles rather
     // than an orphan dropped at teardown.
-    if (globalThis.__nimbusVfsResidencySettle) {
-      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
-    }
-    const __residencyReport = __nimbusResidencyMissReport();
+    const __residencyMisses = await __nimbusDataReadMisses();
+    const __residencyReport = __nimbusResidencyMissText(__residencyMisses);
     if (__residencyReport) {
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
@@ -1248,7 +1239,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
 
     if (__supervisor) {
       try {
-        await __nimbusDrainVfsWrites(__supervisor);
+        await __nimbusSettleFilesystem();
       } catch (e) {
         const message = (e && e.message) || String(e);
         const stack = (e && e.stack) || message;
@@ -1286,13 +1277,12 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
-      residencyMisses: __nimbusDataReadMisses(),
+      residencyMisses: __residencyMisses,
       moduleMisses: __nimbusExecutedModuleMisses(),
       // Code produced while it ran, for the next launch (commonjs-cell.ts).
       runtimeCode: __nimbusRuntimeCodeLedger(),
       ...(__diag ? { diag: {
-        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0, esmAdoptions: __nimbusEsmAdoptions,
-        namespaceRefusals: (globalThis.__nimbusVfsCoherence && globalThis.__nimbusVfsCoherence.namespaceRefusals) || 0,
+        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, esmAdoptions: __nimbusEsmAdoptions, ...__nimbusFilesystemDiag(),
       } } : {}),
     });
   }
@@ -1464,13 +1454,9 @@ async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    // Every change the program made is in its client's log already: the
-    // flush waits for their answers (the parked cells' claims among them).
-    const __vfsOutcomes = await Promise.allSettled([
-      ...(rt.supervisor ? Object.keys(rt.vfsWrites).map((path) => rt.flushVfsWrite(path)) : []),
-      rt.drainVfsMutations(),
-      ...(globalThis.__nimbusProcessFs ? [globalThis.__nimbusProcessFs.flush()] : []),
-    ]);
+    // What the process holds goes to the session, and the flush waits for
+    // the answers to everything it logged.
+    const __vfsOutcomes = await Promise.allSettled([rt.flushFilesystem()]);
     for (let pass = 0; pass < 12; pass++) {
       const turn = Promise.withResolvers();
       __nimbusPlatformSetTimeout(turn.resolve, 0);
@@ -1484,12 +1470,10 @@ async function __nimbusFlushRuntime() {
     // to the report; unacknowledged entries are sent again by the next flush.
     const [__learning] = await Promise.allSettled([__nimbusFlushRuntimeCode(rt.supervisor)]);
     if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
-    const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
-    if (__vfsFailure) throw __vfsFailure.reason;
     // A change the program was told succeeded that the session refused or
     // never answered: this boundary (a response, the exit) reports it.
-    const __fsFailure = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.takeFailuresError() : null;
-    if (__fsFailure) throw __fsFailure;
+    const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
+    if (__vfsFailure) throw __vfsFailure.reason;
   });
   rt.pendingDrainChain = __pendingDrain.catch(() => {});
   await __pendingDrain;
@@ -1514,7 +1498,6 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // advances on every spawn would give the same program a new image each
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
-${VFS_CURSOR_SEED_SOURCE}
     const __nimbusStdinAtLeast = Number((__startArgs && __startArgs.stdinAtLeast) || 0);
     // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
     const __nimbusStdinFile = __startArgs && __startArgs.stdinFile && typeof __startArgs.stdinFile.path === "string" ? __startArgs.stdinFile : null;
@@ -1577,6 +1560,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
     const __residentBootStarted = ${REAL_NOW_SOURCE}();
+${NODE_ROOT_STAT_SOURCE}
     const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
@@ -1593,16 +1577,10 @@ ${VFS_CURSOR_SEED_SOURCE}
       } catch {}
     }
     __MODULE_VFS_BUNDLE = null;
-    // One cursor, not two. The seed above publishes the cursor this SPAWN
-    // staged at, which is right for a cold store and stale for a kept one —
-    // the cursor the boot returns describes what the rows actually are.
-    if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
-    }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
     // namespace cannot be listed fails here, naming why.
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || await __nimbusRootFailure();
     if (__namespaceFailure) throw new Error(__namespaceFailure);
 ${nodeProgramRuntime(sources, entry.esModule)}
     if (attachedTty) {
@@ -1680,9 +1658,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       supervisor: __supervisor,
       pendingIO: __pendingIO,
       outputPending: __outputPending,
-      vfsWrites: __vfsWrites,
-      flushVfsWrite: __nimbusFlushVfsWrite,
-      drainVfsMutations: __nimbusDrainVfsMutations,
+      flushFilesystem: __nimbusFlushFilesystem,
       pendingDrainChain: Promise.resolve(),
     };
     await __nimbusFlushRuntime();
@@ -1691,10 +1667,8 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       if (!__supervisor || __nimbusProcessExitReported) return;
       // Every resident exit path funnels through here, so the unanswered-read
       // report is sited once and cannot be reached around.
-      if (globalThis.__nimbusVfsResidencySettle) {
-      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
-    }
-    const __residencyReport = __nimbusResidencyMissReport();
+      const __residencyMisses = await __nimbusDataReadMisses();
+      const __residencyReport = __nimbusResidencyMissText(__residencyMisses);
       if (__residencyReport) {
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
@@ -1707,7 +1681,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         code = 1;
         await __nimbusReleaseStderr(__replayShort);
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
+      await __supervisor.reportExit(code, reason || "", __residencyMisses, [...(__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {

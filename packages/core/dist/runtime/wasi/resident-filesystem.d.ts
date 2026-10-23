@@ -35,6 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import { type HolderOptions } from './delegation-holder.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
@@ -323,6 +324,8 @@ export interface ResidentDelegation {
     readonly readLeases?: () => boolean;
     /** The process's own store's write log (HolderOptions.journal). */
     readonly journal?: ProcessFsJournal;
+    /** Told of each change the process's client logs (HolderOptions.logged). */
+    readonly logged?: HolderOptions['logged'];
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
     /**
      * The directories the last process in this facet opened, in order (its

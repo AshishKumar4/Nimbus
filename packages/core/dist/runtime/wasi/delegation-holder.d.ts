@@ -38,7 +38,7 @@ import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '..
 import type { ResidentEntry } from './resident-filesystem.js';
 import { type Provisional } from './provisional.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
+import { type ProcessFsClient, type ProcessFsClientOptions, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
 export interface HolderStore {
@@ -88,6 +88,8 @@ export interface HolderOptions {
      * each call logged that makes a name and does not name one.
      */
     readonly umask?: () => number;
+    /** Told of each change its client logs (ProcessFsClientOptions.logged). */
+    readonly logged?: ProcessFsClientOptions['logged'];
 }
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {

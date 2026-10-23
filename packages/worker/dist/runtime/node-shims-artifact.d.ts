@@ -2,7 +2,6 @@ import { type StagedSourceEnv } from './staged-source.js';
 import { ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 interface NodeSourceTexts {
     shims: string;
-    ledger: string;
     residentStore: string;
     registry: string;
     interpreterPrimordials: string;

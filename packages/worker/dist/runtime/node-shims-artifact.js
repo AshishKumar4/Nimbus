@@ -30,7 +30,7 @@ export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode 
         imports: COMMONJS_CELL_IMPORTS,
         // The resident store's library (vfs/resident), evaluated once at module
         // scope: it defines __nimbusResidentModule, whose createResidentStore each
-        // process calls for its own store.
+        // process calls for its own store, and processFilesystem its filesystem.
         code: moduleSource `const __NIMBUS_CODE_CELLS = ${codeCells};
 const __NIMBUS_RUNTIME_CODE = ${runtimeCode};
 const __NIMBUS_STACK_ENTRY = ${stackEntry};
@@ -53,16 +53,16 @@ function asset(name) {
 /** One shared copy per isolate; the loader reads the same verified sources by their pins. */
 export const fetchNodeFacetSources = memoizeUntilRejected(async (env) => {
     const load = (name) => immutableModuleSource(env, asset(name));
-    const [shims, ledger, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, parser, nodeLib, nodeLibRest, nodeDns, nodeCp, esmLate] = await Promise.all([
-        load('NODE_SHIMS'), load('VFS_WRITE_LEDGER'), load('RESIDENT_STORE'), load('NODE_REGISTRY'),
+    const [shims, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, parser, nodeLib, nodeLibRest, nodeDns, nodeCp, esmLate] = await Promise.all([
+        load('NODE_SHIMS'), load('RESIDENT_STORE'), load('NODE_REGISTRY'),
         load('JS_INTERPRETER_PRIMORDIALS'), load('JS_INTERPRETER'), load('JS_INTERPRETER_OPS'), load('JS_PARSER'), load('NODE_LIB'), load('NODE_LIB_REST'), load('NODE_DNS'), load('NODE_CP'),
         load('ESM_LATE'),
     ]);
     return {
-        shims: shims.text, ledger: ledger.text, residentStore: residentStore.text, registry: registry.text,
+        shims: shims.text, residentStore: residentStore.text, registry: registry.text,
         interpreterPrimordials: interpreterPrimordials.text, interpreter: interpreter.text,
         interpreterOps: interpreterOps.text, parser: parser.text, nodeLib: nodeLib.text, nodeLibRest: nodeLibRest.text, nodeDns: nodeDns.text, nodeCp: nodeCp.text,
         esmLate: esmLate.text,
-        immutable: { shims, ledger, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, parser, nodeLib, nodeLibRest, nodeDns, nodeCp, esmLate },
+        immutable: { shims, residentStore, registry, interpreterPrimordials, interpreter, interpreterOps, parser, nodeLib, nodeLibRest, nodeDns, nodeCp, esmLate },
     };
 });

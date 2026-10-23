@@ -255,6 +255,7 @@ export function delegationHolder(options) {
         ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
         ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
         ...(options.journal === undefined ? {} : { journal: options.journal }),
+        ...(options.logged === undefined ? {} : { logged: options.logged }),
         released: dropDecisions,
         // Closing starts (a recall, an idle or renewing give-back): nothing more
         // is decided under it, and its files' descriptions write through from now

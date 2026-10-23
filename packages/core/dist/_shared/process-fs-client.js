@@ -745,10 +745,12 @@ export function processFsClient(options) {
                 pendingSyncBytes += grown;
             counters.ops++;
             counters.folded++;
+            options.logged?.(op);
             return tail.answer;
         }
         if (foldOnly)
             return undefined;
+        options.logged?.(op);
         const answers = parts.map((part) => {
             let entry;
             const answer = new Promise((resolve, reject) => {

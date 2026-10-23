@@ -294,6 +294,7 @@ export function residentFilesystem(session, resident, delegation) {
             ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
             ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
             ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
+            ...(delegation.logged === undefined ? {} : { logged: delegation.logged }),
             ...(delegation.umask === undefined ? {} : { umask: delegation.umask }),
             ...(delegation.timers === undefined ? {} : { timers: delegation.timers }),
             ...(delegation.now === undefined ? {} : { now: delegation.now }),
@@ -1043,7 +1044,7 @@ export function residentFilesystem(session, resident, delegation) {
         return after(contentOf(key, entry), (bytes) => bytes ?? (holder?.provisional.pending(entry.dev, entry.ino) ? DELEGATE : wholeByPages(key, entry)));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
-        if (key === DELEGATE || key === '' || key === null)
+        if (key === DELEGATE || key === null)
             return DELEGATE;
         const entry = entryAt(key);
         if (entry === undefined || entry === null)

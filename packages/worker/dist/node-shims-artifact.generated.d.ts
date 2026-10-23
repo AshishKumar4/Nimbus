@@ -12,10 +12,6 @@
 export declare const NODE_SHIMS_ENTRY: string;
 export declare const NODE_SHIMS_BUILD_ID: string;
 export declare const NODE_SHIMS_SHA256: string;
-/** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export declare const VFS_WRITE_LEDGER_ENTRY: string;
-export declare const VFS_WRITE_LEDGER_BUILD_ID: string;
-export declare const VFS_WRITE_LEDGER_SHA256: string;
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
 export declare const RESIDENT_STORE_ENTRY: string;
 export declare const RESIDENT_STORE_BUILD_ID: string;

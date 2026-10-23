@@ -644,9 +644,10 @@ var __nimbusResidentModule = (() => {
     if (points === void 0) {
       const all = objectKeys(feedsOf(position));
       const found = [];
-      for (let i = 0; i < all.length; i++)
+      for (let i = 0; i < all.length; i++) {
         if (all[i] !== ROOT_FEED)
-          found[found.length] = all[i];
+          found[found.length] = { point: all[i], name: stringSlice(all[i], 1), first: stringCharCodeAt(all[i], 1) };
+      }
       points = found;
       mountPoints.set(position.feeds, points);
     }
@@ -656,14 +657,19 @@ var __nimbusResidentModule = (() => {
     const points = mountPointsOf(position);
     if (points.length === 0)
       return ROOT_FEED;
-    const path = key.length > 0 && stringCharCodeAt(key, 0) === 47 ? key : "/" + key;
-    let found = ROOT_FEED;
+    const at = key.length > 0 && stringCharCodeAt(key, 0) === 47 ? 1 : 0;
+    const first = stringCharCodeAt(key, at);
+    const rest = key.length - at;
+    let found = null;
     for (let i = 0; i < points.length; i++) {
-      const point = points[i];
-      if (point.length > found.length && (path === point || path.length > point.length && stringStartsWith(path, point) && stringCharCodeAt(path, point.length) === 47))
-        found = point;
+      const mount = points[i];
+      const length = mount.name.length;
+      if (mount.first !== first || rest < length || found !== null && length <= found.name.length)
+        continue;
+      if ((rest === length || stringCharCodeAt(key, at + length) === 47) && stringStartsWith(key, mount.name, at))
+        found = mount;
     }
-    return found;
+    return found === null ? ROOT_FEED : found.point;
   }
   function notAfter(position, held) {
     if (position.table !== held.table)
@@ -715,7 +721,7 @@ var __nimbusResidentModule = (() => {
     const under = path === "/" ? "/" : path + "/";
     const points = mountPointsOf(position);
     for (let i = 0; i < points.length; i++) {
-      if (points[i].length > under.length && stringStartsWith(points[i], under))
+      if (points[i].point.length > under.length && stringStartsWith(points[i].point, under))
         return true;
     }
     return false;
@@ -8087,10 +8093,12 @@ var __nimbusResidentModule = (() => {
           pendingSyncBytes += grown2;
         counters.ops++;
         counters.folded++;
+        options.logged?.(op);
         return tail.answer;
       }
       if (foldOnly)
         return void 0;
+      options.logged?.(op);
       const answers = parts.map((part) => {
         let entry;
         const answer2 = new Promise((resolve, reject) => {
@@ -8757,6 +8765,7 @@ var __nimbusResidentModule = (() => {
       ...options.grantAfter === void 0 ? {} : { grantAfter: options.grantAfter },
       ...options.grantInos === void 0 ? {} : { grantInos: options.grantInos },
       ...options.journal === void 0 ? {} : { journal: options.journal },
+      ...options.logged === void 0 ? {} : { logged: options.logged },
       released: dropDecisions,
       // Closing starts (a recall, an idle or renewing give-back): nothing more
       // is decided under it, and its files' descriptions write through from now
@@ -9712,6 +9721,20 @@ var __nimbusResidentModule = (() => {
   var notNow = () => {
     throw NOT_NOW;
   };
+  var READS = /* @__PURE__ */ new Map([
+    ["readFile", "content"],
+    ["read", "content"],
+    ["readRange", "content"],
+    ["stat", "metadata"],
+    ["access", "metadata"],
+    ["readdir", "metadata"],
+    ["readlink", "metadata"],
+    ["realpath", "metadata"],
+    ["open", "metadata"],
+    ["fstat", "metadata"],
+    ["readdirHandle", "metadata"]
+  ]);
+  var ANSWERED_REFUSALS = /* @__PURE__ */ new Set(["ENOENT", "ENOTDIR", "EACCES", "EISDIR", "ELOOP", "EPERM"]);
   var NO_SYNCHRONOUS_FORM = /* @__PURE__ */ new Set(["synchronous", "subscribe", "writeStream", "writeBatch", "writeFileFrom", "acquire", "copyTree", "gateLaunch", "awaitRecall"]);
   function after2(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
@@ -9755,7 +9778,7 @@ var __nimbusResidentModule = (() => {
   var identity = (dev, ino) => `${dev}:${ino}`;
   function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, faultIns: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
     let now = false;
     const begin = (io) => {
       if (now)
@@ -9771,6 +9794,7 @@ var __nimbusResidentModule = (() => {
       });
     };
     let holder = null;
+    const residency = delegation?.residency;
     const authority = new Proxy(session, {
       get(target, name, receiver) {
         const value = Reflect.get(target, name, receiver);
@@ -9873,6 +9897,7 @@ var __nimbusResidentModule = (() => {
         ...delegation.grantAfter === void 0 ? {} : { grantAfter: delegation.grantAfter },
         ...delegation.grantInos === void 0 ? {} : { grantInos: delegation.grantInos },
         ...delegation.journal === void 0 ? {} : { journal: delegation.journal },
+        ...delegation.logged === void 0 ? {} : { logged: delegation.logged },
         ...delegation.umask === void 0 ? {} : { umask: delegation.umask },
         ...delegation.timers === void 0 ? {} : { timers: delegation.timers },
         ...delegation.now === void 0 ? {} : { now: delegation.now },
@@ -9907,6 +9932,7 @@ var __nimbusResidentModule = (() => {
         });
     }
     const readers = /* @__PURE__ */ new Set();
+    const readerKeys = /* @__PURE__ */ new Map();
     const unwritten = /* @__PURE__ */ new Set();
     const directories = /* @__PURE__ */ new Map();
     const paged = /* @__PURE__ */ new Map();
@@ -9935,7 +9961,7 @@ var __nimbusResidentModule = (() => {
         const entry = store.entry(key);
         if (entry === void 0)
           return { missing: key };
-        if (entry !== null && !answerable(key, entry))
+        if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
           return DELEGATE;
         step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
       }
@@ -10041,6 +10067,53 @@ var __nimbusResidentModule = (() => {
       });
       return fetched;
     };
+    let faults = null;
+    let faulted = Promise.resolve();
+    const faulting = /* @__PURE__ */ new Set();
+    const outstanding = (fetch) => {
+      faulting.add(fetch);
+      void fetch.then(() => {
+        faulting.delete(fetch);
+      });
+      return fetch;
+    };
+    const faultsEnded = async () => {
+      while (faulting.size > 0)
+        await Promise.all(faulting);
+    };
+    let refusedFetch = null;
+    const faultIn = (key, entry) => {
+      if (residency === void 0)
+        return null;
+      const held = () => store.content(key, entry.revision)?.byteLength === entry.size;
+      const out = fetchingAhead.get(key);
+      if (out !== void 0)
+        return outstanding(out.then(held));
+      const speculation = residency.speculation();
+      if (speculation !== null && !speculation.charge(entry.size))
+        return null;
+      let files = faults;
+      if (files === null) {
+        const named = [];
+        files = faults = named;
+        faulted = outstanding(Promise.resolve().then(() => {
+          faults = null;
+          return store.fillMany(named);
+        }).catch(() => {
+        }));
+      }
+      const batch = faulted;
+      files.push([key, entry]);
+      counts.fills++;
+      counts.faultIns++;
+      counts.filledBytes += entry.size;
+      fetchingAhead.set(key, batch);
+      void batch.then(() => {
+        if (fetchingAhead.get(key) === batch)
+          fetchingAhead.delete(key);
+      });
+      return outstanding(batch.then(held));
+    };
     const resolve = (path, follow, content = false, crossed) => {
       let root;
       let name;
@@ -10108,13 +10181,11 @@ var __nimbusResidentModule = (() => {
       const entry = store.entry(key);
       if (entry === void 0)
         return void 0;
-      if (entry !== null && !answerable(key, entry))
+      if (entry !== null && entry.dev !== store.device && !answerable(key, entry))
         return void 0;
       return entry;
     };
     const answerable = (key, entry) => {
-      if (entry.dev === store.device)
-        return true;
       const cursor = store.cursor();
       if (cursor === null)
         return false;
@@ -10162,8 +10233,10 @@ var __nimbusResidentModule = (() => {
       const held = store.content(key, entry.revision);
       if (held !== void 0 && held.byteLength === entry.size)
         return held;
-      if (now)
+      if (now) {
+        refusedFetch = faultIn(key, entry);
         notNow();
+      }
       const fill = () => {
         counts.fills++;
         counts.filledBytes += entry.size;
@@ -10175,6 +10248,19 @@ var __nimbusResidentModule = (() => {
       return batch.then(() => {
         const fetched = store.content(key, entry.revision);
         return fetched !== void 0 && fetched.byteLength === entry.size ? fetched : fill();
+      });
+    };
+    const wholeByPages = (key, entry) => {
+      if (entry.size <= FS_READ_BATCH_REQUEST_BYTES)
+        return DELEGATE;
+      return store.pages(key, entry.revision, entry.size, 0, Math.floor((entry.size - 1) / RESIDENT_PAGE_BYTES)).then((found) => {
+        if (found === null)
+          return DELEGATE;
+        counts.pagedReads++;
+        counts.pagesFetched += found.fetched;
+        const whole = new Uint8Array(entry.size);
+        found.pages.forEach((page, at) => whole.set(page, at * RESIDENT_PAGE_BYTES));
+        return whole;
       });
     };
     const answer = (name, local, remote, caughtUps = 0) => {
@@ -10296,6 +10382,7 @@ var __nimbusResidentModule = (() => {
     };
     fs.settle = async () => {
       const failures = [];
+      await faultsEnded();
       await Promise.all([directoryPool?.dispose(), holder?.settle()].map((ending) => Promise.resolve(ending).catch((error) => {
         failures.push({ path: "/", dev: 0, ino: 0, error });
       })));
@@ -10390,14 +10477,14 @@ var __nimbusResidentModule = (() => {
         throw fsError2("EACCES", "open", path);
       if (entry.type === "directory")
         throw fsError2("EISDIR", "open", path);
-      if (entry.type !== "file" || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode))
+      if (entry.type !== "file" || isCharacterDevice(entry.mode))
         return DELEGATE;
       if (volatileProc(key, entry))
         return generated(key) ?? DELEGATE;
-      return after2(contentOf(key, entry), (bytes) => bytes === void 0 ? DELEGATE : bytes);
+      return after2(contentOf(key, entry), (bytes) => bytes ?? (holder?.provisional.pending(entry.dev, entry.ino) ? DELEGATE : wholeByPages(key, entry)));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer("readdir", () => after2(resolve(path, options.followSymlinks !== false), (key) => {
-      if (key === DELEGATE || key === "" || key === null)
+      if (key === DELEGATE || key === null)
         return DELEGATE;
       const entry = entryAt(key);
       if (entry === void 0 || entry === null)
@@ -10559,8 +10646,12 @@ var __nimbusResidentModule = (() => {
       }
       if (done !== void 0)
         return done;
-      if (now)
+      if (now) {
+        const of = holder.provisional.inodeOf(handleId);
+        if (of !== void 0 && !holder.provisional.pending(of.entry.dev, of.entry.ino))
+          refusedFetch = faultIn(of.key, of.entry);
         throw NOT_NOW;
+      }
       const at = holder.provisional.inodeOf(handleId);
       if (at === void 0)
         return readByAnchor(handleId, offset, length);
@@ -10637,6 +10728,8 @@ var __nimbusResidentModule = (() => {
       delegated("open");
       return after2(authority.open(path, flags), (handle) => {
         readers.add(handle.id);
+        if (residency !== void 0)
+          readerKeys.set(handle.id, keyOf(handle.path));
         const { type, dev, ino, size } = handle.stat;
         if (dev === store.device) {
           const key = keyOf(handle.path);
@@ -10749,6 +10842,7 @@ var __nimbusResidentModule = (() => {
       if (readers.delete(handleId)) {
         directories.delete(handleId);
         paged.delete(handleId);
+        readerKeys.delete(handleId);
         delegated("close");
         return authority.close(handleId);
       }
@@ -10844,9 +10938,9 @@ var __nimbusResidentModule = (() => {
             holder.changing([op.from, op.to]);
           else if (op.type === "call" && (op.call.call === "unlink" || op.call.call === "rmdir"))
             holder.changing([op.call.path]);
-          const answered = holder.client.submit(op);
+          const answered2 = holder.client.submit(op);
           try {
-            await answered;
+            await answered2;
           } finally {
             owed.own++;
           }
@@ -11061,6 +11155,103 @@ var __nimbusResidentModule = (() => {
         detail: `resource temporarily unavailable, ${syscall} '${path}' \u2014 '${path}' exists but its content is not resident in this process, and a synchronous call cannot wait to fetch it`
       });
     };
+    const missed = /* @__PURE__ */ new Map();
+    const keyFor = (target) => {
+      if (typeof target === "number")
+        return holder?.owns(target) ? holder.keyOf(target) : readerKeys.get(target);
+      if (typeof target === "string")
+        return keyOf(target);
+      if (typeof target === "object" && target !== null && "root" in target)
+        return keyOf(`${target.root}/${pathOf(target)}`);
+      return void 0;
+    };
+    const readOf = (syscall, args) => {
+      if (syscall !== "open")
+        return READS.get(syscall);
+      const flags = args[1];
+      return flags && !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive ? "metadata" : void 0;
+    };
+    const refused = (syscall, args, fetch) => {
+      const kind = readOf(syscall, args);
+      const key = kind === void 0 ? void 0 : keyFor(args[0]);
+      if (kind === void 0 || key === void 0)
+        return;
+      const speculation = residency.speculation();
+      if (speculation !== null) {
+        speculation.missed(key, fetch);
+        return;
+      }
+      const was = missed.get(key);
+      if (was === "content" || was === kind)
+        return;
+      missed.set(key, kind);
+      if (was === void 0)
+        residency.missed?.(key);
+    };
+    const answered = (kind, args) => {
+      const key = keyFor(args[0]);
+      if (key === void 0)
+        return;
+      const keys = [key];
+      try {
+        const at = walkOnce("", key, true);
+        if (typeof at === "string" && at !== key)
+          keys.push(at);
+      } catch {
+      }
+      for (const at of keys)
+        if (kind === "content" || missed.get(at) === "metadata")
+          missed.delete(at);
+    };
+    if (residency !== void 0) {
+      for (const name of READS.keys()) {
+        const passed = Reflect.get(fs, name);
+        if (typeof passed !== "function")
+          continue;
+        Reflect.set(fs, name, (...args) => {
+          const kind = now || missed.size === 0 ? void 0 : readOf(name, args);
+          if (kind === void 0)
+            return Reflect.apply(passed, fs, args);
+          const refusal = (error) => {
+            if (ANSWERED_REFUSALS.has(errnoCodeOf(error) ?? ""))
+              answered(kind, args);
+            throw error;
+          };
+          let answer2;
+          try {
+            answer2 = Reflect.apply(passed, fs, args);
+          } catch (error) {
+            return refusal(error);
+          }
+          if (!(answer2 instanceof Promise)) {
+            answered(kind, args);
+            return answer2;
+          }
+          return answer2.then((value) => {
+            answered(kind, args);
+            return value;
+          }, refusal);
+        });
+      }
+    }
+    const knownAbsent = (key) => {
+      if (!store.ready())
+        return false;
+      try {
+        const at = walkOnce("", key, true);
+        return typeof at === "string" && entryAt(at) === null;
+      } catch (error) {
+        const code = errnoCodeOf(error);
+        return code === "ENOENT" || code === "ENOTDIR";
+      }
+    };
+    fs.misses = async () => {
+      await faultsEnded();
+      for (const key of [...missed.keys()])
+        if (knownAbsent(key))
+          missed.delete(key);
+      return [...missed.keys()];
+    };
     const synchronous = /* @__PURE__ */ Object.create(null);
     for (const name of names) {
       if (NO_SYNCHRONOUS_FORM.has(name) || typeof Reflect.get(fs, name) !== "function")
@@ -11077,9 +11268,13 @@ var __nimbusResidentModule = (() => {
           }
           return value;
         } catch (error) {
-          if (error === NOT_NOW)
-            throw notResident(name, args);
-          throw error;
+          if (error !== NOT_NOW)
+            throw error;
+          const refusal = notResident(name, args);
+          if (residency !== void 0 && errnoCodeOf(refusal) === "EAGAIN")
+            refused(name, args, refusedFetch);
+          refusedFetch = null;
+          throw refusal;
         } finally {
           now = was;
         }
