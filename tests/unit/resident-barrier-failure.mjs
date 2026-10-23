@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import {
@@ -32,7 +31,7 @@ import {
   until,
   residentDataPlan,
 } from './lib/resident-body.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
 const F = '/home/user/app/f.txt';
 const G = '/home/user/app/g.txt';
@@ -335,7 +334,7 @@ await runScenarios(import.meta.path, {
     });
     const shims = new Function(
       '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-      '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
+      '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
       + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
     )(
       { 'home/user/app/f.txt': 'V1' },

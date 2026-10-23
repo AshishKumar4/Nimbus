@@ -16,7 +16,6 @@
 import assert from 'node:assert/strict';
 // The launch's captures the write ledger reads (__nimbusLaunchCaptures).
 import './lib/launch-captures.mjs';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
   NIMBUS_AI_GATEWAY_PORT,
@@ -45,7 +44,7 @@ function bootFacet({ env = {}, origin } = {}) {
 
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
+    '"use strict";' + generateShimsCode() + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
   );
   const require = factory(
     {},

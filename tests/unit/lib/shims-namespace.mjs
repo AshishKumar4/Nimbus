@@ -199,6 +199,16 @@ export function createShimsStorePrelude(residentSource) {
 export const SHIMS_STORE_PRELUDE = createShimsStorePrelude(RESIDENT_STORE);
 
 /**
+ * Splice after generateShimsCode(): the process's filesystem made over the
+ * seeded store and the factory's supervisor, as a launch makes it once its
+ * store booted (node-shims __nimbusStartProcessFilesystem). The root's stat
+ * is the seeded namespace's: its rows carry no device, so neither does it.
+ */
+export const SHIMS_STORE_START = `
+;__nimbusStartProcessFilesystem({ dev: 0, ino: 1, nlink: 2, type: "directory", size: 0, atime: 0, mtime: 0, ctime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0 });
+`;
+
+/**
  * List a test authority (a SqliteVFS) as the session would for a launch, into
  * the listing the prelude seeds the namespace from. Call it just before the
  * factory; the listing is taken at that moment, as a launch's is.

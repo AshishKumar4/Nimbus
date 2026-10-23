@@ -14,12 +14,11 @@
 // - autoDestroy: false keeps a stream open, emitClose: false destroys it
 //   without 'close', and an fs stream reads them from autoClose/emitClose.
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 const factory = new Function('__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO', 'stdin',
-  'let stdout="",stderr="";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + ';return builtins;');
+  'let stdout="",stderr="";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + ';return builtins;');
 const SOURCE = 'copied through a pipe — Grüße ✓\n';
 const builtins = factory({ 'home/user/site/hello.txt': SOURCE }, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/copy.js', '/home/user', [], '');

@@ -8,9 +8,8 @@
 // and threw ENOENT for a source a peer had made.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const asked = [];
@@ -28,7 +27,7 @@ const supervisor = waveSupervisor({
 });
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${SHIMS_STORE_PRELUDE + generateShimsCode()}
+  `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
 ;return { fs: builtins.fs, flushClient: () => __nimbusProcessFs().flush() };`,
 );
 const metadata = {

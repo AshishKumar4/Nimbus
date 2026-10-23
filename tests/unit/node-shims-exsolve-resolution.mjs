@@ -26,7 +26,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { transformSync } from 'esbuild';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
 const PROJ = 'home/user/proj';
 const KIT_MAIN = `/${PROJ}/node_modules/@nuxt/kit/dist/index.mjs`;
@@ -70,7 +70,7 @@ const manifest = {
 const NativeURL = globalThis.URL;
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins;',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return builtins;',
 );
 // Every staged file and listed directory comes with its record, as
 // the namespace lists them: the stat ladder answers from these.

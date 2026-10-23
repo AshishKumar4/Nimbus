@@ -21,10 +21,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 // Each case: a body run with `process` and `fs` in scope, in a fresh directory
@@ -70,7 +69,7 @@ for (const name of Object.keys(CASES)) {
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict"; let stdout = ""; let stderr = ""; let exitCode = 0; const __pendingIO = [];' +
-      VFS_WRITE_LEDGER_SOURCE + SHIMS_STORE_PRELUDE + generateShimsCode() +
+      SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START +
       '\n;return { fs: __fsMod, process: __processMod };',
   );
   declareNamespace({ metadata: { '/home/user/f': { mode: 0o100644, uid: 1000, gid: 1000 } }, manifest: {} });

@@ -9,7 +9,6 @@
 import assert from 'node:assert/strict';
 // The launch's captures the write ledger reads (__nimbusLaunchCaptures).
 import './lib/launch-captures.mjs';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const routed = [];
@@ -38,7 +37,7 @@ let boundaryNotice = null;
 const replay = { armed: false, outbound: false, afterBoundary: () => boundaryNotice };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusStopReplay',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return null;',
+  '"use strict";' + code + '\n;return null;',
 );
 factory(
   {},

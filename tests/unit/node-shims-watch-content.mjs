@@ -4,7 +4,7 @@
 // to restart Vite/Astro every 500 ms (config and tsconfig falsely changed).
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 let bytes = new Uint8Array([1, 2, 3]);
 const bundle = new Proxy({}, {
@@ -38,7 +38,7 @@ assert.equal(events.length, 2, 'a closed watcher observes nothing');
 // keep the last authoritative snapshot while the namespace is unavailable.
 const namespaceTicks = [];
 const namespace = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', 'setInterval', 'clearInterval',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\nreturn { fs: builtins.fs, ready: value => __resident.namespace.markReady(__resident.coherence.tables("test"), value), change: () => __resident.namespace.put(__resident.coherence.tables("test"), "home/user/config.js", { type: "file", size: 21, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 2, ctime: 2, ino: 0 }, 2), relist: () => __resident.namespace.put(__resident.coherence.tables("test"), "home/user/config.js", { type: "file", size: 18, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 0 }, 9) };',
 )(
   { 'home/user/config.js': 'export default {};' }, {}, {}, null,

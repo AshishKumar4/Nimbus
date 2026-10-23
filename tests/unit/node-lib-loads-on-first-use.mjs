@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE } from '../../packages/core/src/_shared/commonjs-cell.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 const VALUE = '({ probe: [1, 2, { a: 3, nested: { deeper: new Map([[1, "one"]]) } }], when: null })';
 const host = spawnSync('node', ['-e', `console.log(require('util').inspect(${VALUE}))`], { encoding: 'utf8', env: { PATH: process.env.PATH } });
@@ -19,7 +19,7 @@ assert.equal(host.status, 0, host.stderr);
 
 const shims = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { inspect: __nimbusInspect, builtins, loaded: __nimbusTestNodeLibLoaded };',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return { inspect: __nimbusInspect, builtins, loaded: __nimbusTestNodeLibLoaded };',
 )({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
 const loaded = () => [...shims.loaded.keys()];
 

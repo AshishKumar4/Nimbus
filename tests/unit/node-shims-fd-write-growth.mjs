@@ -12,9 +12,8 @@
 // the loop measures the cost directly.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 // The ledger declares __vfsWrites and the revision stamps beside it, and the
 // shims call into it — so it is spliced in ahead of them exactly as every
@@ -22,7 +21,7 @@ import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 // being passed in, because the ledger owns that table.
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
   + '\n;return { fs: __fsMod, Buffer: __BufferMod, writes: __vfsWrites };',
 );
 

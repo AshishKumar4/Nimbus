@@ -35,7 +35,7 @@ import {
   isBundleModuleCandidate,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { FakeVfs } from './lib/fake-require-fs.mjs';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 /** What the entry's specifiers resolved to — the entry itself is always shipped. */
 const bundleOf = async (files, entryFile) =>
@@ -163,7 +163,7 @@ for (const [base, expected] of TABLE) {
   try {
     const factory = new Function(
       '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-      '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire(filename);',
+      '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return builtins.module.createRequire(filename);',
     );
     const require = factory(bundle, {}, {}, null,
       { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/app/bin', [], {}, '/' + entry, '/app/bin');

@@ -4,16 +4,14 @@
  *
  * Why this exists
  * ───────────────
- * Every node facet's generated worker text splices three sources that only
+ * Every node facet's generated worker text splices two sources that only
  * ever run inside the facet:
  *   - `generateShimsCode()` (src/runtime/node-shims.ts), the ~230 KiB
  *     node-compat shims;
- *   - `VFS_WRITE_LEDGER_SOURCE` (@nimbus-sh/core _shared/vfs-write-ledger.ts),
- *     the write ledger the shims' filesystem writes go through;
  *   - the resident store's library (src/vfs/resident, bundled here by
  *     esbuild), defining `__nimbusResidentModule`, whose
- *     createResidentStore each process calls for the resident set the shims
- *     read from.
+ *     createResidentStore each process calls for its store, and
+ *     processFilesystem for the filesystem the shims call over it.
  * and carries more as modules of its map: the runtime-code interpreter,
  * its parser and its host module (scripts/interpreter-bundle.mjs), which a launch
  * compiles only when its program first produces code no launch staged, and
@@ -23,7 +21,7 @@
  * gate (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs), whose
  * intended fix is exactly this promote: large facet-runner source strings
  * belong in the static-assets layer, not the supervisor bundle. Nothing the
- * Worker bundle imports reaches the three modules any more.
+ * Worker bundle imports reaches the two modules any more.
  *
  * This script evaluates the COMMITTED dist — dist is the deployable truth
  * (package "main" points at dist; apps bundle from it), so each staged asset
@@ -33,7 +31,6 @@
  *
  * Output:
  *   public/_assets/runtime/node-shims-<buildId>.js
- *   public/_assets/runtime/vfs-write-ledger-<buildId>.js
  *   public/_assets/runtime/resident-store-<buildId>.js
  *   public/_assets/runtime/js-interpreter-<buildId>.js
  *   public/_assets/runtime/js-interpreter-ops-<buildId>.js
@@ -62,7 +59,6 @@ const ROOT = path.resolve(__dirname, '..');
 const { generateShimsCode } = await import(path.join(ROOT, 'dist/runtime/node-shims.js'));
 const { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule, generateNodeCpModule } = await import(path.join(ROOT, 'dist/runtime/node-lib-module.js'));
 const { bundleResidentStore } = await import('./resident-store-bundle.mjs');
-const { VFS_WRITE_LEDGER_SOURCE } = await import('@nimbus-sh/core/_shared/vfs-write-ledger.js');
 const { bundleInterpreter, bundleRegistry } = await import('./interpreter-bundle.mjs');
 const interpreter = await bundleInterpreter({ start: ROOT });
 
@@ -77,12 +73,6 @@ if (typeof shims !== 'string' || shims.length < 100_000) {
 
 const SOURCES = [
   { name: 'NODE_SHIMS', family: 'node-shims', source: shims, from: 'dist/runtime/node-shims.js generateShimsCode()' },
-  {
-    name: 'VFS_WRITE_LEDGER',
-    family: 'vfs-write-ledger',
-    source: VFS_WRITE_LEDGER_SOURCE,
-    from: '@nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE',
-  },
   {
     name: 'RESIDENT_STORE',
     family: 'resident-store',

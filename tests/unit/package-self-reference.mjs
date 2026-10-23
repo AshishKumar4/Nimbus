@@ -39,7 +39,7 @@ import { dirname, join } from 'node:path';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { packageSelfReferenceSubpath } from '../../packages/core/src/_shared/exports-resolver.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 // ── Fixture tree (VFS paths, no leading slash) ────────────────────────────
@@ -178,7 +178,7 @@ try {
   // ── Nimbus runtime: the shim's require/import chain ──────────────────
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode()
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
       + '\n;return { meta: globalThis.__nimbusImportMetaResolve, require: (id, dir) => __resolveFrom(id, dir) };',
   );
   const runtimeResolve = factory(

@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 // The facet's global, which has none.
 delete globalThis.BroadcastChannel;
@@ -23,7 +23,7 @@ if (typeof globalThis.BroadcastChannel === 'function') globalThis.BroadcastChann
 
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.worker_threads;',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return builtins.worker_threads;',
 );
 const wt = factory({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/app.js', '/home/user');
 const { BroadcastChannel } = wt;

@@ -5,14 +5,13 @@
 // than poisoned. For the coherence tests: what the process's own writes do to
 // its cached cells, and what a peer's do.
 
-import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { positionOf } from '../../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processBridge } from './process-bridge.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './shims-namespace.mjs';
 import { waveSupervisor } from './wave-supervisor.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -72,7 +71,7 @@ export function shimStoreProcess({ seed, writer } = {}) {
 
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
   );
   declareNamespace({

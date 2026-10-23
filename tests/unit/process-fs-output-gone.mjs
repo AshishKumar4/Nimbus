@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 const gone = Object.assign(new Error('process pid 41 does not exist'), { code: 'ESRCH' });
 const client = processFsClient({ session: {
@@ -15,7 +15,7 @@ const scope = Object.create(globalThis);
 scope.__nimbusProcessFs = client;
 const factory = new Function(
   'globalThis', '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  'let stdout = "", stderr = "", exitCode = 0; const __pendingIO = [];\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  'let stdout = "", stderr = "", exitCode = 0; const __pendingIO = [];\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\nreturn { console: __consoleMod, process: __processMod, gate: __nimbusOutputGate, output: () => stdout, ProcessExit: __ProcessExit };',
 );
 const runtime = factory(scope, {}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');

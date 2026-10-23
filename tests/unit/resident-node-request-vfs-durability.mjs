@@ -5,7 +5,6 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -17,7 +16,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './lib/facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
@@ -140,7 +139,7 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   waveSupervisor(supervisor);
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${SHIMS_STORE_PRELUDE + generateShimsCode()}
+    `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
 ;return {
   fs: builtins.fs,
   writes: __vfsWrites,

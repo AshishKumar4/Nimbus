@@ -5,11 +5,11 @@
 // stdin consumes the parent's live input and releases it on child exit.
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 const timer = globalThis.setTimeout;
 const sleep = ms => new Promise(resolve => timer(resolve, ms));
 const factory = new Function('__vfsBundle','__vfsWrites','__vfsDirs','__supervisor','cred','cwd','argv','env','filename','dirname','__pendingIO','stdin',
-  'let stdout="",stderr="";' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  'let stdout="",stderr="";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
   + ';return {cp:__childProcessMod,process:__processMod,output:()=>({stdout,stderr})};');
 const bytes = text => new TextEncoder().encode(text);
 const input = new Uint8Array([0,255,195,169,10]);

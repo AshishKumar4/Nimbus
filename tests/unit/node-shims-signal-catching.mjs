@@ -10,10 +10,10 @@
 // shims run here over a stand-in supervisor.
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 const make = (supervisor) => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusProcessId',
-  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\nreturn { proc: __processMod, outputGate: __nimbusOutputGate };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
+  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\nreturn { proc: __processMod, outputGate: __nimbusOutputGate };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const failures = [];

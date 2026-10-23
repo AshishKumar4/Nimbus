@@ -13,7 +13,7 @@ import { prefetchForRequire } from '../../packages/core/src/runtime/require-reso
 import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, NODE_REQUIRE_POLICY } from '../../packages/core/src/runtime/require-resolution.ts';
 import { createCjsLoader } from '../../packages/core/src/substrate/lifo/node-compat/cjs-loader.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
 const pkg = (json) => JSON.stringify(json) + '\n';
 const W = 'home/user/app';
@@ -167,7 +167,7 @@ try {
     argv: [], filename: '/' + W + '/main.cjs', dirname: '/' + W, signal: new AbortController().signal };
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', 'nodeCommandLine',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire(filename);',
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return builtins.module.createRequire(filename);',
   );
   for (const conditions of [[], ['development']]) {
     // Each guest boot gets a fresh host constructor, as in its own realm;

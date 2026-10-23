@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { lookupReject } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return builtins.module.createRequire((dirname || cwd) + "/");',
 );
 const requireFromFacet = (declareNamespace({ metadata: {}, manifest: {
     'home/user': ['module-require.js', 'local-require.js', 'compile-cache.js', 'kit dist', 'app'],

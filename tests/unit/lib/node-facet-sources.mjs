@@ -11,9 +11,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The launch's captures the write ledger reads (__nimbusLaunchCaptures).
+// The launch's captures the shims read (__nimbusLaunchCaptures).
 import './launch-captures.mjs';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule, generateNodeCpModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { COMMONJS_CELL_RUNTIME_SOURCE } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 import {
@@ -27,7 +26,6 @@ export function nodeFacetSources(shims) {
     shims,
     immutable: {},
     registry: COMMONJS_CELL_RUNTIME_SOURCE,
-    ledger: VFS_WRITE_LEDGER_SOURCE,
     residentStore: readFileSync(join(PUBLIC, RESIDENT_STORE_ENTRY), 'utf8'),
     interpreterPrimordials: readFileSync(join(PUBLIC, JS_INTERPRETER_PRIMORDIALS_ENTRY), 'utf8'),
     interpreter: readFileSync(join(PUBLIC, JS_INTERPRETER_ENTRY), 'utf8'),

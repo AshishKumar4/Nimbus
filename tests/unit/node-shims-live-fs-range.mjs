@@ -6,13 +6,12 @@
 // live VFS content stays authoritative.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -50,10 +49,10 @@ const supervisor = {
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
 
-const code = SHIMS_STORE_PRELUDE + generateShimsCode();
+const code = SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START;
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return { fs: __fsMod };'
+  '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = (declareNamespace({ metadata: // Staged content comes with its record, as every launch stages it.
   {

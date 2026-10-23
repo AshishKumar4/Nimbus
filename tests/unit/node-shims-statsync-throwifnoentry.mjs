@@ -6,9 +6,9 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 
-const code = SHIMS_STORE_PRELUDE + generateShimsCode();
+const code = SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START;
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'

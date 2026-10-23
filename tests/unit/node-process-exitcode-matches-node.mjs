@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 const VALUES = `[
   '9007199254740992', '1.5', 'abc', '3', ' 4', '0x10', '1e3', '', '-0', '-5', 'Infinity', '4294967297', '-9007199254740992',
@@ -35,7 +35,7 @@ const want = JSON.parse(ran.stdout);
 
 const process_ = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return __processMod;',
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return __processMod;',
 )({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
 const got = new Function('process', PROBE)(process_);
 const values = new Function(`return ${VALUES}`)();

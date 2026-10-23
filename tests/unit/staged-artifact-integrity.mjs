@@ -49,7 +49,6 @@ import {
   JS_INTERPRETER_OPS_ENTRY,
   JS_INTERPRETER_PRIMORDIALS_ENTRY,
   JS_PARSER_ENTRY,
-  VFS_WRITE_LEDGER_ENTRY,
 } from '../../packages/worker/src/node-shims-artifact.generated.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 
@@ -204,7 +203,6 @@ try {
   // entry has to go rather than fail every node launch after it.
   const nodeSources = [
     ['node-shims', NODE_SHIMS_ENTRY, 'shims'],
-    ['vfs-write-ledger', VFS_WRITE_LEDGER_ENTRY, 'ledger'],
     ['resident-store', RESIDENT_STORE_ENTRY, 'residentStore'],
     ['js-interpreter-primordials', JS_INTERPRETER_PRIMORDIALS_ENTRY, 'interpreterPrimordials'],
     ['js-interpreter', JS_INTERPRETER_ENTRY, 'interpreter'],

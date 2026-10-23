@@ -11,10 +11,10 @@
 // static servers and their frameworks make.
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 const factory = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO', 'stdin',
-  'let stdout="",stderr="";' + SHIMS_STORE_PRELUDE + generateShimsCode() + ';return builtins;');
+  'let stdout="",stderr="";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + ';return builtins;');
 const builtins = factory({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/server.js', '/home/user', [], '');
 const url = builtins.url;

@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { NODE_MINIMATCH_SHA256, NODE_MINIMATCH_SOURCE } from '../../packages/worker/src/runtime/node-minimatch-source.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 // ── the vendored matcher is upstream's, unedited ──
 // Node v22.23.4's deps/minimatch/index.js.
@@ -169,7 +169,7 @@ try {
   for (const dir of DIRS) dirs[join(root, dir).slice(1)] = true;
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: builtins.fs, url: builtins.url };',
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return { fs: builtins.fs, url: builtins.url };',
   );
   const { fs, url } = factory(bundle, {}, dirs, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, root, [], {}, root + '/app.js', root);
   const run = (0, eval)(`(${RUNNER})`);

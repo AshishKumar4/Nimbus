@@ -16,13 +16,12 @@
 // is answered from the registry.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
 import { STAGED_BINDINGS } from '../../packages/worker/src/runtime/staged-bindings.ts';
 
 const harness = createSqliteVfsTestHarness();
@@ -82,7 +81,7 @@ for (const [path, body] of Object.entries(FILES)) {
 }
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict"; let stdout = "", stderr = "";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  '"use strict"; let stdout = "", stderr = "";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\n;return { require: (id, dir) => __requireFrom(id, dir), stderrText: () => stderr };',
 );
 const bundle = Object.fromEntries(Object.entries(FILES));

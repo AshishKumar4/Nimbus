@@ -70,7 +70,6 @@ async function arm(name, from) {
       resolveDir: tree, sourcefile: `${name}-shims-require-arm.mjs`, loader: 'js',
       contents: `
 import { generateShimsCode } from ${JSON.stringify(join(tree, 'packages/worker/src/runtime/node-shims.ts'))};
-import { VFS_WRITE_LEDGER_SOURCE } from ${JSON.stringify(join(core, 'src/_shared/vfs-write-ledger.ts'))};
 import * as captures from ${JSON.stringify(join(core, 'src/_shared/primordials.ts'))};
 import { createShimsStorePrelude, declareNamespace } from ${JSON.stringify(helper)};
 
@@ -80,7 +79,7 @@ export function createFactory(residentSource) {
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
-      + VFS_WRITE_LEDGER_SOURCE + '\\n' + createShimsStorePrelude(residentSource) + generateShimsCode()
+      + '\\n' + createShimsStorePrelude(residentSource) + generateShimsCode()
       + '\\n;return builtins.module.createRequire(dirname + "/");\\n//# sourceURL=shims-require-${name}.js',
   );
   return (bundle, dir) => {

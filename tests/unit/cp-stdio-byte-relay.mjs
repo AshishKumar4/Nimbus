@@ -22,7 +22,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { _rpcStdout, _rpcReportExit } from '../../packages/worker/src/session/rpc.ts';
 import { StreamTextDecoders } from '../../packages/core/src/_shared/bytes.ts';
 import { outputHooks } from '../../packages/core/src/_shared/byte-stream.ts';
-import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START } from './lib/shims-namespace.mjs';
 
 // Captured before the shims install their timer barrier over the global.
 const realSetTimeout = globalThis.setTimeout;
@@ -31,7 +31,7 @@ const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
 // The wrapper declares the facet's reported result; the shims append to it.
 const factory = new Function(
   '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__pendingIO',
-  '"use strict"; let stdout = "", stderr = "";' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  '"use strict"; let stdout = "", stderr = "";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\n;return { cp: __childProcessMod, process: __processMod, fs: __fsMod, reported: () => ({ stdout, stderr }) };',
 );
 

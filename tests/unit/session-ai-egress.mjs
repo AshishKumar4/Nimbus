@@ -12,7 +12,6 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
 import assert from 'node:assert/strict';
 // The launch's captures the write ledger reads (__nimbusLaunchCaptures).
 import './lib/launch-captures.mjs';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { createCurlCommand } from '../../packages/core/src/substrate/lifo/commands/net/curl.ts';
 import { handleSessionAiRequest, storeSessionAiCredential } from '../../packages/worker/src/session/ai.ts';
@@ -67,7 +66,7 @@ function installShims(env) {
   };
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return null;',
+    '"use strict";' + generateShimsCode() + '\n;return null;',
   );
   factory(
     {},

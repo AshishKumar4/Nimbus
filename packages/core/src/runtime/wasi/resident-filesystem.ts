@@ -1346,7 +1346,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }), () => authority.readFile(path, options));
 
   fs.readdir = (path, options = {}) => answer<RuntimeVfsDirEntry[]>('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
-    if (key === DELEGATE || key === '' || key === null) return DELEGATE;
+    if (key === DELEGATE || key === null) return DELEGATE;
     const entry = entryAt(key);
     if (entry === undefined || entry === null) return DELEGATE;
     if (entry.type !== 'directory') return DELEGATE;

@@ -12,13 +12,12 @@
 
 import assert from 'node:assert/strict';
 import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { acrossRpc } from './lib/rpc-error.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace, listAuthority } from './lib/shims-namespace.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
@@ -45,7 +44,7 @@ function facetWithFailure(failure) {
   waveSupervisor(supervisor);
   return new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() +
+    '"use strict";' + generateShimsCode() +
       '\n;return { fs: __fsMod };',
   )(
     {},
@@ -117,7 +116,7 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
   declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } } });
   const { fs } = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod };',
+    '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + '\n;return { fs: __fsMod };',
   )({}, {}, supervisor, user, '/home/user', [], {}, '/home/user/main.mjs', '/home/user');
   const error = await rejection(fs.promises.rename('/home/user/nope', '/home/user/new'));
   assert.deepEqual(

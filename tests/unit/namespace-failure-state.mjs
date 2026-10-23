@@ -10,7 +10,6 @@
 // relists it, and that relist fails.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -19,7 +18,7 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { processBridge } from './lib/process-bridge.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
-import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -51,7 +50,7 @@ listAuthority(rawVfs);
 globalThis.__nimbusVfsCursor = { position: (await _rpcFsAcquire(host, null)).position };
 const { fs, setTimeout: shimTimeout } = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
+  '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START
     + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
 )({}, {}, supervisor, CRED, '/home/user/app', [], {}, '/home/user/app/main.js', '/home/user/app');
 const stats = globalThis.__nimbusVfsCoherence;
