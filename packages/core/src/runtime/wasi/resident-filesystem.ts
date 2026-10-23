@@ -181,6 +181,8 @@ export interface ResidentBarrier {
   readonly fromDelivery?: boolean;
   /** Its ACQUIRE got no answer (whatever a repair after it landed): a barrier failure, counted. */
   readonly dropped?: boolean;
+  /** What the answer applied names (keys, a subtree flagged), or 'all' where it could not be applied as it came: for the process's own changes it reports against. */
+  readonly reported?: 'all' | readonly { readonly path: string; readonly subtree: boolean }[];
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -637,6 +639,16 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           // What the process made and the session holds, which the view has no bytes of: fetched before the barrier lands.
           const owed = holder?.retire(from) ?? [];
           await Promise.all(owed.map(([key, row]) => store.fill(key, row).catch(() => null)));
+          // A report that names an own change the session has not answered yet: the barrier holds until it does, then asks
+          // again, so what the answer decided is retired (kept, or fetched) before the resumption runs.
+          if (holder !== null && result.reported !== undefined) {
+            holder.noteReports(result.reported);
+            const acks = holder.ownAcks();
+            if (acks !== null) {
+              await acks;
+              return store.barrier();
+            }
+          }
         }
         return result;
       });
