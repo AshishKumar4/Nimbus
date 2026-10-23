@@ -2348,8 +2348,9 @@ ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, 
 import __NIMBUS_RUNNER from ${JSON.stringify(`./${RUNNER_BOOT_MODULE}`)};
 
 let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
-// This isolate's: the runner's owner tells by it that an isolate was lost.
-const __nimbusRunnerBoot = crypto.randomUUID();
+// This isolate's, made at its first call (a Worker makes no random value at
+// its module's top level): the runner's owner tells by it that an isolate was lost.
+let __nimbusRunnerBoot = null;
 // The process's store, in this isolate's heap, for as long as the isolate lives.
 const __resident = __nimbusResidentModule.createResidentStore();
 ${RUNNING_FLUSH_SOURCE}
@@ -2470,6 +2471,7 @@ export default class extends WorkerEntrypoint {
   async run(input, ended) {
     // A call its owner ends (a timeout, a kill) aborts this isolate where it stands, as a one-shot's run does.
     ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
+    __nimbusRunnerBoot ??= crypto.randomUUID();
     const turn = await (__nimbusRunnerStart ??= __nimbusRunnerStarted(this.env));
     return { boot: __nimbusRunnerBoot, ...(await turn(String(input.code))) };
   }
