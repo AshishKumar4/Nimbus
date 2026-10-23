@@ -6292,10 +6292,10 @@ var __nimbusResidentModule = (() => {
         desc.lastRecord = record;
         const answer = host2.client.submit(call);
         desc.lastAnswer = answer;
-        void answer.then((answered) => settleRecords([record], false, answered.mutation?.after), () => settleRecords([record], true)).then(() => {
+        void promiseThen(promiseThen(promiseThen(answer, (answered) => settleRecords([record], false, mutationAfter(answered)), () => settleRecords([record], true)), () => {
           fit(inode);
           host2.sent();
-        }).catch(endedOnly);
+        }), void 0, endedOnly);
         fit(inode);
         return answer;
       }
@@ -6705,47 +6705,29 @@ var __nimbusResidentModule = (() => {
           throw fsError2("EBADF", "write", desc.path);
         const at = host2.now();
         const start = desc.append ? void 0 : offset ?? desc.position;
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-439cdcbc2660fb37.js
-        if (continued(desc, start, bytes, at)) {
+        if (!awaited && continued(desc, start, bytes, at)) {
           desc.position = start === void 0 ? desc.inode.state.size : offset === null ? start + typedArrayByteLength(bytes) : desc.position;
           return typedArrayByteLength(bytes);
-========
-        if (!awaited && continued(desc, start, bytes, at)) {
-          desc.position = start === void 0 ? desc.inode.state.size : offset === null ? start + bytes.byteLength : desc.position;
-          return bytes.byteLength;
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-a13a4c9159530707.js
         }
         const data = owned(bytes);
         let answer;
         if (desc.append) {
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-439cdcbc2660fb37.js
-          contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, typedArrayByteLength(data), "write");
+          answer = contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, typedArrayByteLength(data), "write", awaited);
           desc.position = desc.inode.state.size;
         } else {
           const start2 = offset ?? desc.position;
-          contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, typedArrayByteLength(data), "write");
-========
-          answer = contentOp(desc, { kind: "append", data, at }, { type: "call", call: { call: "append", path: desc.inode.key, ...by(desc), data } }, data.byteLength, "write", awaited);
-          desc.position = desc.inode.state.size;
-        } else {
-          const start2 = offset ?? desc.position;
-          answer = contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, data.byteLength, "write", awaited);
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-a13a4c9159530707.js
+          answer = contentOp(desc, { kind: "write", offset: start2, data, at }, { type: "call", call: { call: "write", path: desc.inode.key, ...by(desc), offset: start2, data } }, typedArrayByteLength(data), "write", awaited);
           if (offset === null)
             desc.position = start2 + typedArrayByteLength(data);
         }
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-439cdcbc2660fb37.js
-        return typedArrayByteLength(bytes);
-========
-        return answer === void 0 ? bytes.byteLength : answer.then(() => bytes.byteLength);
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-a13a4c9159530707.js
+        return answer === void 0 ? typedArrayByteLength(bytes) : promiseThen(answer, () => typedArrayByteLength(bytes));
       },
       ftruncate: (handleId, size, awaited = false) => {
         const desc = descOf(handleId);
         if (!desc.write)
           throw fsError2("EINVAL", "ftruncate", desc.path);
         const answer = contentOp(desc, { kind: "truncate", size, at: host2.now() }, { type: "call", call: { call: "ftruncate", path: desc.inode.key, ...by(desc), size } }, 0, "ftruncate", awaited);
-        return answer === void 0 ? void 0 : answer.then(() => void 0);
+        return answer === void 0 ? void 0 : promiseThen(answer, () => void 0);
       },
       seek: (handleId, offset, whence) => {
         const desc = descOf(handleId);
@@ -8201,7 +8183,7 @@ var __nimbusResidentModule = (() => {
   var sessionTimers = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
 
   // ../core/dist/_shared/process-fs-client.js
-  var ORPHANED_ERRNOS = /* @__PURE__ */ new Set(["ENOENT", "EEXIST", "ELOOP", "ENOTDIR"]);
+  var ORPHANED_ERRNOS = new SafeSet(["ENOENT", "EEXIST", "ELOOP", "ENOTDIR"]);
   var PROCESS_FS_SYNC_CAP_BYTES = 256 * 1024 * 1024;
   var PROCESS_FS_HEAP_SYNC_CAP_BYTES = 64 * 1024 * 1024;
   var PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
@@ -8445,13 +8427,14 @@ var __nimbusResidentModule = (() => {
           removeAt(marks, at).resolve();
       }
     };
-    const orphanedDescriptions = /* @__PURE__ */ new Set();
+    const orphanedDescriptions = new SafeSet();
     const orphanedRefusal = (op, errno2) => {
       if (op === null || op.type !== "call" && op.type !== "rename" && op.type !== "setattr")
         return false;
-      if (op.type === "call" && "description" in op.call && op.call.description !== void 0 && orphanedDescriptions.has(op.call.description))
+      const through = op.type === "call" ? descriptionOf(op.call) : void 0;
+      if (through !== void 0 && orphanedDescriptions.has(through))
         return true;
-      const decided = op.type === "rename" ? op.expect !== void 0 || op.expectTo !== void 0 : op.type === "setattr" ? op.expect !== void 0 : "expect" in op.call && op.call.expect !== void 0 || op.call.call === "open" && op.call.nofollow === true;
+      const decided = op.type === "rename" ? ownValue(op, "expect") !== void 0 || ownValue(op, "expectTo") !== void 0 : op.type === "setattr" ? ownValue(op, "expect") !== void 0 : ownField(op.call, "expect") !== void 0 || op.call.call === "open" && op.call.nofollow === true;
       if (!decided || !ORPHANED_ERRNOS.has(errno2))
         return false;
       if (op.type === "call" && op.call.call === "open" && op.call.description !== void 0)
@@ -8462,12 +8445,8 @@ var __nimbusResidentModule = (() => {
       settled(entry);
       const path = entry.paths[0] ?? "";
       if (entry.acknowledged) {
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-439cdcbc2660fb37.js
-        failures[failures.length] = { op: entry.name, path, errno: errno2, message };
-========
         if (!(refused && orphanedRefusal(op, errno2)))
-          failures.push({ op: entry.name, path, errno: errno2, message });
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-a13a4c9159530707.js
+          failures[failures.length] = { op: entry.name, path, errno: errno2, message };
         entry.resolve({ failed: { errno: errno2, message, ...refused ? { refused: true } : {} } });
       } else {
         entry.reject(fsError3(errno2, message, path));
@@ -10766,13 +10745,8 @@ var __nimbusResidentModule = (() => {
     const owes = () => owed.input > caught.input || owed.own > caught.own;
     const catchUp = (given) => {
       const at = { input: owed.input, own: owed.own };
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-439cdcbc2660fb37.js
       const own = given === void 0 || given === null ? void 0 : ownValue(given.args, "own");
-      const delivered = given && typeof own === "number" && owed.own <= own ? given : void 0;
-========
-      const own = given?.args.own;
       const delivered = given && (typeof own === "number" ? owed.own <= own : owed.own <= caught.own) ? given : void 0;
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-a13a4c9159530707.js
       counts.barriers++;
       const client = holder?.client;
       const ask = client !== void 0 && (delegation === void 0 ? void 0 : ownValue(delegation, "readLeases"))?.() === true ? client.readLeaseAsk() : null;
@@ -11152,12 +11126,8 @@ var __nimbusResidentModule = (() => {
       return entry;
     };
     const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-439cdcbc2660fb37.js
     const walkedMounts = (delegation === void 0 ? void 0 : ownValue(delegation, "walkedMounts")) === true;
-========
-    const walkedMounts = delegation?.walkedMounts === true;
-    const answeredWrites = delegation?.answeredWrites === true;
->>>>>>>> origin/work/node-on-rf:packages/worker/public/_assets/runtime/resident-store-a13a4c9159530707.js
+    const answeredWrites = (delegation === void 0 ? void 0 : ownValue(delegation, "answeredWrites")) === true;
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
       if (cursor === null)
