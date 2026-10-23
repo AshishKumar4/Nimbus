@@ -75,13 +75,16 @@ async function scenario(name, run) {
 // ── a program's own reads: the first fetch is refused, the next miss asks again ──
 await scenario('a program\'s own read', async () => {
   let asks = 0;
-  const { fs, rf } = world(() => ++asks > 1);
+  const ledger = [];
+  const { fs, rf } = world(() => { const granted = ++asks > 1; ledger.push(granted); return granted; });
   const path = `${dir}/direct.js`;
   assert.throws(() => fs.readFileSync(path, 'utf8'), { code: 'EAGAIN' });
   await rf.misses();
   assert.throws(() => fs.readFileSync(path, 'utf8'), { code: 'EAGAIN' }, 'the first fetch did not land');
   await rf.misses();
-  assert.equal(fs.readFileSync(path, 'utf8'), FILES['direct.js'], 'the second miss asked again, and it landed');
+  let again;
+  try { again = fs.readFileSync(path, 'utf8'); } catch (error) { throw new Error(`DIAG ${error.code} after the granted second fetch; ledger ${JSON.stringify(ledger)}; stats ${JSON.stringify(rf.stats())}`); }
+  assert.equal(again, FILES['direct.js'], 'the second miss asked again, and it landed');
 });
 
 // ── the import() prefetch: a fetch that did not land fails it by name; the next import asks again ──

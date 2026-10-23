@@ -102,7 +102,7 @@ const rejection = async (promise) => {
 {
   const path = 'home/user/app/node_modules/growing/index.js';
   const { hydrated, read, quota, io, authority } = world({ [path]: 'x'.repeat(1024) });
-  authority.peer.writeFile(path, 'y'.repeat(1024 * 1024));
+  await authority.peer.writeFile(path, 'y'.repeat(1024 * 1024));
   const error = await rejection(hydrated(() => read(path, null), quota('growing', { bytes: 200 * 1024 })));
   assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_UNREADABLE', `a 1 MiB file read after its 1 KiB listing: its fetch did not land: ${error}`);
   assert.ok(io.bytes <= 200 * 1024, `no more than the quota was read (${io.bytes} bytes)`);
@@ -116,7 +116,7 @@ const rejection = async (promise) => {
   const files = {};
   for (let i = 0; i < 10; i++) files[`home/user/app/node_modules/swell/f${i}.js`] = 'x'.repeat(1024);
   const { hydrated, read, quota, io, authority } = world(files);
-  for (const name of Object.keys(files)) authority.peer.writeFile(name, 'y'.repeat(64 * 1024));
+  for (const name of Object.keys(files)) await authority.peer.writeFile(name, 'y'.repeat(64 * 1024));
   const names = Object.keys(files);
   const QUOTA = 40 * 1024;
   const error = await rejection(hydrated(() => names.map((k) => read(k, null)), quota('swell', { bytes: QUOTA })));

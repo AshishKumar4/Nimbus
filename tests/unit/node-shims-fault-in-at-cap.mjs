@@ -47,9 +47,10 @@ for (const name of Object.keys(FILES)) {
   assert.throws(() => fs.readFileSync(`${dir}/${name}`, 'utf8'), { code: 'EAGAIN' }, `${name} is not held yet`);
 }
 await rf.misses();
+const before = JSON.stringify({ grants, stats: rf.stats() });
 
 for (const [name, body] of Object.entries(FILES)) {
-  assert.equal(fs.readFileSync(`${dir}/${name}`, 'utf8'), body, `${name}'s fault-in landed in the full store`);
+  assert.equal(fs.readFileSync(`${dir}/${name}`, 'utf8'), body, `${name}'s fault-in landed in the full store; before ${before}`);
 }
 assert.ok(grants.length >= 1, 'room was asked of the ledger');
 assert.ok(bytes() <= cap(), `and the store holds no more than it was granted (${bytes()} of ${cap()})`);

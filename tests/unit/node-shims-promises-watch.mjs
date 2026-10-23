@@ -41,8 +41,8 @@ const { fs, rf, timers } = sessionShims(session, {
 });
 const rawSetTimeout = globalThis.setTimeout;
 /** A session write, and the clock's tick before the next one (mtime and ctime are the clock's). */
-const write = async (content) => { await new Promise((resolve) => rawSetTimeout(resolve, 3)); session.peer.writeFile(path, content); };
-const remove = async () => { await new Promise((resolve) => rawSetTimeout(resolve, 3)); session.peer.unlink(path); };
+const write = async (content) => { await new Promise((resolve) => rawSetTimeout(resolve, 3)); await session.peer.writeFile(path, content); };
+const remove = async () => { await new Promise((resolve) => rawSetTimeout(resolve, 3)); await session.peer.unlink(path); };
 const tick = async () => {
   await rf.catchUp();
   for (const callback of [...timers.values()]) callback();

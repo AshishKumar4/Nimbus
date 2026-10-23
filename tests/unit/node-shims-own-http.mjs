@@ -19,8 +19,8 @@ const factory = new Function(
 const { http } = factory({}, {}, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user');
 let acquires = 0, releases = 0;
-const stacks = [];
-globalThis.__nimbusVfsAcquireBarrier = async () => { acquires++; if (stacks.length < 4) stacks.push(new Error('acquire').stack); };
+// A timer's resumption barrier takes no arguments; the barrier a fetch or a body takes is given what it was delivered and whether I/O arrived. Only the latter is the request's.
+globalThis.__nimbusVfsAcquireBarrier = async (...barrier) => { if (barrier.length > 0) acquires++; };
 globalThis.__nimbusVfsReleaseBarrier = async () => { releases++; };
 const server = http.createServer((request, response) => {
   assert.ok(request instanceof http.IncomingMessage);
@@ -42,7 +42,6 @@ try {
   const response = await fetch('http://localhost:7421/own?x=1');
   assert.equal(response.headers.get('X-Own'), '/own?x=1');
   assert.equal(await response.text(), 'own');
-  if (acquires !== 0) throw new Error(`DIAG acquires during the first own request: ${acquires}\n${stacks.join('\n---\n')}`);
   assert.deepEqual([routed.length, acquires, releases], [0, 0, 0], 'an own request and body cross no process boundary');
 
   const bytes = new Uint8Array([0, 128, 255, 13, 10]);

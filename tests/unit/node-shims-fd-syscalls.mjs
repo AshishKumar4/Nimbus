@@ -192,7 +192,7 @@ assert.equal(closeErr.code, 'EBADF', 'with a callback it arrives there instead')
 // `exists` is only as good as the sync view, so a file that lives only in
 // SQLite looks absent. Zeroing it at open time would destroy the very
 // content an append was asked to preserve.
-vfs.writeFile('home/user/live-append.log', enc.encode('PRIOR'));
+await vfs.writeFile('home/user/live-append.log', enc.encode('PRIOR'));
 const preFd = fs.openSync('/home/user/live-append.log', 'a');
 fs.closeSync(preFd);
 assert.equal(dec.decode(await bridge.readFile('/home/user/live-append.log')), 'PRIOR',
@@ -268,7 +268,7 @@ assert.ok(s1.mtime.getTime() >= before - 1000, 'mtime is the write\'s own, not a
 // invisible to the sync view (learning about it needs an RPC, which cannot
 // block), so openSync reports ENOENT — the same answer readFileSync already
 // gives for such a path. One mechanism, one answer.
-vfs.writeFile('home/user/born-later.bin', enc.encode('UNSEEN'));
+await vfs.writeFile('home/user/born-later.bin', enc.encode('UNSEEN'));
 assert.throws(() => fs.openSync('/home/user/born-later.bin', 'r'), (e) => e.code === 'ENOENT');
 assert.throws(() => fs.readFileSync('/home/user/born-later.bin'), (e) => e.code === 'ENOENT');
 // ...while the async form sees it, because it can reach the supervisor.
@@ -278,7 +278,7 @@ assert.equal(await fs.promises.readFile('/home/user/born-later.bin', 'utf8'), 'U
 // and the next barrier's delta named it with its stat) but its CONTENT lives
 // only in the authority. open succeeds; sync I/O must then refuse loudly
 // rather than serve bytes it does not have.
-vfs.writeFile('home/user/live-only.bin', enc.encode('LIVEDATA-0123456789'));
+await vfs.writeFile('home/user/live-only.bin', enc.encode('LIVEDATA-0123456789'));
 await new Promise((resolve) => setTimeout(resolve, 0));
 const lfd = fs.openSync('/home/user/live-only.bin', 'r+');
 assert.throws(() => fs.readSync(lfd, buf, 0, 4, 0), (e) => {

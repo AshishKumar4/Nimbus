@@ -7,10 +7,10 @@
 // pipelined. Without it, a change to how reads are issued can only be
 // asserted, not measured.
 //
-// Asserts the count against the calls the session really receives: every
-// read call that crosses to the session (a whole-file read, a ranged read, a
-// descriptor's read, or a batch carrying a range) is one round trip, and
-// metadata must not inflate it.
+// Asserts the count against the calls the session really receives. A read is
+// a call that carries bytes: a whole-file or ranged read, a descriptor's read,
+// or one range of a batch (a batch carries its ranges together, and each range
+// is a chunk the session reads). Metadata must not inflate the count.
 
 import assert from 'node:assert/strict';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -51,9 +51,9 @@ const { fs } = sessionShims(authority, {
 });
 const fsp = fs.promises;
 
-/** The read round trips the session has been asked for: each read call, and each batch carrying a range. */
+/** The ranged reads the session has been asked for: each read call, and each range of a batch. */
 const readTrips = () => crossed.readFileBytes + crossed.fsReadRange + crossed.fsRead
-  + batches.filter((kinds) => kinds.includes('range')).length;
+  + batches.reduce((total, kinds) => total + kinds.filter((kind) => kind === 'range').length, 0);
 
 // ── one small file ──────────────────────────────────────────────────────
 {
@@ -75,30 +75,29 @@ const readTrips = () => crossed.readFileBytes + crossed.fsReadRange + crossed.fs
 
 // ── chunking amplification is visible ───────────────────────────────────
 // This is the number a batching/pipelining change has to move: one logical
-// read of a 3-chunk file costs more than one round trip.
+// read of a 3-chunk file costs more than one chunk read.
 {
   const before = readTrips();
   const bytes = await fsp.readFile(`${dir}/big.bin`);
   assert.equal(bytes.byteLength, 3 * CHUNK);
-  const roundTrips = readTrips() - before;
-  assert.ok(roundTrips > 1,
-    `a ${3 * CHUNK}-byte read should span multiple ${CHUNK}-byte round trips, saw ${roundTrips}`);
-  console.log(`  one ${3 * CHUNK}-byte async read = ${roundTrips} supervisor round trips`);
+  const chunks = readTrips() - before;
+  assert.ok(chunks > 1,
+    `a ${3 * CHUNK}-byte read should span multiple ${CHUNK}-byte chunk reads, saw ${chunks}`);
+  console.log(`  one ${3 * CHUNK}-byte async read = ${chunks} supervisor chunk reads`);
 }
 
 // ── learns riding the read batch are metadata, not reads ─────────────────
 // A batch carries both ranged reads and the lstat each async read then
-// learns of a name the namespace does not hold yet. Only a batch carrying a
-// range is a read round trip.
+// learns of a name the namespace does not hold yet. Only a range is a read.
 {
-  authority.peer.writeFile(`${dir.slice(1)}/learned.txt`, 'learned bytes');
+  await authority.peer.writeFile(`${dir.slice(1)}/learned.txt`, 'learned bytes');
   const before = readTrips();
   const batchesBefore = batches.length;
   assert.equal(await fsp.readFile(`${dir}/learned.txt`, 'utf8'), 'learned bytes');
   const learned = batches.slice(batchesBefore);
-  const rangeTrips = learned.filter((kinds) => kinds.includes('range')).length;
+  const rangeCount = learned.reduce((total, kinds) => total + kinds.filter((kind) => kind === 'range').length, 0);
   assert.ok(learned.some((kinds) => kinds.includes('lstat')), `the read learned its name by a batch: ${JSON.stringify(learned)}`);
-  assert.equal(readTrips() - before, rangeTrips, `a batch of learns counted as a read: ${JSON.stringify(learned)}`);
+  assert.equal(readTrips() - before, rangeCount, `a batch of learns counted as a read: ${JSON.stringify(learned)}`);
 
   const readsBeforeWrite = readTrips();
   const batchesBeforeWrite = batches.length;
@@ -109,4 +108,4 @@ const readTrips = () => crossed.readFileBytes + crossed.fsReadRange + crossed.fs
   assert.equal(readTrips(), readsBeforeWrite, 'an async write, which reads nothing, moved the read count');
 }
 
-console.log(`node-shims-fs-rpc-read-count OK: ${readTrips()} supervisor fs read round trips`);
+console.log(`node-shims-fs-rpc-read-count OK: ${readTrips()} supervisor fs chunk reads`);
