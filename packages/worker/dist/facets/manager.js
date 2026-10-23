@@ -26,6 +26,8 @@ import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { InterpreterEnvFactsSchema, interpreterProcessEnv } from '@nimbus-sh/core/runtime/interpreter-env.js';
+import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
+import { readsAffectedBy, readsUnderMounts, recordLaunchReads } from './launch-reads.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
@@ -4007,9 +4009,19 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // 2. Greedy oversample — every installed pkg's pkg.json + main.
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
     //    regex prefetch misses. Its budget is independent from the complete
-    //    static require closure, which is correctness-critical.
+    //    static require closure, which is correctness-critical. Only a
+    //    closure that can load by a name it computes is guessed for
+    //    (opaque-loads.ts): one whose every load is a literal was walked
+    //    whole, and a builtins-only `node -e` in a Next app spent 13 s here
+    //    (verify/handoffs/ticket-launch-greedy-oversample-cost.md).
     const independentBeforeGroups = new Set(Object.keys(bundle));
-    const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
+    // Only code loads: a manifest or other data file the walk read is not run
+    // (an express checkout's package.json scripts say "mocha --require").
+    const opaque = hasOpaqueLoads(entryCode)
+        || [...closurePaths].some((path) => (isBundleModuleCandidate(path) || path.endsWith('.cjs')) && hasOpaqueLoads(prefetch.bundle[path]));
+    const greedy = opaque
+        ? await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions })
+        : { added: 0, groups: [] };
     phase('e.greedy');
     // Each landed learned root's closure (PrefetchResult.units) is one group
     // beside the greedy pass's, kept or evicted whole: a dependency evicted on
@@ -4594,14 +4606,18 @@ export class FacetManager {
      * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
-     * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
-     * reads from paths that can lie anywhere in the VFS (STATIC_ABSOLUTE_LITERALS
-     * pulls absolute-path literals like /tmp/x),
-     * so a cwd-scoped subtree revision cannot guarantee invalidation. The
-     * global revision bumps on ANY write, so the cache invalidates on every
-     * mutation that could change any file the bundle reads — provably
-     * conservative. Bounded to a small LRU; the working set per session is a
-     * handful of bins (tsc/vite/eslint) plus repeated `node -e` shapes.
+     * Correctness watermark: what the build asked the filesystem
+     * (launch-reads.ts). buildPrefetchBundle reads from paths that can lie
+     * anywhere in the VFS (STATIC_ABSOLUTE_LITERALS pulls absolute-path
+     * literals like /tmp/x), so a cwd-scoped subtree revision cannot guarantee
+     * invalidation; each path it asked about, found or not, and each directory
+     * it listed, can. An entry at an older revision is checked against the
+     * barrier's report of what changed since its build (_takePrefetchEntry):
+     * it serves again unless a change names one of those. It used to be the
+     * global revision, which every write moves, so a write anywhere (a shell
+     * history line, an agent's file tool) rebuilt the next launch's map.
+     * Bounded to a small LRU; the working set per session is a handful of bins
+     * (tsc/vite/eslint) plus repeated `node -e` shapes.
      */
     prefetchBundleCache = new Map();
     static PREFETCH_CACHE_MAX = 16;
@@ -5743,7 +5759,12 @@ export class FacetManager {
     async _installedManifests(entry, pacer) {
         if (!this.filesystem)
             return '{"files":{}}';
-        const { cred } = entry;
+        return await this._manifestCopiesFor(entry.cred, () => this.filesystem.bind({ pid: entry.pid, cred: entry.cred }), pacer);
+    }
+    /** Reads of the manifest copies in flight, by credential and install revision: a launch joins the read a prewarm began. */
+    manifestReads = new Map();
+    /** `cred`'s manifest copies at the install revision now (_installedManifests), read through the view `view` makes. */
+    async _manifestCopiesFor(cred, view, pacer) {
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
         const sql = this.ctx.storage.sql;
         const install = sql ? new NpmCache(sql).installRevision() : '';
@@ -5753,7 +5774,20 @@ export class FacetManager {
             this.manifestCopies.set(credKey, held);
             return held.json;
         }
-        const vfs = this.filesystem.bind({ pid: entry.pid, cred });
+        const readKey = `${credKey}\x00${install}`;
+        const reading = this.manifestReads.get(readKey);
+        if (reading !== undefined)
+            return await reading;
+        const read = this._readManifestCopies(credKey, install, view(), pacer);
+        this.manifestReads.set(readKey, read);
+        try {
+            return await read;
+        }
+        finally {
+            this.manifestReads.delete(readKey);
+        }
+    }
+    async _readManifestCopies(credKey, install, vfs, pacer) {
         const files = {};
         let bytes = 0;
         for (let after = null;;) {
@@ -5793,6 +5827,34 @@ export class FacetManager {
             kept -= copies.json.length;
         }
         return json;
+    }
+    /**
+     * What a session's first `node` waits for, made as soon as the session has
+     * a filesystem rather than by that launch: the node runtime's sources
+     * (2.3 MB from the deployment's assets, by way of the colo cache, on an
+     * isolate that has not read them) and `cred`'s manifest copies (a listing
+     * of the whole namespace and a read of each package.json, which a new
+     * session object has not kept). Measured 2026-10-23 on a throwaway: the
+     * first `node -e 1` after a reset of an express project's session took
+     * 3.1 s, against 0.6 s warm. A launch that comes while this runs joins its
+     * reads (manifestReads, the sources' memo). It holds no process and no
+     * Dynamic Worker, and runs on the session's own turns, paced as a launch
+     * is, so a request that arrives meanwhile is answered between them.
+     */
+    async prewarm(cred) {
+        const filesystem = this.filesystem;
+        const sources = fetchNodeFacetSources(this.env);
+        if (filesystem === null) {
+            await sources;
+            return;
+        }
+        const lease = filesystem.openHost(cred);
+        try {
+            await Promise.all([sources, this._manifestCopiesFor(cred, () => lease.fs, new TurnBudget(this.launchPump, turnChunkMaxBytes(this.env)))]);
+        }
+        finally {
+            await lease.dispose();
+        }
     }
     /**
      * Paths earlier launches of the same build missed in this session. Other
@@ -5943,23 +6005,34 @@ export class FacetManager {
         return refs;
     }
     /**
-     * The cache's entry for `key` at `revision`, if one is held. An entry built
-     * at an older revision can never be SERVED again — the lookup requires an
-     * exact match — so from the first write after it was admitted it is
-     * retained garbage, held in the isolate that is measurably
-     * memory-constrained. Dropped here, before the build that replaces it
-     * allocates, so the stale filesystem graph and the new one never co-reside.
+     * The entry for `key`, if what its build read is as it was. An entry at an
+     * older revision is checked against what changed since its build, as
+     * `vfs` names the changes (launch-reads.ts readsAffectedBy): unaffected, it
+     * is dated at `revision` and served; affected, or past the retained change
+     * log (poison), it is dropped before the build that replaces it allocates,
+     * so the stale graph and the new one never co-reside. The other entries of
+     * the same credential are checked the same way and dropped when stale, as
+     * they were when any write dropped them all.
      */
-    _takePrefetchEntry(key, revision, spec) {
-        let evictedStale = false;
-        for (const [staleKey, stale] of this.prefetchBundleCache) {
-            if (stale.revision === revision)
+    async _takePrefetchEntry(key, revision, spec, vfs, credKey) {
+        let dropped = false;
+        for (const [entryKey, entry] of this.prefetchBundleCache) {
+            if (entry.revision === revision || !entryKey.includes(`\x00${credKey}\x00`))
                 continue;
-            this.prefetchBundleCache.delete(staleKey);
-            this.prefetchCacheBytes -= stale.bytes;
-            evictedStale = true;
+            const changes = entry.mounted ? null : await vfs.acquire(entry.stamp.epoch, entry.stamp.rev);
+            if (changes !== null && !changes.poison && !readsAffectedBy(entry.reads, changes.paths)) {
+                entry.revision = revision;
+                entry.stamp = { epoch: changes.epoch, rev: changes.rev };
+                continue;
+            }
+            // Checked again only if still there: another launch may have replaced it while the barrier answered.
+            if (this.prefetchBundleCache.get(entryKey) !== entry)
+                continue;
+            this.prefetchBundleCache.delete(entryKey);
+            this.prefetchCacheBytes -= entry.bytes;
+            dropped = true;
         }
-        if (evictedStale)
+        if (dropped)
             setPrefetchCacheBytes(this.prefetchCacheBytes);
         const cached = this.prefetchBundleCache.get(key);
         if (!cached || cached.revision !== revision || spec.maxBundleBytes !== undefined)
@@ -6001,9 +6074,9 @@ export class FacetManager {
         const takeCached = async () => {
             await this.learning.settled();
             revision = await vfs.revision();
-            return this._takePrefetchEntry(key, revision, spec);
+            return await this._takePrefetchEntry(key, revision, spec, vfs, credKey);
         };
-        const cached = this._takePrefetchEntry(key, revision, spec);
+        const cached = await this._takePrefetchEntry(key, revision, spec, vfs, credKey);
         if (cached)
             return this._holdMapShare(entry, cached);
         // A build of the same launch at the same revision is in flight: its entry is this launch's once it is admitted.
@@ -6042,6 +6115,11 @@ export class FacetManager {
             // It builds the filesystem as it is now, read again after its wait: a
             // launch of its key arriving at that revision joins it.
             inProgress.revision = revision;
+            // What it asks the filesystem is noted, from a cursor taken first: a
+            // later launch is served this build unless a change since names it.
+            const recorded = recordLaunchReads(vfs);
+            const buildFs = recorded.view;
+            const stamp = await vfs.acquire(null, 0);
             const readProfile = this.readProfile;
             const offered = [];
             const learnedFor = readProfile === null ? undefined : async (closure) => {
@@ -6062,12 +6140,12 @@ export class FacetManager {
                     executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
                 }
             }
-            const vfsState = await gatherPrefetchBundle(vfs, {
+            const vfsState = await gatherPrefetchBundle(buildFs, {
                 scriptPath: spec.scriptPath,
                 cwd: spec.cwd,
                 entryCode: spec.entryCode,
                 esbuild: this.esbuild ?? undefined,
-                staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
+                staticRefs: (path) => this._staticRefsOf(buildFs, cred, path, pacer),
                 bundleProfile: profile,
                 moduleScope,
                 observedReads: new Set(learning.dataReads),
@@ -6094,7 +6172,7 @@ export class FacetManager {
                         continue;
                     }
                     // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
-                    const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
+                    const stat = await Promise.resolve(buildFs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
                     if (stat === null || stat.type !== 'file')
                         unresolved.push(entry.path);
                 }
@@ -6109,7 +6187,7 @@ export class FacetManager {
             // installs: a binding is compiled with the launch or not at all, and a
             // program can reach its owner by a specifier no walk follows.
             const declaredWalk = { probes: 0 };
-            const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
+            const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(buildFs), spec.scriptPath, undefined, declaredWalk);
             const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
             const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
             const stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
@@ -6144,7 +6222,7 @@ export class FacetManager {
                 esm: vfsState.esm,
                 codeOnly: vfsState.codeOnly,
                 dataModules: vfsState.dataModules,
-                runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
+                runtimeCode: await this._stagedRuntimeCode(learning, buildFs, pacer, moduleScope, launch.stripTypes),
             });
             if (vfsState.phases)
                 vfsState.phases.serialize = Date.now() - serializeFrom;
@@ -6162,7 +6240,9 @@ export class FacetManager {
             // Released BEFORE admission so the byte bound prices what the entry costs
             // from here on, not the peak it passed through on the way in.
             releaseSerializedSources(vfsState);
-            vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
+            const reads = recorded.reads();
+            const mounted = readsUnderMounts(reads, this.filesystem?.mounts?.(cred).map((mount) => mount.mountPoint) ?? []);
+            vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState, { stamp: { epoch: stamp.epoch, rev: stamp.rev }, reads, mounted });
             // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
             return { state: vfsState, shared: { state: { ...vfsState }, revision } };
         };
@@ -6421,7 +6501,7 @@ export class FacetManager {
         return modules.size > 0 ? modules : undefined;
     }
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
-    _admitPrefetchCacheEntry(key, revision, vfsState) {
+    _admitPrefetchCacheEntry(key, revision, vfsState, dated) {
         const previous = this.prefetchBundleCache.get(key);
         if (previous)
             this.prefetchCacheBytes -= previous.bytes;
@@ -6441,7 +6521,7 @@ export class FacetManager {
             setPrefetchCacheBytes(this.prefetchCacheBytes);
             return false;
         }
-        this.prefetchBundleCache.set(key, { revision, vfsState, bytes });
+        this.prefetchBundleCache.set(key, { revision, vfsState, bytes, ...dated });
         this.prefetchCacheBytes += bytes;
         for (const [oldest, entry] of this.prefetchBundleCache) {
             if (this.prefetchBundleCache.size <= FacetManager.PREFETCH_CACHE_MAX
