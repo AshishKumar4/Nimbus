@@ -2302,12 +2302,13 @@ const RUNNER_DROPPED = "the platform dropped the runner's idle worker";
 const RUNNER_ENTRY = '// a Nimbus runner: each call runs its code as a REPL line\n';
 
 /**
- * The text a runner's answer may carry in each of its five texts (value,
- * stdout, stderr, the error's message and stack): a tenth of what one RPC
- * answer may hold, at two bytes a character. Past it the text is cut, and
+ * The text a runner's answer may carry in each of its five long texts
+ * (value, stdout, stderr, the error's message and stack), at two bytes a
+ * character: together a little over four fifths of what one RPC answer may
+ * hold, the rest left for its short fields. Past it the text is cut, and
  * says so; an answer over the RPC limit would lose the runner.
  */
-const RUNNER_ANSWER_TEXT_CHARS = Math.floor(MAX_RPC_SAFE_PAYLOAD_BYTES / 10);
+const RUNNER_ANSWER_TEXT_CHARS = Math.floor(MAX_RPC_SAFE_PAYLOAD_BYTES / 12);
 
 /** One runner of the session (FacetManager.runnerRun). */
 interface RunnerRecord {
@@ -2344,9 +2345,10 @@ interface RunnerGeneration {
 interface RunnerLaunch {
   /** Its map, until the loader takes it. */
   map: PreparedOneShotCode | null;
-  /** Its map made again, after running work reclaimed the parked one. */
-  readonly prepareAgain: () => Promise<PreparedOneShotCode>;
-  readonly start: RunnerStart;
+  /** What its process starts with, from the bundle its map was made from. */
+  start: RunnerStart;
+  /** Its map, and its start, made again after running work reclaimed the parked map. */
+  readonly prepareAgain: () => Promise<{ map: PreparedOneShotCode; start: RunnerStart }>;
   /** Settled as the loader takes its map. */
   readonly pacer: TurnBudget;
 }
@@ -8499,9 +8501,10 @@ export class FacetManager {
       const timeoutMs = options.timeoutMs;
       const timer = timeoutMs === undefined ? null : setTimeout(() => ended.abort(new RunnerCallEnded('timeout', timeoutMs)), timeoutMs);
       const fresh = generation.launch !== null;
+      let sent = false;
       let entered = false;
       try {
-        const answer = await this._runnerEnter(generation, code, cpuMs, ended.signal, () => { entered = true; });
+        const answer = await this._runnerEnter(generation, code, cpuMs, ended.signal, { sent: () => { sent = true; }, entered: () => { entered = true; } });
         // An isolate the platform started again, with none of what the
         // generation held: a new one runs the call.
         if ('unstarted' in answer) {
@@ -8524,12 +8527,16 @@ export class FacetManager {
           continue;
         }
         // Refused before its worker began it (the ledger's deadlock, the
-        // platform's limit): the runner keeps its state, and the refusal is
-        // the call's, as a launch's is.
-        if (!entered && (isDynamicWorkerDeadlock(error) || classifyError(error) === 'dynamic_worker_cap')) throw error;
-        // A wall limit that came while it waited for a worker loses nothing,
+        // platform's limit): the refusal is the call's, as a launch's is, and
+        // a runner that had started keeps its state. One that had not holds
+        // nothing worth keeping, and its launch's credit goes.
+        if (!entered && (isDynamicWorkerDeadlock(error) || classifyError(error) === 'dynamic_worker_cap')) {
+          if (fresh) this._runnerRetire(runner, generation, { code: 1, cause: errorMessage(error) });
+          throw error;
+        }
+        // A wall limit that came before the call was sent loses nothing,
         // unless the generation never started (its launch's hold goes too).
-        const kept = !entered && error instanceof RunnerCallEnded && error.why === 'timeout' && !fresh;
+        const kept = !sent && error instanceof RunnerCallEnded && error.why === 'timeout' && !fresh;
         const failure = runnerFailure(error, cpuMs, !kept);
         if (!kept) this._runnerRetire(runner, generation, { code: 1, cause: failure.message });
         return { stdout: '', stderr: '', error: failure, fresh, ms: Date.now() - began };
@@ -8558,8 +8565,13 @@ export class FacetManager {
       (current) => this._prepareOneShotCode(RUNNER_ENTRY, { cwd: spec.cwd }, entry, current, pacer, undefined, generateRunnerCode));
     try {
       let { prepared: map, state: vfsState } = await prepare(await this._buildProcessBundle(entry, bundleSpec, pacer));
-      const dataPlan = await this._staticReadPlan(entry, vfsState, spec.cwd, spec.env.HOME, pacer);
-      const manifests = await this._installedManifests(entry, pacer);
+      // What the process starts with, from the bundle its map was made from.
+      const startFor = async (state: FacetVfsState): Promise<RunnerStart> => ({
+        pid: entry.pid, cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: state.cursor ?? null,
+        dataPlan: await this._staticReadPlan(entry, state, spec.cwd, spec.env.HOME, pacer),
+        manifests: await this._installedManifests(entry, pacer),
+      });
+      const start = await startFor(vfsState);
       const bundlePaths = vfsState.bundlePaths ?? [];
       this.filesystem?.nameLaunch?.(entry, () => launchNames(spec.cwd, undefined, [], bundlePaths, []));
       // What it reports missing as it runs is filed against its bundle, for the next generation.
@@ -8574,13 +8586,13 @@ export class FacetManager {
         dropped: false,
         launch: {
           map,
+          start,
           prepareAgain: async () => {
             if (vfsState.generatedSourcesReleased) vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
             else await this._holdMapShare(entry, vfsState);
             ({ prepared: map, state: vfsState } = await prepare(vfsState));
-            return map;
+            return { map, start: await startFor(vfsState) };
           },
-          start: { pid: entry.pid, cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: vfsState.cursor ?? null, dataPlan, manifests },
           pacer,
         },
       };
@@ -8603,9 +8615,8 @@ export class FacetManager {
    * ledger, and made again if running work reclaims it meanwhile. A call
    * after that holds only its worker.
    */
-  private async _runnerEnter(generation: RunnerGeneration, code: string, cpuMs: number, signal: AbortSignal, onEntered: () => void): Promise<RunnerAnswer> {
+  private async _runnerEnter(generation: RunnerGeneration, code: string, cpuMs: number, signal: AbortSignal, told: { sent(): void; entered(): void }): Promise<RunnerAnswer> {
     const launch = generation.launch;
-    const input: RunnerInput = launch === null ? { code } : { code, start: launch.start };
     const call = () => this.processHost.callRunner({
       pid: generation.pid,
       writerId: generation.writerId,
@@ -8620,10 +8631,11 @@ export class FacetManager {
         launch.pacer.settle();
         return map.code();
       },
-      input,
+      input: (launch === null ? { code } : { code, start: launch.start }) satisfies RunnerInput,
       cpuMs,
       signal,
-      onEntered,
+      onSent: told.sent,
+      onEntered: told.entered,
     }, (answer) => RunnerAnswerSchema.parse(answer));
     for (;;) {
       const map = launch?.map ?? null;
@@ -8637,7 +8649,7 @@ export class FacetManager {
         }, parked.reclaimable);
       } catch (error) {
         if (!parked.reclaimed || signal.aborted) throw error;
-        launch.map = await launch.prepareAgain();
+        ({ map: launch.map, start: launch.start } = await launch.prepareAgain());
       } finally {
         parked.unregister();
       }

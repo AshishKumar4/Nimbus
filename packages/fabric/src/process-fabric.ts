@@ -766,10 +766,15 @@ export interface RunnerCallParams<I extends object> {
   /** Ends the call where it waits (a timeout, a kill): the worker aborts itself, as a one-shot's run does. */
   signal: AbortSignal;
   /**
+   * Called as the call is sent to the worker, holding its Dynamic Worker. A
+   * call that fails before it was sent ran nothing; one sent may be running
+   * in the worker however it fails.
+   */
+  onSent(): void;
+  /**
    * Called once the worker has begun the call (its first call back, the
-   * run's `ended`). A call that fails before it ran none of its code: the
-   * platform refused it, or its worker did not load. One that fails after
-   * it may have left the worker in any state.
+   * run's `ended`). A call sent and refused before this was refused by the
+   * platform, and ran nothing.
    */
   onEntered(): void;
 }

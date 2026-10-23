@@ -1023,11 +1023,14 @@ async function callRunner<I extends object, T>(
     for (;;) {
       let entered = false;
       try {
-        return await untilEnded(params.signal, async (ended) => consume(await run.run(params.input, () => {
-          if (!entered) params.onEntered();
-          entered = true;
-          return ended();
-        })));
+        return await untilEnded(params.signal, async (ended) => {
+          params.onSent();
+          return consume(await run.run(params.input, () => {
+            if (!entered) params.onEntered();
+            entered = true;
+            return ended();
+          }));
+        });
       } catch (error) {
         if (entered || classifyError(error) !== 'dynamic_worker_cap') throw error;
         // Refused before it was entered: the ledger learns it from the hold it ends (runOneShot).

@@ -162,7 +162,7 @@ await runner.close();
   runner. A call whose `timeoutMs` came while it still waited for a
   Dynamic Worker ran nothing, and its runner keeps its state.
 - **Output.** `value`, `stdout`, `stderr` and the error's `message` and
-  `stack` each carry up to about 2.9 million characters; past that the text
+  `stack` each carry up to about 2.4 million characters; past that the text
   is cut, and says so.
 - **`fresh`.** A `fresh: true` answer ran in a new runner, where nothing an
   earlier call left is there: the first call, the call after one that lost
