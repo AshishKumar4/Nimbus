@@ -822,19 +822,21 @@ async function callRunner(ctx, env, supervisor, params, consume) {
             const props = supervisor();
             return applyFacetLimits('process', workspaceOutbound({ ...code, env: { SUPERVISOR: bindingSupervisor(props), ...egressMarker(props) } }, props));
         });
+        // The keyed stub is the loader's cache entry, kept (IsolatePool's); the call's entrypoint is disposed below.
         const run = worker.getEntrypoint(undefined, { limits: effectiveFacetLimits('process', { cpuMs: params.cpuMs }) });
         entrypoint = run;
+        if (typeof run.run !== 'function')
+            throw new Error('Nimbus: a runner worker has no run method');
         let firstRefusal;
         for (;;) {
             let entered = false;
             try {
-                return await untilEnded(params.signal, async (ended) => {
-                    params.onSent();
-                    return consume(await run.run(params.input, () => {
-                        entered = true;
-                        return ended();
-                    }));
-                });
+                return await untilEnded(params.signal, async (ended) => consume(await run.run(params.input, () => {
+                    if (!entered)
+                        params.onEntered();
+                    entered = true;
+                    return ended();
+                })));
             }
             catch (error) {
                 if (entered || classifyError(error) !== 'dynamic_worker_cap')

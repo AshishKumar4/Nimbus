@@ -170,8 +170,13 @@ export const ExitStatusSchema = z.union([
     z.object({ code: z.null(), signal: z.string() }),
 ]);
 const RemovedAppSchema = z.object({ owner: z.string(), removed: z.boolean(), port: z.number().nullable() });
-/** A runner's id: 1 to 64 of A-Z a-z 0-9 . _ - (a UUID fits). */
-export const RunnerIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
+/** `id` as a runner's: 1 to 64 of A-Z a-z 0-9 . _ - (a UUID fits); a TypeError otherwise. */
+export function parseRunnerId(id) {
+    const parsed = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).safeParse(id);
+    if (!parsed.success)
+        throw new TypeError(`runner: an id is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(id)}`);
+    return parsed.data;
+}
 /**
  * What a runner call threw, or why it failed: an Error's name, message,
  * stack and code; another thrown value as `util.inspect` shows it, in

@@ -955,9 +955,9 @@ export class NimbusSession extends CloudflareDurableObject {
         return _programmatic.rpcRunCode(this, code, options);
     }
     async _rpcRunnerRun(id, code, runner, options) {
-        return _programmatic.rpcRunnerRun(this, id, code, runner, options);
+        return _programmatic.rpcRunnerRun(this, '', id, code, runner, options);
     }
-    async _rpcRunnerClose(id) { return _programmatic.rpcRunnerClose(this, id); }
+    async _rpcRunnerClose(id) { return _programmatic.rpcRunnerClose(this, '', id); }
     async _rpcInstallRuntime(spec, options) { return _programmatic.rpcInstallRuntime(this, spec, options); }
     async _rpcEnsureRuntimes(specs, options) { return _programmatic.rpcEnsureRuntimes(this, specs, options); }
     async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this)); }

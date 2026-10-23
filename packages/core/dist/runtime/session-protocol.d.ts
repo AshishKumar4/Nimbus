@@ -295,8 +295,8 @@ export declare const ExitStatusSchema: z.ZodUnion<readonly [z.ZodObject<{
     code: z.ZodNull;
     signal: z.ZodString;
 }, z.core.$strip>]>;
-/** A runner's id: 1 to 64 of A-Z a-z 0-9 . _ - (a UUID fits). */
-export declare const RunnerIdSchema: z.ZodString;
+/** `id` as a runner's: 1 to 64 of A-Z a-z 0-9 . _ - (a UUID fits); a TypeError otherwise. */
+export declare function parseRunnerId(id: string): string;
 /**
  * What a runner call threw, or why it failed: an Error's name, message,
  * stack and code; another thrown value as `util.inspect` shows it, in

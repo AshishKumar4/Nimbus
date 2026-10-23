@@ -34,8 +34,8 @@ export interface ProgrammaticShell {
 }
 type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
-    runnerRun(id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
-    runnerClose(id: string): boolean;
+    runnerRun(owner: string, id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+    runnerClose(owner: string, id: string): boolean;
     kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean;
     closeLaunches(): Promise<void>;
     hasResidentProcess(pid: number): boolean;
@@ -144,14 +144,16 @@ export declare function rpcRunCode(self: ProgrammaticHost, code: string, options
 /** What running and closing a session's runners asks of it. */
 export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager'>;
 /**
- * Run `code` in runner `id` (FacetManager.runnerRun). A runner made at this
- * call takes the session shell's cwd and exported environment for what
- * `runner` leaves out, and runs as the session's user unless a colocated
- * caller names another.
+ * Run `code` in runner `id` of `owner` (FacetManager.runnerRun): a hosted
+ * session's scope has runners of its own; every other caller, the
+ * workspace's (''). A runner made at this call takes the session shell's
+ * cwd and exported environment for what `runner` leaves out, as a named
+ * shell starts from them, and runs as the session's user unless the caller
+ * names another.
  */
-export declare function rpcRunnerRun(self: RunnersHost, id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
-/** End runner `id` (FacetManager.runnerClose): whether there was one. */
-export declare function rpcRunnerClose(self: RunnersHost, id: string): Promise<{
+export declare function rpcRunnerRun(self: RunnersHost, owner: string, id: string, code: string, runner?: SessionRunnerOptions, options?: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+/** End runner `id` of `owner` (FacetManager.runnerClose): whether there was one. */
+export declare function rpcRunnerClose(self: RunnersHost, owner: string, id: string): Promise<{
     closed: boolean;
 }>;
 export declare function rpcInstallRuntime(self: ProgrammaticHost, spec: string, options?: SessionRuntimeInstallOptions): Promise<{

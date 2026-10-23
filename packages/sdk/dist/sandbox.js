@@ -10,7 +10,7 @@ import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
  */
 export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
-import { SessionResults, SessionSuccessSchema, SessionFailureSchema, RunnerIdSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { SessionResults, SessionSuccessSchema, SessionFailureSchema, parseRunnerId, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { decodeProgramStream, PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
 import { feedProgramInput } from '@nimbus-sh/core/runtime/program-start.js';
 import { z } from 'zod/v4';
@@ -397,17 +397,15 @@ export class NimbusSandbox {
      */
     runner(options = {}) {
         const { id = crypto.randomUUID(), ...asked } = options;
-        const parsed = RunnerIdSchema.safeParse(id);
-        if (!parsed.success)
-            throw new TypeError(`runner: an id is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(id)}`);
+        const named = parseRunnerId(id);
         const runner = { ...asked, cwd: resolveSandboxCwd(this.root, asked.cwd ?? this.root) };
         return {
-            id: parsed.data,
+            id: named,
             run: async (code, call = {}) => {
                 await this.ready();
-                return this.rpc(this.stub()._rpcRunnerRun(parsed.data, code, runner, call));
+                return this.rpc(this.stub()._rpcRunnerRun(named, code, runner, call));
             },
-            close: async () => (await this.rpc(this.stub()._rpcRunnerClose(parsed.data))).closed,
+            close: async () => (await this.rpc(this.stub()._rpcRunnerClose(named))).closed,
         };
     }
     async destroy(options = {}) {

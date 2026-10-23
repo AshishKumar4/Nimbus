@@ -15,7 +15,8 @@ import { endResidentKeepalive } from './hibernation.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import { RunnerIdSchema, SessionProcessLogsOptionsSchema } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { parseRunnerId, SessionProcessLogsOptionsSchema } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
@@ -456,13 +457,15 @@ export async function rpcRunCode(self, code, options = {}) {
     return rpcExec(self, `node -e ${singleQuote(code)}`, options);
 }
 /**
- * Run `code` in runner `id` (FacetManager.runnerRun). A runner made at this
- * call takes the session shell's cwd and exported environment for what
- * `runner` leaves out, and runs as the session's user unless a colocated
- * caller names another.
+ * Run `code` in runner `id` of `owner` (FacetManager.runnerRun): a hosted
+ * session's scope has runners of its own; every other caller, the
+ * workspace's (''). A runner made at this call takes the session shell's
+ * cwd and exported environment for what `runner` leaves out, as a named
+ * shell starts from them, and runs as the session's user unless the caller
+ * names another.
  */
-export async function rpcRunnerRun(self, id, code, runner = {}, options = {}) {
-    const name = runnerName(id);
+export async function rpcRunnerRun(self, owner, id, code, runner = {}, options = {}) {
+    const name = parseRunnerId(id);
     if (typeof code !== 'string')
         throw new TypeError('runner: code must be a string');
     if (runner.cwd !== undefined && (typeof runner.cwd !== 'string' || !runner.cwd.startsWith('/'))) {
@@ -474,15 +477,17 @@ export async function rpcRunnerRun(self, id, code, runner = {}, options = {}) {
     if (runner.execId !== undefined)
         parseExecId(runner.execId);
     const cred = runner.cred === undefined ? CRED_SESSION_USER : requireVfsCred(runner.cred, 'runner');
-    for (const [limit, value] of [['timeoutMs', options.timeoutMs], ['cpuMs', options.cpuMs]]) {
-        if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
-            throw new TypeError(`runner: ${limit} must be a positive whole number of ms, got ${value}`);
+    // The most a process facet may use, and the longest a timer can wait (a longer delay fires at once).
+    for (const [limit, value, most] of [['timeoutMs', options.timeoutMs, 2 ** 31 - 1], ['cpuMs', options.cpuMs, facetLimits('process').cpuMs]]) {
+        if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > most)) {
+            throw new TypeError(`runner: ${limit} must be a whole number of ms from 1 to ${most}, got ${value}`);
+        }
     }
     await self.ensureRuntimeReady();
     const facets = self.facetManager;
     if (!facets)
         throw new Error('runner: the session has no process manager');
-    return facets.runnerRun(name, runner, () => {
+    return facets.runnerRun(owner, name, runner, () => {
         const shell = self.runtimeWorkspace?.shell;
         const cwd = runner.cwd ?? shell?.getCwd();
         const env = runner.env ?? shell?.getExportedEnv();
@@ -491,17 +496,11 @@ export async function rpcRunnerRun(self, id, code, runner = {}, options = {}) {
         return { cwd, env: { ...env }, cred, ...(runner.execId === undefined ? {} : { execId: runner.execId }) };
     }, code, options);
 }
-/** End runner `id` (FacetManager.runnerClose): whether there was one. */
-export async function rpcRunnerClose(self, id) {
-    const name = runnerName(id);
+/** End runner `id` of `owner` (FacetManager.runnerClose): whether there was one. */
+export async function rpcRunnerClose(self, owner, id) {
+    const name = parseRunnerId(id);
     await self.ensureRuntimeReady();
-    return { closed: self.facetManager?.runnerClose(name) === true };
-}
-function runnerName(id) {
-    const parsed = RunnerIdSchema.safeParse(id);
-    if (!parsed.success)
-        throw new TypeError(`runner: an id is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(id)}`);
-    return parsed.data;
+    return { closed: self.facetManager?.runnerClose(owner, name) === true };
 }
 export async function rpcInstallRuntime(self, spec, options = {}) {
     await ensureProgrammaticReady(self);

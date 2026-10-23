@@ -292,16 +292,17 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
 }, usesSqlite: boolean, sources: NodeFacetSources, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
 /**
  * Generate a runner's main module (FacetManager.runnerRun): a node process
- * that runs no entry. Its first call boots it as a one-shot boots (its
- * store in its heap, its output captured), and every call runs its code as
- * a line typed at the node REPL (runtime/js-repl.ts): compiled by the
- * runtime-code service's compileReplLine, with top-level `await`, its
- * declarations kept on the global object, `require` from the working
+ * that runs no entry. Its generation's first call starts it as a one-shot
+ * starts (its store in its heap, its output captured), and every call runs
+ * its code as a line typed at the node REPL (runtime/js-repl.ts): compiled
+ * by the runtime-code service's compileReplLine, with top-level `await`,
+ * its declarations kept on the global object, `require` from the working
  * directory. A call takes an ACQUIRE first, so its code reads what the
  * session holds now, and makes its writes durable before it answers, as a
  * resident's request does (RUNNING_FLUSH_SOURCE). Nothing it leaves pending
- * (a timer) runs after it answers: the platform runs a worker's code only
- * within a request. Each answer carries the isolate's boot id.
+ * (a timer, a fetch) runs after it answers: the platform runs a worker's
+ * code only within a request. An isolate the platform starts again has no
+ * process; given no start, it answers `unstarted` and runs nothing.
  */
 export declare function generateRunnerCode(vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports: readonly FacetWasmImport[]): Promise<GeneratedNodeFacetCode>;
 /**
@@ -1912,26 +1913,27 @@ export declare class FacetManager {
     /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
     private _launchEnded;
     /**
-     * Run `code` in runner `id`: a warm node process the session keeps under
-     * a Loader key of its own (session, runner, generation), which runs each
-     * call's code as a REPL line (generateRunnerCode) and holds no Dynamic
-     * Worker between calls. One runner runs its calls one at a time, in order,
-     * and keeps what each leaves for the next; nothing isolates them. It is
-     * made at its first call, from what `resolve` makes of the options it was
-     * asked for (`asked`); a later call that asks for other options is
-     * refused. A call that loses the runner's worker (past its CPU or wall
-     * limit, a kill, process.exit, any failure of its worker) ends that
-     * generation, and the next call makes a new one. An answer is `fresh`
-     * when its code ran in an isolate no earlier call of the runner ran in:
-     * the first call, the one after a loss, and the one after the platform
-     * dropped an idle worker.
+     * Run `code` in runner `id` of `owner` (a hosted session's scope, or the
+     * workspace's, ''): a warm node process the session keeps under a Loader
+     * key of its own (session, runner, generation), which runs each call's
+     * code as a REPL line (generateRunnerCode) and holds no Dynamic Worker
+     * between calls. One runner runs its calls one at a time, in order, and
+     * keeps what each leaves for the next; nothing isolates them. It is made
+     * at its first call, from what `resolve` makes of the options it was asked
+     * for (`asked`); a later call that asks for other options is refused. A
+     * call that loses the runner's process or isolate (past its CPU or wall
+     * limit, a kill, a close, process.exit, any failure of its worker) ends
+     * that generation, and the next call makes a new one. An answer is `fresh`
+     * when it is its generation's first: nothing an earlier call left is there.
      */
-    runnerRun(id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
+    runnerRun(owner: string, id: string, asked: SessionRunnerOptions, resolve: () => RunnerSpec, code: string, options: SessionRunnerRunOptions): Promise<SessionRunnerResult>;
     /**
-     * End runner `id`: whether there was one. A call it is running is ended as
-     * a kill ends one, and the calls still in its line are refused.
+     * End runner `id` of `owner`: whether there was one. A call it is running
+     * is ended as a kill ends one, and the calls still in its line are refused.
      */
-    runnerClose(id: string): boolean;
+    runnerClose(owner: string, id: string): boolean;
+    /** `runner`, under `name`, is gone: no call runs on it again, and the one it runs is ended. */
+    private _runnerDiscard;
     private _runnerCall;
     /**
      * A new generation of `runner`: its process, its bundle and map, prepared
@@ -1939,14 +1941,17 @@ export declare class FacetManager {
      */
     private _runnerGeneration;
     /**
-     * One call on `generation`'s worker. Its first load is a launch's: its map
-     * parked, under its share of the credit, until the launch is let in on the
-     * ledger, and made again if running work reclaims it meanwhile. A warm
-     * call holds only its worker.
+     * One call on `generation`'s worker. Until its process has started, a call
+     * carries its start, and its first load is a launch's: its map parked,
+     * under its share of the credit, until the launch is let in on the
+     * ledger, and made again if running work reclaims it meanwhile. A call
+     * after that holds only its worker.
      */
     private _runnerEnter;
     /** `runner`'s generation is over: its process ends with `ending`, and what it held goes. */
     private _runnerRetire;
+    /** End every runner, and each call it runs: the session is closing (closeLaunches). */
+    private _closeRunners;
     /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
@@ -2038,11 +2043,12 @@ export declare class FacetManager {
      */
     private _parkOneShotMap;
     /**
-     * `entry`'s map from the bundle `bundle` holds, by `prepare`, under its
-     * launch's share of the credit, taken before it holds a worker. A map that
-     * needs more credit than its build took is made again from a bundle built
-     * under that much (OneShotAllocationNeeded), and one over the ceiling from
-     * a bundle built under it (ModuleMapOverCeilingError), each once.
+     * `entry`'s map, by `prepare`, from bundle `state`, under its launch's
+     * share of the credit, taken before it holds a worker; with the bundle it
+     * was made from. A map that needs more credit than its build took is made
+     * again from a bundle built under that much (OneShotAllocationNeeded), and
+     * one over the ceiling from a bundle built under it
+     * (ModuleMapOverCeilingError), each once.
      */
     private _prepareUnderCredit;
     /**

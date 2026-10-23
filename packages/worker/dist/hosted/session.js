@@ -78,12 +78,16 @@ export class HostedSession extends RpcTarget {
         return operations.rpcDetachExec(this.#client(), detachId, this.scope?.shellId);
     }
     async _rpcRunCode(code, options) { return operations.rpcRunCode(this.#client(), code, this.#exec(options)); }
-    // A runner runs in no shell: a scoped session's runs as its identity.
+    // A scoped session's runners are its own, and run as its identity.
     async _rpcRunnerRun(id, code, runner, options) {
         const cred = this.#cred(runner?.cred);
-        return operations.rpcRunnerRun(this.#client(), id, code, { ...runner, ...(cred === undefined ? {} : { cred }) }, options);
+        return operations.rpcRunnerRun(this.#client(), this.#runnerOwner(), id, code, { ...runner, ...(cred === undefined ? {} : { cred }) }, options);
     }
-    async _rpcRunnerClose(id) { return operations.rpcRunnerClose(this.#client(), id); }
+    async _rpcRunnerClose(id) { return operations.rpcRunnerClose(this.#client(), this.#runnerOwner(), id); }
+    /** Whose runners a call names: this scope's, or the workspace's (''). */
+    #runnerOwner() {
+        return this.scope === null ? '' : JSON.stringify([this.scope.shellId ?? null, this.scope.cred ?? null]);
+    }
     // The file methods keep the session's wire shape: the third slot is a
     // process claim no SDK caller makes, and is not accepted here either.
     async _rpcReadFile(path, _pid, cred) {
