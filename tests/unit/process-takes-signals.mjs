@@ -263,16 +263,16 @@ for (let ticks = 0; ticks < 16; ticks++) {
   const shell = processes.spawn('sh', ['sh'], '/home/user');
   const job = processes.spawn('python3', ['python3', 'a.py'], '/home/user', { parentPid: shell.pid });
   const child = processes.spawn('cat', ['cat'], '/home/user', { parentPid: job.pid });
-  const backgroundJob = processes.spawn('sh', ['sh'], '/home/user', { parentPid: shell.pid });
+  // A background job a subshell started: what marks it is its own spawn, whichever shell's job table holds it.
+  const subshell = processes.spawn('sh', ['sh'], '/home/user', { parentPid: shell.pid });
+  const backgroundJob = processes.spawn('sh', ['sh'], '/home/user', { parentPid: subshell.pid, backgroundJob: true });
   const background = processes.spawn('python3', ['python3', 'b.py'], '/home/user', { parentPid: backgroundJob.pid });
   const server = processes.spawn('python3', ['python3', 'server.py'], '/home/user', { parentPid: shell.pid });
   for (const { pid } of [job, background, server]) processes.takeSignals(pid, CATCHES);
   for (const { pid } of [job, child, background]) processes.setForeground(pid, true);
-  processes.signalForeground(shell.pid, signalAbortReason('INT'), new Set([backgroundJob.pid]));
+  processes.signalForeground(shell.pid, signalAbortReason('INT'));
   assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'the foreground job\'s program is sent it, and it waits there untaken');
-  assert.equal(await processes.nextSignal(job.pid, 100), 'SIGINT', 'its program is handed it');
-  assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'and has not taken it until it says so');
-  assert.equal(await processes.nextSignal(job.pid, 0), null, 'it says so by asking again');
+  assert.equal(await processes.nextSignal(job.pid, 100), 'SIGINT', 'until its program is handed it');
   assert.equal(processes.untakenSignal(job.pid), null);
   assert.equal(processes.get(child.pid).state, 'killed', 'a process below it that takes none is ended by it');
   assert.equal(processes.get(shell.pid).state, 'running', 'the shell is not');
