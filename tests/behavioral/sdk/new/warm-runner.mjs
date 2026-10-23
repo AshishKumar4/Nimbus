@@ -191,7 +191,9 @@ try {
   const exited = await call(runner, 'process.exit(3)');
   a.check('process.exit ends the runner with ERR_NIMBUS_RUNNER_EXITED', exited.error?.code === 'ERR_NIMBUS_RUNNER_EXITED', show(exited));
   await call(runner, 'globalThis.kept = 1');
-  const exitedLater = await call(runner, 'setTimeout(() => process.exit(4), 0); await new Promise((resolve) => setTimeout(resolve, 50))');
+  const slept = await call(runner, 'await new Promise((resolve) => setTimeout(resolve, 50)); "slept"', { timeoutMs: 10_000 });
+  a.check('a call can await a timer', slept.value === "'slept'" && slept.fresh === false, show(slept));
+  const exitedLater = await call(runner, 'setTimeout(() => process.exit(4), 0); await new Promise(() => {})', { timeoutMs: 10_000 });
   const afterExit = await call(runner, 'typeof kept');
   a.check('process.exit from a callback ends the runner too',
     exitedLater.error?.code === 'ERR_NIMBUS_RUNNER_EXITED' && afterExit.fresh === true && afterExit.value === "'undefined'", show({ exitedLater, afterExit }));
