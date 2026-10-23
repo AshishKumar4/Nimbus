@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: other tenants' reads in the shared read profile may fill what a node launch's module map leaves after the program's closure; they were held to an eighth of the map (2.25 MiB).
 - Fixed: when many programs start at once (twelve `npm install`s in a session, say), a start the platform refuses at its Dynamic Worker limit waits for room and starts. Since 2026-10-23 the platform words that refusal "Too many dynamic workers", which Nimbus did not recognise, so the program failed at once with that message.
 - Fixed: a node one-shot whose synchronous read (`fs.readFileSync`, `require`) finds a file its process does not hold runs again as a resident process, which holds it, and the command gets the bytes on its first run. Before, the read failed with `EAGAIN` and the run ended 1, and only the command's next run had the file. What the run printed before that read is shown once, and the command still ends when its program does, with its status; one that then listens runs on as a server, as a one-shot that listens does. A run that cannot be run again (it did something outside itself first, or its output is captured) fails the read as before. The next launch of the command stages the file, and runs as a one-shot.
 - Every mount states its change model, and a process's view answers by it:

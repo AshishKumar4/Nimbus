@@ -95,8 +95,6 @@ import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
 
-/** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
-const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport, type ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
@@ -4629,7 +4627,7 @@ export interface PrefetchBundleOptions {
   /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
   maxBundleBytes?: number;
   /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+  learnedFor?: (closure: readonly string[], room: number) => Promise<readonly string[]>;
   /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
   executedModules?: readonly RequiredModuleRoot[];
   /** Where the launch's transform results are kept by content. */
@@ -4994,7 +4992,7 @@ async function _buildPrefetchBundle(
   // Other sessions' misses in the packages this closure can load
   // (read-profile.ts) are evidence of the same kind: a learned module joins
   // the module map with its imports, as this session's own misses do.
-  const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+  const learned = learnedFor ? await learnedFor(Object.keys(bundle), Math.max(0, room)).catch(() => []) : [];
   const own = await addObservedReads(vfs, observedReads ?? new Set(), bundle, observedPaths, budgetState, Math.max(0, room), pacer);
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
@@ -7533,10 +7531,10 @@ export class FacetManager {
       const stamp = (await vfs.acquire(null)).position;
       const readProfile = this.readProfile;
       const offered: StagedProfileEntry[] = [];
-      const learnedFor = readProfile === null ? undefined : async (closure: readonly string[]) => {
+      const learnedFor = readProfile === null ? undefined : async (closure: readonly string[], room: number) => {
         const roots = this._profileRoots(closure, spec.cwd);
         if (roots.length === 0) return [];
-        offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+        offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), room));
         return offered.map((entry) => entry.path);
       };
       const learning = await this.learning.forLaunch(key);
