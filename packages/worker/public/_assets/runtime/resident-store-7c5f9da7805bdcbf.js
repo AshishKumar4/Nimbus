@@ -5665,7 +5665,7 @@ var __nimbusResidentModule = (() => {
     };
     const writableParent = (key, path, syscall) => {
       const parent = rowAt(parentKey3(key));
-      if (parent === void 0 || parent === null || parent.dev !== host2.device)
+      if (parent === void 0 || parent === null || parent.dev !== host2.device && host2.mounted?.(key) !== true)
         return void 0;
       if (parent.type !== "directory")
         throw fsError2("ENOTDIR", syscall, path);
@@ -10711,6 +10711,17 @@ var __nimbusResidentModule = (() => {
       counts.local++;
       return done;
     };
+    const decidedThenSent = (decided, session2) => {
+      if (now || holder === null)
+        return session2();
+      let value;
+      try {
+        value = decided();
+      } catch {
+        return session2();
+      }
+      return holder.flush().then(() => value);
+    };
     const ownChange = (keys, decided, session2) => {
       const rows = keys.map((key) => key === void 0 || !store.ready() ? void 0 : ownEntryAt(key));
       const placed = rows.every((row) => row !== void 0) ? rows : void 0;
@@ -11090,14 +11101,18 @@ var __nimbusResidentModule = (() => {
           return DELEGATE;
         return holder.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
       }));
-      return after2(local, (done) => done !== DELEGATE ? done : now && options?.createParents !== true ? provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0)) : bySessionWriteFile(path, bytes, options));
+      const decided = () => provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0));
+      return after2(local, (done) => done !== DELEGATE ? done : options?.createParents === true ? bySessionWriteFile(path, bytes, options) : now ? decided() : decidedThenSent(decided, () => bySessionWriteFile(path, bytes, options)));
     };
     const bySessionMkdir = fs.mkdir;
     fs.mkdir = (path, options) => {
       if (holder === null)
         return bySessionMkdir(path, options);
-      if (options?.recursive)
-        return now && typeof path === "string" ? mkdirParents(path, options) : bySessionMkdir(path, options);
+      if (options?.recursive) {
+        if (typeof path !== "string")
+          return bySessionMkdir(path, options);
+        return now ? mkdirParents(path, options) : decidedThenSent(() => mkdirParents(path, options), () => bySessionMkdir(path, options));
+      }
       const mode = options?.mode ?? 511;
       let named;
       const local = decide(() => after2(walkFor(path, false), (walk) => {
@@ -11187,11 +11202,12 @@ var __nimbusResidentModule = (() => {
           return DELEGATE;
         return holder.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? void 0 : DELEGATE;
       })));
-      return after2(local, (done) => done !== DELEGATE ? void 0 : now ? void provisionally(from, true, (source, row) => {
+      const decided = () => void provisionally(from, true, (source, row) => {
         if (row === null)
           throw fsError2("ENOENT", "copyfile", pathOf(from));
         return provisionally(to, true, (target, there) => holder.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
-      }) : bySessionCopy(from, to, options));
+      });
+      return after2(local, (done) => done !== DELEGATE ? void 0 : now ? decided() : decidedThenSent(decided, () => bySessionCopy(from, to, options)));
     };
     const bySessionRename = fs.rename;
     fs.rename = (from, to) => {
