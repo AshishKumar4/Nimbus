@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // The public throwaway `up` command, after `wrangler preview` reports a
 // deployment, reads the Preview's latest deployment until the API serves it,
-// for as long as the upload took. When it never does, it uploads once more, saying so;
+// for as long as the upload took and no less than the slowest landing measured
+// (1488 ms), so a read slower than the upload still counts. When it never
+// does, it uploads once more, saying so;
 // when that one does not land either, the command fails saying what the API
 // served instead, or that the API answered nothing in time, never with the
 // abort of its own deadline. A Preview the command created keeps its
@@ -191,8 +193,8 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   }
 
   for (const [name, settled, expected] of [
-    ['the API keeps serving the deployment before', 'stale', /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
-    ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within [\d.]+ s, as long as the upload took/],
+    ['the API keeps serving the deployment before', 'stale', /did not land, twice: [\d.]+ s after it, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
+    ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within [\d.]+ s/],
   ]) {
     mode = settled;
     latestReads = 0;
@@ -215,7 +217,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     const { code, stdout, stderr } = await up();
     const output = `${stdout}${stderr}`;
     assert.equal(code, 3, `up reaches readiness\n${output}`);
-    assert.match(output, /WARNING: .*did not land: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
+    assert.match(output, /WARNING: .*did not land: [\d.]+ s after it, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
     assert.match(output, /deployment deployment-uploaded-2 is live at https:\/\/tw-up-settle-nimbus-probe-previews\.proof\.workers\.dev/, `up goes on with the second upload\n${output}`);
     assert.deepEqual([record().versionId, record().secret], ['deployment-uploaded-2', 'the-held-signing-secret'], 'and records it, with the secret it held');
     console.log('  ok  a second upload that lands: up goes on with it');
@@ -260,7 +262,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     rmSync(recordPath, { force: true });
     rmSync(join(checkout, 'uploads'), { force: true });
     const missed = await up();
-    assert.match(`${missed.stdout}${missed.stderr}`, /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves no deployment as the latest/, `${missed.stdout}${missed.stderr}`);
+    assert.match(`${missed.stdout}${missed.stderr}`, /did not land, twice: [\d.]+ s after it, the API serves no deployment as the latest/, `${missed.stdout}${missed.stderr}`);
     const kept = record();
     assert.equal(kept.secretPushed, true, 'the secret of a Preview this run created is kept through the miss');
     mode = 'landed';
