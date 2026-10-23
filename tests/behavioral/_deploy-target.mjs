@@ -230,18 +230,16 @@ export class TargetNotReadyError extends Error {
 async function untilServed(versionId, cycle, { timeoutMs, floorMs, what, unresolved = () => '' }) {
   if (!versionId) throw new TargetNotReadyError('readiness requires this upload\'s version id receipt');
   const deadline = Date.now() + timeoutMs;
-  // Whether the deadline cut the running cycle's waits short: its failure then says little.
-  let cut = false;
   const budget = (max) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('readiness deadline exceeded');
-    if (remaining < max) cut = true;
     return Math.min(max, remaining);
   };
   const requireVersion = (observed, stage) => {
     if (observed !== versionId) throw new Error(`${stage} answered version ${JSON.stringify(observed)}, expected uploaded version ${versionId}`);
   };
-  // The last failure of a cycle the deadline left whole, else of one it cut short.
+  // The last failure of a cycle the deadline left whole, else of one it cut
+  // short: a wait cut to the deadline ends at it, and says little.
   let last = '';
   let lastCut = '';
   let consecutive = 0;
@@ -251,7 +249,6 @@ async function untilServed(versionId, cycle, { timeoutMs, floorMs, what, unresol
   while (Date.now() < deadline) {
     const started = Date.now();
     let ready = false;
-    cut = false;
     cycles++;
     try {
       await cycle({ budget, requireVersion });
@@ -259,7 +256,7 @@ async function untilServed(versionId, cycle, { timeoutMs, floorMs, what, unresol
     } catch (e) {
       failed++;
       const message = e instanceof Error ? e.message : String(e);
-      if (cut) lastCut = message;
+      if (Date.now() >= deadline) lastCut = message;
       else last = message;
     }
     if (ready && Date.now() < deadline) {
