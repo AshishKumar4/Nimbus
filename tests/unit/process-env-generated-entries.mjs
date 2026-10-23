@@ -66,7 +66,7 @@ async function opencodeRunner(mode, program) {
     if (name === 'reportExit') { exited.resolve(args[0]); return undefined; }
     return send(name, args);
   });
-  const { runner, dir } = await importOpencodeRunner({ mode, program, vfsCursor: JSON.stringify(authority.cursor()) });
+  const { runner, dir } = await importOpencodeRunner({ mode, program, vfsCursor: JSON.stringify(authority.cursor()), vfsRoot: JSON.stringify(authority.root()) });
   return { authority, supervisor, runner, dir, exited: exited.promise };
 }
 

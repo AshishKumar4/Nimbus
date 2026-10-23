@@ -97,7 +97,7 @@ async function launch(cacheRetained) {
     const { supervisor, log } = facetSupervisor(authority);
     const proc = new mod.NimbusProcess(createProcessFacetCtx(`released-${cacheRetained}`), { SUPERVISOR: supervisor });
     await bounded(proc.startProcess({
-      pid: log.pid, vfsCursor: built.cursor,
+      pid: log.pid, vfsCursor: built.cursor, vfsRoot: built.root,
       dataPlan: await residentDataPlan(authority, '/home/user'),
     }));
     assert.equal(log.stderr, '');

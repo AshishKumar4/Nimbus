@@ -40,7 +40,7 @@ const generated = generateOpencodeRunnerCode({
   argv: [], terminal: {}, cred: nodeCred, cwd: '/home/user', stdin: '', mode: 'attached',
   sources: nodeFacetSources(generateShimsCode()),
   vfsBundle: JSON.stringify({ 'home/user/node-only.txt': 'Node bytes', 'home/user/shared.txt': 'Node secret' }),
-  vfsCursor: JSON.stringify(nodeSession.cursor()), vfsManifest: '{}', vfsMetadata: '{}',
+  vfsCursor: JSON.stringify(nodeSession.cursor()), vfsRoot: JSON.stringify(nodeSession.root()), vfsManifest: '{}', vfsMetadata: '{}',
 });
 // The opencode runner stages no ES modules of its own.
 const modules = generatedModuleSet({ esModules: {}, ...generated }, 'runner.mjs');

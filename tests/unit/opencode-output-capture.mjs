@@ -93,7 +93,7 @@ async function opencodeOneShot(program) {
   const { pid } = authority.host.processes.spawn('opencode', ['opencode'], '/home/user', { cred: CRED });
   const send = opSender((envelope) => authority.host.supervisorOp({ ...envelope, pid }));
   const supervisor = supervisorDouble((name, args) => send(name, args));
-  const { runner } = await importOpencodeRunner({ mode: 'oneshot', program, vfsCursor: JSON.stringify(authority.cursor()) });
+  const { runner } = await importOpencodeRunner({ mode: 'oneshot', program, vfsCursor: JSON.stringify(authority.cursor()), vfsRoot: JSON.stringify(authority.root()) });
   const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: {} }) }), { SUPERVISOR: supervisor });
   let caught = null;
   try { caught = authority.read('home/user/caught.txt'); } catch { /* the program wrote none */ }
@@ -175,6 +175,7 @@ await runScenarios(import.meta.path, {
       `),
       terminal: { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) },
       vfsCursor: JSON.stringify(authority.cursor()),
+      vfsRoot: JSON.stringify(authority.root()),
     });
     await new runner.NimbusProcess({ storage: facetStorage(facetSql()), waitUntil() {}, id: { toString: () => 'output-capture' } }, { SUPERVISOR: supervisor }).startProcess({ env: {} });
     assert.equal(await exited.promise, 0);

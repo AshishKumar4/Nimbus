@@ -147,6 +147,8 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
     peerAs: (cred) => peerOf(rawVfs.as(cred)),
     host,
     cursor: () => /** @type {any} */ (host.supervisorBridge().acquire(null)).position,
+    /** The session's root, as a launch reads it beside its cursor (FacetVfsState.root). */
+    root: () => host.supervisorBridge().stat('/'),
     read: (path) => dec.decode(kfs.readFile(path)),
   };
 }
@@ -290,7 +292,9 @@ export async function launchResident({
   // as the manager computes it, unless the test names one.
   const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle)) : undefined);
   // The env in the start payload, as the manager hands it over: never in the generated source.
-  const started = await proc.startProcess({ env: processEnv, ...(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}) } : {}), ...startArgs });
+  // The session's root, as the manager reads it beside the cursor (FacetVfsState.root).
+  const vfsRoot = authority ? authority.root() : null;
+  const started = await proc.startProcess({ env: processEnv, ...(vfsRoot ? { vfsRoot } : {}), ...(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}) } : {}), ...startArgs });
   return { proc, sql, started, generated };
 }
 

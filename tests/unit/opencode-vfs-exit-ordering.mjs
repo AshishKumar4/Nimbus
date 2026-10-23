@@ -70,7 +70,7 @@ if (mode) {
     // What the manager stages an attached TUI with (_stageOpencodeSpec).
     const terminal = mode === 'attached' ? { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) } : {};
     const vfsCursor = JSON.stringify(authority.cursor());
-    const { runner } = await importOpencodeRunner({ mode, program, terminal, vfsCursor });
+    const { runner } = await importOpencodeRunner({ mode, program, terminal, vfsCursor, vfsRoot: JSON.stringify(authority.root()) });
     let answered = false;
     const run = mode === 'oneshot'
       ? runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: terminal }) }), { SUPERVISOR: supervisor })
