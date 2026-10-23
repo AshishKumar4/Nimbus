@@ -205,6 +205,21 @@ async function appendThenFull() {
   assert.deepEqual(received(ops, path), ['A', 'newer']);
 }
 
+async function appendThenFullBackToBack() {
+  const authority = createAuthority();
+  const path = '/home/user/append-back-to-back.txt';
+  authority.kfs.writeFile(path, 'base');
+  const { fs, ops } = nodeOnSession(authority);
+  const append = fs.promises.appendFile(path, 'A');
+  const full = fs.promises.writeFile(path, 'newer');
+  await Promise.all([append, full]);
+  assert.equal(
+    await authority.peer.readFileString(path),
+    'newer',
+    `an append made before a full write lands before it, with no wait between them; the session received ${JSON.stringify(ops)}`,
+  );
+}
+
 async function fullThenAppend() {
   const authority = createAuthority();
   const path = '/home/user/full-then-append.txt';
@@ -280,11 +295,11 @@ async function rangeSharesFullImage() {
   await handle.close();
 }
 
-async function zeroByteWrite() {
+async function zeroByteWriteLeavesFile() {
   const authority = createAuthority();
   const path = '/home/user/zero-byte-write.txt';
   authority.kfs.writeFile(path, 'base');
-  const { fs, ops, log } = nodeOnSession(authority);
+  const { fs } = nodeOnSession(authority);
   const handle = await fs.promises.open(path, 'r+');
   const result = await handle.write(new Uint8Array(0), 0, 0, 10);
   assert.equal(result.bytesWritten, 0);
@@ -293,6 +308,21 @@ async function zeroByteWrite() {
   assert.equal((await authority.peer.stat(path)).size, 4, 'and its size');
   assert.equal(await fs.promises.readFile(path, 'utf8'), 'base');
   assert.equal(fs.readFileSync(path, 'utf8'), 'base');
+  const one = new Uint8Array(1);
+  const read = await handle.read(one, 0, 1, null);
+  assert.equal(read.bytesRead, 1);
+  assert.equal(dec.decode(one), 'b', 'the handle position did not move');
+  await handle.close();
+}
+
+async function zeroByteWriteSendsNothing() {
+  const authority = createAuthority();
+  const path = '/home/user/zero-byte-write.txt';
+  authority.kfs.writeFile(path, 'base');
+  const { fs, ops, log } = nodeOnSession(authority);
+  const handle = await fs.promises.open(path, 'r+');
+  await handle.write(new Uint8Array(0), 0, 0, 10);
+  await globalThis.__nimbusProcessFs.flush();
   assert.equal(log.calls.fsWrite ?? 0, 0, 'a zero-byte write makes no write call');
   assert.equal(log.calls.fsWriteRange ?? 0, 0, 'and no ranged write call');
   assert.deepEqual(
@@ -300,10 +330,6 @@ async function zeroByteWrite() {
     [],
     'and the session receives no data for it',
   );
-  const one = new Uint8Array(1);
-  const read = await handle.read(one, 0, 1, null);
-  assert.equal(read.bytesRead, 1);
-  assert.equal(dec.decode(one), 'b', 'the handle position did not move');
   await handle.close();
 }
 
@@ -657,6 +683,13 @@ async function cleanTruncateFailureRejects() {
     /injected clean truncate failure/,
     'a floated clean mutation failure rejects the response instead of returning 200',
   );
+}
+
+async function cleanTruncateSettledFailureRejects() {
+  const authority = createAuthority();
+  let failTruncate = false;
+  const proc = await cleanProcess(authority, gateOf(), (name) => (failTruncate && name === 'fsTruncate' ? EIO('injected clean truncate failure') : null));
+  failTruncate = true;
   await assert.rejects(
     proc.handleHttpRequest(request('truncate-immediate')),
     /injected clean truncate failure/,
@@ -684,7 +717,8 @@ async function exitIntent() {
   assert.equal(handle.log.exit, null, 'long-running Node does not report terminal success before durability');
 }
 
-async function oneShot() {
+/** The one-shot run whose append's wave fails: its result, the codes it reported, and the wave's calls. */
+async function runOneShot() {
   const authority = createAuthority();
   const reports = [];
   let appendCalls = 0;
@@ -734,9 +768,19 @@ process.exit(0);
     cwd: '/home/user',
     captureOutput: true,
   });
+  return { result, reports, appendCalls };
+}
+
+async function oneShotReportsFinalCode() {
+  const { result, reports } = await runOneShot();
+  assert.equal(result.exitCode, 1, JSON.stringify(result));
+  assert.deepEqual(reports, [1], 'only the final failed durability code is reported');
+}
+
+async function oneShotAppendNotRetried() {
+  const { result, appendCalls } = await runOneShot();
   assert.equal(result.exitCode, 1, JSON.stringify(result));
   assert.equal(appendCalls, 1, `definitive EIO is not retried: ${JSON.stringify(result)}`);
-  assert.deepEqual(reports, [1], 'only the final failed durability code is reported');
 }
 
 await runScenarios(import.meta.path, {
@@ -745,11 +789,13 @@ await runScenarios(import.meta.path, {
   'a same-path boundary write waits behind an older shim flush in flight': sameBoundaryWaitsBehindOlderFlush,
   'an older awaited writeFile completes without clearing a newer sync write': olderWriteKeepsNewer,
   'an append and the full write made after it reach the session in order': appendThenFull,
+  'an append made before a full write lands before it, with no wait between them': appendThenFullBackToBack,
   'a full write queued before an append stays a full image the append extends': fullThenAppend,
   'concurrent appends to a live-only file land in order, none lost': concurrentAppends,
   'a caught failure of an awaited write surfaces at the next boundary, once': caughtFailureSurfaces,
   'a ranged write and a boundary flush of one full image send it once': rangeSharesFullImage,
-  'a zero-byte positional write sends no bytes and does not move the handle': zeroByteWrite,
+  'a zero-byte positional write leaves the file and the handle as they were': zeroByteWriteLeavesFile,
+  'a zero-byte positional write makes no write call to the session': zeroByteWriteSendsNothing,
   'a ranged write in flight is ordered before a later sync full write': rangeThenFull,
   'a ranged write scheduled before a sync write is not overlaid on it': scheduledRangeThenFull,
   'concurrent append-mode FileHandle writes land at the end, in order': concurrentHandleAppends,
@@ -768,6 +814,8 @@ await runScenarios(import.meta.path, {
   'a clean ranged write holds the response until the session has it': cleanRangeHoldsResponse,
   'a clean truncate in flight holds the response until the session has it': cleanTruncateHoldsResponse,
   'a clean truncate that fails rejects the response, caught or not': cleanTruncateFailureRejects,
+  'a clean truncate that fails before the response headers still fails the response': cleanTruncateSettledFailureRejects,
   'an append that fails after process.exit intent fails the start, reporting no exit': exitIntent,
-  'a one-shot run\'s failed append drain reports only its final code': oneShot,
+  'a one-shot run\'s failed append drain reports only its final code': oneShotReportsFinalCode,
+  'a one-shot run\'s failed append is not retried': oneShotAppendNotRetried,
 });
