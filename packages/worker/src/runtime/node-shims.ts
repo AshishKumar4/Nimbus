@@ -1460,7 +1460,13 @@ const __fsMod = (() => {
    * the session has it, its refusal the call's (answeredWrites).
    */
   function _async(syscall, p, run, dest) {
-    return __nimbusTrackOp(_inCallOrder(p, async () => {
+    return __nimbusTrackOp(_inCallOrder(p, () => _awaited(syscall, p, run, dest)));
+  }
+  /**
+   * An awaited call from its start to its answer, decided on the session as it is now (the body of _async and _asyncRead).
+   */
+  function _awaited(syscall, p, run, dest) {
+    return (async () => {
       try {
         const fs = _rf();
         // Decided on the session as it is now: what another process did before it, as Node's call finds it, and what
@@ -1472,7 +1478,7 @@ const __fsMod = (() => {
         }
         return await run(fs);
       } catch (error) { throw _rfError(error, syscall, p, dest); }
-    }));
+    })();
   }
   /**
    * The awaited calls on one name, decided in the order they were made (a
@@ -1506,7 +1512,7 @@ const __fsMod = (() => {
    * what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, run);
+    return __nimbusTrackOp(_awaited(syscall, p, run));
   }
   /** A name's answer where nothing is there at all (readlink's ENOENT, beside its EINVAL). */
   const _absent = {};
@@ -1650,7 +1656,11 @@ const __fsMod = (() => {
   function existsSync(p) {
     if (p === undefined || p === null || p === "") return false;
     try { return _rf().synchronous.stat(_at(p)) !== null; }
-    catch { return false; }
+    catch (error) {
+      // While the namespace is being rebuilt nothing can be said: refused, naming why (as this fs always refused it); else not there.
+      if (error !== null && typeof error === "object" && error.code === "EAGAIN" && typeof __resident !== "undefined" && !__resident.namespace.ready()) throw _rfError(error, "stat", p);
+      return false;
+    }
   }
   function statSync(p, opts) {
     const absPath = _at(p);
