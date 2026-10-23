@@ -160,6 +160,7 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
  * process of the session's own, carrying its pid — and `overrides` replaces
  * any one of them (an `undefined` override removes the method). Process
  * output, exit and ports are captured here instead. `cred` is the process's credential.
+ * @param {{ readonly uid: number, readonly gid: number, readonly groups: readonly number[], readonly umask: number }} [cred]
  */
 export function facetSupervisor(authority, overrides = {}, cred = CRED) {
   const { host } = authority;
