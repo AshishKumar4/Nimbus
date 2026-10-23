@@ -56,11 +56,6 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from '../runtime/delegations.js';
 import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../runtime/wave-contracts.js';
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
 import type { FeedCursor } from '../runtime/feed-position.js';
-import {
-  arrayCopy, arrayIndexOf, arrayJoin, arrayShift, bytesView, dateNow, Error, mapKeyList, mathMax, mathMin, objectAssign, objectHasOwn, ownField, ownValue,
-  promiseAll, PromiseConstructor, promiseFinally, promiseReject, promiseResolve, promiseThen, reflectApply, reflectDeleteProperty, reflectGet, regExpExec,
-  SafeList, SafeMap, SafeSet, setFind, stringIncludes, stringOf, stringSplit, SymbolConstructor, typedArrayByteLength, typedArraySet, Uint8ArrayConstructor,
-} from './primordials.js';
 
 export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
 /** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
@@ -127,7 +122,7 @@ export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
 
 /** An op committed: the stat of the file its data call published, when it published one. */
 /** What the session answers a change decided on a name that leads elsewhere now (sqlite-vfs expectAt, an O_NOFOLLOW open of a link). */
-const ORPHANED_ERRNOS: SafeSet<string> = new SafeSet(['ENOENT', 'EEXIST', 'ELOOP', 'ENOTDIR']);
+const ORPHANED_ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EEXIST', 'ELOOP', 'ENOTDIR']);
 
 export interface ProcessFsAnswer {
   receipt?: ProcessFsReceipt;
@@ -443,19 +438,19 @@ export const UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unk
 
 /** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
 export function unsettledEnd(error: unknown): Error & { unsettled: true } {
-  const message = error instanceof Error ? reflectGet(error, 'message') : stringOf(error);
-  const code: unknown = typeof error === 'object' && error !== null ? reflectGet(error, 'code') : undefined;
-  return objectAssign(new Error(`${message}\n${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true as const, ...(code === undefined ? {} : { code }) });
+  const message = error instanceof Error ? error.message : String(error);
+  const code: unknown = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+  return Object.assign(new Error(`${message}\n${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true as const, ...(code === undefined ? {} : { code }) });
 }
 
 /** The note an ended run's error carries (unsettledEnd), as a line, or ''. */
 export function unsettledNoteOf(error: unknown): string {
-  return typeof error === 'object' && error !== null && reflectGet(error, 'unsettled') === true ? `${UNSETTLED_END_NOTE}\n` : '';
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'unsettled') === true ? `${UNSETTLED_END_NOTE}\n` : '';
 }
 
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
-const FOLD_BUFFER: unique symbol = SymbolConstructor('process-fs-fold-buffer') as never;
+const FOLD_BUFFER = Symbol('process-fs-fold-buffer');
 
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
@@ -500,7 +495,7 @@ const RECALL_POLL_MS = 20_000;
  * long as a recall may take (the session's DELEGATION_RECALL_TIMEOUT_MS) and
  * a second more; then its writes are lost (EIO).
  */
-const recallWaitMs = (n: number): number => mathMin(10 * 2 ** n, 1_000);
+const recallWaitMs = (n: number): number => Math.min(10 * 2 ** n, 1_000);
 const WAVE_RECALL_BOUND_MS = DELEGATION_RECALL_TIMEOUT_MS + 1_000;
 
 interface Grant extends ProcessFsGrant {
@@ -512,8 +507,7 @@ interface Grant extends ProcessFsGrant {
   /** Being given back (idle, renewed, widened, settled): nothing more is decided under it. */
   closing: boolean;
   /** Its close in flight (close): one at a time, a second joining it. */
-  closed: Promise<boolean> | undefined;
-  readonly certificate: GrantCertificate | undefined;
+  closed?: Promise<boolean>;
   ended: boolean;
   lastUsed: number;
 }
@@ -533,39 +527,12 @@ function within(key: string, root: string): boolean {
   return true;
 }
 
-/** `list`'s element at `at`, taken out: splice(at, 1) without a species or a result list. */
-function removeAt<T>(list: T[], at: number): T {
-  const item = list[at]!;
-  for (let i = at; i < list.length - 1; i++) list[i] = list[i + 1]!;
-  list.length--;
-  return item;
-}
-/** Everything `list` holds, taken out of it in order: splice(0) without a species. */
-function takeAll<T>(list: T[]): SafeList<T> {
-  const taken = new SafeList<T>();
-  for (let i = 0; i < list.length; i++) taken[i] = list[i]!;
-  list.length = 0;
-  return taken;
-}
-/** `first`'s elements, then `second`'s. */
-function joined<T>(first: readonly T[], second: readonly T[]): SafeList<T> {
-  const both = new SafeList<T>();
-  for (let i = 0; i < first.length; i++) both[both.length] = first[i]!;
-  for (let i = 0; i < second.length; i++) both[both.length] = second[i]!;
-  return both;
-}
-/** Whether any entry of `list` is numbered under an epoch. */
-function anyNumbered(list: readonly { readonly seq: number }[]): boolean {
-  for (let i = 0; i < list.length; i++) if (list[i]!.seq !== 0) return true;
-  return false;
-}
-
 function commonAncestor(left: string, right: string): string {
-  const a = stringSplit(left, '/');
-  const b = stringSplit(right, '/');
-  const out = new SafeList<string>();
-  for (let index = 0; index < mathMin(a.length, b.length) && a[index] === b[index]; index++) out[out.length] = a[index]!;
-  return arrayJoin(out, '/');
+  const a = left.split('/');
+  const b = right.split('/');
+  const out: string[] = [];
+  for (let index = 0; index < Math.min(a.length, b.length) && a[index] === b[index]; index++) out.push(a[index]!);
+  return out.join('/');
 }
 
 interface Entry {
@@ -607,10 +574,7 @@ function pathsOf(op: ProcessFsOp): string[] {
 
 /** A storage key as W7 takes it: no leading or doubled slash, no `.` or `..`, not the root. */
 function canonical(path: string): boolean {
-  if (path === '') return false;
-  const parts = stringSplit(path, '/');
-  for (let i = 0; i < parts.length; i++) if (parts[i] === '' || parts[i] === '.' || parts[i] === '..') return false;
-  return !stringIncludes(path, '\0');
+  return path !== '' && path.split('/').every((part) => part !== '' && part !== '.' && part !== '..') && !path.includes('\0');
 }
 
 function nameOf(op: ProcessFsOp): string {
@@ -618,45 +582,43 @@ function nameOf(op: ProcessFsOp): string {
 }
 
 function fsError(errno: string, message: string, path: string): Error & { code: string; path: string } {
-  return objectAssign(new Error(message), { code: errno, path });
+  return Object.assign(new Error(message), { code: errno, path });
 }
 function isProcessGone(error: Error): error is Error & { code: 'ESRCH' } {
-  return ownField(error, 'code') === 'ESRCH';
+  return 'code' in error && error.code === 'ESRCH';
 }
 
 /** The open description a call writes through (W7Call description), if any. */
 function descriptionOf(call: W7Call): string | undefined {
-  return ownField(call, 'description') as string | undefined;
+  return 'description' in call ? call.description : undefined;
 }
 
 type DataCall = Extract<W7Call, { data: Uint8Array }>;
-/** Whether `call` carries bytes (its own `data`). */
-const carriesData = (call: W7Call): call is DataCall => objectHasOwn(call, 'data');
 
 function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } {
-  const size = typedArrayByteLength(call.data) + typedArrayByteLength(data);
-  if (buffer === null || typedArrayByteLength(buffer) < size) {
-    buffer = new Uint8ArrayConstructor(mathMin(DATA_PIECE_BYTES, mathMax(size, (buffer === null ? typedArrayByteLength(call.data) : typedArrayByteLength(buffer)) * 2)));
-    typedArraySet(buffer, call.data);
+  const size = call.data.byteLength + data.byteLength;
+  if (buffer === null || buffer.byteLength < size) {
+    buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
+    buffer.set(call.data);
   }
-  typedArraySet(buffer, data, typedArrayByteLength(call.data));
-  const joined = bytesView(buffer, 0, size);
-  return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: bytesView(joined, typedArrayByteLength(call.data)) };
+  buffer.set(data, call.data.byteLength);
+  const joined = buffer.subarray(0, size);
+  return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
 }
 
 /** How `next` folds into `last`: its bytes replace last's, extend them, or (null) it does not fold. */
 function foldOf(last: ProcessFsOp, next: ProcessFsOp): 'replaces' | 'extends' | null {
-  if (last.type !== 'call' || next.type !== 'call' || !carriesData(last.call) || !carriesData(next.call)) return null;
+  if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
   const a = last.call;
   const b = next.call;
   // Through one description only: another's access, or its file, may differ.
-  if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || typedArrayByteLength(a.data) + typedArrayByteLength(b.data) > DATA_PIECE_BYTES) return null;
-  const inoOf = (call: W7Call): number | undefined => ownField(call, 'ino') as number | undefined;
+  if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
+  const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
   // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
   if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) return 'replaces';
   if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) return 'extends';
   if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) return 'extends';
-  if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + typedArrayByteLength(a.data) === b.offset) return 'extends';
+  if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) return 'extends';
   return null;
 }
 
@@ -683,29 +645,29 @@ function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null)
  * file, with the access its open decided).
  */
 function pieces(op: ProcessFsOp): ProcessFsOp[] {
-  if (op.type !== 'call' || !carriesData(op.call) || typedArrayByteLength(op.call.data) <= DATA_PIECE_BYTES) return [op];
+  if (op.type !== 'call' || !('data' in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES) return [op];
   const call = op.call;
   const data = call.data;
-  const out: ProcessFsOp[] = [{ type: 'call', call: { ...call, data: bytesView(data, 0, DATA_PIECE_BYTES) } }];
+  const out: ProcessFsOp[] = [{ type: 'call', call: { ...call, data: data.subarray(0, DATA_PIECE_BYTES) } }];
   // An append's later pieces follow it at the end; the others at their offsets after the first.
-  for (let at = DATA_PIECE_BYTES; at < typedArrayByteLength(data); at += DATA_PIECE_BYTES) {
-    const piece = bytesView(data, at, mathMin(typedArrayByteLength(data), at + DATA_PIECE_BYTES));
-    const ino = ownField(call, 'ino') as number | undefined;
+  for (let at = DATA_PIECE_BYTES; at < data.byteLength; at += DATA_PIECE_BYTES) {
+    const piece = data.subarray(at, Math.min(data.byteLength, at + DATA_PIECE_BYTES));
+    const ino = 'ino' in call ? call.ino : undefined;
     const description = descriptionOf(call);
     const by = description === undefined ? {} : { description };
-    out[out.length] = call.call === 'append' || call.call === 'appendFile'
+    out.push(call.call === 'append' || call.call === 'appendFile'
       ? { type: 'call', call: { call: 'append', path: call.path, ...(ino === undefined ? {} : { ino }), ...by, data: piece } }
-      : { type: 'call', call: { call: 'write', path: call.path, ...(ino === undefined ? {} : { ino }), ...by, offset: (call.call === 'write' ? call.offset : 0) + at, data: piece } };
+      : { type: 'call', call: { call: 'write', path: call.path, ...(ino === undefined ? {} : { ino }), ...by, offset: (call.call === 'write' ? call.offset : 0) + at, data: piece } });
   }
   return out;
 }
 
 export function processFsClient(options: ProcessFsClientOptions): ProcessFsClient {
   const { session } = options;
-  const timers = ownValue(options, 'timers') ?? GLOBAL_TIMERS;
-  const now = ownValue(options, 'now') ?? dateNow;
-  const journal = ownValue(options, 'journal') ?? memoryJournal();
-  const syncCap = ownValue(options, 'syncCapBytes') ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
+  const timers = options.timers ?? GLOBAL_TIMERS;
+  const now = options.now ?? Date.now;
+  const journal = options.journal ?? memoryJournal();
+  const syncCap = options.syncCapBytes ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
   /** Data bytes the heap holds of unsent entries: past a window, an entry's data is read back from the journal when sent. */
   let heapBytes = 0;
   /** Logged, not yet sent; the first ones may carry numbers from a wave they came back from. */
@@ -754,15 +716,15 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0, renewed: 0, folded: 0,
     readLeases: 0, readConfirms: 0, readRecalls: 0, readReleased: 0,
   };
-  const grantAfter = ownValue(options, 'grantAfter') ?? GRANT_AFTER;
-  const grantIdleMs = ownValue(options, 'grantIdleMs') ?? GRANT_IDLE_MS;
-  const recallPollMs = ownValue(options, 'recallPollMs') ?? RECALL_POLL_MS;
-  const lingerMs = ownValue(options, 'lingerMs') ?? LINGER_MS;
+  const grantAfter = options.grantAfter ?? GRANT_AFTER;
+  const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
+  const recallPollMs = options.recallPollMs ?? RECALL_POLL_MS;
+  const lingerMs = options.lingerMs ?? LINGER_MS;
   const grants: Grant[] = [];
   /** Mutations per candidate subtree not yet held; subtrees the session refused, and the range each was last given. */
-  const mutations = new SafeMap<string, number>();
-  const refusedRoots = new SafeSet<string>();
-  const rangeOf = new SafeMap<string, number>();
+  const mutations = new Map<string, number>();
+  const refusedRoots = new Set<string>();
+  const rangeOf = new Map<string, number>();
   /** A grant being taken (no other is asked for meanwhile), and whether waves wait for it (while it is asked for). */
   let claiming: Promise<void> | null = null;
   let paused = false;
@@ -781,9 +743,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       pendingSyncBytes -= entry.bytes;
       pendingSyncOps--;
     }
-    answered = mathMax(answered, entry.order);
+    answered = Math.max(answered, entry.order);
     for (let at = marks.length - 1; at >= 0; at--) {
-      if (marks[at]!.mark <= answered) removeAt(marks, at).resolve();
+      if (marks[at]!.mark <= answered) marks.splice(at, 1)[0]!.resolve();
     }
   };
 
@@ -791,7 +753,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * The descriptions whose open the session refused as orphaned: what was
    * made through one went to a file no name leads to (orphanedRefusal).
    */
-  const orphanedDescriptions = new SafeSet<string>();
+  const orphanedDescriptions = new Set<string>();
   /**
    * Whether the session refused `op` only because the name it was decided
    * on leads elsewhere now (a peer removed, replaced or swapped a link in at
@@ -802,11 +764,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    */
   const orphanedRefusal = (op: ProcessFsOp | null, errno: string): boolean => {
     if (op === null || op.type !== 'call' && op.type !== 'rename' && op.type !== 'setattr') return false;
-    const through = op.type === 'call' ? descriptionOf(op.call) : undefined;
-    if (through !== undefined && orphanedDescriptions.has(through)) return true;
-    const decided = op.type === 'rename' ? ownValue(op, 'expect') !== undefined || ownValue(op, 'expectTo') !== undefined
-      : op.type === 'setattr' ? ownValue(op, 'expect') !== undefined
-      : ownField(op.call, 'expect') !== undefined || (op.call.call === 'open' && op.call.nofollow === true);
+    if (op.type === 'call' && 'description' in op.call && op.call.description !== undefined && orphanedDescriptions.has(op.call.description)) return true;
+    const decided = op.type === 'rename' ? op.expect !== undefined || op.expectTo !== undefined
+      : op.type === 'setattr' ? op.expect !== undefined
+      : ('expect' in op.call && op.call.expect !== undefined) || (op.call.call === 'open' && op.call.nofollow === true);
     if (!decided || !ORPHANED_ERRNOS.has(errno)) return false;
     if (op.type === 'call' && op.call.call === 'open' && op.call.description !== undefined) orphanedDescriptions.add(op.call.description);
     return true;
@@ -821,7 +782,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     settled(entry);
     const path = entry.paths[0] ?? '';
     if (entry.acknowledged) {
-      if (!(refused && orphanedRefusal(op, errno))) failures[failures.length] = { op: entry.name, path, errno, message };
+      if (!(refused && orphanedRefusal(op, errno))) failures.push({ op: entry.name, path, errno, message });
       entry.resolve({ failed: { errno, message, ...(refused ? { refused: true as const } : {}) } });
     } else {
       entry.reject(fsError(errno, message, path));
@@ -851,22 +812,22 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    */
   const retirePending = async (): Promise<void> => {
     while (retiring.length > 0) {
-      try { await ownValue(session, 'retireWriter')?.(retiring[0]!); }
+      try { await session.retireWriter?.(retiring[0]!); }
       catch (error) {
         if (processGone === null || !(error instanceof Error) || !isProcessGone(error)) throw error;
       }
-      arrayShift(retiring);
+      retiring.shift();
     }
   };
   const writerFor = async (entries: readonly Entry[]): Promise<string | null> => {
-    const numberedPending = anyNumbered(entries) || anyNumbered(queue);
+    const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
     if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
     // An epoch given up is retired before anything else is sent (lostEpoch);
     // one the session cannot be told of yet is told before the next wave.
     await retirePending();
     const openedAt = now();
     const first = counters.epochs === 0;
-    const writer = await openWaveEpoch(() => session.openWriter(first), { ...(ownValue(options, 'retry') === undefined ? {} : { retry: ownValue(options, 'retry') }), timers });
+    const writer = await openWaveEpoch(() => session.openWriter(first), { ...(options.retry === undefined ? {} : { retry: options.retry }), timers });
     epoch = { writer, openedAt, numbering: null };
     counters.epochs++;
     ack = 0;
@@ -877,8 +838,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Number `entries` under the epoch: from where its numbering starts, one each in journal order. */
   const numberEntries = (entries: readonly Entry[]): void => {
     const current = epoch!;
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+    for (const entry of entries) {
       if (entry.seq !== 0) continue;
       if (current.numbering === null) {
         // Recorded first: a numbering the journal did not take is not the epoch's.
@@ -896,26 +856,20 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * waits for, so it is answered in the time that takes).
    */
   const cut = (): Entry[] => {
-    let limit = Infinity;
-    for (let i = 0; i < marks.length; i++) limit = mathMin(limit, marks[i]!.mark);
+    const limit = marks.reduce((least, waiting) => Math.min(least, waiting.mark), Infinity);
     const taken: Entry[] = [];
-    const owned = new SafeSet<string>();
+    const owned = new Set<string>();
     let pathBytes = 0;
     let bytes = 0;
     while (queue.length > 0) {
       const next = queue[0]!;
-      const fresh = new SafeList<string>();
-      let freshBytes = 0;
-      for (let i = 0; i < next.paths.length; i++) {
-        if (owned.has(next.paths[i]!)) continue;
-        fresh[fresh.length] = next.paths[i]!;
-        freshBytes += utf8Length(next.paths[i]!);
-      }
+      const fresh = next.paths.filter((path) => !owned.has(path));
+      const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
       if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
-      for (let i = 0; i < fresh.length; i++) { const path = fresh[i]; owned.add(path); }
+      for (const path of fresh) owned.add(path);
       pathBytes += freshBytes;
       bytes += next.bytes;
-      taken[taken.length] = arrayShift(queue)!;
+      taken.push(queue.shift()!);
     }
     return taken;
   };
@@ -926,7 +880,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (escaped !== null) await escaped;
       writer = await writerFor(entries);
     } catch (error) {
-      if (error instanceof Error && classifyMessage(reflectGet(error, 'message')) === 'subrequest_cap') {
+      if (error instanceof Error && classifyMessage(error.message) === 'subrequest_cap') {
         exhaustedInvocation(entries, error);
         return;
       }
@@ -934,39 +888,37 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         endedProcess(entries, error, epoch?.writer ?? null);
         return;
       }
-      for (let i = 0; i < entries.length; i++) { const entry = entries[i]; fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? reflectGet(error, 'message') : stringOf(error)}`, true); }
+      for (const entry of entries) fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`, true);
       forget(entries[entries.length - 1]!.jid, false);
       return;
     }
     let ops: ProcessFsOp[];
     let bytes: Uint8Array;
     try {
-      const listed = new SafeList<ProcessFsOp>();
-      for (let i = 0; i < entries.length; i++) listed[i] = opOf(entries[i]!);
-      ops = arrayCopy(listed);
+      ops = entries.map(opOf);
       // Sent: the heap's copy is the wave's now.
-      for (let i = 0; i < entries.length; i++) { const entry = entries[i]; if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; } }
+      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
       bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
       // Numbered once, under the epoch they are first sent under; a re-send keeps them.
       numberEntries(entries);
     } catch (error) {
       // Refused here, before any of it left (a log that cannot be read back,
       // an op no wave can carry): answered as refused, each one, never left waiting.
-      const code = typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined;
-      const errno = typeof code === 'string' && regExpExec(/^E[A-Z0-9]+$/, code) !== null ? code : 'EIO';
-      for (let i = 0; i < entries.length; i++) { const entry = entries[i]; fail(entry, errno, `this write could not be sent: ${error instanceof Error ? reflectGet(error, 'message') : stringOf(error)}`, true); }
+      const code = (error as { code?: unknown } | null)?.code;
+      const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
+      for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`, true);
       forget(entries[entries.length - 1]!.jid, false);
       // An epoch numbers ops by their place in the log: dropped, these leave
       // a gap the session would refuse what follows for. What follows is
       // numbered under a new epoch (nothing of this wave left, and what the
       // old one sent was answered, so it has nothing to retire).
       epoch = null;
-      for (let i = 0; i < queue.length; i++) { const entry = queue[i]; entry.seq = 0; }
+      for (const entry of queue) entry.seq = 0;
       return;
     }
     const firstSeq = entries[0]!.seq;
     counters.waves++;
-    counters.maxWaveOps = mathMax(counters.maxWaveOps, entries.length);
+    counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
     wave++;
     let result: unknown;
     try {
@@ -977,13 +929,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         streamed: false,
         wave,
         ...(writer === null ? {} : { sequence: { seq: firstSeq, ack } }),
-        ...(ownValue(options, 'retry') === undefined ? {} : { retry: ownValue(options, 'retry') }),
+        ...(options.retry === undefined ? {} : { retry: options.retry }),
         resent: () => { counters.resends++; },
         timers,
       });
     } catch (error) {
       // Lost past every re-send, or refused before any op (the epoch gone): their fate is unknown.
-      if (error instanceof Error && classifyMessage(reflectGet(error, 'message')) === 'subrequest_cap') {
+      if (error instanceof Error && classifyMessage(error.message) === 'subrequest_cap') {
         exhaustedInvocation(entries, error);
         return;
       }
@@ -991,7 +943,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         endedProcess(entries, error, writer);
         return;
       }
-      lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? reflectGet(error, 'message') : stringOf(error)}`, writer);
+      lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? error.message : String(error)}`, writer);
       return;
     }
     // The session's own answer (WaveIngest's, through the binding).
@@ -1003,9 +955,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? 'no error'}`, writer);
       return;
     }
-    ack = mathMax(ack, cursor);
+    ack = Math.max(ack, cursor);
     ownHeld = answer.held === true;
-    if (!ownHeld) ownThrough = mathMax(ownThrough, answer.revision ?? Infinity);
+    if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
     // The session met a delegation it recalls first (one this process holds
     // too: its read lease, asked with a directory batch whose answer has not
     // reached it) and applied nothing after `cursor`: the recall started,
@@ -1016,16 +968,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       : answer.sequence?.refused ?? null;
     let receipt = 0;
     const back: Entry[] = [];
-    const mutations = new SafeMap<number, WaveMutation>();
-    const answeredMutations = answer.mutations ?? [];
-    for (let i = 0; i < answeredMutations.length; i++) mutations.set(answeredMutations[i]!.index, answeredMutations[i]!);
+    const mutations = new Map<number, WaveMutation>((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
     if (answer.held === true) heldWaves++;
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index]!;
+    for (const [index, entry] of entries.entries()) {
       if (refused !== null && entry.seq === refused.seq) {
         counters.refused++;
         fail(entry, refused.errno, refused.message, true, ops[index] ?? null);
-        if (writer === null) ack = mathMax(ack, entry.seq);
+        if (writer === null) ack = Math.max(ack, entry.seq);
         continue;
       }
       if (entry.seq <= cursor) {
@@ -1033,7 +982,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         let answered: ProcessFsAnswer = {};
         const op = ops[index]!;
         // A data call's, an open's and a copy's answer is the session's stat of its file.
-        const path = op.type === 'call' && (carriesData(op.call) || op.call.call === 'open' || op.call.call === 'copyFile') ? op.call.path : null;
+        const path = op.type === 'call' && ('data' in op.call || op.call.call === 'open' || op.call.call === 'copyFile') ? op.call.path : null;
         const published: WriteStreamReceipt | undefined = answer.receipts[receipt];
         if (path !== null && published?.path === path) {
           receipt++;
@@ -1041,11 +990,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
           answered = { receipt: stat };
         }
         const mutation = mutations.get(index);
-        if (mutation !== undefined) answered = { ...answered, mutation: { before: mutation.before, after: mutation.after } };
+        if (mutation !== undefined) answered.mutation = { before: mutation.before, after: mutation.after };
         entry.resolve(answered);
         continue;
       }
-      back[back.length] = entry;
+      back.push(entry);
     }
     // What was answered is forgotten: a prefix of the log (waves are cut in order).
     const answeredThrough = back.length === 0 ? entries[entries.length - 1]!.jid : back[0]!.jid - 1;
@@ -1056,11 +1005,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (!recalling) recalled = null;
     if (answer.ok || refused !== null || (recalled !== null && now() - recalled.since < WAVE_RECALL_BOUND_MS)) {
       // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
-      for (let i = 0; i < back.length; i++) { const entry = back[i]; entry.lingers = false; }
-      const rest = takeAll(queue);
-      for (let i = 0; i < back.length; i++) queue[i] = back[i]!;
-      for (let i = 0; i < rest.length; i++) queue[back.length + i] = rest[i]!;
-      if (recalled !== null) await new PromiseConstructor<void>((resolve) => { timers.setTimeout(resolve, recallWaitMs(recalled!.waits++)); });
+      for (const entry of back) entry.lingers = false;
+      queue.unshift(...back);
+      if (recalled !== null) await new Promise<void>((resolve) => { timers.setTimeout(resolve, recallWaitMs(recalled!.waits++)); });
       return;
     }
     recalled = null;
@@ -1076,18 +1023,17 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * over, what the new epoch sends.
    */
   const lostEpoch = (entries: Entry[], message: string, writer: string | null): void => {
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+    for (const entry of entries) {
       counters.lost++;
       // A caller that awaited it is told, and its fate is a durability failure besides, caught or not.
-      if (!entry.acknowledged) failures[failures.length] = { op: entry.name, path: entry.paths[0] ?? '', errno: 'EIO', message };
+      if (!entry.acknowledged) failures.push({ op: entry.name, path: entry.paths[0] ?? '', errno: 'EIO', message });
       fail(entry, 'EIO', message);
     }
     forget(entries[entries.length - 1]!.jid, false);
-    if (writer !== null) retiring[retiring.length] = writer;
+    if (writer !== null) retiring.push(writer);
     epoch = null;
     ownThrough = Infinity;
-    for (let i = 0; i < queue.length; i++) { const entry = queue[i]; entry.seq = 0; }
+    for (const entry of queue) entry.seq = 0;
   };
 
   /**
@@ -1098,25 +1044,23 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    */
   const endedProcess = (entries: Entry[], refusal: Error & { code: string }, writer: string | null): void => {
     processGone ??= refusal;
-    const ended = joined(entries, takeAll(queue));
-    for (let i = 0; i < ended.length; i++) {
-      const entry = ended[i];
+    const ended = [...entries, ...queue.splice(0)];
+    for (const entry of ended) {
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
-      fail(entry, 'ESRCH', reflectGet(processGone, 'message'));
+      fail(entry, 'ESRCH', processGone.message);
     }
     forget(ended[ended.length - 1]!.jid, false);
-    if (writer !== null) retiring[retiring.length] = writer;
+    if (writer !== null) retiring.push(writer);
     epoch = null;
     ownThrough = Infinity;
   };
 
   const exhaustedInvocation = (entries: Entry[], refusal: Error): void => {
-    processGone ??= fsError('EIO', reflectGet(refusal, 'message'), '');
-    const stopped = joined(entries, takeAll(queue));
-    for (let i = 0; i < stopped.length; i++) {
-      const entry = stopped[i];
+    processGone ??= fsError('EIO', refusal.message, '');
+    const stopped = [...entries, ...queue.splice(0)];
+    for (const entry of stopped) {
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
-      fail(entry, 'EIO', reflectGet(refusal, 'message'));
+      fail(entry, 'EIO', refusal.message);
     }
     forget(stopped[stopped.length - 1]!.jid, false);
     epoch = null;
@@ -1127,9 +1071,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     scheduled = false;
     if (inFlight !== null || paused || sealed) return;
     if (queue.length === 0) return;
-    let lingering = true;
-    for (let i = 0; lingering && i < queue.length; i++) lingering = queue[i]!.lingers;
-    if (marks.length === 0 && lingering) {
+    if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
       lingerTimer ??= timers.setTimeout(() => {
         lingerTimer = null;
         client.hurry();
@@ -1142,7 +1084,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       lingerTimer = null;
     }
     inFlight = entries;
-    sending = promiseFinally(send(entries), () => {
+    sending = send(entries).finally(() => {
       inFlight = null;
       sending = null;
       pump();
@@ -1151,28 +1093,25 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
 
   /** submit's body: `op` logged (folded, or queued), its answer; with `foldOnly`, undefined and nothing logged where it does not fold. */
   const entered = (given: ProcessFsOp, submitOptions: { acknowledged?: boolean; decided?: boolean } | undefined, foldOnly: boolean): Promise<ProcessFsAnswer> | undefined => {
-    const acknowledged = (submitOptions === undefined ? undefined : ownValue(submitOptions, 'acknowledged')) === true;
-    const decided = (submitOptions === undefined ? undefined : ownValue(submitOptions, 'decided')) === true;
-    if (processGone !== null && !(sealed && (acknowledged || decided))) throw processGone;
-    const op = withUmaskOf(given, ownValue(options, 'umask'));
+    const acknowledged = submitOptions?.acknowledged === true;
+    if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
+    const op = withUmaskOf(given, options.umask);
     const named = pathsOf(op);
-    let lingers = acknowledged || decided;
-    for (let i = 0; lingers && i < named.length; i++) lingers = heldGrant(named[i]!) !== undefined;
-    for (let i = 0; i < named.length; i++) { const path = named[i]; if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path); }
+    const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
+    for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
     // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
     if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
       throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
     }
     const parts = pieces(op);
-    let bytes = 0;
-    for (let i = 0; i < parts.length; i++) { const part = parts[i]!; if (part.type === 'call' && carriesData(part.call)) bytes += typedArrayByteLength(part.call.data); }
+    const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
     if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
     // The same file's next bytes, right after its last unsent change: folded into it.
     const tail = foldTail(parts, named, acknowledged);
     const merged = tail !== undefined ? folded(tail.op!, parts[0]!, tail[FOLD_BUFFER] ?? null) : null;
     if (merged !== null && tail !== undefined) {
-      const mergedBytes = merged.op.type === 'call' && carriesData(merged.op.call) ? typedArrayByteLength(merged.op.call.data) : 0;
-      journal.replace(tail.jid, merged.op, ownValue(merged, 'append'));
+      const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+      journal.replace(tail.jid, merged.op, merged.append);
       const grown = mergedBytes - tail.bytes;
       tail.op = merged.op;
       if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined) tail[FOLD_BUFFER] = merged.buffer ?? undefined;
@@ -1187,24 +1126,22 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (acknowledged) pendingSyncBytes += grown;
       counters.ops++;
       counters.folded++;
-      ownValue(options, 'logged')?.(op);
+      options.logged?.(op);
       return tail.answer!;
     }
     if (foldOnly) return undefined;
-    ownValue(options, 'logged')?.(op);
-    const answers = new SafeList<{ entry: Entry | undefined; answer: Promise<ProcessFsAnswer> }>();
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i]!;
+    options.logged?.(op);
+    const answers = parts.map((part) => {
       let entry: Entry | undefined;
-      const answer = new PromiseConstructor<ProcessFsAnswer>((resolve, reject) => {
-        const partBytes = part.type === 'call' && carriesData(part.call) ? typedArrayByteLength(part.call.data) : 0;
+      const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {
+        const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
         // Logged where the process's death does not reach, before it is told anything.
         const jid = journal.append(part);
         // The heap keeps a window of what is unsent; the rest is read back from the journal.
         const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
         if (kept) heapBytes += partBytes;
         entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
-        queue[queue.length] = entry;
+        queue.push(entry);
         pendingBytes += partBytes;
         if (acknowledged) {
           pendingSyncBytes += partBytes;
@@ -1214,39 +1151,26 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       });
       // Undefined where the journal refused it: nothing was queued, and the answer is that refusal.
       if (entry !== undefined) entry.answer = answer;
-      answers[i] = { entry, answer };
-    }
+      return { entry, answer };
+    });
     schedule();
     // A piece failed fails the call; its last piece's receipt answers it,
     // and its mutation spans them all.
-    const waits = new SafeList<Promise<ProcessFsAnswer>>();
-    for (let i = 0; i < answers.length; i++) waits[i] = answers[i]!.answer;
-    const answer = promiseThen(promiseAll(waits), (all): ProcessFsAnswer => {
-      const first = all.length === 0 ? undefined : ownValue(all[0]!, 'mutation');
+    const answer = Promise.all(answers.map((piece) => piece.answer)).then((all): ProcessFsAnswer => {
+      const first = all[0]?.mutation;
       const last = all[all.length - 1];
       if (last === undefined) return {};
       // An acknowledged piece failed: the call's failure (reported once, by the client). Refused,
       // never applied, only where every piece was: one applied or of unknown fate leaves the call's unknown.
-      let failures = 0;
-      let refusedAll = true;
-      let failed: { errno: string; message: string } | undefined;
-      for (let i = 0; i < all.length; i++) {
-        const fate = ownValue(all[i]!, 'failed');
-        if (fate === undefined) continue;
-        failures++;
-        failed ??= fate;
-        if (ownValue(fate, 'refused') !== true) refusedAll = false;
+      const failures = all.filter((piece) => piece.failed !== undefined);
+      if (failures.length > 0) {
+        const { errno, message } = failures[0]!.failed!;
+        return { failed: failures.length === all.length && failures.every((piece) => piece.failed!.refused === true) ? { errno, message, refused: true } : { errno, message } };
       }
-      if (failed !== undefined) {
-        const { errno, message } = failed;
-        return { failed: failures === all.length && refusedAll ? { errno, message, refused: true } : { errno, message } };
-      }
-      const rest: ProcessFsAnswer = { ...last };
-      reflectDeleteProperty(rest, 'mutation');
-      const lastMutation = ownValue(last, 'mutation');
-      return first !== undefined && lastMutation !== undefined ? { ...rest, mutation: { before: first.before, after: lastMutation.after } } : rest;
+      const { mutation: _mutation, ...rest } = last;
+      return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
     });
-    if (acknowledged) promiseThen(answer, undefined, () => {});
+    if (acknowledged) answer.catch(() => {});
     // A one-piece call's entry gives an op folded into it the call's own answer: the same, at the same turn.
     const only = answers.length === 1 ? answers[0]!.entry : undefined;
     if (only !== undefined) only.answer = answer;
@@ -1270,13 +1194,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     while (sending !== null) await sending;
   };
 
-  const live = (): Grant[] => {
-    const found = new SafeList<Grant>();
-    for (let i = 0; i < grants.length; i++) if (!grants[i]!.ended) found[found.length] = grants[i]!;
-    return found;
-  };
+  const live = (): Grant[] => grants.filter((grant) => !grant.ended);
 
-  const allowedRoot = (root: string): boolean => root !== '' && !(ownValue(options, 'isHomeRoot')?.(root) ?? false);
+  const allowedRoot = (root: string): boolean => root !== '' && !(options.isHomeRoot?.(root) ?? false);
 
   /**
    * Give `grant` back: nothing more is decided under it from now, what was
@@ -1292,10 +1212,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     const wasClosing = grant.closing;
     grant.closing = true;
     try {
-      ownValue(options, 'freezing')?.(grant.root);
+      options.freezing?.(grant.root);
     } catch {
       grant.closing = wasClosing;
-      return promiseResolve(false);
+      return Promise.resolve(false);
     }
     grant.closed = (async () => {
       await client.flush();
@@ -1309,12 +1229,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const end = async (grant: Grant): Promise<void> => {
     if (grant.ended) return;
     grant.ended = true;
-    const at = arrayIndexOf(grants, grant);
-    if (at >= 0) removeAt(grants, at);
+    const at = grants.indexOf(grant);
+    if (at >= 0) grants.splice(at, 1);
     counters.released++;
-    ownValue(options, 'released')?.(grant.root);
+    options.released?.(grant.root);
     try {
-      await ownValue(session, 'grants')?.release(grant.owner);
+      await session.grants?.release(grant.owner);
     } catch {
       // Already ended by the session (revoked, or the process is ending).
     }
@@ -1322,7 +1242,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
 
   /** A grant's recalls, for as long as it lasts: send the log, then do what was asked. */
   const answerRecalls = async (grant: Grant): Promise<void> => {
-    const port = ownValue(session, 'grants')!;
+    const port = session.grants!;
     while (!grant.ended) {
       let kind: RecallKind | null;
       try {
@@ -1331,9 +1251,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         // ESTALE: the session ended it (revoked for an unanswered recall, or the process is ending).
         if (!grant.ended) {
           grant.ended = true;
-          const at = arrayIndexOf(grants, grant);
-          if (at >= 0) removeAt(grants, at);
-          ownValue(options, 'released')?.(grant.root);
+          const at = grants.indexOf(grant);
+          if (at >= 0) grants.splice(at, 1);
+          options.released?.(grant.root);
         }
         return;
       }
@@ -1344,12 +1264,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // process does there from now on goes to the session as anyone's.
       const wasClosing = grant.closing;
       grant.closing = true;
-      ownValue(options, 'freezing')?.(grant.root);
+      options.freezing?.(grant.root);
       await client.flush();
       if (kind === 'share') {
         grant.shared = true;
         grant.closing = wasClosing;
-        ownValue(options, 'released')?.(grant.root);
+        options.released?.(grant.root);
       }
       try {
         await port.recalled(grant.owner, kind);
@@ -1358,9 +1278,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       if (kind === 'revoke') {
         grant.ended = true;
-        const at = arrayIndexOf(grants, grant);
-        if (at >= 0) removeAt(grants, at);
-        ownValue(options, 'released')?.(grant.root);
+        const at = grants.indexOf(grant);
+        if (at >= 0) grants.splice(at, 1);
+        options.released?.(grant.root);
         return;
       }
     }
@@ -1380,11 +1300,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * session confirmed it, then a writer recalled it), and trusting it then
    * would read past a change published since.
    */
-  const endedReadLeases = new SafeSet<string>();
+  const endedReadLeases = new Set<string>();
   const endReadLease = (owner: string): void => {
     endedReadLeases.add(owner);
     // Owners are never reused; the oldest are forgotten past a bound.
-    if (endedReadLeases.size > 64) endedReadLeases.delete(setFind(endedReadLeases, () => true)!);
+    if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value!);
     if (readLease?.owner === owner) readLease = null;
   };
 
@@ -1392,8 +1312,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const giveBackReadLease = async (owner: string): Promise<void> => {
     endReadLease(owner);
     counters.readReleased++;
-    const grants = ownValue(session, 'grants');
-    if (grants !== undefined) await promiseThen(grants.release(owner), undefined, () => {});
+    await session.grants?.release(owner).catch(() => {});
   };
   /** The run ended (settle): it takes no read lease again. */
   let runEnded = false;
@@ -1404,7 +1323,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * idle, and holds a poll open for nothing).
    */
   const answerReadRecalls = async (owner: string): Promise<void> => {
-    const port = ownValue(session, 'grants')!;
+    const port = session.grants!;
     for (;;) {
       const polled = now();
       let kind: RecallKind | null;
@@ -1442,13 +1361,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (idleTimer !== null || live().length === 0) return;
     idleTimer = timers.setTimeout(() => {
       idleTimer = null;
-      const held = live();
-      const idle = new SafeList<Grant>();
-      for (let i = 0; i < held.length; i++) if (!held[i]!.closing && now() - held[i]!.lastUsed >= grantIdleMs) idle[idle.length] = held[i]!;
+      const idle = live().filter((grant) => !grant.closing && now() - grant.lastUsed >= grantIdleMs);
       if (idle.length === 0 || settling) { armIdle(); return; }
-      const closes = new SafeList<Promise<boolean>>();
-      for (let i = 0; i < idle.length; i++) closes[i] = close(idle[i]!);
-      void promiseThen(promiseAll(closes), armIdle);
+      void Promise.all(idle.map(close)).then(armIdle);
     }, grantIdleMs);
   };
 
@@ -1459,15 +1374,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * subtree become their common ancestor (when that may be taken).
    */
   const claim = (root: string): void => {
-    const port = ownValue(session, 'grants');
+    const port = session.grants;
     if (port === undefined || claiming !== null || settling) return;
-    claiming = promiseFinally((async () => {
+    claiming = (async () => {
       let target = root;
       const held = live();
       if (held.length >= MAX_DELEGATIONS_PER_PROCESS) {
         let best = '';
-        for (let i = 0; i < held.length; i++) {
-          const grant = held[i];
+        for (const grant of held) {
           const shared = commonAncestor(grant.root, root);
           if (shared.length > best.length) best = shared;
         }
@@ -1476,32 +1390,25 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       // What the process holds under the new root is given back first: a lease never overlaps another of its own.
       // Its own grant of the same root among them: a renewal, with a range twice as large.
-      const holding = live();
-      const covered = new SafeList<Grant>();
-      for (let i = 0; i < holding.length; i++) if (within(holding[i]!.root, target)) covered[covered.length] = holding[i]!;
+      const covered = live().filter((grant) => within(grant.root, target));
       if (covered.length > 0) {
         // One not given back stays held: no lease is taken over it.
-        const closes = new SafeList<Promise<boolean>>();
-        for (let i = 0; i < covered.length; i++) closes[i] = close(covered[i]!);
-        const given = await promiseAll(closes);
-        for (let i = 0; i < given.length; i++) if (!given[i]) return;
-        let wider = false;
-        for (let i = 0; !wider && i < covered.length; i++) wider = covered[i]!.root !== target;
-        if (wider) counters.widened++;
+        if (!(await Promise.all(covered.map(close))).every(Boolean)) return;
+        if (covered.some((grant) => grant.root !== target)) counters.widened++;
         else counters.renewed++;
       }
       // What was logged lands first (the directory may be one of its own mkdirs).
       await client.flush();
       paused = true;
       await quiet();
-      const inos = rangeOf.has(target) ? rangeOf.get(target)! * 2 : (ownValue(options, 'grantInos') ?? GRANT_INOS);
+      const inos = rangeOf.has(target) ? rangeOf.get(target)! * 2 : (options.grantInos ?? GRANT_INOS);
       let granted: ExclusiveMutationGrant;
       try {
         granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
       } catch (error) {
         // EBUSY (another's lease), EPERM (the session's own), ENOSPC: the
         // session decides there, from now on. A directory not there (yet) may be asked for again.
-        if ((typeof error === 'object' && error !== null ? ownField(error, 'code') : undefined) !== 'ENOENT') refusedRoots.add(target);
+        if ((error as { code?: unknown } | null)?.code !== 'ENOENT') refusedRoots.add(target);
         counters.grantsRefused++;
         return;
       }
@@ -1511,8 +1418,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         owner: granted.owner,
         umask: granted.umask ?? 0o022,
         confined: granted.confined === true,
-        certificate: granted.certificate,
-        closed: undefined,
+        ...(granted.certificate === undefined ? {} : { certificate: granted.certificate }),
         nextIno: granted.inos?.first ?? 0,
         endIno: granted.inos?.end ?? 0,
         inos,
@@ -1522,15 +1428,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         ended: false,
         lastUsed: now(),
       };
-      grants[grants.length] = grant;
+      grants.push(grant);
       counters.grants++;
       void answerRecalls(grant);
       armIdle();
-    })(), () => {
+    })().finally(() => {
       claiming = null;
       paused = false;
-      const counted = mapKeyList(mutations);
-      for (let i = 0; i < counted.length; i++) if (within(counted[i]!, root) || within(root, counted[i]!)) mutations.delete(counted[i]!);
+      for (const key of [...mutations.keys()]) if (within(key, root) || within(root, key)) mutations.delete(key);
       schedule();
     });
   };
@@ -1538,12 +1443,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   // A process with a raw socket decides nothing here: what it awaits is the
   // session's answer, which comes once it is published.
   const heldGrant = (key: string): Grant | undefined => (escaped !== null ? undefined
-    : grantWhere((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
-  /** The first grant `test` holds of. */
-  const grantWhere = (test: (grant: Grant) => boolean): Grant | undefined => {
-    for (let i = 0; i < grants.length; i++) if (test(grants[i]!)) return grants[i];
-    return undefined;
-  };
+    : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
 
   /** What refuses `bytes` more of synchronous writes past the cap the client holds unanswered. */
   const syncCapRefusal = (bytes: number, path: string): Error => fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
@@ -1559,15 +1459,15 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         held.lastUsed = now();
         return held;
       }
-      if (ownValue(session, 'grants') === undefined || settling || escaped !== null) return undefined;
+      if (session.grants === undefined || settling || escaped !== null) return undefined;
       // Shared, or another's: the session decides; a subtree it refused is not asked for again.
-      if (grantWhere((grant) => !grant.ended && within(key, grant.root)) !== undefined) return undefined;
+      if (grants.some((grant) => !grant.ended && within(key, grant.root))) return undefined;
       // Counted at each directory above it: the deepest one that has had
       // GRANT_AFTER mutations is taken (a loop writing across many
       // directories of one tree takes the tree, not each directory).
       let deepest: string | undefined;
       for (let root = parentKey(key); allowedRoot(root); root = parentKey(root)) {
-        if (setFind(refusedRoots, (refused) => within(root, refused)) !== undefined) break;
+        if ([...refusedRoots].some((refused) => within(root, refused))) break;
         const seen = (mutations.get(root) ?? 0) + 1;
         mutations.set(root, seen);
         if (seen >= grantAfter && deepest === undefined) deepest = root;
@@ -1594,7 +1494,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return heldGrant(key);
     },
     holds(key) {
-      return grantWhere((grant) => !grant.ended && within(key, grant.root)) !== undefined;
+      return grants.some((grant) => !grant.ended && within(key, grant.root));
     },
     vouch(key, root) {
       if (client.pending() || ownHeld || root.cursor < ownThrough) return undefined;
@@ -1603,8 +1503,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     certifies(key, root) {
       if (escaped !== null) return undefined;
       let found: 'held' | 'above' | undefined;
-      for (let i = 0; i < grants.length; i++) {
-        const grant = grants[i];
+      for (const grant of grants) {
         const certificate = grant.certificate;
         if (certificate === undefined || certificate.epoch !== root.epoch || root.cursor < certificate.revision) continue;
         const standing = standingOf(grant, key);
@@ -1634,7 +1533,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return entered(given, submitOptions, true);
     },
     hurry() {
-      for (let i = 0; i < queue.length; i++) { const entry = queue[i]; entry.lingers = false; }
+      for (const entry of queue) entry.lingers = false;
       schedule();
     },
     seal() {
@@ -1645,50 +1544,47 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
     },
     flush() {
-      ownValue(options, 'drain')?.();
+      options.drain?.();
       const mark = logged;
-      const flushed = answered >= mark ? promiseResolve() : new PromiseConstructor<void>((resolve) => { marks[marks.length] = { mark, resolve }; });
+      const flushed = answered >= mark ? Promise.resolve() : new Promise<void>((resolve) => { marks.push({ mark, resolve }); });
       schedule();
-      return promiseThen(flushed, async () => {
+      return flushed.then(async () => {
         if (processGone === null) return;
-        await promiseThen(retirePending(), undefined, () => {});
+        await retirePending().catch(() => {});
         throw processGone;
       });
     },
     effect() {
       if (processGone !== null) return null;
-      ownValue(options, 'drain')?.();
+      options.drain?.();
       return answered >= logged ? null : client.flush();
     },
     published() {
-      const ask = ownValue(options.session, 'published');
+      const ask = options.session.published;
       if (processGone !== null || ask === undefined || publishedThrough === heldWaves) return null;
       const through = heldWaves;
-      return promiseThen(reflectApply(ask, options.session, [false]), () => {
+      return ask.call(options.session, false).then(() => {
         if (publishedThrough < through) publishedThrough = through;
       });
     },
     rawSocket() {
-      const ask = ownValue(options.session, 'published');
-      if (processGone !== null) return promiseReject(processGone);
+      const ask = options.session.published;
+      if (processGone !== null) return Promise.reject(processGone);
       if (ask === undefined) return null;
       if (escaped === null) {
         // Its answer is the session's word on what it holds of the process's,
         // this client's waves and what it never saw (its launch's writes) alike.
         const through = heldWaves;
-        escaped = promiseThen(reflectApply(ask, options.session, [true]), () => {
+        escaped = ask.call(options.session, true).then(() => {
           escapeLanded = true;
-          publishedThrough = mathMax(publishedThrough, through);
+          publishedThrough = Math.max(publishedThrough, through);
         });
         // Not told, no socket opens, and every write after it fails (send) rather than be answered ahead of its publication.
-        promiseThen(escaped, undefined, () => {});
+        escaped.catch(() => {});
       }
       const logged = client.effect();
       if (escapeLanded && logged === null) return client.published();
-      const both = new SafeList<Promise<unknown> | null>();
-      both[0] = escaped;
-      both[1] = logged;
-      return promiseThen(promiseAll(both), () => client.published() ?? undefined);
+      return Promise.all([escaped, logged]).then(() => client.published() ?? undefined);
     },
     async settle() {
       settling = true;
@@ -1706,22 +1602,20 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         if (idleTimer !== null) { timers.clearTimeout(idleTimer); idleTimer = null; }
         // Each grant closed, its log sent with the rest; its release, as the
         // read lease's, is sent and not waited for.
-        const closing = live();
-        for (let i = 0; i < closing.length; i++) {
-          closing[i]!.closing = true;
-          ownValue(options, 'freezing')?.(closing[i]!.root);
+        for (const grant of live()) {
+          grant.closing = true;
+          options.freezing?.(grant.root);
         }
         await client.flush();
-        const ending = live();
-        for (let i = 0; i < ending.length; i++) void end(ending[i]!);
+        for (const grant of live()) void end(grant);
         settling = false;
       }
-      if (processGone !== null) await promiseThen(retirePending(), undefined, () => {});
+      if (processGone !== null) await retirePending().catch(() => {});
       const failure = client.takeFailuresError();
       if (failure !== null) throw failure;
     },
     takeFailures() {
-      return arrayCopy(takeAll(failures));
+      return failures.splice(0, failures.length);
     },
     readTrusted() {
       // Asked only where I/O just moved the clock to real time (a resumption
@@ -1735,11 +1629,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return !runEnded && readLease?.owner === owner && readLease.logged === logged;
     },
     readLeaseAsk() {
-      if (ownValue(session, 'grants') === undefined || runEnded) return null;
+      if (session.grants === undefined || runEnded) return null;
       return { at: now(), logged: answered === logged ? logged : -1 };
     },
     readLeaseAnswered(lease) {
-      if (ownValue(session, 'grants') === undefined || endedReadLeases.has(lease.owner)) return;
+      if (session.grants === undefined || endedReadLeases.has(lease.owner)) return;
       if (readLease?.owner === lease.owner) {
         readLease.confirmedAt = now();
         return;
@@ -1760,13 +1654,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       counters.readConfirms++;
     },
     takeFailuresError() {
-      const taken = takeAll(failures);
+      const taken = failures.splice(0, failures.length);
       // A missing process is terminal even after its recorded ops were taken.
       if (processGone !== null) return processGone;
       return taken.length === 0 ? null : failuresError(taken);
     },
     noteFailure(failure) {
-      failures[failures.length] = failure;
+      failures.push(failure);
     },
     get pendingBytes() { return pendingBytes; },
     get ended() { return processGone !== null; },
@@ -1783,15 +1677,11 @@ const DRAIN_WAVE_BASE = 2 ** 40;
  * response, its exit): each named, with the session's errno and message.
  */
 export function failuresError(failures: readonly ProcessFsFailure[]): Error & { code: string; failures: readonly ProcessFsFailure[] } {
-  const said = new SafeList<string>();
-  for (let i = 0; i < failures.length; i++) {
-    const failure = failures[i]!;
-    if (failure.errno === 'ESRCH') return objectAssign(new Error(failure.message), { code: 'ESRCH', failures });
-    said[i] = `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`;
-  }
-  return objectAssign(new Error(
+  const gone = failures.find((failure) => failure.errno === 'ESRCH');
+  if (gone !== undefined) return Object.assign(new Error(gone.message), { code: 'ESRCH', failures });
+  return Object.assign(new Error(
     `${failures.length} filesystem change${failures.length === 1 ? '' : 's'} this process made did not reach the session:\n`
-      + arrayJoin(said, '\n'),
+      + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n'),
   ), { code: 'EIO', failures });
 }
 
@@ -1821,8 +1711,6 @@ export async function drainProcessFsJournal(options: {
   timers?: WaveTimers;
 }): Promise<ProcessFsDrain> {
   const { journal, session } = options;
-  const retry = ownValue(options, 'retry');
-  const timers = ownValue(options, 'timers');
   const drained: ProcessFsDrain = { landed: 0, failures: [] };
   let held = await journal.readAfter(0, DRAIN_WINDOW_BYTES);
   if (held.length === 0) return drained;
@@ -1830,17 +1718,16 @@ export async function drainProcessFsJournal(options: {
   const numberings = await journal.numberings();
   if (numberings.length === 0 || numberings[0]!.jid > held[0]!.jid) {
     const writer = await openWaveEpoch(() => session.openWriter(false), {
-      ...(retry === undefined ? {} : { retry }),
-      ...(timers === undefined ? {} : { timers }),
+      ...(options.retry === undefined ? {} : { retry: options.retry }),
+      ...(options.timers === undefined ? {} : { timers: options.timers }),
     });
     const numbering = { writer, seq: 1, jid: held[0]!.jid };
     await journal.number(numbering);
-    for (let i = numberings.length; i > 0; i--) numberings[i] = numberings[i - 1]!;
-    numberings[0] = numbering;
+    numberings.unshift(numbering);
   }
   const numberingOf = (jid: number): ProcessFsNumbering => {
     let found = numberings[0]!;
-    for (let i = 0; i < numberings.length; i++) { const numbering = numberings[i]; if (numbering.jid <= jid) found = numbering; }
+    for (const numbering of numberings) if (numbering.jid <= jid) found = numbering;
     return found;
   };
   // Its waves are numbered past any the process sent under the same writer:
@@ -1851,32 +1738,23 @@ export async function drainProcessFsJournal(options: {
     // A wave: entries under one numbering, their numbers contiguous, within W7's bounds.
     const numbering = numberingOf(held[0]!.jid);
     const taken: { jid: number; op: ProcessFsOp; seq: number }[] = [];
-    const owned = new SafeSet<string>();
+    const owned = new Set<string>();
     let bytes = 0;
     let pathBytes = 0;
-    for (let i = 0; i < held.length; i++) {
-      const entry = held[i];
+    for (const entry of held) {
       if (numberingOf(entry.jid) !== numbering) break;
       const seq = numbering.seq + (entry.jid - numbering.jid);
       if (taken.length > 0 && seq !== taken[taken.length - 1]!.seq + 1) break;
-      const named = pathsOf(entry.op);
-      const paths = new SafeList<string>();
-      let entryPathBytes = 0;
-      for (let j = 0; j < named.length; j++) {
-        if (owned.has(named[j]!)) continue;
-        paths[paths.length] = named[j]!;
-        entryPathBytes += utf8Length(named[j]!);
-      }
-      const entryBytes = entry.op.type === 'call' && carriesData(entry.op.call) ? typedArrayByteLength(entry.op.call.data) : 0;
+      const paths = pathsOf(entry.op).filter((path) => !owned.has(path));
+      const entryBytes = entry.op.type === 'call' && 'data' in entry.op.call ? entry.op.call.data.byteLength : 0;
+      const entryPathBytes = paths.reduce((sum, path) => sum + utf8Length(path), 0);
       if (taken.length > 0 && (owned.size + paths.length > WAVE_PATHS || pathBytes + entryPathBytes > WAVE_PATH_BYTES || bytes + entryBytes > WAVE_BYTES)) break;
-      for (let j = 0; j < paths.length; j++) owned.add(paths[j]!);
+      for (const path of paths) owned.add(path);
       bytes += entryBytes;
       pathBytes += entryPathBytes;
-      taken[taken.length] = { ...entry, seq };
+      taken.push({ ...entry, seq });
     }
-    const ops = new SafeList<ProcessFsOp>();
-    for (let i = 0; i < taken.length; i++) ops[i] = taken[i]!.op;
-    const encoded = await encodeWriteBatch({ inodes: [], chunks: [], ops: arrayCopy(ops) });
+    const encoded = await encodeWriteBatch({ inodes: [], chunks: [], ops: taken.map((entry) => entry.op) });
     const result = await sendWaveAttempts({
       supervisor: session,
       writer: async () => numbering.writer,
@@ -1884,8 +1762,8 @@ export async function drainProcessFsJournal(options: {
       streamed: false,
       wave: ++wave,
       ...(numbering.writer === null ? {} : { sequence: { seq: taken[0]!.seq, ack: 0 } }),
-      ...(retry === undefined ? {} : { retry }),
-      ...(timers === undefined ? {} : { timers }),
+      ...(options.retry === undefined ? {} : { retry: options.retry }),
+      ...(options.timers === undefined ? {} : { timers: options.timers }),
     }) as WriteBatchStreamResult;
     const cursor = numbering.writer === null
       ? taken[0]!.seq - 1 + (result.ok ? taken.length : result.committedOps)
@@ -1898,11 +1776,10 @@ export async function drainProcessFsJournal(options: {
         ? { seq: cursor + 1, errno: result.error.errno, message: result.error.message } : null)
       : result.sequence?.refused ?? null;
     let through = 0;
-    for (let i = 0; i < taken.length; i++) {
-      const entry = taken[i];
+    for (const entry of taken) {
       if (entry.seq <= cursor && (refused === null || entry.seq !== refused.seq)) { drained.landed++; through = entry.jid; continue; }
       if (refused !== null && entry.seq === refused.seq) {
-        drained.failures[drained.failures.length] = { op: nameOf(entry.op), path: pathsOf(entry.op)[0] ?? '', errno: refused.errno, message: refused.message };
+        drained.failures.push({ op: nameOf(entry.op), path: pathsOf(entry.op)[0] ?? '', errno: refused.errno, message: refused.message });
         through = entry.jid;
         continue;
       }
@@ -1912,9 +1789,7 @@ export async function drainProcessFsJournal(options: {
       throw new Error(`the session applied none of a drained write: ${result.ok ? 'no error' : result.error.message}`);
     }
     await journal.dropThrough(through);
-    const left = new SafeList<(typeof held)[number]>();
-    for (let i = 0; i < held.length; i++) if (held[i]!.jid > through) left[left.length] = held[i]!;
-    held = left;
+    held = held.filter((entry) => entry.jid > through);
     if (held.length === 0) held = await journal.readAfter(through, DRAIN_WINDOW_BYTES);
   }
   return drained;

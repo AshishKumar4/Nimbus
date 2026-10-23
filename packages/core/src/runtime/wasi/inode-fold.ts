@@ -10,9 +10,8 @@
  * or a clock.
  */
 
-import type { FsTime, W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { chownedMode, timeAt } from '../../vfs/posix-access.js';
-import { bytesView, mathMax, objectHasOwn, typedArrayByteLength, typedArrayFill, typedArraySet, Uint8ArrayConstructor } from '../../_shared/primordials.js';
 
 /** What an inode is, as far as its own operations change it. */
 export interface InodeState {
@@ -29,11 +28,6 @@ export interface InodeState {
 }
 
 /** One of the process's own operations on an inode, as logged; `at` is when it was decided (its times). */
-
-/** Which change W7Attrs carries, by its own fields: a mode's, an owner's, or times'. */
-export const isModeChange = (attrs: W7Attrs): attrs is { mode: number } => objectHasOwn(attrs, 'mode');
-export const isOwnerChange = (attrs: W7Attrs): attrs is { uid: number | null; gid: number | null } => objectHasOwn(attrs, 'uid');
-export const isTimesChange = (attrs: W7Attrs): attrs is { atime: FsTime; mtime: FsTime } => objectHasOwn(attrs, 'atime');
 export type InodeOp =
   | { readonly kind: 'write'; readonly offset: number; readonly data: Uint8Array; readonly at: number }
   | { readonly kind: 'append'; readonly data: Uint8Array; readonly at: number }
@@ -47,9 +41,9 @@ export type InodeOp =
  * A private copy of the first `length` of `bytes`: a plain array no one else
  * holds, whatever `bytes` is (a Buffer's slice is a view of it, not a copy).
  */
-export function owned(bytes: Uint8Array, length = typedArrayByteLength(bytes)): Uint8Array {
-  const copy = new Uint8ArrayConstructor(length);
-  typedArraySet(copy, bytesView(bytes, 0, length));
+export function owned(bytes: Uint8Array, length = bytes.byteLength): Uint8Array {
+  const copy = new Uint8Array(length);
+  copy.set(bytes.subarray(0, length));
   return copy;
 }
 
@@ -61,9 +55,9 @@ export function copyState(state: InodeState): InodeState {
 /** Room for `size` bytes in `state`'s buffer, its first `state.size` kept, the rest zero. */
 function grown(state: InodeState, size: number): Uint8Array {
   const bytes = state.bytes!;
-  if (size <= typedArrayByteLength(bytes)) return bytes;
-  const next = new Uint8ArrayConstructor(mathMax(size, typedArrayByteLength(bytes) * 2, 4096));
-  typedArraySet(next, bytesView(bytes, 0, state.size));
+  if (size <= bytes.byteLength) return bytes;
+  const next = new Uint8Array(Math.max(size, bytes.byteLength * 2, 4096));
+  next.set(bytes.subarray(0, state.size));
   return next;
 }
 
@@ -79,24 +73,24 @@ export function applyOp(state: InodeState, op: InodeOp): InodeState {
   switch (op.kind) {
     case 'write':
     case 'append': {
-      if (typedArrayByteLength(op.data) === 0) return state;
+      if (op.data.byteLength === 0) return state;
       const offset = op.kind === 'append' ? state.size : op.offset;
-      const end = offset + typedArrayByteLength(op.data);
+      const end = offset + op.data.byteLength;
       if (state.bytes !== null) {
         const bytes = grown(state, end);
-        if (offset > state.size) typedArrayFill(bytes, 0, state.size, offset);
-        typedArraySet(bytes, op.data, offset);
+        if (offset > state.size) bytes.fill(0, state.size, offset);
+        bytes.set(op.data, offset);
         state.bytes = bytes;
       }
-      state.size = mathMax(state.size, end);
+      state.size = Math.max(state.size, end);
       state.mtime = state.ctime = op.at;
       return state;
     }
     case 'truncate': {
-      if (op.size === 0) state.bytes = new Uint8ArrayConstructor(0);
+      if (op.size === 0) state.bytes = new Uint8Array(0);
       else if (state.bytes !== null && op.size > state.size) {
         const bytes = grown(state, op.size);
-        typedArrayFill(bytes, 0, state.size, op.size);
+        bytes.fill(0, state.size, op.size);
         state.bytes = bytes;
       }
       state.size = op.size;
@@ -122,8 +116,8 @@ export function applyOp(state: InodeState, op: InodeOp): InodeState {
 }
 
 /** `ops` folded over a copy of `baseline`, in order: what the inode is with them pending. */
-export function foldOps(baseline: InodeState, ops: readonly InodeOp[]): InodeState {
+export function foldOps(baseline: InodeState, ops: Iterable<InodeOp>): InodeState {
   let state = copyState(baseline);
-  for (let i = 0; i < ops.length; i++) state = applyOp(state, ops[i]);
+  for (const op of ops) state = applyOp(state, op);
   return state;
 }
