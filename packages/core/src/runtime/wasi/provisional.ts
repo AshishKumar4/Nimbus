@@ -1617,6 +1617,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     write: (handleId, offset, bytes, awaited = false) => {
       const desc = descOf(handleId);
       if (!desc.write) throw fsError('EBADF', 'write', desc.path);
+      // write(2) of nothing to a regular file changes nothing.
+      if (bytes.byteLength === 0) return 0;
       const at = host.now();
       const start = desc.append ? undefined : offset ?? desc.position;
       if (!awaited && continued(desc, start, bytes, at)) {
