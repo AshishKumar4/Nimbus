@@ -19,7 +19,7 @@ published independently in the `@nimbus-sh` npm scope.
   - A sleeping run (`time.sleep`) ended 9.5-10 s after Ctrl-C with `OSError: [Errno 58] Not supported`. Now it ends with a `KeyboardInterrupt`.
   - While a python one-shot computes in the session, the session now answers between two of its asks: a request to the session waited up to 3.3-5.3 s during a 5 s loop, and now waits 0.1-1.8 s.
   - A script (`python file.py`) and `python -m` still run as a resident process, which Ctrl-C ends without a `KeyboardInterrupt`.
-- Fixed: a python run that ends by `os._exit(n)` ends with status `n`. It ended with 1 and the error `python: [object Object]`. This holds for one-shots, the REPL and servers, with any cpython build.
+- Fixed: a python run that ends by `os._exit(n)` ends with status `n`. It ended with 1 and printed the error `[object Object]`. This holds for one-shots, the REPL and servers, with any cpython build.
 - Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 - Fixed: `astro dev` runs with Astro 7.4.2. Astro 7.4.2 requires Node
   22.23.4 or later, and its CLI stopped before its dev server loaded,
