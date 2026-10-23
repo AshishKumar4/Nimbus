@@ -707,7 +707,9 @@ export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, reado
  * names by a relative literal, resolved against that module's directory —
  * the only way to find an image in a dependency the bin-package pass never
  * walks (lightningcss-wasm's 15.8 MiB `lightningcss_node.wasm`, which Vite 8
- * loads for CSS minification). A launch stages each as a module-map member
+ * loads for CSS minification); and a `.wasm` file an earlier run of the
+ * launch read synchronously (its learned reads), which a resident holds as
+ * data, not as a map cell. A launch stages each as a module-map member
  * the loader compiles, registered under both keys, so the program's own
  * `new WebAssembly.Module(bytes)` is answered from the map whether it read
  * the bytes by path or carried them inline. A file that cannot be read is
