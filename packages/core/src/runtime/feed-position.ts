@@ -10,7 +10,7 @@
  * feedOf, and only the composite reads them whole (feedsOf). So nothing that
  * compares the root reads anything but the root's feed.
  */
-import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringStartsWith, TypeError } from '../_shared/primordials.js';
+import { objectHasOwn, objectKeys, SafeWeakMap, stringCharCodeAt, stringSlice, stringStartsWith, TypeError } from '../_shared/primordials.js';
 
 declare const OPAQUE: unique symbol;
 
@@ -83,14 +83,23 @@ export function samePosition(a: FeedPosition, b: FeedPosition): boolean {
   return true;
 }
 
-/** The mount points of `position`'s feeds but the root's, read once a position (a store asks at every call that finds a path's feed). */
-const mountPoints = new SafeWeakMap<FeedCursors, readonly string[]>();
-function mountPointsOf(position: FeedPosition): readonly string[] {
+/** A fed mount: its point ('/dev'), its name beneath the root ('dev'), and that name's first code unit, which most keys differ at. */
+interface MountPoint {
+  readonly point: string;
+  readonly name: string;
+  readonly first: number;
+}
+
+/** The mounts of `position`'s feeds but the root's, read once a position (a store asks at every call that finds a path's feed). */
+const mountPoints = new SafeWeakMap<FeedCursors, readonly MountPoint[]>();
+function mountPointsOf(position: FeedPosition): readonly MountPoint[] {
   let points = mountPoints.get(position.feeds);
   if (points === undefined) {
     const all = objectKeys(feedsOf(position));
-    const found: string[] = [];
-    for (let i = 0; i < all.length; i++) if (all[i] !== ROOT_FEED) found[found.length] = all[i];
+    const found: MountPoint[] = [];
+    for (let i = 0; i < all.length; i++) {
+      if (all[i] !== ROOT_FEED) found[found.length] = { point: all[i], name: stringSlice(all[i], 1), first: stringCharCodeAt(all[i], 1) };
+    }
     points = found;
     mountPoints.set(position.feeds, points);
   }
@@ -101,13 +110,18 @@ function mountPointsOf(position: FeedPosition): readonly string[] {
 export function feedPointOf(position: FeedPosition, key: string): string {
   const points = mountPointsOf(position);
   if (points.length === 0) return ROOT_FEED;
-  const path = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? key : '/' + key;
-  let found = ROOT_FEED;
+  // Compared from where the key's first name starts: no path is made for it.
+  const at = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? 1 : 0;
+  const first = stringCharCodeAt(key, at);
+  const rest = key.length - at;
+  let found: MountPoint | null = null;
   for (let i = 0; i < points.length; i++) {
-    const point = points[i];
-    if (point.length > found.length && (path === point || (path.length > point.length && stringStartsWith(path, point) && stringCharCodeAt(path, point.length) === 0x2f))) found = point;
+    const mount = points[i];
+    const length = mount.name.length;
+    if (mount.first !== first || rest < length || (found !== null && length <= found.name.length)) continue;
+    if ((rest === length || stringCharCodeAt(key, at + length) === 0x2f) && stringStartsWith(key, mount.name, at)) found = mount;
   }
-  return found;
+  return found === null ? ROOT_FEED : found.point;
 }
 
 /**
@@ -175,7 +189,7 @@ export function abovePoint(position: FeedPosition, key: string): boolean {
   const under = path === '/' ? '/' : path + '/';
   const points = mountPointsOf(position);
   for (let i = 0; i < points.length; i++) {
-    if (points[i].length > under.length && stringStartsWith(points[i], under)) return true;
+    if (points[i].point.length > under.length && stringStartsWith(points[i].point, under)) return true;
   }
   return false;
 }
