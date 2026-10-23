@@ -10595,7 +10595,7 @@ var __nimbusResidentModule = (() => {
     Object.defineProperty(fs, "client", { value: holder?.client ?? null, enumerable: true });
     fs.logHeld = () => holder?.logHeld();
     fs.flush = async () => {
-      await holder?.flush();
+      await holder?.send();
     };
     fs.settle = async () => {
       const failures = [];
