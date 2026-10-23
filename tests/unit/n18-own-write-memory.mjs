@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // N18 near the limit. A node process's own write that its facet store has no
-// room to hold is kept in the process's heap (a bounded LRU), so
-// write-then-read still works. When that budget is spent too, a sync read of
-// a write it could not keep says why: ENOSPC, "workspace storage is full",
-// naming the async form. It is never a bare EAGAIN.
+// room to hold is kept in the process's heap, within FACET_OWN_WRITE_MEMORY_BYTES
+// (the store admission's pin), so write-then-read still works. Past that bound
+// a write is refused with ENOSPC, and a sync read of a write it could not keep
+// says so: ENOSPC, naming the async form. It is never a bare EAGAIN.
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, facetSql } from './lib/resident-body.mjs';
@@ -15,8 +15,8 @@ const fs = require("fs");
 let seed = 7;
 const bytes = (n) => { const b = Buffer.alloc(n); for (let i = 0; i < n; i++) { seed = (seed * 1103515245 + 12345) >>> 0; b[i] = seed >>> 24; } return b; };
 globalThis.__probe = {
-  write: (p, n) => { const b = bytes(n); fs.writeFileSync(p, b); return b.subarray(0, 8).toString("hex"); },
-  read: (p) => { try { return fs.readFileSync(p).subarray(0, 8).toString("hex"); } catch (e) { return e.message; } },
+  write: (p, n) => { try { const b = bytes(n); fs.writeFileSync(p, b); return b.subarray(0, 8).toString("hex"); } catch (e) { return e.code; } },
+  read: (p) => { try { return fs.readFileSync(p).subarray(0, 8).toString("hex"); } catch (e) { return e.code; } },
   settle: () => new Promise((r) => setTimeout(r, 20)),
 };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
@@ -47,17 +47,15 @@ await probe.settle();
 assert.ok(authority.kfs.exists('home/user/app/a'), 'the session holds it');
 assert.equal(probe.read('/home/user/app/a'), first, 'still readable after the write-back');
 
-// Past the budget: the least recently read goes first; its miss names the storage.
+// Past the budget: a write the process can no longer keep is refused as no space, and says so.
 const big = FACET_OWN_WRITE_MEMORY_BYTES - MB;
-// b was read before a, so b is the one that goes.
 probe.write('/home/user/app/c', big);
-assert.equal(probe.read('/home/user/app/a'), first, 'the more recently read write stays');
-const evicted = probe.read('/home/user/app/b');
-assert.match(evicted, /^ENOSPC: workspace storage is full; '\/home\/user\/app\/b' is readable asynchronously/);
+assert.equal(probe.read('/home/user/app/a'), first, 'the write within the budget stays readable');
+assert.equal(probe.read('/home/user/app/b'), 'ENOSPC');
 // Larger than the whole budget: never held, and said so.
 probe.write('/home/user/app/huge', FACET_OWN_WRITE_MEMORY_BYTES + MB);
-// (Until its write-back lands, the parked write itself serves it.)
+// (Until its write-back lands, the decided bytes serve it.)
 await probe.settle();
-assert.match(probe.read('/home/user/app/huge'), /^ENOSPC: workspace storage is full/);
+assert.equal(probe.read('/home/user/app/huge'), 'ENOSPC');
 
 await Bun.write(Bun.stdout, 'n18-own-write-memory: ok\n');

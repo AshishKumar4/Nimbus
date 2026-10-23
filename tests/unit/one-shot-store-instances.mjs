@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// Reuse ONE real generated one-shot module for two credentials. The extra
-// shim hook only seeds a cell through the store's API, without a write ledger
-// entry: unlike fs.writeFileSync it leaves genuinely process-only bytes at exit.
+// Reuse ONE real generated one-shot module for two credentials: each run has
+// its own credential, namespace and process state, and what the first run
+// wrote is the session's, as the session holds it when the second run starts.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,9 +23,7 @@ const authority = createAuthority();
 authority.kfs.writeFile('home/user/memory-only.txt', 'authority bytes');
 authority.kfs.writeFile('home/user/shared-meta.txt', 'shared');
 authority.kfs.chmod('home/user/shared-meta.txt', 0o644);
-const sources = nodeFacetSources(generateShimsCode() + `
-globalThis.__instanceTestOwnCell = (path, value) => { __resident.bundle[path] = value; };
-`);
+const sources = nodeFacetSources(generateShimsCode());
 const program = `
 const fs = require('fs');
 if (process.argv.includes('first')) {
@@ -33,7 +31,7 @@ if (process.argv.includes('first')) {
   // What it sets on a file the session then changes back.
   fs.chmodSync('/home/user/shared-meta.txt', 0o600);
   fs.utimesSync('/home/user/shared-meta.txt', 1000, 1000);
-  globalThis.__instanceTestOwnCell('home/user/memory-only.txt', 'only in the first process');
+  fs.writeFileSync('/home/user/memory-only.txt', 'only in the first process');
   console.log('memory=' + fs.readFileSync('/home/user/memory-only.txt', 'utf8'));
   console.log('ok');
 } else {
@@ -78,7 +76,7 @@ const stat = authority.kfs.stat('home/user/secret.txt');
 assert.equal(stat.uid, 1000, 'the first write reached the authority as its own process');
 assert.equal(stat.mode & 0o7777, 0o600, 'the first write made the file with the mode it asked for');
 assert.equal(authority.read('home/user/secret.txt'), 'private');
-assert.equal(authority.read('home/user/memory-only.txt'), 'authority bytes', 'the injected cell never reached the authority');
+assert.equal(authority.read('home/user/memory-only.txt'), 'only in the first process');
 // The session changes back what the first process set.
 const kernel = authority.rawVfs.as(CRED_KERNEL);
 kernel.chmod('home/user/shared-meta.txt', 0o644);
@@ -92,10 +90,9 @@ assert.equal(second.stderr, '');
 assert.deepEqual(JSON.parse(second.stdout), {
   denied: 'EACCES',
   exists: secondAuthority.exists('home/user/secret.txt'),
-  memory: 'authority bytes',
+  memory: 'only in the first process',
   meta: { mode: 0o644, mtimeMs: 5_000_000 },
   uid: 2000,
-}, "the second fetch has its own namespace, credential, own-write cells, and modes and times: the session's, not the first's");
-delete globalThis.__instanceTestOwnCell;
+}, "the second fetch has its own namespace and credential, and the modes and times the session holds: not the first's");
 realProcess.stdout.write('one-shot-store-instances: PASS\n');
 realProcess.exit(0);
