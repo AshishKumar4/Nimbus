@@ -375,18 +375,6 @@ const GAPS = {
       + 'meanwhile statSync can report a directory that is gone',
     shows: 'sync stat x/e answered directory 755',
   },
-  'an awaited read of a file the session holds is answered, not refused (5479) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile d/f answered EAGAIN',
-  },
-  'an awaited read of a file the session holds is answered, not refused (5652) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile d/f answered EAGAIN',
-  },
-  'an awaited read of a file the session holds is answered, not refused (5425) [node]': {
-    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
-    shows: 'own readFile x/e/g answered EAGAIN',
-  },
   'a file the process renamed away keeps its size while a new file is written at its old name (6113) [node]': {
     lacks: 'S gives a write in flight at a name the size of the file it renamed away from that name (closed by the cutover: RF keeps own state by identity); '
       + 'meanwhile statSync of the renamed file can report the size of the file being written at its old name',
@@ -455,10 +443,6 @@ const GAPS = {
   'a file read after a peer changed its mode is held for a call that cannot wait (7896) [eager]': {
     lacks: 'the eager engine reads a file a peer just changed the mode of by its old revision (ESTALE) and holds no bytes for the next call that cannot wait (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/e/g answered EAGAIN',
-  },
-  'an awaited read of a directory the process lists is answered, not refused (7597) [node]': {
-    lacks: 'S refuses an awaited read of a directory EAGAIN while its listing is held (main does too; closed by the cutover: RF waits for the session)',
-    shows: 'own readFile x answered EAGAIN',
   },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
