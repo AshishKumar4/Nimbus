@@ -802,6 +802,15 @@ export function provisional(host: ProvisionalHost): Provisional {
    * fate to `settle`: refused only where the session never applied it (an
    * unknown fate counts as answered: only a fresh barrier retires it).
    */
+  /**
+   * What an answer's handler meets logging after the process ended (a close
+   * of what it kept): the client refuses it, as it refuses everything now,
+   * and settle reports the process's end. Any other error is the handler's.
+   */
+  const endedOnly = (error: unknown): void => {
+    if (!host.client.ended) throw error;
+  };
+
   const logged = (op: ProcessFsOp, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, awaited = false): Promise<unknown> | undefined => {
     host.drain();
     const settled = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
@@ -811,7 +820,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (awaited) {
       // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
       const answer = host.client.submit(op);
-      void answer.then((answered) => settled(false, answered), () => settled(true, undefined));
+      void answer.then((answered) => settled(false, answered), () => settled(true, undefined)).catch(endedOnly);
       return answer;
     }
     settles(host.client.submit(op, { acknowledged: true }), settle);
@@ -823,7 +832,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     void answer.then(
       (answered) => { settle(answered.failed?.refused === true, answered); host.sent(); },
       () => { settle(false, undefined); host.sent(); },
-    );
+    ).catch(endedOnly);
   };
 
   /** `inode`'s fold again from its baseline: what it is with the records it has now. */
