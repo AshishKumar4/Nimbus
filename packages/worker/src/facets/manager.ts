@@ -42,6 +42,7 @@ import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@
 import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
@@ -4722,9 +4723,16 @@ async function _buildPrefetchBundle(
   // 2. Greedy oversample — every installed pkg's pkg.json + main.
   //    Catches dynamic-require / `bindings()` / plugin-loader cases the
   //    regex prefetch misses. Its budget is independent from the complete
-  //    static require closure, which is correctness-critical.
+  //    static require closure, which is correctness-critical. Only a
+  //    closure that can load by a name it computes is guessed for
+  //    (opaque-loads.ts): one whose every load is a literal was walked
+  //    whole, and a builtins-only `node -e` in a Next app spent 13 s here
+  //    (verify/handoffs/ticket-launch-greedy-oversample-cost.md).
   const independentBeforeGroups = new Set(Object.keys(bundle));
-  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
+  const opaque = hasOpaqueLoads(entryCode) || [...closurePaths].some((path) => hasOpaqueLoads(prefetch.bundle[path]));
+  const greedy = opaque
+    ? await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions })
+    : { added: 0, groups: [] };
   phase('e.greedy');
   // Each landed learned root's closure (PrefetchResult.units) is one group
   // beside the greedy pass's, kept or evicted whole: a dependency evicted on
