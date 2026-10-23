@@ -1324,7 +1324,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
-  fs.flush = async () => { await holder?.flush(); };
+  fs.flush = async () => { await holder?.send(); };
   fs.settle = async () => {
     const failures: UnsettledWrite[] = [];
     await faultsEnded();
