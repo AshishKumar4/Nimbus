@@ -36,12 +36,19 @@ const GUEST_LOADING = [
   // What identifies the code a program produces, keyed as it compiles.
   join(CORE, 'src/_shared/runtime-code-identity.ts'),
   join(CORE, 'src/_shared/relative-wasm-paths.ts'),
-  // The filesystem reads it makes: the resident namespace's walk.
-  fileURLToPath(new URL('../../../packages/worker/src/vfs/resident/namespace-lookup.ts', import.meta.url)),
-  fileURLToPath(new URL('../../../packages/worker/src/vfs/resident/namespace.ts', import.meta.url)),
-  fileURLToPath(new URL('../../../packages/worker/src/vfs/resident/transport.ts', import.meta.url)),
-  fileURLToPath(new URL('../../../packages/worker/src/vfs/resident/cells.ts', import.meta.url)),
-  fileURLToPath(new URL('../../../packages/worker/src/vfs/resident/cell-cost.ts', import.meta.url)),
+  // The filesystem reads it makes: the process's filesystem (its synchronous
+  // face, a refusal and its record, the fault-in it issues, the barrier an
+  // awaited read takes), its holder, decisions and client, the walk and
+  // access rules they judge by, and the resident store under them. Not the
+  // write log (process-fs-journal.ts), nor what only an open or a
+  // directory descriptor reaches (descriptors.ts, read-directory-batch.ts).
+  ...['runtime/wasi/resident-filesystem.ts', 'runtime/wasi/delegation-holder.ts', 'runtime/wasi/provisional.ts', 'runtime/wasi/own-names.ts',
+    'runtime/wasi/inode-fold.ts', 'runtime/wasi/read-directory-pool.ts', 'runtime/wasi/process-filesystem.ts', '_shared/process-fs-client.ts',
+    'runtime/vfs-supervisor.ts', 'runtime/feed-position.ts', 'runtime/beneath-walk.ts', 'vfs/posix-access.ts', 'vfs/open-rules.ts', 'vfs/vfs-error.ts']
+    .map((file) => join(CORE, 'src', file)),
+  ...['namespace-lookup.ts', 'namespace.ts', 'transport.ts', 'cells.ts', 'cell-cost.ts', 'view.ts', 'sync.ts', 'tables.ts', 'kv-tables.ts',
+    'admission.ts', 'coherence.ts', 'pages.ts', 'permissions.ts', 'index.ts', 'supervisor.ts']
+    .map((file) => fileURLToPath(new URL(`../../../packages/worker/src/vfs/resident/${file}`, import.meta.url))),
 ];
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),

@@ -381,3 +381,59 @@ export function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T 
   for (let step = setIteratorNext(iterator); !step.done; step = setIteratorNext(iterator)) if (test(step.value)) return step.value;
   return undefined;
 }
+
+// The process's filesystem (runtime/wasi/resident-filesystem.ts, its holder,
+// decisions and client) and the resident store under it.
+/** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
+export const promiseThen: <T, R1 = T, R2 = never>(
+  promise: Promise<T>, onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,
+) => Promise<R1 | R2> = uncurryThis(Promise.prototype.then);
+/** `Promise.resolve(value)`, of the launch's Promise. */
+export const promiseResolve: {
+  (): Promise<void>;
+  <T>(value: T): Promise<Awaited<T>>;
+} = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
+/** `Promise.reject(reason)`, of the launch's Promise. */
+export const promiseReject: <T = never>(reason?: unknown) => Promise<T> = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+/** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
+export function promiseFinally<T>(promise: Promise<T>, onFinally: () => unknown): Promise<T> {
+  return promiseThen(
+    promise,
+    (value) => promiseThen(promiseResolve(onFinally()), () => value),
+    (reason: unknown) => promiseThen(promiseResolve(onFinally()), (): never => { throw reason; }),
+  );
+}
+/** The members of `set`, in its order: a SafeList, by SafeSet's forEach as the launch captured it. */
+export function setList<T>(set: ReadonlySet<T>): SafeList<T> {
+  const list = new SafeList<T>();
+  setForEach(set, (value) => { list[list.length] = value; });
+  return list;
+}
+const mapForEach: <K, V>(map: ReadonlyMap<K, V>, each: (value: V, key: K) => void) => void = uncurryThis(Map.prototype.forEach);
+/** The values of `map`, in its order: a SafeList. */
+export function mapValueList<K, V>(map: ReadonlyMap<K, V>): SafeList<V> {
+  const list = new SafeList<V>();
+  mapForEach(map, (value) => { list[list.length] = value; });
+  return list;
+}
+/** The keys of `map`, in its order: a SafeList. */
+export function mapKeyList<K, V>(map: ReadonlyMap<K, V>): SafeList<K> {
+  const list = new SafeList<K>();
+  mapForEach(map, (_value, key) => { list[list.length] = key; });
+  return list;
+}
+export const stringLocaleCompare: (text: string, other: string) => number = uncurryThis(String.prototype.localeCompare);
+export const stringPadStart: (text: string, length: number, fill?: string) => string = uncurryThis(String.prototype.padStart);
+export const mathTrunc = Math.trunc;
+export const numberIsFinite = Number.isFinite;
+export const typedArrayFill: (view: Uint8Array, value: number, start?: number, end?: number) => Uint8Array = uncurryThis(Uint8Array.prototype.fill);
+/** `bytes.subarray(start, end)` without the view's constructor or species: a view of the same buffer. */
+export function bytesView(bytes: Uint8Array, start: number, end: number = typedArrayByteLength(bytes)): Uint8Array {
+  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + start, end > start ? end - start : 0);
+}
+/** `bytes.slice(start, end)` without the view's constructor or species: a copy. */
+export function bytesCopy(bytes: Uint8Array, start = 0, end: number = typedArrayByteLength(bytes)): Uint8Array {
+  const copy = new Uint8ArrayConstructor(end > start ? end - start : 0);
+  typedArraySet(copy, bytesView(bytes, start, end));
+  return copy;
+}
