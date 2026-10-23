@@ -2441,6 +2441,12 @@ ${nodeProgramRuntime(sources, false)}
   const __runnerUncaught = (thrown) => { stderr += "Uncaught " + __runnerShown(__runnerError(thrown)) + "\\n"; };
   __processMod.on("uncaughtException", __runnerUncaught);
   __processMod.on("unhandledRejection", __runnerUncaught);
+  // The call running now hears the process's exit by a promise of its own:
+  // the platform runs a promise's continuations in the request that made it,
+  // so a promise an earlier call made (the shims' exit promise among them)
+  // never wakes a later one.
+  let __runnerExitHeard = null;
+  __processMod.on("exit", (exitCode) => { if (__runnerExitHeard !== null) __runnerExitHeard(exitCode); });
   // The text an answer carries: past RUNNER_ANSWER_TEXT_CHARS, cut, saying so.
   const __runnerFit = (text) => text.length <= ${RUNNER_ANSWER_TEXT_CHARS} ? text
     : text.slice(0, ${RUNNER_ANSWER_TEXT_CHARS}) + "\\n[nimbus: " + (text.length - ${RUNNER_ANSWER_TEXT_CHARS}) + " more characters were not answered]\\n";
@@ -2467,14 +2473,17 @@ ${nodeProgramRuntime(sources, false)}
       if (run === null) throw new SyntaxError("Unexpected end of input");
       // process.exit from a callback stops the process's timers, so the code
       // may never settle: its exit ends the call.
+      const exit = new Promise((resolve) => { __runnerExitHeard = resolve; });
       const result = await Promise.race([
         __nimbusReflectApply(run, globalThis, []),
-        __nimbusProcessExitPromise.then((exitCode) => { throw new __ProcessExit(exitCode); }),
+        exit.then((exitCode) => { throw new __ProcessExit(exitCode); }),
       ]);
       value = String(__runnerInspect(result === undefined ? undefined : result.value));
     } catch (thrown) {
       if (thrown instanceof __ProcessExit) exited = thrown.code;
       else error = __runnerError(thrown);
+    } finally {
+      __runnerExitHeard = null;
     }
     try {
       await __nimbusFlushRuntime();

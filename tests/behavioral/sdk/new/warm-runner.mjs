@@ -193,9 +193,6 @@ try {
   await call(runner, 'globalThis.kept = 1');
   const slept = await call(runner, 'await new Promise((resolve) => setTimeout(resolve, 50)); "slept"', { timeoutMs: 10_000 });
   a.check('a call can await a timer', slept.value === "'slept'" && slept.fresh === false, show(slept));
-  const probeExit = await call(runner, 'setTimeout(() => { globalThis.t1 = 1; try { process.exit(4); } catch (e) { globalThis.t2 = String(e && e.message); } }, 0); await new Promise((r) => globalThis.__nimbusRawSetTimeout(r, 300)); JSON.stringify([globalThis.t1, globalThis.t2, process.exitCode, process._exiting])', { timeoutMs: 10_000 });
-  a.record('probeExit', probeExit);
-  await call(runner, 'globalThis.kept = 1');
   const exitedLater = await call(runner, 'setTimeout(() => process.exit(4), 0); await new Promise(() => {})', { timeoutMs: 10_000 });
   const afterExit = await call(runner, 'typeof kept');
   a.check('process.exit from a callback ends the runner too',
