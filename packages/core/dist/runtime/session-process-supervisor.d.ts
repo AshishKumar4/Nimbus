@@ -456,6 +456,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * ask past goes back to the front.
      */
     parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
+    /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
+    untakenSignal(pid: number): ProcessSignalName | null;
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid: number, signal: ProcessSignalName): boolean;
     /**
@@ -480,6 +482,14 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * end where not.
      */
     signalGroup(pid: number, reason: SignalAbortReason): void;
+    /**
+     * `reason`'s signal to the foreground job of the shell `pid`, as a
+     * terminal's key after the first (which the job's command took as its
+     * abort): each process below the shell marked foreground (setForeground),
+     * with no foreground process between it and the shell, and its group
+     * ({@link signalGroup}). A background job is not marked, and is not sent it.
+     */
+    signalForeground(pid: number, reason: SignalAbortReason): void;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {

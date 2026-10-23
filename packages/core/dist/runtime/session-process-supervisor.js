@@ -957,6 +957,10 @@ export class SessionProcessSupervisor {
         }
         box.taker?.(null);
     }
+    /** The first signal sent to `pid`'s program that waits in its box, never handed to it (takeSignals), or null. */
+    untakenSignal(pid) {
+        return this.signalBoxes.get(pid)?.queued[0] ?? null;
+    }
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid, signal) {
         return this.signalBoxes.get(pid)?.catches.has(signal) === true;
@@ -1030,6 +1034,25 @@ export class SessionProcessSupervisor {
             .map((entry) => entry.pid);
         for (const member of group)
             this.kill(member, exitCodeForSignal(reason.signal), reason);
+    }
+    /**
+     * `reason`'s signal to the foreground job of the shell `pid`, as a
+     * terminal's key after the first (which the job's command took as its
+     * abort): each process below the shell marked foreground (setForeground),
+     * with no foreground process between it and the shell, and its group
+     * ({@link signalGroup}). A background job is not marked, and is not sent it.
+     */
+    signalForeground(pid, reason) {
+        const below = (entry) => this.lineage(entry.pid).slice(1);
+        const leaders = this.getAll().filter((entry) => {
+            if (entry.state !== 'running' || entry.foreground !== true)
+                return false;
+            const ancestors = below(entry);
+            const at = ancestors.indexOf(pid);
+            return at >= 0 && ancestors.slice(0, at).every((ancestor) => this.table.get(ancestor)?.foreground !== true);
+        });
+        for (const leader of leaders)
+            this.signalGroup(leader.pid, reason);
     }
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid, packets) {

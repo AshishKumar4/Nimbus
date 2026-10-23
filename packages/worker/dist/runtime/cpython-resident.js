@@ -120,7 +120,11 @@ export function cpythonResidentStart(facetMgr) {
             facetMgr.finishProcess(spawned.pid, exitCode, failure);
             return { exitCode, stdout: data.stdout || '', stderr: `${data.stderr || ''}python: ${failure}\n` };
         }
-        if (data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
+        const result = data.result;
+        const exitCode = typeof result?.exitCode === 'number' ? result.exitCode : 0;
+        // A program that ended unsuccessfully (an uncaught KeyboardInterrupt, a
+        // nonzero SystemExit) is no server, whatever it registered.
+        if (exitCode === 0 && data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
             await facetMgr.registerPort(spawned.pid, data.port);
             const routeable = await facetMgr.waitForRouteablePorts(spawned.pid);
             const port = routeable.includes(data.port) ? data.port : routeable[0];
@@ -140,8 +144,6 @@ export function cpythonResidentStart(facetMgr) {
                 port,
             };
         }
-        const result = data.result;
-        const exitCode = typeof result?.exitCode === 'number' ? result.exitCode : 0;
         facetMgr.finishProcess(spawned.pid, exitCode, data.stderr || 'python process exited');
         return { exitCode, stdout: data.stdout || '', stderr: data.stderr || '' };
     };
