@@ -116,8 +116,10 @@ const target = { t: 1 };
 const handler = { h: 1 };
 const { proxy: gone, revoke: revokeGone } = Proxy.revocable({}, {});
 revokeGone();
+// Held: a weak collection shows what is still alive, and a collection run is neither node's nor the session's to time.
+const weakProxy = new Proxy({}, {});
 for (const value of [new Set([new Proxy(target, handler), new Proxy(new Proxy([1], {}), handler)]).values(), Promise.resolve(new Proxy(target, handler)),
-  new Proxy(new Proxy(target, handler), new Proxy(handler, {})), new Proxy(gone, {}), new WeakSet([new Proxy({}, {})])]) {
+  new Proxy(new Proxy(target, handler), new Proxy(handler, {})), new Proxy(gone, {}), new WeakSet([weakProxy])]) {
   for (const print of [() => util.inspect(value, { showHidden: true }), () => util.inspect(value, { showProxy: true, showHidden: true }), () => util.format('%s', value)]) {
     try {
       console.log(print());
