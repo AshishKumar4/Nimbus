@@ -10630,6 +10630,7 @@ var __nimbusResidentModule = (() => {
       const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
       if (crossed !== void 0)
         crossed.length = 0;
+      let passing = false;
       for (let step = walk.next(); ; ) {
         if (step.done)
           return step.value === null ? null : step.value.reached;
@@ -10650,8 +10651,9 @@ var __nimbusResidentModule = (() => {
         }
         const entry = store.entry(key);
         if (entry === void 0) {
-          if (!walkedMounts)
+          if (!walkedMounts || !(passing || mountedName(key)))
             return { missing: key };
+          passing = true;
           step = walk.next(PASSED_THROUGH);
           continue;
         }

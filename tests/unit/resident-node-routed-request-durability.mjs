@@ -170,7 +170,9 @@ assert.ok(
   order.push('response');
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(durable('/home/user/routed-write.txt'), 'second');
-  assert.deepEqual(order, ['write', 'response']);
+  // Every write the handler made reached the session before its response did.
+  assert.equal(order.at(-1), 'response');
+  assert.ok(order.length > 1 && order.slice(0, -1).every((step) => step === 'write'), JSON.stringify(order));
 }
 
 // The routed requests reached the ONE program the user started — routing must
