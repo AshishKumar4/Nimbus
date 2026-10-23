@@ -4,54 +4,72 @@
 // durability failure whatever the program caught, and surfaces when the
 // process's writes are drained. Which is which is one policy, the syscall
 // verdicts (vfs-error.ts SYSCALL_VERDICTS), for the process's filesystem
-// client and the write ledger alike.
+// client.
 //
-// Red before: the ledger kept its own list, which lacked EXDEV, ENOTSUP,
-// ENXIO and E2BIG, so a caught cross-device rename (a move between mounts,
-// which `mv` and npm fall back from) failed the process's drain as though its
-// bytes were lost.
+// The session's answer to the rename's wave is injected: a verdict names its
+// errno, and nothing of the wave applies; without one, the wave's outcome is
+// unknown. EXDEV, ENOTSUP, ENXIO and E2BIG are verdicts a move between mounts
+// draws; this session does not make one, so the wave's answer is the verdict.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, declareNamespace } from './lib/shims-namespace.mjs';
-import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { createAuthority, facetSupervisor, launchResident, runScenarios } from './lib/resident-body.mjs';
 
-/** A node process whose session refuses its rename of /home/user/app with `code`. */
-function processRefusing(code) {
-  const supervisor = waveSupervisor({
-    async writeFile() {},
-    async mkdir() {},
-    async rename(from, to) {
-      throw Object.assign(new Error(`${code}: refused, rename '${from}' -> '${to}'`), { code });
-    },
-  });
-  const factory = new Function(
-    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    `"use strict";${SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START}
-;return { fs: builtins.fs, drain: () => __nimbusDrainVfsMutations() };`,
-  );
-  const metadata = {
-    'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
-    'home/user/app': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 },
+const PROGRAM = `
+const fs = require("fs");
+globalThis.__probe = {
+  rename: (from, to) => fs.promises.rename(from, to).then(() => "ok", (e) => e.code),
+  renameSync: (from, to) => { try { fs.renameSync(from, to); return "ok"; } catch (e) { return e.code; } },
+};
+`;
+
+/** The session's answer to the wave: refused with `errno` (a verdict), or, with none, its outcome unknown. */
+function answering(errno) {
+  return async () => {
+    const message = `${errno ?? 'EIO'}: refused, rename '/home/user/app' -> '/home/user/moved'`;
+    return {
+      ok: false,
+      committedGroupSequence: 0,
+      committedPathCount: 0,
+      committedOps: 0,
+      inodes: 0,
+      chunks: 0,
+      receipts: [],
+      error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'validation', message, ...(errno === undefined ? {} : { errno }) },
+    };
   };
-  declareNamespace({ metadata, manifest: { 'home/user': ['app'], 'home/user/app': [] } });
-  return factory(
-    {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
-  );
 }
 
+async function launch(errno) {
+  const authority = createAuthority();
+  authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+  const handle = facetSupervisor(authority, { writeBatchStream: answering(errno) });
+  await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor() });
+  return globalThis.__probe;
+}
+
+/** The codes of the failures the drain reports. */
+async function drained() {
+  return (await globalThis.__nimbusProcessFs.settle()).map((failure) => failure.error.code);
+}
+
+async function caught(errno) {
+  const probe = await launch(errno);
+  assert.equal(await probe.rename('/home/user/app', '/home/user/moved'), errno ?? 'EIO', 'the caller hears the refusal');
+  assert.deepEqual(await drained(), [], 'a caught refusal is the call\'s answer, not a lost write');
+}
+
+const scenarios = {};
 for (const code of ['EXDEV', 'ENOTSUP', 'ENXIO', 'E2BIG', 'ENOENT']) {
-  const { fs, drain } = processRefusing(code);
-  await assert.rejects(fs.promises.rename('/home/user/app', '/home/user/moved'), (error) => error.code === code, `${code}: the caller hears the refusal`);
-  await drain();
-  console.log(`  ${code}: a caught refusal is the call's answer, not a lost write`);
+  scenarios[`${code}: a caught refusal is the call's answer, not a lost write`] = () => caught(code);
 }
-
-{
-  const { fs, drain } = processRefusing('EIO');
-  await assert.rejects(fs.promises.rename('/home/user/app', '/home/user/moved'), (error) => error.code === 'EIO');
-  await assert.rejects(drain(), (error) => error.code === 'EIO', 'an unknown outcome surfaces at the drain, caught or not');
-  console.log('  EIO: a caught failure of unknown outcome still surfaces');
-}
-
-console.log('node-caught-refusal-durability: ok');
+scenarios['EIO: a caught failure of unknown outcome still surfaces'] = async () => {
+  const probe = await launch(undefined);
+  assert.equal(await probe.rename('/home/user/app', '/home/user/moved'), 'EIO', 'the caller hears the failure');
+  assert.deepEqual(await drained(), ['EIO'], 'an unknown outcome surfaces at the drain, caught or not');
+};
+scenarios['EIO on a synchronous change: its unknown outcome surfaces at the drain'] = async () => {
+  const probe = await launch(undefined);
+  assert.equal(await probe.renameSync('/home/user/app', '/home/user/moved'), 'ok', 'the program was told the change succeeded');
+  assert.deepEqual(await drained(), ['EIO'], 'an acknowledged change whose outcome is unknown surfaces at the drain');
+};
+await runScenarios(import.meta.path, scenarios);

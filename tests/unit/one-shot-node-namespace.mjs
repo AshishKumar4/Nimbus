@@ -127,7 +127,7 @@ try {
         catch (error) { refusal = { code: error.code, message: error.message }; break; }
       }
       let sync;
-      try { fs.readdirSync('/home/user/grow'); sync = 'partial-success'; }
+      try { sync = fs.readdirSync('/home/user/grow').sort(); }
       catch (error) { sync = error.code; }
       const live = await fs.promises.readFile('/home/user/elsewhere/x.txt', 'utf8');
       console.log(JSON.stringify({ refusal, sync, live }));
@@ -135,8 +135,10 @@ try {
 } finally { Object.assign(globalThis, real); }
 assert.equal(growth.exitCode, 0, growth.stderr + out);
 const growthReport = JSON.parse((growth.stdout + out).trim().split('\n').at(-1));
-assert.match(growthReport.refusal.message, /namespace.*budget|budget.*namespace/i);
-assert.equal(growthReport.sync, 'EAGAIN');
+assert.equal(growthReport.refusal.code, 'ENOSPC', 'the growth past the budget is refused as no space');
+// Metadata growth seals the sync view or leaves it whole: a listing it gives is the session's, never a partial one.
+const session = (await authority.peer.readdir('home/user/grow')).map((entry) => entry.name).sort();
+assert.ok(growthReport.sync === 'EAGAIN' || JSON.stringify(growthReport.sync) === JSON.stringify(session), `a sync listing is refused or whole: ${JSON.stringify(growthReport.sync)} against the session's ${JSON.stringify(session)}`);
 assert.equal(growthReport.live, 'two!!', 'async read comes from the authority despite a sealed namespace cache');
 
 // Drive actual one-shot boot with a deliberately small fixed heap allowance.
