@@ -12,7 +12,7 @@
 // the barrier (no refetch), and a peer write to the same path still evicts.
 
 import assert from 'node:assert/strict';
-import { createAuthority } from './lib/resident-body.mjs';
+import { createAuthority, sleep } from './lib/resident-body.mjs';
 import { shimsOnSession } from './lib/shims-on-session.mjs';
 
 const authority = createAuthority();
@@ -40,6 +40,8 @@ const { fs, setTimeout: shimSetTimeout } = shimsOnSession({
 const stats = () => globalThis.__nimbusProcessFs.stats();
 const out = { setTimeout: shimSetTimeout };
 const read = (p) => authority.peer.readFileString(p);
+/** `promise`, or a failure naming `what` after a few seconds: a wave that never went out is a hang, not a wait. */
+const within = (promise, what) => Promise.race([promise, sleep(5_000).then(() => { throw new Error(`timed out waiting for ${what}`); })]);
 
 const FILES = 40;
 const written = [];
@@ -136,7 +138,8 @@ assert.equal(stats().fills, quiet, 'a re-written path is self-authored again');
 // the facet's read lease to be recalled, which waits for that response, so the
 // peer's writes land once the response is released, and the facet's next
 // resumption reads the peer's bytes, the second path new and the first one
-// from the peer too.
+// from the peer too. A decided write sends no wave until something flushes, so
+// the write is flushed here: that is the wave the hold holds.
 {
   const P = `${dir}/race.txt`;
   const Q = `${dir}/q.txt`;
@@ -147,10 +150,12 @@ assert.equal(stats().fills, quiet, 'a re-written path is self-authored again');
   applied = Promise.withResolvers();
   holdNext = true;
   fs.writeFileSync(P, 'MINE');
-  await applied.promise;
+  const sent = globalThis.__nimbusProcessFs.flush();
+  await within(applied.promise, 'the held wave');
   const peerWrites = Promise.all([authority.peer.writeFile(P, 'PEER'), authority.peer.writeFile(Q, 'q1')]);
   release.resolve();
-  await peerWrites;
+  await within(peerWrites, 'the peer writes behind the held response');
+  await sent;
 
   const resumed = await new Promise((resolve) => {
     out.setTimeout(() => resolve([P, Q].map((p) => fs.readFileSync(p, 'utf8'))), 5);

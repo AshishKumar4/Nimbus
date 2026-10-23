@@ -35,6 +35,8 @@ const timerRead = (f, p) => new Promise((resolve, reject) => {
 const syncRead = (fs, p) => {
   try { return fs.readFileSync(p, 'utf8'); } catch (error) { return `${error.code}: ${error.message}`; }
 };
+/** `promise`, or a failure naming `what` after a few seconds: a wave that never went out is a hang, not a wait. */
+const within = (promise, what) => Promise.race([promise, sleep(5_000).then(() => { throw new Error(`timed out waiting for ${what}`); })]);
 
 // Asserts that the barrier after an own mutation of `p` kept the bytes: the
 // sync read serves `expected`, and the session holds the same.
@@ -259,9 +261,11 @@ const scenarios = {
   // issued after the process's own write can be answered before that write's
   // response arrives. The held response makes that ordering deterministic: the
   // session applies the wave, its answer is held, and the test takes the
-  // barrier the real race delivers early. A peer's change waits for the
-  // process's read lease to be recalled, which waits for this response, so a
-  // peer's write queued in the gap lands once the response is released.
+  // barrier the real race delivers early. A decided write sends no wave until
+  // something flushes, so each arming is followed by a flush: that is the wave
+  // the hold holds. A peer's change waits for the process's read lease to be
+  // recalled, which waits for this response, so a peer's write queued in the
+  // gap lands once the response is released.
   async 'a ranged write survives a barrier answered before its response'() {
     const held = holdNextResponse();
     const f = facet(held.hooks);
@@ -270,9 +274,11 @@ const scenarios = {
     const fh = await f.fs.promises.open(p, 'r+');
     const landed = held.arm();
     const write = fh.write('JELLO', 0);
-    await landed;
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
     await barrierInGap(f.fs, held);
     await write;
+    await sent;
     await fh.close();
     assert.equal(syncRead(f.fs, p), 'JELLO WORLD', 'race/range: the process own bytes survive a barrier answered ahead of its write');
     assert.equal(await f.authority.peer.readFileString(p), 'JELLO WORLD', 'race/range: the session holds the same bytes');
@@ -287,9 +293,11 @@ const scenarios = {
     await f.fs.promises.writeFile(p, 'FIRST');
     const landed = held.arm();
     const write = f.fs.promises.writeFile(p, 'SECOND');
-    await landed;
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
     await barrierInGap(f.fs, held);
     await write;
+    await sent;
     assert.equal(syncRead(f.fs, p), 'SECOND', 'race/whole: the flushed bytes survive a barrier answered ahead of the write');
     assert.equal(await f.authority.peer.readFileString(p), 'SECOND', 'race/whole: the session holds them too');
     await f.fs.promises.utimes(p, new Date(T), new Date(T));
@@ -303,11 +311,13 @@ const scenarios = {
     await f.fs.promises.writeFile(p, 'FIRST');
     const landed = held.arm();
     const write = f.fs.promises.writeFile(p, 'SECOND');
-    await landed;
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
     const peerWrite = f.authority.peer.writeFile(p, 'PEER');
     await barrierInGap(f.fs, held);
-    await write;
-    await peerWrite;
+    await within(write, 'the write behind the held response');
+    await sent;
+    await within(peerWrite, 'the peer write behind the held response');
     assert.equal(await f.fs.promises.readFile(p, 'utf8'), 'PEER', 'race/whole-peer: the refetch serves the peer bytes');
   },
 
@@ -319,12 +329,14 @@ const scenarios = {
     const fh = await f.fs.promises.open(p, 'r+');
     const landed = held.arm();
     const write = fh.write('X', 0);
-    await landed;
+    const sent = globalThis.__nimbusProcessFs.flush();
+    await within(landed, 'the held wave');
     const peerWrite = f.authority.peer.writeFile(p, 'PEERPEERPEER');
     await barrierInGap(f.fs, held);
-    await write;
+    await within(write, 'the write behind the held response');
+    await sent;
     await fh.close();
-    await peerWrite;
+    await within(peerWrite, 'the peer write behind the held response');
     assert.equal(await timerRead(f, p), 'PEERPEERPEER', 'race/peer: the sync read serves the peer bytes');
     assert.equal(await f.authority.peer.readFileString(p), 'PEERPEERPEER', 'race/peer: and the session agrees');
   },

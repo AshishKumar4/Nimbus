@@ -28,6 +28,7 @@ kernel.chmod('tmp', 0o1777);
 kernel.chown('tmp', 0, 0);
 kernel.writeFile('tmp/theirs.txt', 'theirs');
 kernel.chown('tmp/theirs.txt', 1001, 1001);
+assert.equal((await authority.peer.stat('/tmp')).mode & 0o7777, 0o1777, 'the session\'s /tmp is sticky and world-writable');
 
 const { fs } = shimsOnSession({
   authority,

@@ -118,6 +118,8 @@ const rejectsWith = async (promise, code) => {
   assert.equal(await at(`${home}/g`), null, 'and no later write-back resurrects it');
 
   await authority.peer.writeFile(`${home}/h`, 'held');
+  // The program has learned the name (a listing or a stat), as a sync unlink's caller has: the view is as of its last barrier.
+  await fs.promises.access(`${home}/h`);
   fs.unlinkSync(`${home}/h`);
   await rejectsWith(fs.promises.access(`${home}/h`), 'ENOENT');
   assert.equal(await at(`${home}/h`), null, 'a sync unlink of an authority-held file lands');

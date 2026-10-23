@@ -74,7 +74,7 @@ for (const [name, [sync, syscall]] of Object.entries(syncs)) {
     fs.writeSync(fd, 'kept');
     await globalThis.__nimbusProcessFs.flush();
     await refuseOne();
-    await assert.rejects(sync(fs, fd), reported(syscall), `${name} did not report the refusal recorded before it`);
+    await assert.rejects(async () => sync(fs, fd), reported(syscall), `${name} did not report the refusal recorded before it`);
     // Reported once: the next is clean.
     await sync(fs, fd);
     fs.closeSync(fd);
@@ -86,7 +86,7 @@ for (const [name, close] of Object.entries(closes)) {
     const fd = fs.openSync(`/home/user/${name}.txt`, 'w');
     await globalThis.__nimbusProcessFs.flush();
     await refuseOne();
-    await assert.rejects(close(fs, fd), reported('close'), `${name} did not report the refusal recorded before it`);
+    await assert.rejects(async () => close(fs, fd), reported('close'), `${name} did not report the refusal recorded before it`);
     // Closed all the same.
     assert.throws(() => fs.fstatSync(fd), (error) => error.code === 'EBADF', `${name} left the descriptor open`);
   };
@@ -96,7 +96,7 @@ for (const [method, syscall] of [['sync', 'fsync'], ['datasync', 'fdatasync'], [
     const { fs, refuseOne } = facet();
     const handle = await fs.promises.open(`/home/user/handle-${method}.txt`, 'w');
     await refuseOne();
-    await assert.rejects(handle[method](), reported(syscall), `FileHandle.${method} did not report the refusal recorded before it`);
+    await assert.rejects(async () => handle[method](), reported(syscall), `FileHandle.${method} did not report the refusal recorded before it`);
     if (method !== 'close') {
       await handle[method]();
       await handle.close();

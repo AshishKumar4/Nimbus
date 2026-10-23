@@ -91,4 +91,4 @@ const scenarios = {
   },
 };
 
-await runScenarios(import.meta.path, scenarios);
+await runScenarios(import.meta.path, scenarios, { barrierFailures: true });
