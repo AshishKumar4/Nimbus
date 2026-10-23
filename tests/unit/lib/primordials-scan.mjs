@@ -81,6 +81,11 @@ const GUEST_LOADING_FUNCTIONS = new Map([
     'applyOp', 'owned', 'foldOps', 'copyState', 'grown', 'copyInto',
   ]],
 ]);
+/**
+ * What the audit does not follow out of a function it checks: the write side,
+ * which sends what the program wrote (a read lease's recall sends the log first).
+ */
+const WRITE_SIDE = new Set(['ProcessFsClient.flush']);
 /** The file that implements each interface of those files their functions call members of (others are the session's or the caller's). */
 const IMPLEMENTED_IN = new Map([
   ['DelegationHolder', HOLDER], ['ProvisionalHost', HOLDER], ['ProcessFsClientOptions', HOLDER], ['Provisional', PROVISIONAL], ['ProcessFsClient', CLIENT],
@@ -199,7 +204,9 @@ export function primordialViolations() {
             const owner = declaration && declaration.parent;
             if (declaration && (isPropertySignatureDeclaration(declaration) || isMethodSignatureDeclaration(declaration)) && owner && isInterfaceDeclaration(owner)) {
               const implemented = IMPLEMENTED_IN.get(owner.name.text);
-              if (implemented && !GUEST_LOADING_FUNCTIONS.get(implemented).includes(symbol.name)) at(named, `calls ${owner.name.text}.${symbol.name}, which the audit does not reach`);
+              if (implemented && !WRITE_SIDE.has(`${owner.name.text}.${symbol.name}`) && !GUEST_LOADING_FUNCTIONS.get(implemented).includes(symbol.name)) {
+                at(named, `calls ${owner.name.text}.${symbol.name}, which the audit does not reach`);
+              }
             } else if (declaration && functionName(declaration) !== undefined && !audited(declaration, d.path)) {
               at(named, `calls ${symbol.name}, which the audit does not reach`);
             }
