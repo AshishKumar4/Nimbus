@@ -1951,7 +1951,7 @@ const __fsMod = (() => {
     const absPath = _at(p);
     const size = Math.max(0, Math.trunc(Number(len) || 0));
     // Node's own: an open of it 'r+', its ftruncate, its close (decided and sent in order, as truncateSync's).
-    await _async("open", p, async (fs) => {
+    await _async("truncate", p, async (fs) => {
       const opened = await fs.open(absPath, _openFlags("r+"));
       let done = false;
       try { await fs.ftruncate(opened.id, size); done = true; }

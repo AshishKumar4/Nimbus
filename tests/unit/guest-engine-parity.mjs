@@ -497,11 +497,17 @@ const SCENARIOS = {
     const opened = await e.fs.open(`${APP}/log.txt`, { write: true, append: true });
     await e.fs.write(opened.id, null, enc.encode('a'));
     e.stall();
-    // Logged, and never answered.
-    for (const piece of ['b', 'c']) e.fs.write(opened.id, null, enc.encode(piece)).catch(() => {});
+    // Logged, and never answered: what the process was told it wrote (an engine answers a write once logged) lands;
+    // one it was never told of (an engine that answers a write once the session has it) may not, as a write(2) that
+    // never returned. None lands twice.
+    const told = [];
+    for (const piece of ['b', 'c']) e.fs.write(opened.id, null, enc.encode(piece)).then(() => told.push(piece), () => {});
     await sleep(LINGER_MS * 4);
     await e.end('kill', { twice: true });
-    assert.equal(await e.peerText(`${APP}/log.txt`), 'abc', 'an append landed twice, or not at all');
+    const text = await e.peerText(`${APP}/log.txt`);
+    // In order: 'a', each piece it was told of, then the others, as far as they landed.
+    const landed = ['a', ...['b', 'c'].map((_, k, all) => 'a' + all.slice(0, k + 1).join(''))].filter((t) => t.length >= 1 + told.length);
+    assert.ok(landed.includes(text), `an append landed twice, or one the process was told of did not: ${JSON.stringify(text)} (told ${JSON.stringify(told)})`);
   },
   async 'what the process was told it wrote lands when the session kills it at once'(e) {
     await e.hold(OUT);
