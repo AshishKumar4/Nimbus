@@ -259,8 +259,9 @@ export const SPECS = {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
       // The first core that registers cpython-runner@4, which sends a
-      // one-shot its signals (core 0.26.0 registers @3 at most).
-      core: '>=0.27.0',
+      // one-shot its signals (core 0.27.0, the newest published, registers
+      // @3 at most).
+      core: '>=0.27.1',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
