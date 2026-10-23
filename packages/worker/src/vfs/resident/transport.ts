@@ -64,7 +64,11 @@ export interface WantedFile { path: string; size: number; rev: number; epoch: st
 export interface FillReport { requested: number; filled: number; failed: number; bytes?: number; ranges?: number; copied?: number }
 
 /** What one fetch did: files asked for, held (copies included), refused; bytes fetched, in how many ranges. */
-export interface Fetched { requested: number; filled: number; failed: number; bytes: number; ranges: number; copied: number }
+export interface Fetched {
+  requested: number; filled: number; failed: number; bytes: number; ranges: number; copied: number;
+  /** Files the session refused as stale (ESTALE): it holds a newer revision than the one asked for. */
+  stale: number;
+}
 
 /** A whole enumeration: its files, every name, what the names cost a one-shot, its cursor, and whether it finished. */
 export interface Listing {
@@ -285,6 +289,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     const landed = new SafeMap<string, number>();
     let filled = 0, failed = 0, fetchedBytes = 0;
     const failedPaths = new SafeSet<string>();
+    const stalePaths = new SafeSet<string>();
     /** This read's own, from before it is asked: the chunk rows it writes are its while nothing changes their heads (cells.beginFill). */
     const paths = new SafeList<string>();
     for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
@@ -338,7 +343,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
           if (code === 'EACCES' && range.part === 0) {
             cells.put(t, range.path, { error: 'EACCES' }, range.rev);
             filled++;
-          } else failedPaths.add(range.path);
+          } else {
+            failedPaths.add(range.path);
+            if (code === 'ESTALE') stalePaths.add(range.path);
+          }
           continue;
         }
         const bytes = ownValue(entry, 'bytes');
@@ -376,7 +384,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     if (ranges.length > 0) await admission.reportSize();
     return {
       requested, filled: filled + copied, failed,
-      bytes: fetchedBytes, ranges: ranges.length, copied,
+      bytes: fetchedBytes, ranges: ranges.length, copied, stale: stalePaths.size,
     };
   };
 

@@ -100,8 +100,12 @@ export interface ResidentNamespace {
    * bytes that landed after a barrier admitted the change is not served.
    */
   content(key: string, revision?: number): Uint8Array | undefined;
-  /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
-  fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
+  /**
+   * Fetch file `key`'s bytes (at `entry`'s revision) into the store; null
+   * when they could not be fetched, 'stale' when the session holds a newer
+   * revision of it than `entry`'s (ESTALE: the view is behind).
+   */
+  fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null | 'stale'>;
   /**
    * Pages `first`..`last` (RESIDENT_PAGE_BYTES each) of file `key`, `size`
    * bytes at revision `revision`: held ones from the store, the rest read
@@ -299,6 +303,8 @@ export interface ResidentFilesystemStats {
 const MAX_LISTINGS_PER_CALL = 64;
 /** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
 const MAX_CATCH_UPS_PER_CALL = 3;
+/** What a call's local answer is where the session said the view is behind for what it reads (a fill refused ESTALE). */
+const BEHIND: unique symbol = Symbol('behind');
 
 /** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
 const WALKED_DIRECTORIES = 1024;
@@ -929,7 +935,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * this process changed whose bytes are not known here: the authority has
    * its changes first).
    */
-  const contentOf = (key: string, entry: ResidentEntry): Uint8Array | undefined | Promise<Uint8Array | undefined> => {
+  const contentOf = (key: string, entry: ResidentEntry): Uint8Array | undefined | Promise<Uint8Array | undefined | typeof BEHIND> => {
     const decided = holder?.content(entry);
     if (decided !== undefined) return decided;
     if (holder?.provisional.pending(entry.dev, entry.ino)) return undefined;
@@ -938,10 +944,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const held = store.content(key, entry.revision);
     if (held !== undefined && held.byteLength === entry.size) return held;
     if (now) notNow();
-    const fill = (): Promise<Uint8Array | undefined> => {
+    const fill = (): Promise<Uint8Array | undefined | typeof BEHIND> => {
       counts.fills++;
       counts.filledBytes += entry.size;
-      return store.fill(key, entry).then(keep);
+      return store.fill(key, entry).then((bytes) => (bytes === 'stale' ? BEHIND : keep(bytes)));
     };
     // A batch fetching it (read-ahead) is waited on, not repeated.
     const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
@@ -956,9 +962,18 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * Answer from the store when it can, else from the authority: the barrier
    * first when one is owed, then `local`, whose DELEGATE hands the call on.
    */
-  const answer = <T>(name: string, local: () => T | Delegate | Promise<T | Delegate>, remote: () => T | Promise<T>, caughtUps = 0): T | Promise<T> => {
-    const settle = (value: T | Delegate): T | Promise<T> => {
-      if (value !== DELEGATE) { counts.local++; return value; }
+  const answer = <T>(name: string, local: () => T | Delegate | typeof BEHIND | Promise<T | Delegate | typeof BEHIND>, remote: () => T | Promise<T>, caughtUps = 0): T | Promise<T> => {
+    const settle = (value: T | Delegate | typeof BEHIND): T | Promise<T> => {
+      // The session said the view is behind for what this call reads: a barrier, then the call again (a caller that
+      // may wait; past the bound, or one that cannot wait, the session answers).
+      if (value === BEHIND && !now && caughtUps < MAX_CATCH_UPS_PER_CALL) {
+        return catchUp().then((ok) => {
+          if (ok) return answer(name, local, remote, caughtUps + 1);
+          delegated(name);
+          return remote();
+        });
+      }
+      if (value !== DELEGATE && value !== BEHIND) { counts.local++; return value; }
       delegated(name);
       return remote();
     };
@@ -1170,6 +1185,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const existing = pins.get(pinKey);
     if (existing !== undefined) return pinned(existing);
     return after(contentOf(key, entry), (bytes) => {
+      if (bytes === BEHIND) return BEHIND;
       if (bytes === undefined || !store.reserve(bytes.byteLength)) return null;
       const pin: Pin = { bytes, holders: 0 };
       pins.set(pinKey, pin);
