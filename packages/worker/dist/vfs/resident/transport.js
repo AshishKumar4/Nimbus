@@ -209,6 +209,7 @@ export function createTransport(coherence, admission, namespace, cells) {
         const t = coherence.tables('fetchFiles');
         const requested = wantedFiles.length;
         let copied = 0;
+        const served = new SafeMap();
         const files = new SafeList();
         const later = new SafeList();
         const fetching = new SafeSet();
@@ -345,9 +346,11 @@ export function createTransport(coherence, admission, namespace, cells) {
                     failedPaths.add(range.path);
                     continue;
                 }
-                // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
+                // Not a byte of it beneath a newer revision of the file (another fill's head and chunks); kept for the read that asked it.
                 if (outdated(t, learning, range.path, range.rev)) {
                     failedPaths.add(range.path);
+                    if (range.parts === 1)
+                        served.set(range.path, chunk);
                     continue;
                 }
                 fetchedBytes += chunkBytes;
@@ -385,6 +388,7 @@ export function createTransport(coherence, admission, namespace, cells) {
         return {
             requested, filled: filled + copied, failed,
             bytes: fetchedBytes, ranges: ranges.length, copied,
+            ...(served.size === 0 ? {} : { outdated: served }),
         };
     };
     /**
