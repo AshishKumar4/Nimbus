@@ -28,8 +28,8 @@ import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsKey, nsRowAt, type Namespace } from './namespace.js';
 import {
-  arrayCopy, arrayIncludes, arrayIsArray, mapKeyList, NumberOf, objectHasOwn, ownValue, promiseAll, promiseFinally, promiseResolve, promiseThen, SafeList,
-  SafeMap, stringOf, stringStartsWith, Uint8ArrayConstructor,
+  arrayCopy, arrayIncludes, arrayIsArray, mapKeyList, newTextEncoder, NumberOf, objectHasOwn, ownValue, promiseAllAsFound, promiseFinally, promiseResolve, promiseThen,
+  SafeList, SafeMap, stringOf, stringStartsWith, textEncoderEncode, Uint8ArrayConstructor,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import type { Pages } from './pages.js';
 import { groupsOf, type ResidentCred } from './permissions.js';
@@ -149,7 +149,7 @@ export function createView(
       const known = namespace.root();
       if (known === undefined || known.rev < (NumberOf(root.revision) || 0)) namespace.setRoot(root, root.revision);
       namespace.setCred(cred);
-      const encoder = new TextEncoder();
+      const encoder = newTextEncoder();
       const typeOf = (kind: number): ResidentEntry['type'] => (kind === NS_DIR ? 'directory' : kind === NS_LINK ? 'symlink' : 'file');
 
       /** What an ACQUIRE is asked with: the store's cursor, and the push roots it keeps (sync.acquireOptions). */
@@ -292,7 +292,7 @@ export function createView(
             const waits = new SafeList<unknown>();
             waits[0] = newer !== undefined && newer !== record ? newer.read : undefined;
             waits[1] = repairing ?? undefined;
-            return promiseAll(waits);
+            return promiseAllAsFound(waits);
           }), () => undefined, () => undefined), () => { if (refetching.get(k) === record) refetching.delete(k); });
           refetching.set(k, record);
           done[i] = record.done;
@@ -362,7 +362,7 @@ export function createView(
         }
         const waits = refetch(again);
         for (let i = 0; i < joined.length; i++) waits[waits.length] = joined[i];
-        await promiseAll(waits);
+        await promiseAllAsFound(waits);
         return answer!.readLease ? { landed: true, applied: !repaired, readLease: answer!.readLease } : { landed: true, applied: !repaired };
       };
 
@@ -410,7 +410,7 @@ export function createView(
           }
           const cell = cells.get(k);
           if (cell === undefined || (typeof cell === 'object' && objectHasOwn(cell, 'error'))) return undefined;
-          return typeof cell === 'string' ? encoder.encode(cell) : cell as Uint8Array;
+          return typeof cell === 'string' ? textEncoderEncode(encoder, cell) : cell as Uint8Array;
         },
         async fill(k, entry) {
           const cursor = coherence.cursor();

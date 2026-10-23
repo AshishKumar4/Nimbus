@@ -56,11 +56,11 @@ import { abovePoint, feedOf, feedPointOf, ROOT_FEED, rootOf, type FeedPosition }
 import { PROC_MOUNT_POINT, procFileGenerator } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 import {
-  arrayCopy, arrayIncludes, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, mathFloor, mathMax,
-  mathMin, NumberOf, objectCreate, objectHasOwn, ObjectPrototype, ownField, ownValue, promiseAll, PromiseConstructor, promiseFinally, promiseResolve,
-  promiseThen, Proxy, reflectApply, reflectDefineProperty, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeList, SafeMap, SafeSet,
-  setList, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor,
-  typedArraySet, Uint8ArrayConstructor,
+  arrayCopy, arrayIncludes, arrayIndexOf, arrayJoin, arraySort, bytesCopy, bytesView, dataDescriptor, dateNow, Error, mathFloor, mathMax, mathMin,
+  newTextEncoder, NumberOf, objectCreate, objectHasOwn, ObjectPrototype, ownField, ownValue, promiseAllAsFound, PromiseConstructor, promiseFinally,
+  promiseResolve, promiseThen, Proxy, reflectApply, reflectDefineProperty, reflectGet, reflectGetPrototypeOf, reflectOwnKeys, reflectSet, SafeList,
+  SafeMap, SafeSet, setList, stringLastIndexOf, stringLocaleCompare, stringOf, stringSlice, stringSplit, stringStartsWith, SymbolConstructor,
+  textEncoderEncode, typedArraySet, Uint8ArrayConstructor,
 } from '../../_shared/primordials.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -972,7 +972,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return fetch;
   };
   const faultsEnded = async (): Promise<void> => {
-    while (faulting.size > 0) await promiseAll(setList(faulting));
+    while (faulting.size > 0) await promiseAllAsFound(setList(faulting));
   };
   /** The fetch the refusal of the synchronous call running now issued or joined. */
   let refusedFetch: Promise<boolean> | null = null;
@@ -1195,7 +1195,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const generate = procFileGenerator(stringSlice(('/' + key), PROC_MOUNT_POINT.length + 1));
     if (generate === undefined) return undefined;
     const content = generate({ ...store.cred, umask: 0 });
-    return typeof content === 'string' ? new TextEncoder().encode(content) : bytesCopy(content);
+    return typeof content === 'string' ? textEncoderEncode(newTextEncoder(), content) : bytesCopy(content);
   };
 
 
@@ -1436,7 +1436,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         failures[failures.length] = { path: '/', dev: 0, ino: 0, error };
       });
     }
-    await promiseAll(ended);
+    await promiseAllAsFound(ended);
     return failures;
   };
   // A sync of a file through any descriptor: everything this process logged
@@ -2146,7 +2146,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   fs.writeFile = (path, bytes, options) => {
     if (holder === null || options?.expectedRevision !== undefined) return bySessionWriteFile(path, bytes, options);
-    const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+    const data = typeof bytes === 'string' ? textEncoderEncode(newTextEncoder(), bytes) : bytes;
     const flags: RuntimeOpenFlags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
     const local = decide<number>(() => after(walkToWrite(path, options?.createParents === true), (walk) => {
       if (walk === DELEGATE || !decidable(walk.key, walk)) return DELEGATE;
