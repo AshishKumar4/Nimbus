@@ -89,7 +89,11 @@ try {
       a.check(`${host} ${name}: ends within ${BOUND_MS} ms of Ctrl-C`, ms !== null && ms <= BOUND_MS, `ended after ${ms === null ? `more than ${STUCK_MS}` : ms} ms`);
       a.check(`${host} ${name}: exit ${expected.exit}, last saying ${expected.last}`,
         submission.exitCode === expected.exit && said.some((line) => line.endsWith(expected.last)), JSON.stringify({ exit: submission.exitCode, tail: said.slice(-4) }));
-      if (expected.noServer) a.check(`${host} ${name}: not started as a server`, !said.some((line) => line.includes('started (long-running)')), JSON.stringify(said.slice(-4)));
+      if (expected.noServer) {
+        // Ended, it no longer runs: a server would run on in the background.
+        const ps = stripAnsi((await t.run('ps', 30_000)).output);
+        a.check(`${host} ${name}: not left running as a server`, !ps.includes(`ctrl-c-${name}.py`), JSON.stringify(ps.slice(-600)));
+      }
       // Still running: the terminal is the run's, and nothing after it can run.
       if (!ended) break run;
     }
