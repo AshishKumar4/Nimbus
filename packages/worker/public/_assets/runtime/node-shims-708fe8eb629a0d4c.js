@@ -4687,12 +4687,26 @@ const __fsMod = (() => {
    * `run` over the filesystem, awaited, its refusal Node's `syscall` of
    * `p`: an operation in flight from its start to its answer, as Node's
    * libuv request is, so the program is not taken for finished between the
-   * session calls it makes.
+   * session calls it makes. A change is answered once the session has
+   * everything the process logged (another process reads it as this one
+   * was told it is), its refusal the call's: as this fs has always answered
+   * an awaited change.
    */
   function _async(syscall, p, run, dest) {
     return __nimbusTrackOp((async () => {
+      try {
+        const fs = _rf();
+        const answer = await run(fs);
+        if (__nimbusProcessSupervised) await fs.flush();
+        return answer;
+      } catch (error) { throw _rfError(error, syscall, p, dest); }
+    })());
+  }
+  /** An awaited call that changes nothing (a read's): answered as the filesystem answers it. */
+  function _asyncQuiet(syscall, p, run) {
+    return __nimbusTrackOp((async () => {
       try { return await run(_rf()); }
-      catch (error) { throw _rfError(error, syscall, p, dest); }
+      catch (error) { throw _rfError(error, syscall, p); }
     })());
   }
   /**
@@ -4702,7 +4716,7 @@ const __fsMod = (() => {
    * before it answers from what this process holds (inbound).
    */
   function _asyncRead(syscall, p, run) {
-    return _async(syscall, p, (fs) => {
+    return _asyncQuiet(syscall, p, (fs) => {
       if (__nimbusProcessSupervised) fs.inbound();
       return run(fs);
     });
@@ -5378,7 +5392,12 @@ const __fsMod = (() => {
   async function _openAsync(path, flags, mode) {
     const absPath = _at(path);
     const fl = _openFlags(flags, mode);
-    const opened = await _asyncRead("open", path, (fs) => fs.open(absPath, fl));
+    // What the name is now; an open that makes or empties a file is a change, answered once the session has it.
+    const changes = fl.write || fl.create || fl.truncate || fl.append;
+    const opened = await (changes ? _async : _asyncRead)("open", path, (fs) => {
+      if (__nimbusProcessSupervised) fs.inbound();
+      return fs.open(absPath, fl);
+    });
     return new __FileHandle(path, opened, fl);
   }
   function openSync(path, flags, mode) {

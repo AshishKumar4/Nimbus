@@ -553,6 +553,9 @@ var __nimbusResidentModule = (() => {
       return true;
     return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
   }
+  function stickyRefusal(parent, entry, cred) {
+    return (parent.mode & 512) !== 0 && cred.uid !== 0 && cred.uid !== parent.uid && cred.uid !== entry.uid ? "EPERM" : null;
+  }
   function chmodRefusal(entry, cred) {
     return cred.uid !== 0 && cred.uid !== entry.uid ? "EPERM" : null;
   }
@@ -5702,6 +5705,14 @@ var __nimbusResidentModule = (() => {
         throw fsError2("EACCES", syscall, path);
       return parent;
     };
+    const removable = (key, row, path, syscall) => {
+      const parent = writableParent(key, path, syscall);
+      if (parent === void 0)
+        return false;
+      if (stickyRefusal(parent, row, host2.cred) !== null)
+        throw fsError2("EPERM", syscall, path);
+      return true;
+    };
     const ownership = (parent) => {
       const setgid = (parent.mode & 1024) !== 0;
       return { uid: host2.cred.uid, gid: setgid ? parent.gid : host2.cred.gid, setgid };
@@ -6428,7 +6439,7 @@ var __nimbusResidentModule = (() => {
           throw fsError2("ENOENT", "unlink", path);
         if (row.type === "directory")
           return false;
-        if (writableParent(key, path, "unlink") === void 0)
+        if (!removable(key, row, path, "unlink"))
           return false;
         host2.drain();
         keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), "unlink", path);
@@ -6446,7 +6457,7 @@ var __nimbusResidentModule = (() => {
           return false;
         if (listed.length > 0)
           throw fsError2("ENOTEMPTY", "rmdir", path);
-        if (writableParent(key, path, "rmdir") === void 0)
+        if (!removable(key, row, path, "rmdir"))
           return false;
         host2.drain();
         admit(nameCost([key]), "rmdir", path);
@@ -6480,7 +6491,7 @@ var __nimbusResidentModule = (() => {
           return false;
         if (from === to)
           return true;
-        if (writableParent(from, path, "rename") === void 0 || writableParent(to, path, "rename") === void 0)
+        if (!removable(from, source, path, "rename") || (target === null ? writableParent(to, path, "rename") === void 0 : !removable(to, target, path, "rename")))
           return false;
         host2.drain();
         const known = layer.get(from) ?? inodeAtNumber(source.dev, source.ino);
@@ -9012,6 +9023,14 @@ var __nimbusResidentModule = (() => {
         throw fsError2("EACCES", syscall, path);
       return parent;
     };
+    const removable = (key, row, path, syscall) => {
+      const parent = writableParent(key, path, syscall);
+      if (parent === void 0)
+        return false;
+      if (stickyRefusal(parent, row, store.cred) !== null)
+        throw fsError2("EPERM", syscall, path);
+      return true;
+    };
     const written = (inode, from = 0) => {
       const file = inode.cell;
       if (file.detached)
@@ -9392,7 +9411,7 @@ var __nimbusResidentModule = (() => {
           return false;
         if (deciding(key) === void 0)
           return false;
-        if (writableParent(key, path, "unlink") === void 0)
+        if (!removable(key, current, path, "unlink"))
           return false;
         const local = prov.inode(current.dev, current.ino);
         drain(local?.cell !== void 0 && local.key === key ? local : void 0);
@@ -9423,7 +9442,7 @@ var __nimbusResidentModule = (() => {
           return false;
         if (from === to)
           return true;
-        if (writableParent(from, path, "rename") === void 0 || writableParent(to, path, "rename") === void 0)
+        if (!removable(from, source, path, "rename") || (target === null ? writableParent(to, path, "rename") === void 0 : !removable(to, target, path, "rename")))
           return false;
         const files = prov.planMove(from, to, path);
         try {

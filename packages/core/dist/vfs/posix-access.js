@@ -32,6 +32,14 @@ export function modeAllows(stat, want, cred) {
         return true;
     return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
 }
+/**
+ * A sticky directory's rule (unlink(2), rmdir(2), rename(2)): in a directory
+ * with the sticky bit, only the entry's owner, the directory's owner or root
+ * removes or replaces the entry (EPERM).
+ */
+export function stickyRefusal(parent, entry, cred) {
+    return (parent.mode & 0o1000) !== 0 && cred.uid !== 0 && cred.uid !== parent.uid && cred.uid !== entry.uid ? 'EPERM' : null;
+}
 /** chmod(2)'s rule: only the owner or root changes a mode (EPERM). */
 export function chmodRefusal(entry, cred) {
     return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;

@@ -44,6 +44,17 @@ export interface PosixCred {
     readonly gid: number;
     readonly groups: readonly number[];
 }
+/**
+ * A sticky directory's rule (unlink(2), rmdir(2), rename(2)): in a directory
+ * with the sticky bit, only the entry's owner, the directory's owner or root
+ * removes or replaces the entry (EPERM).
+ */
+export declare function stickyRefusal(parent: {
+    readonly mode: number;
+    readonly uid: number;
+}, entry: {
+    readonly uid: number;
+}, cred: Pick<PosixCred, 'uid'>): 'EPERM' | null;
 /** chmod(2)'s rule: only the owner or root changes a mode (EPERM). */
 export declare function chmodRefusal(entry: {
     readonly uid: number;

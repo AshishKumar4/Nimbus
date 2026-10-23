@@ -35,7 +35,7 @@
  * (the documented limit, answered by the session's recall timeout).
  */
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, stickyRefusal, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { ownNames } from './own-names.js';
 import { provisional as provisionalDecisions } from './provisional.js';
@@ -364,6 +364,15 @@ export function delegationHolder(options) {
         if (!modeAllows(parent, 3, store.cred))
             throw fsError('EACCES', syscall, path);
         return parent;
+    };
+    /** Whether `row` at `key` may be removed or replaced here: its directory writable, and its sticky bit honoured (EPERM). */
+    const removable = (key, row, path, syscall) => {
+        const parent = writableParent(key, path, syscall);
+        if (parent === undefined)
+            return false;
+        if (stickyRefusal(parent, row, store.cred) !== null)
+            throw fsError('EPERM', syscall, path);
+        return true;
     };
     /**
      * The file's bytes changed, from `from` on: logged before the next
@@ -767,7 +776,7 @@ export function delegationHolder(options) {
                 return false;
             if (deciding(key) === undefined)
                 return false;
-            if (writableParent(key, path, 'unlink') === undefined)
+            if (!removable(key, current, path, 'unlink'))
                 return false;
             const local = prov.inode(current.dev, current.ino);
             drain(local?.cell !== undefined && local.key === key ? local : undefined);
@@ -801,7 +810,7 @@ export function delegationHolder(options) {
                 return false;
             if (from === to)
                 return true;
-            if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
+            if (!removable(from, source, path, 'rename') || (target === null ? writableParent(to, path, 'rename') === undefined : !removable(to, target, path, 'rename')))
                 return false;
             // What the names of its files grow by, admitted before anything is done; not made, given back.
             const files = prov.planMove(from, to, path);
