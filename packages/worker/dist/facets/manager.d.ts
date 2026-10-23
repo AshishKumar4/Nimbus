@@ -1482,11 +1482,19 @@ export declare class FacetManager {
      */
     private _drainProcessJournal;
     /**
+     * Drain the log process `row.pid` of an earlier incarnation left, as it
+     * would have sent it: through a binding of its pid (its descriptions
+     * scoped as its own), its writes the work of the exec its row records
+     * (adoptEnded: the table answers for a pid this incarnation never had).
+     * The binding is released once the drain has flushed what it opened.
+     */
+    private _drainEarlierJournal;
+    /**
      * Drain `journal` into the session as process `pid` (with its credential)
      * would have sent it: through `recovery`, the process's own binding, kept
      * since its log was booked (its descriptions, and the grants that reserved
-     * the inodes it numbered); else, for a log an earlier incarnation left, a
-     * lease of its credential.
+     * the inodes it numbered); else (none was kept when its log was booked) a
+     * lease of its credential, whose writes name no process.
      */
     private _drainJournalAs;
     /**

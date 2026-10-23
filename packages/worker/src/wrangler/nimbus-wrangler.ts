@@ -754,6 +754,8 @@ export class NimbusWrangler {
       root: this.root,
       store: name,
       ...(cred === undefined ? {} : { cred }),
+      // Its writes are the server's process's (VfsWriteEvent.execId), as its own file writes are.
+      ...(cred === undefined || this.vfs.principal.pid === undefined ? {} : { writer: this.vfs.principal.pid }),
     });
     for (const kv of this.config?.kv_namespaces ?? []) {
       if (!kv.binding) continue;

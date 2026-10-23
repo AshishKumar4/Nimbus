@@ -3695,7 +3695,8 @@ realGit) {
         commandEngines.set(fs, {
             key: async (path) => await engineKey(ctx.vfs, vfs, path),
             // Without the session's namespace (a bare engine), nothing is placed elsewhere.
-            writeStream: (stream) => (filesystem?.waves ?? new WaveIngest(null)).writeStream(vfs.as(ctx.cred), stream),
+            // The command's process's writes (VfsWriteEvent.execId).
+            writeStream: (stream) => (filesystem?.waves ?? new WaveIngest(null)).writeStream(vfs.as(ctx.cred, { pid: ctx.pid }), stream),
         });
         // Where a network command writes a repository: its engine key, or on a
         // mount its path in the namespace (every link resolved), which the
@@ -3909,14 +3910,15 @@ realGit) {
                             return code;
                         }
                         // As git's remove_junk: in the DO, under the clone's lease (its
-                        // current owner: the facets were fenced), as the clone's credential.
-                        // On a mount, through the namespace (a host bridge presenting the lease).
-                        const host = place.mount ? filesystem?.openHost(ctx.cred) : undefined;
+                        // current owner: the facets were fenced), as the clone's credential
+                        // and the clone's process, whose work it is (VfsWriteEvent.execId).
+                        // On a mount, through the namespace (that process's binding, presenting the lease).
+                        const host = place.mount ? filesystem?.bind({ pid, cred: ctx.cred }) : undefined;
                         try {
-                            const bridge = host?.fs.synchronous;
+                            const bridge = host?.synchronous;
                             if (place.mount && bridge === undefined)
                                 throw new Error('no namespace to clean it up through');
-                            const cleaned = await cleanUpClone(bridge ? bridgeCleanupFs(bridge, mutationOwner) : vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
+                            const cleaned = await cleanUpClone(bridge ? bridgeCleanupFs(bridge, mutationOwner) : vfs.as(ctx.cred, { mutationOwner, pid }), doCtx.storage, job, {
                                 sliceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_CLEANUP_SLICE) || undefined,
                             });
                             if (cleaned.outcome === 'kept-repo')
@@ -3925,9 +3927,6 @@ realGit) {
                         catch (error) {
                             // The record stays: the session finishes the cleanup when it next starts.
                             ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${String(error?.message ?? error)}\n`);
-                        }
-                        finally {
-                            await host?.dispose();
                         }
                         return code;
                     }
@@ -4008,7 +4007,10 @@ realGit) {
                     const background = processes.spawn('git', ctx.args, getDir(ctx), { parentPid: ctx.pid });
                     const stop = new AbortController();
                     const stopped = processes.holdWork(background.pid, (reason) => stop.abort(reason));
-                    const task = doClone(job, background.pid, stop.signal).then((code) => processes.exit(background.pid, code), () => processes.exit(background.pid, 1)).finally(stopped);
+                    // Its objects are written as the command's (its engine's waves), which ends now: the table keeps it
+                    // attributable until the clone is done.
+                    const retained = processes.retainAttribution(ctx.pid);
+                    const task = doClone(job, background.pid, stop.signal).then((code) => processes.exit(background.pid, code), () => processes.exit(background.pid, 1)).finally(() => { stopped(); retained(); });
                     handedOff = true;
                     doCtx.waitUntil(task);
                     progress.write(`[git] clone running in background (pid ${background.pid})...\n`);

@@ -1383,7 +1383,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
 
   // ── Filesystem seeding ────────────────────────────────────────────────
 
-  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix, cred); }
+  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>, pid?: number): void { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix, cred, pid); }
 
   /**
    * The starter content a fresh Nimbus session shows a user: the banner, the

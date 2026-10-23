@@ -255,7 +255,7 @@ class RuntimeOwner {
   ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
   ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
   ensureNpmInstaller() { this.assertOpen(); return this.services.ensureNpmInstaller(); }
-  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>) { return this.services.ensureGlobalPrefixDirs(prefix, cred); }
+  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>, pid?: number) { return this.services.ensureGlobalPrefixDirs(prefix, cred, pid); }
   _ensureChildProcessManager() { this.assertOpen(); return this.services._ensureChildProcessManager(); }
   _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
   _setCpRegistry(registry: CommandRegistry) {

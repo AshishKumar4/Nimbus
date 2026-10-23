@@ -38,7 +38,7 @@ import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, 
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
-import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { PID_GEN_STRIDE, parseExecId } from '../runtime/process-table.js';
 import { isKillRefusal, SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
@@ -198,6 +198,10 @@ export class NimbusWorkspace {
         // place the table and the filesystem meet.
         processes.setRelease((pid) => filesystem.releaseProcess(pid), (pid) => filesystem.processEnded(pid));
         filesystem.holdOutput(processes);
+        // Each write event names the exec its process is the work of, read from this table as it commits (ask 69).
+        const attribution = { execIdOf: (pid) => processes.execIdOf(pid), retain: (pid) => processes.retainAttribution(pid) };
+        vfs.attributeWrites(attribution);
+        filesystem.vfs.attributeWrites(attribution);
         const env = { ...defaultEnv(home), ...options.env };
         let workspace = null;
         const children = new ChildProcessManager({
@@ -453,17 +457,18 @@ export class NimbusWorkspace {
      * later (a background job) leaves at the first call to start a minute after.
      */
     exec(command, options = {}) {
-        const { shellId, detach, ...call } = options;
+        const { shellId, detach, execId, ...call } = options;
+        const exec = execId === undefined ? undefined : parseExecId(execId);
         if (shellId === undefined)
-            return this.runProcess(command, call, null);
-        return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named));
+            return this.runProcess(command, call, null, exec);
+        return this.withNamedShell(shellId, { detach }, (named) => this.runProcess(command, call, named, exec));
     }
-    async runProcess(command, options, named) {
+    async runProcess(command, options, named, execId) {
         // The table is pruned as a launch begins, as a hosted session's is: what
         // ended more than a minute ago, a job that outlived its exec among them.
         await this.processes.reap();
         const cwd = options.cwd ?? named?.cwd ?? this.shell.getCwd();
-        const { pid } = this.processes.spawn(command, [command], cwd, { cred: this.identity.cred });
+        const { pid } = this.processes.spawn(command, [command], cwd, { cred: this.identity.cred, ...(execId === undefined ? {} : { execId }) });
         // A shell of the call's own already starts from its cwd and env. A named
         // shell takes them for the call only: passed as its state they would pin
         // it there, and its `cd` would not survive the call.

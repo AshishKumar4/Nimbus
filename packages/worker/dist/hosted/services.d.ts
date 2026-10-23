@@ -50,7 +50,7 @@ export declare function _ensureChildProcessManager(self: RuntimeServiceHost): im
  * passes its own progress and npm log sinks.
  */
 export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): Promise<NpmInstaller>;
-export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>): void;
+export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>, pid?: number): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {
     childProcessHost: ChildProcessHost;
     ensureBundlePool: () => PrebundlePool;
@@ -58,6 +58,6 @@ export declare function bindRuntimeServices(host: RuntimeServiceHost, context: R
     _ensureWebSocketRelay: () => WebSocketRelay;
     _ensureChildProcessManager: () => import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
     ensureNpmInstaller: () => Promise<NpmInstaller>;
-    ensureGlobalPrefixDirs: (prefix: string, cred: Readonly<VfsCred>) => void;
+    ensureGlobalPrefixDirs: (prefix: string, cred: Readonly<VfsCred>, pid?: number | undefined) => void;
 };
 //# sourceMappingURL=services.d.ts.map

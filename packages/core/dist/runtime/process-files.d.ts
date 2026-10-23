@@ -103,7 +103,7 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Where `pid`'s listings of the mounts beyond SQLite stand (made when `create`), or undefined. */
     private listingOf;
     private createListing;
-    bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge;
+    bind({ pid, cred, signal, attribute }: NimbusFilesystemBinding): RuntimeFsBridge;
     recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease;
     /** `pid`'s descriptor scope, made on its first binding. */
     private scopeOf;

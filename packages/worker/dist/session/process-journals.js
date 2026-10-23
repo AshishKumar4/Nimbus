@@ -30,13 +30,27 @@ export class ProcessJournals {
         generation INTEGER NOT NULL,
         opened_at INTEGER NOT NULL
       )`);
+            // Its process's exec id (ask 69), on a row made before the column was.
+            let hasExecId = false;
+            for (const row of sql.exec('PRAGMA table_info(nimbus_process_journals)')) {
+                if (String(row.name) === 'exec_id') {
+                    hasExecId = true;
+                    break;
+                }
+            }
+            if (!hasExecId)
+                sql.exec('ALTER TABLE nimbus_process_journals ADD COLUMN exec_id TEXT');
             this.ready = true;
         }
         return sql;
     }
-    /** `pid`'s facet `facet` opened, in incarnation `generation`: its log may hold changes from now on. */
-    opened(facet, pid, cred, generation) {
-        this.table()?.exec('INSERT OR REPLACE INTO nimbus_process_journals (facet, pid, cred, generation, opened_at) VALUES (?, ?, ?, ?, ?)', facet, pid, JSON.stringify(cred), generation, Date.now());
+    /**
+     * `pid`'s facet `facet` opened, in incarnation `generation`: its log may
+     * hold changes from now on. `execId`, the table's for it: what a drain in
+     * a later incarnation attributes its changes to.
+     */
+    opened(facet, pid, cred, generation, execId) {
+        this.table()?.exec('INSERT OR REPLACE INTO nimbus_process_journals (facet, pid, cred, generation, opened_at, exec_id) VALUES (?, ?, ?, ?, ?, ?)', facet, pid, JSON.stringify(cred), generation, Date.now(), execId ?? null);
     }
     /** `pid`'s log is empty: a drain emptied it. */
     settled(pid) {
@@ -51,11 +65,12 @@ export class ProcessJournals {
         const sql = this.table();
         if (sql === undefined)
             return [];
-        return [...sql.exec('SELECT facet, pid, cred, generation FROM nimbus_process_journals ORDER BY opened_at')].map((row) => ({
+        return [...sql.exec('SELECT facet, pid, cred, generation, exec_id FROM nimbus_process_journals ORDER BY opened_at')].map((row) => ({
             facet: String(row.facet),
             pid: Number(row.pid),
             cred: JSON.parse(String(row.cred)),
             generation: Number(row.generation),
+            ...(row.exec_id === null || row.exec_id === undefined ? {} : { execId: String(row.exec_id) }),
         }));
     }
     /**
