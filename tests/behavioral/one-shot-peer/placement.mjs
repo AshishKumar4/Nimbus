@@ -19,6 +19,7 @@
 // terminal that attaches during it waits for it (what (b) accepts, recorded).
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, requestHeaders, sleep } from '../_driver.mjs';
 import { peer, placement, warmFor, mark, hostsSince, diagLatency, watched, median, holdLive } from './_peer.mjs';
+import { CPYTHON_RUNNER } from '../../../packages/core/src/runtime/os-contracts.ts';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('one-shot-peer/placement');
@@ -26,8 +27,8 @@ const ROUNDS = 6;
 const PY_IMPORTS = 'import email.parser, http.client, json, decimal, asyncio, unittest, xml.dom.minidom, sqlite3, argparse, logging; print(1)';
 // Each kind with what it prints when it worked; clang's program is run after it, outside the measured run.
 const KINDS = [
-  { kind: 'python print', line: 'python3 -c "print(1)"', tags: ['cpython-runner@3'], expect: '1' },
-  { kind: 'python imports', line: `python3 -c "${PY_IMPORTS}"`, tags: ['cpython-runner@3'], expect: '1' },
+  { kind: 'python print', line: 'python3 -c "print(1)"', tags: [CPYTHON_RUNNER], expect: '1' },
+  { kind: 'python imports', line: `python3 -c "${PY_IMPORTS}"`, tags: [CPYTHON_RUNNER], expect: '1' },
   { kind: 'ruby requires', line: `ruby -e "require 'json'; require 'set'; require 'time'; require 'fileutils'; require 'optparse'; puts 1"`, tags: ['ruby-runner'], expect: '1' },
   { kind: 'clang', line: 'rm -f x && clang x.c -o x', tags: ['clang-runner-clang', 'clang-runner-wasm-ld'], then: { line: './x', expect: '42' } },
   { kind: 'tsc noEmit', line: 'cd ~/tsp && tsc -p . --noEmit; echo tsc=$?; cd ~', tags: ['tsrs'], expect: 'tsc=0' },
@@ -157,7 +158,7 @@ try {
       if (host === 'session') await peer(sid, 'forget');
       else {
         const until = Date.now() + 35_000;
-        while (Object.keys((await placement(sid))?.warm ?? {}).filter((key) => key.startsWith('cpython-runner@3\n')).length < 3) {
+        while (Object.keys((await placement(sid))?.warm ?? {}).filter((key) => key.startsWith(`${CPYTHON_RUNNER}\n`)).length < 3) {
           if (Date.now() > until) throw new Error('the peer was not warm for three python workers within 35 s');
           await sleep(250);
         }
@@ -219,7 +220,7 @@ try {
   for (const [source, { start }] of Object.entries(SOURCES)) {
     const stop = await start();
     await t.run(PY_PRINT, 600_000);
-    await warmFor(sid, 'cpython-runner@3');
+    await warmFor(sid, CPYTHON_RUNNER);
     const placed = await runAndPlace(PY_PRINT);
     await stop();
     out({ source, placed: placed.calls.map((call) => ({ host: call.host, wants: call.wants })) });

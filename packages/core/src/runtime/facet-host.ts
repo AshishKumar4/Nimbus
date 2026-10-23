@@ -227,3 +227,13 @@ export interface FacetHost {
   readonly memoryBudgetBytes?: number;
   open(spec: FacetSpec): Facet;
 }
+
+/**
+ * Whether a run of an image that takes its own signals (`imageTakesSignals`)
+ * is given them on `host`. It hears one only where a wait or a check of it
+ * parks (JSPI), so on a host that cannot park a guest the session ends the
+ * run instead, as it ends an image that takes none.
+ */
+export function takesOwnSignals(host: FacetHost, imageTakesSignals: boolean): boolean {
+  return imageTakesSignals && host.parking === 'jspi';
+}

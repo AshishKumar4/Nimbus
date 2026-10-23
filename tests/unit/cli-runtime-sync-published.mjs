@@ -33,7 +33,7 @@ import { CPYTHON_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts'
 const WORKER = new URL('../../packages/worker/', import.meta.url).pathname;
 const CORE = new URL('../../packages/core', import.meta.url).pathname;
 const BASH = 'bash@5.2.37-7';
-const CPYTHON = 'cpython@3.13.14-3';
+const CPYTHON = 'cpython@3.13.14-4';
 
 const root = mkdtempSync(join(tmpdir(), 'nimbus-cli-sync-published-'));
 const cwd = process.cwd();

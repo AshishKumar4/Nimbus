@@ -33,7 +33,7 @@ import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { hostImage } from './process-files.js';
 import { nameDec } from '../_shared/bytes.js';
 import type { Command, CommandContext, CommandOutputStream } from '../substrate/lifo/commands/types.js';
-import type { FacetHost, FacetImage } from './facet-host.js';
+import { takesOwnSignals, type FacetHost, type FacetImage } from './facet-host.js';
 import { warmFacetKeys } from './warm-facets.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import type { GitFacetArgs, GitFacetResult } from './git-facet-task.js';
@@ -65,6 +65,7 @@ export function makeGitRunnerFactory(deps: {
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
   const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
   const warmKeys = warmFacetKeys(deps.session, 'git');
+  const takesSignals = takesOwnSignals(deps.facets, deps.takesSignals);
   return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
     if (binKind === 'fsmonitor') return async (ctx) => {
       if (ctx.args.length !== 2 || ctx.args[0] !== '2') {
@@ -117,7 +118,7 @@ export function makeGitRunnerFactory(deps: {
 
       let stdio: ReturnType<typeof openRuntimeStdio>;
       try {
-        stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '), { takesSignals: deps.takesSignals });
+        stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '), { takesSignals });
       } catch (error) {
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
         return 1;
@@ -137,7 +138,7 @@ export function makeGitRunnerFactory(deps: {
         cred,
         pid: stdio.pid,
         restartsWaits: deps.restartsWaits,
-        takesSignals: deps.takesSignals,
+        takesSignals,
       };
       let outcome = 1;
       try {
