@@ -24,7 +24,8 @@ authority.kfs.writeFile('home/user/site/hello.txt', SOURCE);
 
 const { fs, stream } = sessionShims(authority, {
   cwd: '/home/user',
-  head: 'let stdout = "", stderr = ""; const __pendingIO = []; const stdin = "";',
+  // A launch's cell runtime defines this stack reader; a standalone factory has none, and a builtin the shims load at start reads it.
+  head: 'function __nimbusStackSites() { return []; }',
   tail: ';return builtins;',
 });
 

@@ -6,8 +6,24 @@
 // of those calls, as facetSupervisor takes them.
 
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
+import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
 import { CRED, facetSupervisor } from './resident-body.mjs';
 import { SHIMS_STORE_PRELUDE, SHIMS_STORE_START, listAuthority } from './shims-namespace.mjs';
+
+// The platform's timers, before any shims wrap them (the launch hands them to
+// the process's filesystem as its resend timers: manager.ts __nimbusRawSetTimeout).
+const rawSetTimeout = globalThis.setTimeout;
+const rawClearTimeout = globalThis.clearTimeout;
+
+/**
+ * A bridge as another process or a shell reads and writes the session: a call
+ * that meets what a process holds waits for its recall, as a peer's does.
+ */
+export function observed(bridge) {
+  return new Proxy(bridge, {
+    get: (target, name) => (typeof target[name] === 'function' ? (...args) => withRecall(() => target[name](...args)) : target[name]),
+  });
+}
 
 /**
  * The shims of one process in `cwd` on `authority`'s session. Write the
@@ -28,6 +44,8 @@ export function sessionShims(authority, { bundle = {}, overrides, cwd = '/home/u
   forward = handle.forward;
   listAuthority(authority.rawVfs);
   globalThis.__nimbusVfsCursor = { position: authority.cursor() };
+  globalThis.__nimbusRawSetTimeout = rawSetTimeout;
+  globalThis.__nimbusRawClearTimeout = rawClearTimeout;
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + head + SHIMS_STORE_PRELUDE + generateShimsCode() + SHIMS_STORE_START + tail,

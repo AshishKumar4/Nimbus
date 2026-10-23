@@ -55,7 +55,7 @@ for (const [name, body] of Object.entries(FILES)) {
 }
 
 // A changed file's async read still replaces what the store held.
-authority.kfs.writeFile(`${dir.slice(1)}/main.tsx`, 'changed');
+authority.peer.writeFile(`${dir.slice(1)}/main.tsx`, 'changed');
 assert.equal(await fs.promises.readFile(`${dir}/main.tsx`, 'utf8'), 'changed');
 let served = 'changed';
 try { served = fs.readFileSync(`${dir}/main.tsx`, 'utf8'); } catch (error) { assert.equal(error.code, 'EAGAIN', 'a row it could not keep is refused, not stale'); }

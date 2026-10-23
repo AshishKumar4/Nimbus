@@ -10,10 +10,13 @@
 // review of the prefetch).
 //
 // Now one quota is charged at the repair and read boundary, before any data
-// I/O: a file when its repair would be issued, its raw size from the stat
+// I/O: a file when its repair would be issued, its raw size from the listing
 // before its bytes are read, a manifest like a module. Past it nothing more
 // is issued, and the rejection comes once the fetches it admitted have
-// landed.
+// landed. A file that changed after its listing is fetched at the listing's
+// revision: the session refuses that read, so the fetch does not land, and
+// the import fails by name (ERR_NIMBUS_PREFETCH_UNREADABLE) with nothing read
+// past the quota.
 
 import assert from 'node:assert/strict';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -92,32 +95,32 @@ const rejection = async (promise) => {
   assert.equal(io.inFlight, 0);
 }
 
-// ── a file that grows between its stat and its read is charged as it is read ──
+// ── a file that grows between its listing and its read is not read past the quota ──
 // (DustyPanther's fourth recheck: the quota charged the stat's size, and the
 // read then took the file as it found it, whole.) The listing carries 1 KiB;
-// the file is 1 MiB by the time it is read.
+// the file is 1 MiB by the time it is read, so its fetch is refused.
 {
   const path = 'home/user/app/node_modules/growing/index.js';
   const { hydrated, read, quota, io, authority } = world({ [path]: 'x'.repeat(1024) });
-  authority.kfs.writeFile(path, 'y'.repeat(1024 * 1024));
+  authority.peer.writeFile(path, 'y'.repeat(1024 * 1024));
   const error = await rejection(hydrated(() => read(path, null), quota('growing', { bytes: 200 * 1024 })));
-  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `1 MiB read past a 200 KiB quota, admitted at its 1 KiB stat: ${error}`);
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_UNREADABLE', `a 1 MiB file read after its 1 KiB listing: its fetch did not land: ${error}`);
   assert.ok(io.bytes <= 200 * 1024, `no more than the quota was read (${io.bytes} bytes)`);
   assert.equal(io.inFlight, 0);
 }
 
-// ── many files growing at once: each range is charged before it is issued ──
+// ── many files growing at once: no range is read past the quota ──
 // (DustyPanther, fifth recheck: the first range was charged as it arrived, so
 // files admitted small that grew could each overshoot by a range.)
 {
   const files = {};
   for (let i = 0; i < 10; i++) files[`home/user/app/node_modules/swell/f${i}.js`] = 'x'.repeat(1024);
   const { hydrated, read, quota, io, authority } = world(files);
-  for (const name of Object.keys(files)) authority.kfs.writeFile(name, 'y'.repeat(64 * 1024));
+  for (const name of Object.keys(files)) authority.peer.writeFile(name, 'y'.repeat(64 * 1024));
   const names = Object.keys(files);
   const QUOTA = 40 * 1024;
   const error = await rejection(hydrated(() => names.map((k) => read(k, null)), quota('swell', { bytes: QUOTA })));
-  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `ten files grown to 64 KiB exceed a 40 KiB quota: ${error}`);
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_UNREADABLE', `ten files grown to 64 KiB after their listing: their fetches did not land: ${error}`);
   assert.ok(io.bytes <= QUOTA, `no more than the quota was read (${io.bytes} bytes)`);
   assert.equal(io.inFlight, 0);
 }

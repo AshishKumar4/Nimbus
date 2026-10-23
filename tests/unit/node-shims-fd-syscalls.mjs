@@ -12,16 +12,16 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createAuthority } from './lib/resident-body.mjs';
 import { processBridge } from './lib/process-bridge.mjs';
-import { sessionShims } from './lib/session-shims.mjs';
+import { observed, sessionShims } from './lib/session-shims.mjs';
 import { DO_STORAGE_LIMIT_BYTES } from '../../packages/platform/src/limits.ts';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const authority = createAuthority();
 // The process's home is its own, and so is everything seeded into it.
-const vfs = authority.kfs;
+const vfs = authority.peer;
 // The tree the process works in is its own: what it writes back is owned by
 // it, and a stat of it says so.
-const bridge = processBridge(authority.rawVfs, authority.rawVfs.as(USER));
+const bridge = observed(processBridge(authority.rawVfs, authority.rawVfs.as(USER)));
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 

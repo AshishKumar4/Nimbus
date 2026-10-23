@@ -17,13 +17,13 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createAuthority } from './lib/resident-body.mjs';
 import { processBridge } from './lib/process-bridge.mjs';
-import { sessionShims } from './lib/session-shims.mjs';
+import { observed, sessionShims } from './lib/session-shims.mjs';
 
 const dec = new TextDecoder();
 const dir = '/home/user/t';
 const authority = createAuthority();
 authority.kfs.mkdir(dir.slice(1), { recursive: true, mode: 0o755 });
-const bridge = processBridge(authority.rawVfs, authority.rawVfs.as(CRED_KERNEL));
+const bridge = observed(processBridge(authority.rawVfs, authority.rawVfs.as(CRED_KERNEL)));
 
 // The authority is a round trip away. Latency is what makes the starvation
 // real: with an instant supervisor the drain always outpaces the writer, and
@@ -34,7 +34,6 @@ const wait = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
 const LATENCY_MS = 20;
 const slow = (fn) => async (...args) => { await wait(LATENCY_MS); return fn(...args); };
 
-globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});
 
 // The network stub does not resolve until the test lets it, so the facet is

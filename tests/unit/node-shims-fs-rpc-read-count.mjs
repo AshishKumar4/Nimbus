@@ -91,7 +91,7 @@ const readTrips = () => crossed.readFileBytes + crossed.fsReadRange + crossed.fs
 // learns of a name the namespace does not hold yet. Only a batch carrying a
 // range is a read round trip.
 {
-  authority.kfs.writeFile(`${dir.slice(1)}/learned.txt`, 'learned bytes');
+  authority.peer.writeFile(`${dir.slice(1)}/learned.txt`, 'learned bytes');
   const before = readTrips();
   const batchesBefore = batches.length;
   assert.equal(await fsp.readFile(`${dir}/learned.txt`, 'utf8'), 'learned bytes');

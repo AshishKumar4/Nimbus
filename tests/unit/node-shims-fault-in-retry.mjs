@@ -12,9 +12,10 @@
 // spoiled reported=Infinity rev=528 cursor=542" (a throwaway, astro-real).
 //
 // Now a fetch that did not land, and did not prove the file absent, leaves
-// the path to be asked for again by the next miss, a few times; and the
-// prefetch takes another round for a path it asked for again. Driven here
-// through the other way a fill fails to land, a store that refuses it once.
+// the path to be asked for again by the next miss: a program's next read, or
+// the next import()'s. An import() whose fetch did not land fails by name,
+// rather than stand on a partial resolution. Driven here through the other
+// way a fill fails to land, a store that refuses it once.
 
 import assert from 'node:assert/strict';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -35,9 +36,9 @@ const FILES = {
 
 /**
  * A process over these files whose store is full, and a ledger that answers
- * an ask for room with `grant(path)`: the room asked for, or none. A
- * fetch with no room does not land. Asks for no room (the store's report
- * after a fill) are always answered.
+ * an ask for room with `grant()`: the room asked for, or none. A fetch with no
+ * room does not land. Asks for no room (the store's report after a fill) are
+ * always answered.
  */
 function world(grant) {
   const authority = createAuthority();
@@ -65,11 +66,6 @@ function world(grant) {
   return { ...shims, io };
 }
 
-// Every other ask for room is refused, starting with the first.
-let asks = 0;
-const { fs, hydrated, read, quota, rf, io } = world(() => ++asks % 2 === 0);
-const settle = () => rf.misses();
-
 // Each scenario is run on its own, so one that fails does not hide the others.
 const failures = [];
 async function scenario(name, run) {
@@ -78,31 +74,40 @@ async function scenario(name, run) {
 
 // ── a program's own reads: the first fetch is refused, the next miss asks again ──
 await scenario('a program\'s own read', async () => {
+  let asks = 0;
+  const { fs, rf } = world(() => ++asks > 1);
   const path = `${dir}/direct.js`;
   assert.throws(() => fs.readFileSync(path, 'utf8'), { code: 'EAGAIN' });
-  await settle();
+  await rf.misses();
   assert.throws(() => fs.readFileSync(path, 'utf8'), { code: 'EAGAIN' }, 'the first fetch did not land');
-  await settle();
+  await rf.misses();
   assert.equal(fs.readFileSync(path, 'utf8'), FILES['direct.js'], 'the second miss asked again, and it landed');
 });
 
-// ── the import() prefetch takes another round for it ──
+// ── the import() prefetch: a fetch that did not land fails it by name; the next import asks again ──
 await scenario('the import() prefetch', async () => {
+  let asks = 0;
+  const { hydrated, read, quota } = world(() => ++asks > 1);
   const k = 'home/user/retry/prefetched.js';
+  const error = await hydrated(() => read(k, null), quota('retry')).then(() => null, (failure) => failure);
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_UNREADABLE', `the first fetch was refused: ${error}`);
+  assert.match(error.message, /prefetched\.js/);
   const text = await hydrated(() => read(k, null), quota('retry'));
-  assert.equal(text, FILES['prefetched.js'], 'one prefetch step reads the file whose first fetch was refused');
+  assert.equal(text, FILES['prefetched.js'], 'the next import asked for the file again, and it landed');
 });
 
 // ── a file that is not there is not asked for again ──
 await scenario('an absent file', async () => {
+  const { hydrated, read, quota, io } = world(() => true);
   const before = io.reads;
   assert.equal(await hydrated(() => read('home/user/retry/gone.js', null), quota('gone')), null);
   assert.equal(io.reads, before, 'an absent file costs no content read');
 });
 
 // ── two imports reading the same file at once: the one that joins the other's
-// fetch reruns as the one that issued it does (DustyPanther, fifth recheck) ──
+// fetch reads what it fetched, not its first miss (DustyPanther, fifth recheck) ──
 await scenario('two imports of one file', async () => {
+  const { hydrated, read, quota } = world(() => true);
   const k = 'home/user/retry/shared.js';
   const [first, second] = await Promise.all([
     hydrated(() => read(k, null), quota('first')),

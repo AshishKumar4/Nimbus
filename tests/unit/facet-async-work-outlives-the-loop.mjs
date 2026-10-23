@@ -22,7 +22,7 @@ import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createAuthority } from './lib/resident-body.mjs';
 import { processBridge } from './lib/process-bridge.mjs';
-import { sessionShims } from './lib/session-shims.mjs';
+import { observed, sessionShims } from './lib/session-shims.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -39,7 +39,7 @@ vfs.mkdir(`${SRC}/js/src`, { recursive: true });
 vfs.writeFile(`${SRC}/c3.ts`, enc.encode('x'.repeat(200)));
 for (const name of TEMPLATE_FILES) vfs.writeFile(`${SRC}/js/${name}`, enc.encode('y'.repeat(300)));
 vfs.writeFile(`${SRC}/js/src/index.js`, enc.encode('z'.repeat(400)));
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
+const bridge = observed(processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 })));
 
 // The raw timer, captured before the shims wrap globalThis.setTimeout with the
 // resumption barrier: the latency below is the authority's, not a
