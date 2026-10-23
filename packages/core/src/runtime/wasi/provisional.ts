@@ -360,7 +360,7 @@ export interface Provisional {
    * folded over them when they are held). `awaited`: its caller waits for
    * the session's answer (its refusal the call's), as a change by name's.
    */
-  write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean): number | Promise<number>;
+  write(handleId: number, offset: number | null, bytes: Uint8Array, awaited?: boolean, sync?: boolean): number | Promise<number> | undefined;
   ftruncate(handleId: number, size: number, awaited?: boolean): void | Promise<void>;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
   /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (unknown: as a stat by name there). */
@@ -1616,11 +1616,13 @@ export function provisional(host: ProvisionalHost): Provisional {
       return chunk;
     },
 
-    write: (handleId, offset, bytes, awaited = false) => {
+    write: (handleId, offset, bytes, awaited = false, sync = false) => {
       const desc = descOf(handleId);
       if (!desc.write) throw fsError('EBADF', 'write', desc.path);
       // write(2) of nothing to a regular file changes nothing.
       if (bytes.byteLength === 0) return 0;
+      // A sync write to bytes this view does not hold cannot be folded over them: undefined, its caller answers not resident.
+      if (sync && bytesOf(desc.inode, 'write', desc.path) === undefined && entryOf(desc.inode).size > 0) return undefined;
       const at = host.now();
       const start = desc.append ? undefined : offset ?? desc.position;
       if (!awaited && continued(desc, start, bytes, at)) {

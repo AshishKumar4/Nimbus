@@ -733,6 +733,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const readers = new Set<number>();
   /** Of those, the names they were opened by, whose reads answer the program's misses (ProgramResidency). */
   const readerKeys = new Map<number, string>();
+  /** Of the read-only ones that are files: the names and the file's identity (dev, ino); its entry answers their fstat while the name leads to it. */
+  const readerFiles = new Map<number, { key: string; dev: number; ino: number }>();
   /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
   const unwritten = new Set<number>();
   /** Of the read-only ones, the directories, and where their listing is. */
@@ -1336,7 +1338,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
-  fs.decidedAt = (path) => holder !== null && holder.provisional.touches(keyOf(path));
+  fs.decidedAt = (path) => {
+    if (holder === null) return false;
+    if (holder.provisional.touches(keyOf(path))) return true;
+    // A change made through a link is decided at the file the link names (chmod follows it): that file's key counts too.
+    const followed = resolve(path, true);
+    return typeof followed === 'string' && followed !== '' && holder.provisional.touches(followed);
+  };
   Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
@@ -1550,6 +1558,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         : after(holder!.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
       return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
     }
+    // open(2) with O_DIRECTORY on a name the view knows as a file: ENOTDIR, answered here (a sync caller cannot ask the session).
+    if (readOnly && flags.directory === true) return after(resolve(path, flags.followSymlinks !== false), (key) => {
+      if (typeof key === 'string' && key !== '' && entryAt(key)?.type === 'file') throw fsError('ENOTDIR', 'open', pathOf(path));
+      return openOnSession(path, flags);
+    });
     return openOnSession(path, flags);
   };
 
@@ -1740,6 +1753,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const { type, dev, ino, size } = handle.stat;
       if (dev === store.device) {
         const key = keyOf(handle.path);
+        if (type === 'file') readerFiles.set(handle.id, { key, dev, ino });
         if (type === 'directory') directories.set(handle.id, { key, dev, ino });
         else if (type === 'file' && size > WASI_RESIDENT_FILE_CAP_BYTES) paged.set(handle.id, { key, dev, ino });
       }
@@ -1759,6 +1773,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       counts.local++;
       return statOf(entry);
     });
+    // A read-only descriptor of a file: as its name has the file now, while the name still leads to that same file.
+    const file = readerFiles.get(handleId);
+    if (file !== undefined) return answer<RuntimeVfsStat>('fstat', () => {
+      const entry = entryAt(file.key);
+      return entry !== undefined && entry !== null && entry.dev === file.dev && entry.ino === file.ino ? statOf(entry) : DELEGATE;
+    }, () => authority.fstat(handleId));
     delegated('fstat');
     return authority.fstat(handleId);
   };
@@ -1810,7 +1830,16 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes, !now && answeredWrites); }
+    if (holder?.owns(handleId)) {
+      counts.local++;
+      // Node's fs refuses a sync write it cannot fold over bytes it holds (as it always did); a WASI guest's is logged as made.
+      const done = holder.write(handleId, offset, bytes, !now && answeredWrites, now && answeredWrites);
+      if (done !== undefined) return done;
+      // Bytes this process does not hold are refused as the sync read of them is, and their fetch begun.
+      const of = holder.provisional.inodeOf(handleId);
+      if (of !== undefined && !holder.provisional.pending(of.entry.dev, of.entry.ino)) refusedFetch = faultIn(of.key, of.entry);
+      throw NOT_NOW;
+    }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
@@ -1842,6 +1871,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       directories.delete(handleId);
       paged.delete(handleId);
       readerKeys.delete(handleId);
+      readerFiles.delete(handleId);
       delegated('close');
       return authority.close(handleId);
     }

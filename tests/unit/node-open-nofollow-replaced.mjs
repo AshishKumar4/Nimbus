@@ -87,8 +87,8 @@ async function peerActs(stream) {
   }
   for (const name of Object.keys(CASES)) {
     if (replaced.includes(name) || !named.has(key(`leaf-${name}`))) continue;
-    if (CASES[name][2] === 'file') kernel.unlink(key(`leaf-${name}`));
-    kernel.symlink(`other-${name}`, key(`leaf-${name}`));
+    if (CASES[name][2] === 'file') await authority.peer.unlink(key(`leaf-${name}`));
+    await authority.peer.symlink(`other-${name}`, key(`leaf-${name}`));
     replaced.push(name);
   }
   return sent;
