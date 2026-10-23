@@ -5447,6 +5447,19 @@ var __nimbusResidentModule = (() => {
     typedArraySet(copy, length === bytes.length ? bytes : bytesView(bytes, 0, length));
     return copy;
   }
+  var SMALL_WRITE = 64;
+  var smallWrite = new Uint8ArrayConstructor(SMALL_WRITE);
+  function copyInto(target, source, offset) {
+    const length = source.length;
+    if (length > SMALL_WRITE) {
+      typedArraySet(target, source, offset);
+      return;
+    }
+    for (let i = 0; i < length; i++)
+      smallWrite[i] = source[i];
+    for (let i = 0; i < length; i++)
+      target[offset + i] = smallWrite[i];
+  }
   function copyState(state) {
     return { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
   }
@@ -5470,7 +5483,7 @@ var __nimbusResidentModule = (() => {
           const bytes = grown(state, end);
           if (offset > state.size)
             typedArrayFill(bytes, 0, state.size, offset);
-          typedArraySet(bytes, op.data, offset);
+          copyInto(bytes, op.data, offset);
           state.bytes = bytes;
         }
         state.size = mathMax(state.size, end);

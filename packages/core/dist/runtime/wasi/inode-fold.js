@@ -20,6 +20,21 @@ export function owned(bytes, length = bytes.length) {
     typedArraySet(copy, length === bytes.length ? bytes : bytesView(bytes, 0, length));
     return copy;
 }
+/** What a write of at most this many bytes is copied through, its bytes all read before any is written (as set copies a view of the same buffer). */
+const SMALL_WRITE = 64;
+const smallWrite = new Uint8ArrayConstructor(SMALL_WRITE);
+/** `target.set(source, offset)`, a small source copied here by index. */
+function copyInto(target, source, offset) {
+    const length = source.length;
+    if (length > SMALL_WRITE) {
+        typedArraySet(target, source, offset);
+        return;
+    }
+    for (let i = 0; i < length; i++)
+        smallWrite[i] = source[i];
+    for (let i = 0; i < length; i++)
+        target[offset + i] = smallWrite[i];
+}
 /** A copy of `state` that folding into does not change `state`. */
 export function copyState(state) {
     return { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
@@ -53,7 +68,7 @@ export function applyOp(state, op) {
                 const bytes = grown(state, end);
                 if (offset > state.size)
                     typedArrayFill(bytes, 0, state.size, offset);
-                typedArraySet(bytes, op.data, offset);
+                copyInto(bytes, op.data, offset);
                 state.bytes = bytes;
             }
             state.size = mathMax(state.size, end);
