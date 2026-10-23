@@ -206,7 +206,7 @@ var __nimbusResidentModule = (() => {
   var LEDGER_ROW_BYTES = 256;
 
   // nimbus-launch-captures:launch-captures
-  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigInt2, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError: RangeError2, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxError2, TypeError: TypeError2, URIError: URIError2, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathFloor, mathMax, mathMin, newTextEncoder, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
+  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigInt2, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError: RangeError2, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxError2, TypeError: TypeError2, URIError: URIError2, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, bytesCopy, bytesView, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mapKeyList, mapValueList, mathAbs, mathCeil, mathFloor, mathMax, mathMin, mathTrunc, newTextEncoder, newURL, numberIsFinite, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseFinally, promiseReject, promiseResolve, promiseSettled, promiseThen, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, setList, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringLocaleCompare, stringOf, stringPadStart, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArrayFill, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // ../core/dist/constants.js
   var NODE_RELEASE = "22.23.4";
@@ -4763,8 +4763,18 @@ var __nimbusResidentModule = (() => {
     live?.(native);
     return native;
   }
-  function supervisorSession(stub, authority, live) {
+  function supervisorSession(stub, authority, live, holdsGrants = true) {
     const waves = stub;
+    const grants = {
+      acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => {
+        await authority.releaseExclusiveMutation(owner);
+      },
+      awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => {
+        await authority.recalled(owner, kind);
+      }
+    };
     return {
       // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
       openWriter: (first) => toldLive(waves.openWaveWriter(first), live),
@@ -4775,16 +4785,8 @@ var __nimbusResidentModule = (() => {
       published: async (escape) => {
         await toldLive(escape ? waves.fsPublished({ escape: true }) : waves.fsPublished(), live);
       },
-      grants: {
-        acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-        release: async (owner) => {
-          await authority.releaseExclusiveMutation(owner);
-        },
-        awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-        recalled: async (owner, kind) => {
-          await authority.recalled(owner, kind);
-        }
-      }
+      // A process that cannot answer a recall (holdsGrants false) holds none: the session decides each of its changes.
+      ...holdsGrants ? { grants } : {}
     };
   }
 
@@ -6030,7 +6032,7 @@ var __nimbusResidentModule = (() => {
       } else {
         target = inode;
       }
-      if (close && bytes !== null && chmod === void 0 && host2.mounted?.(key) === true) {
+      if (close && bytes !== null && chmod === void 0) {
         const records = ops.map((op) => fold(target, op));
         const whole = { type: "call", call: { call: "writeFile", path: key, mode: asked, umask, data: bytes } };
         const settled = (refused, answer) => {
@@ -10321,10 +10323,7 @@ var __nimbusResidentModule = (() => {
         return void 0;
       return entry;
     };
-    const answerable = (key, entry) => {
-      const fed = fedRow(key, entry);
-      return fed === true || fed === void 0 && walkedMounts;
-    };
+    const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
     const walkedMounts = delegation?.walkedMounts === true;
     const fedRow = (key, entry) => {
       const cursor = store.cursor();
@@ -11491,11 +11490,11 @@ var __nimbusResidentModule = (() => {
   }
   function processFilesystem(supervisor, view, options = {}) {
     const authority = supervisorFilesystem(supervisor);
-    const { journalSql, ...delegation } = options;
+    const { journalSql, holdsGrants, ...delegation } = options;
     const directories = answeringSupervisor(supervisor);
     return residentFilesystem(authority, view, {
       ...delegation,
-      session: supervisorSession(supervisor, authority),
+      session: supervisorSession(supervisor, authority, void 0, holdsGrants !== false),
       isHomeRoot: isHomeDirectory,
       ...typeof directories.fsReadDirectories === "function" ? { readDirectories: (request) => directories.fsReadDirectories(request) } : {},
       ...journalSql === void 0 ? {} : { journal: sqlJournal(journalSql) }

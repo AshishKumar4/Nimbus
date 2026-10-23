@@ -15933,6 +15933,7 @@ var objectGetOwnPropertyNames = Object.getOwnPropertyNames;
 var arrayIsArray = Array.isArray;
 var symbolFor = Symbol.for;
 var stringOf2 = String;
+var PromiseConstructor = Promise;
 var PromiseResolve = Promise.resolve;
 var PromiseReject = Promise.reject;
 var PromisePrototypeThen = Promise.prototype.then;
@@ -16113,6 +16114,14 @@ var arrayBufferByteLength = (() => {
 var arrayShift = uncurryThis(Array.prototype.shift);
 var setValuesOf = uncurryThis(Set.prototype.values);
 var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((/* @__PURE__ */ new Set()).values()) ?? {}, "next"));
+var promiseThen = uncurryThis(Promise.prototype.then);
+var promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
+var promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+var mapForEach = uncurryThis(Map.prototype.forEach);
+var stringLocaleCompare = uncurryThis(String.prototype.localeCompare);
+var stringPadStart = uncurryThis(String.prototype.padStart);
+var numberIsFinite = Number.isFinite;
+var typedArrayFill = uncurryThis(Uint8Array.prototype.fill);
 
 // ../core/src/_shared/node-error.ts
 var nodeErrorClasses = new SafeMap();

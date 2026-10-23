@@ -12,6 +12,8 @@ import { type ResidentDelegation, type ResidentFilesystem, type ResidentNamespac
 export type ProcessFilesystemOptions = Omit<ResidentDelegation, 'session' | 'journal' | 'readDirectories' | 'isHomeRoot'> & {
     /** The process's own store, where it has one (a resident's facet): its write log (process-fs-journal.ts). */
     readonly journalSql?: JournalSql;
+    /** False for a process that cannot answer a recall (a runner, between its calls): it holds no subtree. */
+    readonly holdsGrants?: boolean;
 };
 /** Whether `key` is a home directory itself (`home/<name>`, root's `root`): never held, so the editor and shell there recall nothing. */
 export declare function isHomeDirectory(key: string): boolean;

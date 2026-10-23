@@ -383,3 +383,49 @@ export function setFind(set, test) {
             return step.value;
     return undefined;
 }
+// The process's filesystem (runtime/wasi/resident-filesystem.ts, its holder,
+// decisions and client) and the resident store under it.
+/** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
+export const promiseThen = uncurryThis(Promise.prototype.then);
+/** `Promise.resolve(value)`, of the launch's Promise. */
+export const promiseResolve = reflectApply(FunctionPrototypeBind, PromiseResolve, [PromiseConstructor]);
+/** `Promise.reject(reason)`, of the launch's Promise. */
+export const promiseReject = reflectApply(FunctionPrototypeBind, PromiseReject, [PromiseConstructor]);
+/** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
+export function promiseFinally(promise, onFinally) {
+    return promiseThen(promise, (value) => promiseThen(promiseResolve(onFinally()), () => value), (reason) => promiseThen(promiseResolve(onFinally()), () => { throw reason; }));
+}
+/** The members of `set`, in its order: a SafeList, by SafeSet's forEach as the launch captured it. */
+export function setList(set) {
+    const list = new SafeList();
+    setForEach(set, (value) => { list[list.length] = value; });
+    return list;
+}
+const mapForEach = uncurryThis(Map.prototype.forEach);
+/** The values of `map`, in its order: a SafeList. */
+export function mapValueList(map) {
+    const list = new SafeList();
+    mapForEach(map, (value) => { list[list.length] = value; });
+    return list;
+}
+/** The keys of `map`, in its order: a SafeList. */
+export function mapKeyList(map) {
+    const list = new SafeList();
+    mapForEach(map, (_value, key) => { list[list.length] = key; });
+    return list;
+}
+export const stringLocaleCompare = uncurryThis(String.prototype.localeCompare);
+export const stringPadStart = uncurryThis(String.prototype.padStart);
+export const mathTrunc = Math.trunc;
+export const numberIsFinite = Number.isFinite;
+export const typedArrayFill = uncurryThis(Uint8Array.prototype.fill);
+/** `bytes.subarray(start, end)` without the view's constructor or species: a view of the same buffer. */
+export function bytesView(bytes, start, end = typedArrayByteLength(bytes)) {
+    return new Uint8ArrayConstructor(typedArrayBuffer(bytes), typedArrayByteOffset(bytes) + start, end > start ? end - start : 0);
+}
+/** `bytes.slice(start, end)` without the view's constructor or species: a copy. */
+export function bytesCopy(bytes, start = 0, end = typedArrayByteLength(bytes)) {
+    const copy = new Uint8ArrayConstructor(end > start ? end - start : 0);
+    typedArraySet(copy, bytesView(bytes, start, end));
+    return copy;
+}

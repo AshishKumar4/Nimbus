@@ -1073,7 +1073,8 @@ ${RESIDENCY_MISS_REPORT}
  * calls. It binds `__resident` (made by the caller) in memory, adopts the
  * module bundle at its cursor, and lists the namespace, `__namespaceFailure`
  * naming why it does not answer, else null. It reads cred, dataPlan,
- * manifests, _cwd, __supervisor, __MODULE_VFS_BUNDLE and __MODULE_VFS_CURSOR.
+ * manifests, _cwd, __supervisor, __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR and
+ * __MODULE_VFS_ROOT.
  */
 function heapStoreBoot(storageBytes) {
     return `
@@ -1086,12 +1087,9 @@ function heapStoreBoot(storageBytes) {
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
     const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${storageBytes});
-    if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { position: __residentBooted.cursor };
-    }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);`;
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || __nimbusRootRefusal(__supervisor, __MODULE_VFS_ROOT);`;
 }
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
@@ -1178,22 +1176,7 @@ export default {
     // so a loader that reuses this isolate for another run starts it from an
     // empty store.
     const __resident = __nimbusResidentModule.createResidentStore();
-<<<<<<< HEAD
-    __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-    __resident.admission.setStorage(undefined, __supervisor);
-    __resident.namespace.setCred(cred);
-    __resident.sync.setPlan(dataPlan);
-    __resident.sync.setManifests(manifests);
-    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
-    // The module bundle stays at module scope: a reused isolate adopts it
-    // again on its next run, and its text cells are shared, not copied.
-    const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
-    // No user code runs before the namespace answers: it is the view every
-    // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure) || __nimbusRootRefusal(__supervisor, __MODULE_VFS_ROOT);
-=======
 ${heapStoreBoot(bundleSource.storageBytes)}
->>>>>>> origin/main
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
@@ -1898,7 +1881,7 @@ let __nimbusRunnerStart = null;
 
 // Start the process, and answer the function that runs one call's code.
 async function __nimbusRunnerStarted(workerEnv, start) {
-  const { pid, cwd: _cwd, env, cred, vfsCursor: __MODULE_VFS_CURSOR, dataPlan } = start;
+  const { pid, cwd: _cwd, env, cred, vfsCursor: __MODULE_VFS_CURSOR, vfsRoot: __MODULE_VFS_ROOT, dataPlan } = start;
   const manifests = JSON.parse(start.manifests);
   const argv = [];
   const nodeCommandLine = null;
@@ -1911,9 +1894,8 @@ async function __nimbusRunnerStarted(workerEnv, start) {
   const __nimbusStdinWhole = false;
   const __nimbusStdinAtLeast = 0;
   const __nimbusStdinFile = null;
-  // It runs only while a call holds it: it takes no delegation or read lease it could not answer a recall of (vfs-write-ledger.ts).
+  // It runs only while a call holds it: it takes no delegation or read lease it could not answer a recall of (node-shims __nimbusStartProcessFilesystem).
   const __nimbusAnswersNoRecall = true;
-${VFS_CURSOR_SEED_SOURCE}
   __nimbusStopReplay.begin({ captured: true });
   const __supervisor = workerEnv?.SUPERVISOR
     ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR, __nimbusTrackOp)) : null;
@@ -1967,9 +1949,7 @@ ${nodeProgramRuntime(sources, false)}
     supervisor: __supervisor,
     pendingIO: __pendingIO,
     outputPending: __outputPending,
-    vfsWrites: __vfsWrites,
-    flushVfsWrite: __nimbusFlushVfsWrite,
-    drainVfsMutations: __nimbusDrainVfsMutations,
+    flushFilesystem: __nimbusFlushFilesystem,
     pendingDrainChain: Promise.resolve(),
   };
   return async (code) => {
@@ -7527,7 +7507,7 @@ export class FacetManager {
             let { prepared: map, state: vfsState } = await prepare(await this._buildProcessBundle(entry, bundleSpec, pacer));
             // What the process starts with, from the bundle its map was made from.
             const startFor = async (state) => ({
-                pid: entry.pid, cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: state.cursor ?? null,
+                pid: entry.pid, cwd: spec.cwd, env: spec.env, cred: entry.cred, vfsCursor: state.cursor ?? null, vfsRoot: state.root ?? null,
                 dataPlan: await this._staticReadPlan(entry, state, spec.cwd, spec.env.HOME, pacer),
                 manifests: await this._installedManifests(entry, pacer),
             });

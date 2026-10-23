@@ -667,10 +667,7 @@ export function residentFilesystem(session, resident, delegation) {
      * namespace makes above a fed mount point is answered too. A moving
      * feed's (not fixed) not while a read lease is trusted.
      */
-    const answerable = (key, entry) => {
-        const fed = fedRow(key, entry);
-        return fed === true || (fed === undefined && walkedMounts);
-    };
+    const answerable = (key, entry) => walkedMounts || fedRow(key, entry) === true;
     const walkedMounts = delegation?.walkedMounts === true;
     /**
      * Whether `entry` at `key`, a row off the session's own device, is a fed

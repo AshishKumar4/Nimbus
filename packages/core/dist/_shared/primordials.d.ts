@@ -243,4 +243,30 @@ export declare const arrayBufferByteLength: (buffer: ArrayBufferLike) => number;
 export declare const arrayShift: <T>(list: T[]) => T | undefined;
 /** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
 export declare function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined;
+/** `promise.then(onFulfilled, onRejected)`, by the launch's Promise.prototype.then. */
+export declare const promiseThen: <T, R1 = T, R2 = never>(promise: Promise<T>, onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null) => Promise<R1 | R2>;
+/** `Promise.resolve(value)`, of the launch's Promise. */
+export declare const promiseResolve: {
+    (): Promise<void>;
+    <T>(value: T): Promise<Awaited<T>>;
+};
+/** `Promise.reject(reason)`, of the launch's Promise. */
+export declare const promiseReject: <T = never>(reason?: unknown) => Promise<T>;
+/** `promise.finally(onFinally)`, as Promise.prototype.finally runs it (its turns too), on the captures. */
+export declare function promiseFinally<T>(promise: Promise<T>, onFinally: () => unknown): Promise<T>;
+/** The members of `set`, in its order: a SafeList, by SafeSet's forEach as the launch captured it. */
+export declare function setList<T>(set: ReadonlySet<T>): SafeList<T>;
+/** The values of `map`, in its order: a SafeList. */
+export declare function mapValueList<K, V>(map: ReadonlyMap<K, V>): SafeList<V>;
+/** The keys of `map`, in its order: a SafeList. */
+export declare function mapKeyList<K, V>(map: ReadonlyMap<K, V>): SafeList<K>;
+export declare const stringLocaleCompare: (text: string, other: string) => number;
+export declare const stringPadStart: (text: string, length: number, fill?: string) => string;
+export declare const mathTrunc: (x: number) => number;
+export declare const numberIsFinite: (number: unknown) => boolean;
+export declare const typedArrayFill: (view: Uint8Array, value: number, start?: number, end?: number) => Uint8Array;
+/** `bytes.subarray(start, end)` without the view's constructor or species: a view of the same buffer. */
+export declare function bytesView(bytes: Uint8Array, start: number, end?: number): Uint8Array;
+/** `bytes.slice(start, end)` without the view's constructor or species: a copy. */
+export declare function bytesCopy(bytes: Uint8Array, start?: number, end?: number): Uint8Array;
 //# sourceMappingURL=primordials.d.ts.map
