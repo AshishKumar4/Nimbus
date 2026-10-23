@@ -44,7 +44,7 @@ function makeSupervisor(props) {
   // The session's own writer over its namespace: a whole-file write is descriptor records, which only the namespace router keeps.
   const namespace = new CompositeVFS(sessionVfs);
   const waves = processFiles(namespace).waves;
-  const view = namespace.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
+  const view = sessionVfs.as(CRED_SESSION_USER, { pid: props?.pid ?? 1 });
   return {
     props,
     openWaveWriter: async () => null,
