@@ -214,7 +214,7 @@ export function provisional(host) {
      * directory or link made here: no description names those).
      */
     const expecting = (row, key) => {
-        if (host.mounted?.(key) === true)
+        if (host.mounted?.(key) === true || host.pending?.(key) === true)
             return {};
         if (row === null)
             return { expect: null };

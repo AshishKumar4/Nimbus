@@ -5350,7 +5350,7 @@ var __nimbusResidentModule = (() => {
       return made2 && made2.local && !added.get(dir)?.has(nameOf2(key)) ? null : void 0;
     };
     const expecting = (row, key) => {
-      if (host2.mounted?.(key) === true)
+      if (host2.mounted?.(key) === true || host2.pending?.(key) === true)
         return {};
       if (row === null)
         return { expect: null };
@@ -8980,6 +8980,7 @@ var __nimbusResidentModule = (() => {
       const cell = prov.inode(entry.dev, entry.ino)?.cell;
       return cell === void 0 ? void 0 : cell.bytes.slice(0, cell.length);
     };
+    const copies = /* @__PURE__ */ new Map();
     const prov = provisional({
       // The store's, as it knows it when asked (it learns it at its first barrier).
       get device() {
@@ -9004,6 +9005,7 @@ var __nimbusResidentModule = (() => {
         provisionalActive = on;
       },
       held: (key) => client.held(key) !== void 0,
+      pending: (key) => copies.has(key),
       count: (key) => {
         client.holder(key);
       },
@@ -9146,12 +9148,12 @@ var __nimbusResidentModule = (() => {
       row: (key) => provisionalActive ? composedRow(key) : entryOf(key),
       children: (key, base) => provisionalActive ? composedChildren(key, base) : names.children(key, base),
       copyFile: (from, to, path, stored, keepMode) => {
-        const source = entryOf(from);
+        const source = composedRow(from);
         if (source === void 0 || source === null || source.type !== "file" || (source.mode & 3584) !== 0)
           return false;
         if (!modeAllows(source, 4, store.cred))
           return false;
-        const target = entryOf(to);
+        const target = composedRow(to);
         if (target === void 0 || target !== null && target.type !== "file")
           return false;
         const grant = deciding(to);
@@ -9578,6 +9580,17 @@ var __nimbusResidentModule = (() => {
       },
       superseded: (key) => {
         names.superseded(key);
+      },
+      copying: (key, answered) => {
+        copies.set(key, (copies.get(key) ?? 0) + 1);
+        const done = () => {
+          const left = (copies.get(key) ?? 1) - 1;
+          if (left > 0)
+            copies.set(key, left);
+          else
+            copies.delete(key);
+        };
+        answered.then(done, done);
       },
       holds: (key) => client.held(key) !== void 0,
       barrierBegun: () => {
@@ -10876,7 +10889,7 @@ var __nimbusResidentModule = (() => {
       if (placed !== void 0 && keys.every((key) => !holder.holds(key) || holder.provisional.touches(key))) {
         let answer2;
         try {
-          answer2 = decided(placed, true);
+          answer2 = decided(placed, !keys.some((key) => holder.holds(key)));
         } catch {
           return session2();
         }
@@ -11335,6 +11348,14 @@ var __nimbusResidentModule = (() => {
       return entry ? store.content(key, entry.revision) : void 0;
     };
     const bySessionCopy = fs.copyFile;
+    const copyOnSession = (from, to, options) => {
+      const key = keyOf(pathOf(to));
+      const answered2 = Promise.resolve(bySessionCopy(from, to, options));
+      holder.copying(key, answered2);
+      return answered2.then(() => {
+        holder.superseded(key);
+      });
+    };
     fs.copyFile = (from, to, options) => {
       if (holder === null || options?.preserve === true)
         return bySessionCopy(from, to, options);
@@ -11347,7 +11368,7 @@ var __nimbusResidentModule = (() => {
         if (row === null)
           throw fsError2("ENOENT", "copyfile", pathOf(from));
         return provisionally(to, true, (target, there) => holder.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
-      }) : bySessionCopy(from, to, options));
+      }) : copyOnSession(from, to, options));
     };
     const bySessionRename = fs.rename;
     fs.rename = (from, to) => {
@@ -11366,7 +11387,8 @@ var __nimbusResidentModule = (() => {
     };
     for (const name of ["chmod", "chown", "utimes"]) {
       const passed = Reflect.get(fs, name);
-      Reflect.set(fs, name, (path, ...rest) => {
+      Reflect.set(fs, name, (path, ...given) => {
+        const rest = name === "chown" ? [ownerSide(given[0]), ownerSide(given[1]), ...given.slice(2)] : given;
         const link = name !== "chmod" && rest[2]?.followSymlinks === false;
         const attrs = name === "chmod" ? { mode: Number(rest[0]) } : name === "chown" ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) } : { atime: rest[0], mtime: rest[1] };
         if (holder === null)

@@ -214,6 +214,8 @@ export interface DelegationHolder {
     undecided(key: string): void;
     /** The session moved or removed the name `key` (OwnNames.superseded). */
     superseded(key: string): void;
+    /** A session call by name is changing `key` until `answered` settles: what the provisional decisions leave of the name is unknown meanwhile. */
+    copying(key: string, answered: Promise<unknown>): void;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
     /** A barrier begins: its number, which `retire` takes once it lands. */
