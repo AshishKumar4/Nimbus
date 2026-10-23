@@ -1786,6 +1786,10 @@ const __fsMod = (() => {
     const size = Math.max(0, Math.trunc(Number(len) || 0));
     // Node's own: an open of it 'r+', its ftruncate, its close.
     _sync("open", p, "fs.promises.truncate", (fs) => {
+      // A directory has no descriptor a write opens: EISDIR before any open, as openSync answers it.
+      let found = null;
+      try { found = fs.stat(absPath); } catch {}
+      if (found?.type === "directory") throw _fsErr("EISDIR", "open", p);
       const opened = fs.open(absPath, _openFlags("r+"));
       let done = false;
       try { fs.ftruncate(opened.id, size); done = true; }
