@@ -55,6 +55,12 @@ export interface WorkspaceExecOptions extends RunOptions {
     readonly shellId?: string;
     /** Release a named shell without ending this process or saving its later state. */
     readonly detach?: AbortSignal;
+    /**
+     * The caller's name for this exec, which every process it starts carries
+     * and each write it makes names (VfsWriteEvent.execId): 1 to 160
+     * characters from `A-Z a-z 0-9 . _ : -`, starting with a letter or digit.
+     */
+    readonly execId?: string;
 }
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */

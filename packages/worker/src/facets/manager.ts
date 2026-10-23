@@ -192,7 +192,7 @@ import {
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { drainProcessFsJournal, UNSETTLED_END_NOTE, type ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { ProcessJournals } from '../session/process-journals.js';
+import { ProcessJournals, type PendingJournal } from '../session/process-journals.js';
 import {
   acquireDurableFacetSlot,
   freeDurableFacetSlot,
@@ -5826,7 +5826,7 @@ export class FacetManager {
         opened: (facet) => {
           const cred = this.processes.get(pid)?.cred;
           if (cred === undefined) return;
-          this.processJournals.opened(facet, pid, cred, generation(this.ctx));
+          this.processJournals.opened(facet, pid, cred, generation(this.ctx), this.processes.execIdOf(pid));
           // What its drain writes through, kept from its release to the drain's end.
           if (this.filesystem !== null && !this.recoveries.has(pid)) this.recoveries.set(pid, this.filesystem.recovery(pid, cred));
         },
@@ -5903,7 +5903,7 @@ export class FacetManager {
       reserved: reservedFacetNames(this.ctx),
       generation: generation(this.ctx),
       drain: async (row) => {
-        await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env, row.facet));
+        await this._drainEarlierJournal(row, facetJournal(this.ctx, this.env, row.facet));
         this.vfs?.forgetSequences(row.pid);
         deleteFacetStorage(this.ctx, row.facet);
       },
@@ -6351,11 +6351,35 @@ export class FacetManager {
   }
 
   /**
+   * Drain the log process `row.pid` of an earlier incarnation left, as it
+   * would have sent it: through a binding of its pid (its descriptions
+   * scoped as its own), its writes the work of the exec its row records
+   * (adoptEnded: the table answers for a pid this incarnation never had).
+   * The binding is released once the drain has flushed what it opened.
+   */
+  private async _drainEarlierJournal(row: PendingJournal, journal: ProcessFsJournalSource): Promise<void> {
+    if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
+    const adopted = this.processes.adoptEnded(row.pid, row.execId);
+    try {
+      const recovery = this.filesystem.recovery(row.pid, row.cred);
+      try {
+        await this._drainJournalAs(row.pid, row.cred, journal, recovery);
+      } finally {
+        await recovery.dispose();
+        // Its scope closes, each last close flushing, while its exec still answers.
+        await this.filesystem.releaseProcess(row.pid);
+      }
+    } finally {
+      adopted();
+    }
+  }
+
+  /**
    * Drain `journal` into the session as process `pid` (with its credential)
    * would have sent it: through `recovery`, the process's own binding, kept
    * since its log was booked (its descriptions, and the grants that reserved
-   * the inodes it numbered); else, for a log an earlier incarnation left, a
-   * lease of its credential.
+   * the inodes it numbered); else (none was kept when its log was booked) a
+   * lease of its credential, whose writes name no process.
    */
   private async _drainJournalAs(pid: number, cred: VfsCred, journal: ProcessFsJournalSource, recovery?: NimbusHostFilesystemLease): Promise<void> {
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
@@ -6436,7 +6460,8 @@ export class FacetManager {
    * (SqliteVFS.readRecallAt) is its to read before it is published.
    */
   private _kernelFor(pid: number): RuntimeSynchronousFs {
-    return this.filesystem!.bind({ pid, cred: CRED_KERNEL }).synchronous!;
+    // Written for the process, not by it: its images are the host's (VfsWriteEvent.execId null).
+    return this.filesystem!.bind({ pid, cred: CRED_KERNEL, attribute: false }).synchronous!;
   }
 
   /**
@@ -9076,7 +9101,8 @@ export class FacetManager {
     if (!vfs) {
       throw new Error('Nimbus: a resident process needs a session filesystem to boot');
     }
-    const fs = vfs.as(this.processes.cred(pid));
+    // What it writes as it boots is its own (VfsWriteEvent.execId); the kernel's, the host's.
+    const fs = vfs.as(this.processes.cred(pid), { pid });
     const kernel = vfs.as(CRED_KERNEL);
     return {
       readFile: (path) => withRecall(() => fs.readFileUncached(path)),

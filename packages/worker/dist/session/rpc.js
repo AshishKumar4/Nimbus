@@ -246,28 +246,50 @@ export async function _rpcInnerDoCall(self, req) {
  * NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket): the project, and its
  * KV namespace's or R2 bucket's binding name, or its D1 database.
  */
-const StorageTargetSchema = z.object({ root: z.string(), store: z.string().min(1) });
+const StorageTargetSchema = z.object({ root: z.string(), store: z.string().min(1), writer: z.number().int().positive().optional() });
 /** A Worker's D1 queries, as D1's binding contract carries them: a blob is its bytes. */
 const D1QueriesSchema = z.array(z.object({
     sql: z.string(),
     params: z.array(z.union([z.string(), z.number(), z.null(), z.array(z.number())])).optional(),
 }));
-/** A project's KV or R2 files, as the binding's credential (the process that started the server). */
-function storeFs(self, cred, op) {
+/** `writer` kept attributable (SqliteVFS.retainWriter) while a call made for it is in flight; nothing for no writer. */
+function retainWriter(self, writer) {
+    if (writer === undefined)
+        return () => { };
+    self.ensureSqliteFs();
+    return self.sqliteFs?.retainWriter(writer) ?? (() => { });
+}
+/**
+ * A project's KV or R2 files, as the binding's credential (the process that
+ * started the server), its writes that process's (`writer`, VfsWriteEvent.execId).
+ */
+function storeFs(self, cred, op, writer) {
     self.ensureSqliteFs();
     if (!self.sqliteFs)
         throw new Error(`${op}: the session filesystem is not open`);
-    return self.sqliteFs.as(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, op));
+    return self.sqliteFs.as(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, op), writer === undefined ? undefined : { pid: writer });
 }
 /** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */
 export async function _rpcKvCall(self, target, call, cred) {
-    const { root, store } = StorageTargetSchema.parse(target);
-    return await serveKvCall(new KvEmulator({ vfs: storeFs(self, cred, 'kvCall'), root, binding: store }), call);
+    const { root, store, writer } = StorageTargetSchema.parse(target);
+    const retained = retainWriter(self, writer);
+    try {
+        return await serveKvCall(new KvEmulator({ vfs: storeFs(self, cred, 'kvCall', writer), root, binding: store }), call);
+    }
+    finally {
+        retained();
+    }
 }
 /** A call of a `wrangler dev` Worker's R2 binding, on the bucket its props name. */
 export async function _rpcR2Call(self, target, call, cred) {
-    const { root, store } = StorageTargetSchema.parse(target);
-    return await serveR2Call(new R2Emulator({ vfs: storeFs(self, cred, 'r2Call'), root, binding: store }), call);
+    const { root, store, writer } = StorageTargetSchema.parse(target);
+    const retained = retainWriter(self, writer);
+    try {
+        return await serveR2Call(new R2Emulator({ vfs: storeFs(self, cred, 'r2Call', writer), root, binding: store }), call);
+    }
+    finally {
+        retained();
+    }
 }
 /**
  * A `wrangler dev` Worker's D1 queries, in the database its props name: the
@@ -815,11 +837,18 @@ export async function _rpcWriteBatch(self, payload, pid) {
         chunkId: c.chunkId,
         data: normalizeWriteBatchChunkData(c.data),
     }));
-    return self.getFilesystemAuthority().waves.writeBatch(self.sqliteFs.as(callerCred(self, pid)), {
-        inodes,
-        chunks,
-        deletePaths,
-    });
+    // The batch is its caller's process's work (VfsWriteEvent.execId), kept attributable until it has landed.
+    const retained = retainWriter(self, pid);
+    try {
+        return await self.getFilesystemAuthority().waves.writeBatch(self.sqliteFs.as(callerCred(self, pid), pid === undefined ? undefined : { pid }), {
+            inodes,
+            chunks,
+            deletePaths,
+        });
+    }
+    finally {
+        retained();
+    }
 }
 function normalizeWriteBatchChunkData(value) {
     if (value instanceof Uint8Array)

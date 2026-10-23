@@ -20,14 +20,24 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
-import type { VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry, VfsListOptions } from '../runtime/os-contracts.js';
-import { type FeedPosition } from '../runtime/feed-position.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants, WriteAttribution } from './vfs.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
+/**
+ * Where a reader of a namespace's feed stands: the mount table as its
+ * principal saw it, and each change feed's epoch and cursor.
+ */
+export interface FeedPosition<Epoch extends string | null = string> {
+    readonly table: string;
+    readonly feeds: Readonly<Record<string, {
+        readonly epoch: Epoch;
+        readonly cursor: number;
+    }>>;
+}
 /** One answer of the feed: every path changed since the position, or a poison (relist). */
 export interface FeedAnswer {
     readonly position: FeedPosition;
@@ -53,9 +63,8 @@ export type MountWalk = readonly VfsListEntry[];
  */
 export interface CompositeFeed {
     position(): FeedPosition;
-    /** What changed since `position`; null (a reader with none) is a poison. */
-    since(position: FeedPosition | null, options?: VfsAcquireOptions): FeedAnswer;
-    list(after: string | null, limit: number, walked?: MountWalk, options?: VfsListOptions): {
+    since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
+    list(after: string | null, limit: number, walked?: MountWalk): {
         entries: VfsListEntry[];
         next: string | null;
     };
@@ -75,6 +84,12 @@ export interface CompositeFeed {
 }
 /** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
 export { comparePaths };
+/**
+ * A namespace entry's stat in the runtime contract's shape: its identity
+ * (dev, ino) is the namespace's, and a mounted backend's entries carry no
+ * SQLite revision.
+ */
+export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
 /** The namespace always offers recursive removal, walking a backend that does not, and copies across filesystems. */
 export interface CompositeSyncVFS extends SyncVFS {
@@ -326,6 +341,8 @@ interface Table {
     lastDev: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
+    /** The process table its write events are attributed by (attributeWrites). */
+    attribution?: WriteAttribution;
     /** watchChanges: who is told. */
     changes?: ChangeWatches;
     /** Each principal's view of a backend, to the backend it views (storeBehind). */
@@ -431,12 +448,6 @@ export declare class CompositeVFS implements VFS {
     private unfedPoints;
     /** CompositeFeed.walk. */
     private walkUnfed;
-    /**
-     * Mount `source` at `point`. What a process's view answers of it follows
-     * the backend's change model (VFS.changes): a fed one's names are listed
-     * and followed by every process, as the root's are; one with none is
-     * walked where a launch named it and is the session's to answer.
-     */
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
     mountGeneration(): number;
@@ -470,6 +481,13 @@ export declare class CompositeVFS implements VFS {
      * writeFile or a compare-and-write leaves is the bytes it was given, so
      * its after costs no read.
      */
+    /**
+     * The process table the events it makes for its mounts are attributed by
+     * (VfsWriteEvent.execId), read as each backend call returns. A backend
+     * that reports its own writes (SQLite) attributes them itself; one whose
+     * reports name no process the table knows gives `undefined`.
+     */
+    attributeWrites(attribution: WriteAttribution): void;
     observeWrites(observer: VfsWriteObserver, options?: {
         wants?: (path: string, principal: Principal) => VfsWriteWants;
     }): () => void;
@@ -618,6 +636,14 @@ export declare class CompositeVFS implements VFS {
     /** `report` in its turn among the observed mutations (takeTurn); a caller that cannot wait is refused while another holds it. */
     private inTurn;
     /** reportWrite's report of `spec`'s mutation, `run`, in its turn. */
+    /**
+     * The exec `principal`'s write is the work of (VfsWriteEvent.execId), told
+     * to `resolved` as `run`, the backend's call, returns: when it committed.
+     * A process's entry is held in the table from before the call until then,
+     * so a kill and a reap while it is pending leave it answering. No process
+     * made it: null.
+     */
+    private attributed;
     private reportIn;
     /** `run` once every observed mutation queued before it is done; those after it wait for it. */
     private takeTurn;
@@ -632,12 +658,6 @@ export declare class CompositeVFS implements VFS {
     /** Content the observers are told of, held in `held` until they are done. */
     private keep;
     /** Whether the table declares an accepted mount point, even if its source is absent. */
-    /**
-     * Whether the mount at `point` states a fixed change model (VfsChanges.fixed:
-     * its tree never changes, as the kernel's /dev and /proc): false for any
-     * other, or one whose source is absent.
-     */
-    fixedMount(point: string): boolean;
     someMountPoint(wants: (point: string) => boolean): boolean;
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts(): readonly MountInfo[];
@@ -923,8 +943,6 @@ export declare class CompositeVFS implements VFS {
      * never share a number; one reached by two such spellings may get two.
      */
     private identityOf;
-    /** A fed mount's listed or reported stat at `at`, identified as `stat` there says it (identifyOn): its mount's device, its inode numbered where it has none. */
-    private identifyListed;
     /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
     private identifyOn;
     private statAt;

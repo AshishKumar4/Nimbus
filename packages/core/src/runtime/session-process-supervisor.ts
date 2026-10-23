@@ -164,6 +164,10 @@ export class SessionProcessSupervisor implements ProcessOutput {
   private outputGate: OutputGate | null = null;
   /** Each pid's latest output still held: what its next output goes after. */
   private readonly heldOutput = new Map<number, Promise<void>>();
+  /** Pids a write of whose is in flight (retainAttribution), by count: not forgotten while held. */
+  private readonly attributionLeases = new Map<number, number>();
+  /** Processes of an earlier incarnation whose write logs are draining (adoptEnded): their exec ids. */
+  private readonly adoptedExecIds = new Map<number, string | undefined>();
   /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
   private readonly releasing = new Set<number>();
   /**
@@ -229,6 +233,44 @@ export class SessionProcessSupervisor implements ProcessOutput {
   /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
   get(pid: number): ProcessEntry | undefined {
     return this.table.get(pid);
+  }
+
+  /**
+   * The exec `pid` is the work of (ProcessEntry.execId): what a write it
+   * made is attributed to (VfsWriteEvent.execId). Undefined when its exec
+   * named none, or no such process is known.
+   */
+  execIdOf(pid: number): string | undefined {
+    const entry = this.table.get(pid);
+    return entry === undefined ? this.adoptedExecIds.get(pid) : entry.execId;
+  }
+
+  /**
+   * Keep `pid` in the table, answering execIdOf, until the returned release:
+   * held for a write of its still in flight, or work that writes on its
+   * behalf after it has ended. Its release (what it bound) is not held back:
+   * only its forgetting.
+   */
+  retainAttribution(pid: number): () => void {
+    this.attributionLeases.set(pid, (this.attributionLeases.get(pid) ?? 0) + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      const left = (this.attributionLeases.get(pid) ?? 1) - 1;
+      if (left === 0) this.attributionLeases.delete(pid);
+      else this.attributionLeases.set(pid, left);
+    };
+  }
+
+  /**
+   * `pid`, a process of an earlier incarnation whose write log is draining
+   * now, was the work of `execId` (its journal's record of the table, taken
+   * while it lived): execIdOf answers so until the returned release.
+   */
+  adoptEnded(pid: number, execId: string | undefined): () => void {
+    this.adoptedExecIds.set(pid, execId);
+    return () => { this.adoptedExecIds.delete(pid); };
   }
 
   /**
@@ -622,7 +664,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   reap(maxAge?: number): Promise<number> {
     if (!this.release) return NOTHING_REAPED;
-    const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+    const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid) && !this.attributionLeases.has(entry.pid));
     // Each launch prunes: one with nothing to prune costs it a settled promise, not an async call.
     return expired.length === 0 ? NOTHING_REAPED : this.reapExpired(expired);
   }
@@ -663,7 +705,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     if (!this.release) throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
     const ended = [this.table.get(pid), ...this.table.descendantsOf(pid)]
       .filter((entry): entry is ProcessEntry => entry !== undefined && entry.state !== 'running'
-        && !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+        && !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid) && !this.attributionLeases.has(entry.pid));
     const { reaped, failures } = await this.forgetReleased(ended);
     // The caller waited for this tree: it hears every failure, once all of it is gone.
     if (failures.length === 1) throw failures[0].error;
@@ -756,14 +798,18 @@ export class SessionProcessSupervisor implements ProcessOutput {
     const failures: { pid: number; error: unknown }[] = [];
     // Each release began at its process's end: they are waited for together.
     const released = await Promise.all(entries.map((entry) => this.releaseOf(entry.pid)));
+    let reaped = 0;
     entries.forEach((entry, i) => {
       const failed = released[i];
       if (failed !== null) failures.push({ pid: entry.pid, error: failed.error });
+      // Leased while its release ran (retainAttribution): kept, released, for a later reap.
+      if (this.attributionLeases.has(entry.pid)) return;
       this.releases.delete(entry.pid);
       this.table.forget(entry.pid);
+      reaped++;
     });
-    if (entries.length > 0) this.logRetention?.();
-    return { reaped: entries.length, failures };
+    if (reaped > 0) this.logRetention?.();
+    return { reaped, failures };
   }
 
   get stats(): ProcessTable['stats'] {

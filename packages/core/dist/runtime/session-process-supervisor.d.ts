@@ -111,6 +111,10 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private outputGate;
     /** Each pid's latest output still held: what its next output goes after. */
     private readonly heldOutput;
+    /** Pids a write of whose is in flight (retainAttribution), by count: not forgotten while held. */
+    private readonly attributionLeases;
+    /** Processes of an earlier incarnation whose write logs are draining (adoptEnded): their exec ids. */
+    private readonly adoptedExecIds;
     /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
     private readonly releasing;
     /**
@@ -143,6 +147,25 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     setForeground(pid: number, foreground: boolean): void;
     /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
     get(pid: number): ProcessEntry | undefined;
+    /**
+     * The exec `pid` is the work of (ProcessEntry.execId): what a write it
+     * made is attributed to (VfsWriteEvent.execId). Undefined when its exec
+     * named none, or no such process is known.
+     */
+    execIdOf(pid: number): string | undefined;
+    /**
+     * Keep `pid` in the table, answering execIdOf, until the returned release:
+     * held for a write of its still in flight, or work that writes on its
+     * behalf after it has ended. Its release (what it bound) is not held back:
+     * only its forgetting.
+     */
+    retainAttribution(pid: number): () => void;
+    /**
+     * `pid`, a process of an earlier incarnation whose write log is draining
+     * now, was the work of `execId` (its journal's record of the table, taken
+     * while it lived): execIdOf answers so until the returned release.
+     */
+    adoptEnded(pid: number, execId: string | undefined): () => void;
     /**
      * `pid`'s status as observers are told it (ps, process listings, a parent
      * waiting on it): its end once published, after the output before it
