@@ -64,15 +64,21 @@ const PROVISIONAL = join(WASI, 'provisional.ts');
 const CLIENT = join(CORE, 'src/_shared/process-fs-client.ts');
 const GUEST_LOADING_FUNCTIONS = new Map([
   [HOLDER, [
-    'row', 'children', 'content', 'entry', 'barrierBegun', 'retire', 'pending',
+    'row', 'children', 'content', 'entry', 'barrierBegun', 'retire', 'pending', 'entryOf', 'composedRow', 'composedChildren', 'heldContent',
+    'composedContent', 'composedEntry', 'unreported', 'settled', 'release', 'absorb', 'keep', 'generation', 'reserve', 'active',
   ]],
   [PROVISIONAL, [
-    'pending', 'touches',
+    'pending', 'touches', 'barrierBegun', 'retire', 'inodeAtNumber', 'parentKey', 'within', 'children', 'content', 'kept', 'replay', 'fit', 'release',
+    'viewed', 'payloadOf', 'dropRecords', 'unshared', 'entryOf', 'baseline', 'refold', 'activity', 'viewNameBeneathMoved', 'made', 'everyInode',
+    'cost', 'renamed', 'named', 'removeInode', 'recordCost', 'pinned', 'ownership', 'addInode', 'stringCost', 'pendingGrowth', 'retained', 'rowAt',
+    'provisionalEntry', 'nameOf',
   ]],
   [CLIENT, [
-    'readTrusted', 'held', 'certifies', 'vouch', 'readLeaseAsk', 'readLeaseAnswered', 'readLeased',
+    'readTrusted', 'held', 'certifies', 'vouch', 'readLeaseAsk', 'readLeaseAnswered', 'readLeased', 'pending', 'heldGrant', 'standingOf',
+    'giveBackReadLease', 'answerReadRecalls', 'within', 'endReadLease',
   ]],
   [join(WASI, 'inode-fold.ts'), [
+    'applyOp', 'owned', 'foldOps', 'copyState', 'grown',
   ]],
 ]);
 /** The file that implements each interface of those files their functions call members of (others are the session's or the caller's). */
