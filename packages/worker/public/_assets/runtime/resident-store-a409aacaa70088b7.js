@@ -7073,8 +7073,7 @@ var __nimbusResidentModule = (() => {
             }
           } else if (inode.records.length === retired.length) {
             const last = retired[retired.length - 1];
-            const after3 = ownValue(last, "after");
-            if (rewritten && inode.state?.bytes && after3 !== void 0 && seen.row.type === "file" && seen.row.revision === after3 && seen.row.size === inode.state.size && inode.state.bytes.length >= inode.state.size) {
+            if (rewritten && inode.state?.bytes && ownValue(last, "after") !== void 0 && seen.row.type === "file" && seen.row.revision === ownValue(last, "after") && seen.row.size === inode.state.size && inode.state.bytes.length >= inode.state.size) {
               keeping[keeping.length] = { key: seen.name, row: seen.row, bytes: bytesView(inode.state.bytes, 0, inode.state.size) };
             }
             dropRecords(inode, setOfList(retired));
