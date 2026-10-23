@@ -1077,6 +1077,8 @@ const __fsConstants = Object.freeze({
 // libuv's words for each code (core vfs-error.ts ERRNO_DESCRIPTION).
 const __nimbusErrnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
 const { utf8Length: __nimbusUtf8Length } = ${UTF8_LENGTH_SOURCE};
+// fd 0 reading its \`< file\` (__nimbusTakeStdin): the program's read of stdin, not of a file.
+let __nimbusTakingStdinFile = false;
 const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
@@ -1716,8 +1718,9 @@ const __fsMod = (() => {
     }
     // A one-shot that can be run again stops here, to run again as a
     // resident, which holds the file (stop-replay.ts miss). A speculation's
-    // read is repaired asynchronously instead (_recordResidencyMiss).
-    if (__nimbusReplay && !_speculation()) __nimbusReplay.miss(_strip(absPath));
+    // read is repaired asynchronously instead (_recordResidencyMiss), and
+    // fd 0's read of a \`< file\` stops for stdin (__nimbusTakeStdin).
+    if (__nimbusReplay && !_speculation() && !__nimbusTakingStdinFile) __nimbusReplay.miss(_strip(absPath));
     _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
@@ -1774,7 +1777,7 @@ const __fsMod = (() => {
   // raised (_notResidentError): a run again of a run that stopped at that
   // miss has reached where it stopped (stop-replay.ts read).
   function _contentRead(absPath) {
-    if (__nimbusReplay && !_speculation()) __nimbusReplay.read(_strip(absPath));
+    if (__nimbusReplay && !_speculation() && !__nimbusTakingStdinFile) __nimbusReplay.read(_strip(absPath));
   }
 
   function _speculation() {
@@ -10282,11 +10285,14 @@ function __nimbusTakeStdin() {
     // synchronous read of it. One the launch did not stage stops the run, and
     // the next run reads it ahead (FacetManager.exec); a run that cannot stop
     // answers as any unstaged read does.
+    __nimbusTakingStdinFile = true;
     try {
       return { source: { bytes: __fsMod.readFileSync(file.path).subarray(file.offset) }, ended };
     } catch (err) {
       if (err && err.code === "EAGAIN") __nimbusStopForStdin("end", "read");
       throw err;
+    } finally {
+      __nimbusTakingStdinFile = false;
     }
   }
   if (__nimbusLiveInputChannel()) {
