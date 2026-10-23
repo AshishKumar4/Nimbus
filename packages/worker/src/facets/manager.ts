@@ -2437,8 +2437,7 @@ ${nodeProgramRuntime(sources, false)}
   };
   const __runnerShown = (error) => error.stack ?? (error.name === undefined ? error.message : error.name + ": " + error.message);
   // What nothing awaits throws while a call runs: on that call's stderr, and
-  // the runner goes on, as Node's REPL does. process.exit from there is the
-  // call's exit (__nimbusProcessExitCode).
+  // the runner goes on, as Node's REPL does.
   const __runnerUncaught = (thrown) => { stderr += "Uncaught " + __runnerShown(__runnerError(thrown)) + "\\n"; };
   __processMod.on("uncaughtException", __runnerUncaught);
   __processMod.on("unhandledRejection", __runnerUncaught);
@@ -2466,7 +2465,12 @@ ${nodeProgramRuntime(sources, false)}
     try {
       const run = globalThis.__nimbusRuntimeCode.compileReplLine(code);
       if (run === null) throw new SyntaxError("Unexpected end of input");
-      const result = await __nimbusReflectApply(run, globalThis, []);
+      // process.exit from a callback stops the process's timers, so the code
+      // may never settle: its exit ends the call.
+      const result = await Promise.race([
+        __nimbusReflectApply(run, globalThis, []),
+        __nimbusProcessExitPromise.then((exitCode) => { throw new __ProcessExit(exitCode); }),
+      ]);
       value = String(__runnerInspect(result === undefined ? undefined : result.value));
     } catch (thrown) {
       if (thrown instanceof __ProcessExit) exited = thrown.code;
@@ -2484,6 +2488,7 @@ ${nodeProgramRuntime(sources, false)}
     // I/O the code started and left: it cannot complete once this request
     // ends, and no later call waits for it.
     __pendingIO.length = 0;
+    // An exit during the flush (a timer's) is the call's too.
     if (exited === undefined && __nimbusProcessExitCode !== null) exited = __nimbusProcessExitCode;
     if (error !== undefined) {
       error.message = __runnerFit(error.message);
