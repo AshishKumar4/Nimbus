@@ -126,7 +126,7 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
         if (learning.installs(k)) put(keyed, rev, batch[i]!, bytes);
       }
     }
-    return { pages: out, fetched: missing.length };
+    return { pages: arrayCopy(out), fetched: missing.length };
   };
 
   return {
