@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "3803897905feefa515f499ada56be96ce7470ea6603774609256fa3e51bd3b55",
+  "fingerprint": "ce1dfe3e86ee2d276baaa25288b8f20225b3f0c0bd0fa0def135b0e27b214202",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.23.4"
@@ -3067,7 +3067,7 @@
     "packages/worker/dist/session/state-store.js": "cfafc7bf3345fe4565a53fc69d7e1f67e27bc7d2752003421613c75775732204",
     "packages/worker/dist/session/supervisor-calls.d.ts": "42f2c6c1dce146dbd9a0d9d63f87b2eb5ebb62c6830068de7bf3def36b47b451",
     "packages/worker/dist/session/supervisor-calls.d.ts.map": "ef747755471675deacaaaf65354605d3c6e3bf8ac33e04eb304e3f60b0ec14a0",
-    "packages/worker/dist/session/supervisor-calls.js": "314de3728c9820d7bde39ef87ddb809f0ca860b52b6d04fa343f56f3a98c1932",
+    "packages/worker/dist/session/supervisor-calls.js": "3f8bbbc3f2ab12f65092b1a768c3b60f0b0f78616a9b582536ff2df327fecb53",
     "packages/worker/dist/session/supervisor-op.d.ts": "35bc799911468e7471d1a75f323181aae3590970d326e32b1cdf6c04eaa6ebc6",
     "packages/worker/dist/session/supervisor-op.d.ts.map": "bff83e66c920f662d69217329138c49da0c27800e250c92a11ee8ccbdce80a40",
     "packages/worker/dist/session/supervisor-op.js": "97bf2aaf389079aff799964c8f91d327c2dd3a9013b2348ba2565ea9681d2007",
@@ -3584,7 +3584,7 @@
     "packages/worker/src/session/shell-socket.ts": "1c1b73ba8ec744f46040c70325d4cb39cf82bfbf3a52fbf4a02acb78751880e1",
     "packages/worker/src/session/start-real-vite.ts": "c39e9419af3f614a050700b9f2de2a8d8d59449390154416bfe3ad5281dfef40",
     "packages/worker/src/session/state-store.ts": "cad504685e626bef82cdd55f9a668df433ec57c9eef9a7a4ccc1a33a35234736",
-    "packages/worker/src/session/supervisor-calls.ts": "d1794af0d16b344e98093300c81b477211dc776db31f93ec6e6dcb542f2f6ff7",
+    "packages/worker/src/session/supervisor-calls.ts": "71d29df3bd2e8589e3fd4a0afc7cea0e1fd5c5d68988dacf838df9399688c544",
     "packages/worker/src/session/supervisor-op.ts": "eed623bf4b1ddcafd4b907c6acf7364de601257dd29cb7a26dd9b4e062a7331a",
     "packages/worker/src/session/supervisor-rpc.ts": "bd93998780410733980a359a2c1e87f27f9e4abca25737408bf863822e6acf6a",
     "packages/worker/src/session/thread-demand.ts": "cdf27b65cb13d5c80828f548e2a00acaaba333e42c535f108efded5cf9c49483",

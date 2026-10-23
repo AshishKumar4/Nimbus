@@ -923,7 +923,7 @@ export function supervisorCalls(base) {
          * clears only what that count covers), so a lost call is re-sent.
          */
         async cpSignalsTaken(received) {
-            await this[CALL](this[RESENT]({ op: 'cpSignalsTaken', args: [received], pid: this[REPORTING_PID]() }, { kind: 'open' }, { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS }));
+            return this[CALL](this[RESENT]({ op: 'cpSignalsTaken', args: [received], pid: this[REPORTING_PID]() }, { kind: 'open' }, { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS }));
         }
         /**
          * This process says whether its only remaining work is waiting on its own
