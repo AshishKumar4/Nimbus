@@ -163,7 +163,8 @@ function pinOf(ns: CompositeVFS, dir: string): () => void | Promise<void> {
  * A record as the namespace's single operation of its name makes it, under
  * the view's credential (its umask the call's own, W7Call umask): a mount
  * that takes credentials applies it as it applies any (a default ACL
- * instead, where one is set); one that takes none stores what it is given.
+ * instead, where one is set); for one that takes none the namespace applies
+ * the umask (CompositeVFS.madeMode), as Linux's VFS does.
  */
 async function applyRecord(
   ns: CompositeVFS,

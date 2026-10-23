@@ -66,7 +66,7 @@ for (const [face, at] of [['sync', '/s'], ['async', '/a'], ['session', '/home/us
   });
   await check(`${face}: a wave's O_CREAT open with mode 0666 makes 0644`, async () => {
     const result = await proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [
-      { type: 'call', call: { call: 'open', path: `${at.slice(1)}/waved`, mode: 0o666, umask: 0o022, access: 'write', description: 'w1' } },
+      { type: 'call', call: { call: 'open', path: `${at.slice(1)}/waved`, mode: 0o666, umask: 0o022, access: 'write', create: true, truncate: true, description: 'w1' } },
       { type: 'call', call: { call: 'write', path: `${at.slice(1)}/waved`, description: 'w1', offset: 0, data: enc.encode('w') } },
       { type: 'call', call: { call: 'close', path: `${at.slice(1)}/waved`, description: 'w1' } },
     ] }));
