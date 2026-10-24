@@ -114,7 +114,7 @@ export function gradePaired(rounds) {
     weakest: { arm: weakest.arm, interval: weakest.interval.map(Math.exp) },
     aa: aa.map(Math.exp),
     bb: bb.map(Math.exp),
-    slower: weakest.interval[0] > spread,
+    slower: weakest.interval[0] > spread / 2,
   };
 }
 
