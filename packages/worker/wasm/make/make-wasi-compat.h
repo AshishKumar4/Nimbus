@@ -4,8 +4,8 @@
  * recipes, waitpid, pipe and dup2 (nimbus-proc.c), and a file's mode and
  * owner, and a created file's mode (nimbus-fs.c); and of its own
  * (make-wasi-compat.c): exec as a child it waits for (make re-execs itself
- * after remaking a makefile), wait, mkstemp and tmpfile (its output sync
- * and a makefile read from stdin), the signal mask, and no account lookups.
+ * after remaking a makefile), wait, mkstemp and tmpfile (a makefile read
+ * from stdin), the signal mask, and no account lookups.
  */
 #ifndef MAKE_WASI_COMPAT_H
 #define MAKE_WASI_COMPAT_H

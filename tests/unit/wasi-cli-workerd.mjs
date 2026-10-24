@@ -10,7 +10,8 @@
  *   - make 4.4.1 runs its recipes as session processes (the shell's, and a
  *     program by name: tr, cat, jq), in dependency order, then nothing for
  *     an up-to-date target, and only what a changed source needs;
- *   - $(shell ...), a recursive $(MAKE) -C, and -j4;
+ *   - $(shell ...), a recursive $(MAKE) -C, and -j4; -O is taken, and a
+ *     job's output still reaches the terminal (no output sync here);
  *   - a failing recipe stops make with its own words and status 2.
  */
 
@@ -81,6 +82,10 @@ try {
     const parallel = await run('cd proj && make -B -j4 && cat out/joined.txt; cd ~');
     assert.equal(parallel.status, 0, parallel.stdout);
     assert.match(parallel.stdout, /^A\nB\n?$/m);
+    const synced = await run('cd proj && make -s -O -j2 info; cd ~');
+    assert.equal(synced.status, 0, synced.stdout);
+    assert.match(synced.stdout, /^shell-ran$/m, 'with -O a job\'s output still reaches the terminal');
+    assert.doesNotMatch((await run('cd proj && make -s -p -f /dev/null 2>/dev/null | grep ^.FEATURES; cd ~')).stdout, /output-sync/);
     checks++;
 
     const failed = await run('cd proj && make fail; echo "status=$?"; cd ~');

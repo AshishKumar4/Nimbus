@@ -249,7 +249,7 @@ export const SPECS = {
       core: '>=0.28.1',
     },
     files: [
-      { src: 'jq.wasm', vfs: 'bin/jq', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'jq', sha256: '53040581dea2f20a7ac44fdd9c6bae022f21643cea7ee8531d7537f9737f3b91' },
+      { src: 'jq.wasm', vfs: 'bin/jq', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'jq', sha256: '35aa244c9729faafad2f7e42ef5bc44a505acd6f8abdf6fc3d9e9cd3f66e429f' },
       { src: 'COPYING', vfs: 'share/jq/COPYING', sha256: '10e974638a41fadfd72357f2f3a4325e20b856c563365128f72feaa406f8c92d' },
       { src: 'COPYING.oniguruma', vfs: 'share/jq/COPYING.oniguruma', sha256: '70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f' },
     ],
@@ -277,7 +277,7 @@ export const SPECS = {
       core: '>=0.28.1',
     },
     files: [
-      { src: 'make.wasm', vfs: 'bin/make', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'make', sha256: '35004ff600f76bd6e7e51b9af7d4af4a11e15d18a951ccae53319f50ace75ec3' },
+      { src: 'make.wasm', vfs: 'bin/make', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'make', sha256: '00dbd469705d7b302f06e6801a566b46d95aa20315d3e4d40c6a2c29a0ed579c' },
       { src: 'COPYING', vfs: 'share/make/COPYING', sha256: 'e79e9c8a0c85d735ff98185918ec94ed7d175efc377012787aebcf3b80f0d90b' },
     ],
     license_text: MAKE_GPL_3_LICENSE_NOTICE(),

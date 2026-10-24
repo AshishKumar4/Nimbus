@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build GNU make for wasm32-wasi: upstream make 4.4.1 with patches/ (its
-# recipes spawned through the host, wasi-libc's dirent, output sync without
-# file locks, a main of two arguments), over the shared Nimbus libc shim
+# recipes spawned through the host, wasi-libc's dirent, a main of two
+# arguments) and without output sync (upstream's NO_OUTPUT_SYNC: it holds a
+# job's output in a file the host cannot hand a child, so --output-sync is
+# taken and does nothing), over the shared Nimbus libc shim
 # (../nimbus-libc): posix_spawn, waitpid, pipe and dup2 through the host
 # (nimbus-spawn.c, nimbus-proc.c), a file's mode and owner (nimbus-fs.c),
 # the directory the process starts in (nimbus-cwd.c), a wait its host gave
@@ -69,7 +71,7 @@ ac_cv_func_umask=yes ac_cv_have_decl_bsd_signal=no \
   ./configure --host=wasm32-wasi --prefix=/usr --disable-nls --disable-load --without-guile --disable-job-server >/dev/null
 # The compat header for make's own sources only: configure's checks declare
 # the functions it would declare.
-make -j"$JOBS" CPPFLAGS="-I$LIBC/spawn -I$LIBC/posix -I$LIBC -include $HERE/make-wasi-compat.h" >/dev/null
+make -j"$JOBS" CPPFLAGS="-DNO_OUTPUT_SYNC -I$LIBC/spawn -I$LIBC/posix -I$LIBC -include $HERE/make-wasi-compat.h" >/dev/null
 "$WASI_SDK/bin/llvm-strip" -o "$HERE/make.wasm" make
 cp COPYING "$HERE/COPYING"
 node "$LIBC/verify-imports.mjs" "$HERE/make.wasm"

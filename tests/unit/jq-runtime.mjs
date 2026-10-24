@@ -10,7 +10,8 @@
 // - It reads a pipe and writes through a redirection, and exits as jq does:
 //   -e on null 1, a filter that does not compile 3, input that does not
 //   parse 5 (upstream jq 1.7.1's own statuses and messages).
-// - It reads as the caller: another uid's 0600 file is "Permission denied".
+// - It reads as the caller: another uid's 0600 file is "Permission denied",
+//   and a directory it may not search it does not start in (127).
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -78,7 +79,11 @@ try {
   const denied = await run('cd /home/user/proj && jq . secret.json');
   assert.equal(denied[0], 2, denied[2]);
   assert.match(denied[2], /secret\.json: Permission denied/);
-  console.log('  ok  it reads as the caller: another uid\'s 0600 file is Permission denied');
+  root.mkdir('home/user/proj/locked', { mode: 0o700 });
+  root.chown('home/user/proj/locked', 2000, 2000);
+  const locked = await ws.exec('jq -n 1', { cwd: '/home/user/proj/locked' });
+  assert.deepEqual([locked.exitCode, locked.stdout, locked.stderr], [127, '', 'cannot start in /home/user/proj/locked: Permission denied\n']);
+  console.log('  ok  it reads as the caller: another uid\'s 0600 file is Permission denied, and its 0700 directory no place to start');
 } finally {
   await ws.close();
 }

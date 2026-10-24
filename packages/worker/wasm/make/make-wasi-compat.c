@@ -38,7 +38,7 @@ int execvp(const char *file, char *const argv[]) { return execve(file, argv, env
 
 pid_t wait(int *status) { return waitpid(-1, status, 0); }
 
-/* A new file of the caller's alone, named by `template` with its XXXXXX made unique. */
+/* A new file of the caller's alone, named by `template` with its XXXXXX made unique (a makefile read from stdin). */
 int mkstemp(char *template) {
   static const char letters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   size_t n = strlen(template);

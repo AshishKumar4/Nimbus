@@ -1,59 +1,41 @@
-/* posix_spawn over nimbus_proc.spawn (core runtime/wasi/processes.ts): the
- * program by name or path, which the host finds as the shell does; the
- * child's whole environment and argv; its directory this process's (there
- * is no fork to inherit it from); its 0, 1 and 2 the descriptors the file
- * actions name. An error is returned, as posix_spawn returns one, never set
- * in errno. */
+/* posix_spawn over nimbus_spawnvpe (nimbus-proc.c), the one encoding of a
+ * child for nimbus_proc.spawn and the wait for its start: the program
+ * `path`, which the host finds by name or path as the shell does, with
+ * argv's arguments; the child's whole environment `envp`; its directory
+ * this process's; its 0, 1 and 2 as the file actions left them. An error is
+ * returned, as posix_spawn returns one, never left in errno. */
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <spawn.h>
-
-#define NIMBUS_PROC_IMPORT(name) __attribute__((import_module("nimbus_proc"), import_name(name)))
-NIMBUS_PROC_IMPORT("spawn") int __nimbus_spawn(const char *argv, size_t argv_len, const char *env, size_t env_len,
-    const char *dir, size_t dir_len, int fdin, int fdout, int fderr, int *pid);
-NIMBUS_PROC_IMPORT("start") int __nimbus_start(int pid);
+#include "nimbus-proc.h"
 
 extern char **environ;
-
-/* `strings` (NULL-terminated), `first` in place of the first, as one buffer of NUL-terminated strings. */
-static char *joined(const char *first, char *const strings[], size_t *len) {
-  size_t n = 0;
-  for (size_t i = 0; strings && strings[i]; i++) n += strlen(i == 0 && first ? first : strings[i]) + 1;
-  char *buf = malloc(n ? n : 1);
-  if (!buf) return NULL;
-  char *at = buf;
-  for (size_t i = 0; strings && strings[i]; i++) {
-    const char *s = i == 0 && first ? first : strings[i];
-    size_t l = strlen(s) + 1;
-    memcpy(at, s, l);
-    at += l;
-  }
-  *len = n;
-  return buf;
-}
 
 int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *actions,
                 const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
   (void)attr;
-  if (!argv || !argv[0]) return EINVAL;
-  char dir[4096];
-  if (!getcwd(dir, sizeof dir)) return errno;
-  size_t argv_len = 0, env_len = 0;
-  /* The program is `path`, as exec runs it; argv[0] is only its name, which the host resolves. */
-  char *argv_buf = joined(path, argv, &argv_len);
-  char *env_buf = joined(NULL, envp ? envp : environ, &env_len);
-  if (!argv_buf || !env_buf) { free(argv_buf); free(env_buf); return ENOMEM; }
-  int fds[3] = { 0, 1, 2 };
-  if (actions) memcpy(fds, actions->fd, sizeof fds);
-  int child = -1;
-  int error = __nimbus_spawn(argv_buf, argv_len, env_buf, env_len, dir, strlen(dir), fds[0], fds[1], fds[2], &child);
-  free(argv_buf);
-  free(env_buf);
-  if (error) return error;
-  /* The host answers once the child started, or was refused; a wait it gave up on is asked again. */
-  do error = __nimbus_start(child); while (error == EINTR);
+  if (!path || !argv || !argv[0]) return EINVAL;
+  if (actions && actions->error) return actions->error;
+  size_t argc = 0;
+  while (argv[argc]) argc++;
+  const char **args = calloc(argc + 1, sizeof *args);
+  if (!args) return ENOMEM;
+  /* The program is `path`, as exec runs it; the host resolves argv[0]. */
+  args[0] = path;
+  for (size_t i = 1; i < argc; i++) args[i] = argv[i];
+  /* nimbus_spawnvpe gives the child this process's environment changed by
+   * its delta: with none of its own for the call (one thread), the delta is
+   * the whole of envp. */
+  char **own = environ;
+  environ = NULL;
+  int saved = errno;
+  pid_t child = nimbus_spawnvpe(path, args, envp ? (char **)envp : own, NULL,
+      actions ? actions->fd[0] : 0, actions ? actions->fd[1] : 1, actions ? actions->fd[2] : 2);
+  int error = child < 0 ? errno : 0;
+  environ = own;
+  errno = saved;
+  free(args);
   if (error) return error;
   if (pid) *pid = child;
   return 0;
@@ -66,18 +48,38 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions) {
   for (int i = 0; i < 3; i++) actions->fd[i] = i;
+  actions->closed = NULL;
+  actions->nclosed = 0;
+  actions->error = 0;
   return 0;
 }
-int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions) { (void)actions; return 0; }
+
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions) {
+  free(actions->closed);
+  actions->closed = NULL;
+  actions->nclosed = 0;
+  return 0;
+}
+
+/* Applied now, in order: `fd` is what the child's fd is after the actions before this one. */
 int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *actions, int fd, int newfd) {
   if (fd < 0 || newfd < 0) return EBADF;
   if (newfd > 2) return ENOTSUP;
-  actions->fd[newfd] = fd;
+  int source = fd <= 2 ? actions->fd[fd] : fd;
+  for (size_t i = 0; fd > 2 && i < actions->nclosed; i++) {
+    if (actions->closed[i] == fd && !actions->error) actions->error = EBADF;
+  }
+  actions->fd[newfd] = source;
   return 0;
 }
+
 int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t *actions, int fd) {
   if (fd < 0) return EBADF;
-  if (fd <= 2) actions->fd[fd] = -1;
+  if (fd <= 2) return ENOTSUP;
+  int *closed = realloc(actions->closed, (actions->nclosed + 1) * sizeof *closed);
+  if (!closed) return ENOMEM;
+  closed[actions->nclosed++] = fd;
+  actions->closed = closed;
   return 0;
 }
 
