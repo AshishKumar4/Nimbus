@@ -587,15 +587,17 @@ export class NimbusWorkspace {
         }
         // Beyond the supplied packages: a name the registry cannot answer is
         // offered to the source — catalog reads only, no payload — and gets a
-        // stub when something could satisfy it. Registered last so every real
-        // command and the PATH resolver still win.
+        // stub when something could satisfy it here: a runtime none of whose
+        // versions this build can run gets none, and its name is left to what
+        // resolves after (the hosted session's own `tsc`). Registered last so
+        // every real command and the PATH resolver still win.
         const baseResolve = registry.resolve.bind(registry);
         registry.resolve = async (name, from) => {
           const found = await baseResolve(name, from);
           if (found) return found;
           if (!name || name.includes('/')) return undefined;
           try {
-            if (!await runtimes.resolvable(name)) return undefined;
+            if (!await runtimes.runnable(name)) return undefined;
           } catch {
             return undefined;
           }

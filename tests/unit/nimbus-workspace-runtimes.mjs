@@ -3,7 +3,10 @@
 // packages install on first use through the same single path `nimbus
 // install` uses, a bin the runner table cannot bind is refused before a
 // byte lands, a remote source's alias resolves as a lazy command, and a
-// command the host already registered is never shadowed by a stub.
+// command the host already registered is never shadowed by a stub. A
+// source's runtime no version of which this build can run gets no stub at
+// all, so a later resolver answers its name (Kinu ask 72: the catalog's
+// typescript shadowed the session's own `tsc`).
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -135,6 +138,29 @@ for (const runtimeInstall of ['eager', 'on-demand']) {
   const ran = await ws.exec('remote-tool');
   assert.equal(ran.exitCode, 0, ran.stderr);
   assert.equal(ran.stdout, 'remote ran\n');
+}
+
+// ── A source's runtime this build cannot run gets no stub ─────────────────
+// Every version names a runner this workspace lacks: the name is left to what
+// resolves after the stub would have (the hosted session's own tsc), not
+// answered with an install that can only fail.
+{
+  const offered = (version) => fakePackage({ 'bin/tsc': '# t\n' }, { name: 'typescript', version, runner: 'typescript-runner', bins: ['tsc'] });
+  const ws = await openWorkspace({
+    runtimeInstall: 'on-demand',
+    facets: localFacetHost(ISOLATE_NETWORK),
+    runtimeSource: {
+      list: async () => [{ name: 'typescript', versions: ['7.0.2', '7.0.2-opt1'] }],
+      resolve: async (spec) => (spec === 'tsc' || spec === 'typescript' ? offered('7.0.2') : spec === 'typescript@7.0.2-opt1' ? offered('7.0.2-opt1') : null),
+    },
+  });
+  // What a later resolver (the hosted session's own programs) answers, when nothing before it did.
+  const resolve = ws.registry.resolve.bind(ws.registry);
+  ws.registry.resolve = async (name, from) => (await resolve(name, from)) ?? (name === 'tsc' ? async (ctx) => { ctx.stdout.write('Version own\n'); return 0; } : undefined);
+  const ran = await ws.exec('tsc --version');
+  assert.equal(ran.exitCode, 0, ran.stderr);
+  assert.equal(ran.stdout, 'Version own\n', 'the session\'s own program answers, not an install stub');
+  assert.equal(ran.stderr, '');
 }
 
 // ── A preexisting host command is never shadowed by a stub ────────────────
