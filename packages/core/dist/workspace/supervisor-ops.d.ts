@@ -84,6 +84,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly cpWait: null;
     readonly cpNextSignal: null;
     readonly cpCatchSignals: null;
+    readonly cpSignalsTaken: null;
     readonly cpTakeSignal: null;
     readonly cpBlocked: null;
     readonly fsFstat: 'joined';

@@ -7,6 +7,10 @@ import { parseProcessSignalName } from './process-io-protocol.js';
 const DELIVERED_SIGNALS = Object.keys(NIMBUS_SIGNAL_ERRNOS)
     .map(parseProcessSignalName)
     .filter((signal) => signal !== null);
+/** `pid`'s WASI image takes the signals it is sent (DELIVERED_SIGNALS) until it ends or the release is called. */
+export function takeImageSignals(processes, pid) {
+    return processes.takeSignals(pid, DELIVERED_SIGNALS);
+}
 /**
  * A run's fd0/1/2, on the process supervisor's byte channels: its process
  * (made, or the broker's), the signal that ends it, its input pumped (fd 0
@@ -24,7 +28,7 @@ export function openInvocationStdio(processes, spec) {
     const pid = entry.pid;
     const controller = new AbortController();
     // Its program's for this run alone: an adopted process runs on after it.
-    const releaseSignals = spec.takesSignals ? processes.takeSignals(pid, DELIVERED_SIGNALS) : null;
+    const releaseSignals = spec.takesSignals ? takeImageSignals(processes, pid) : null;
     const abort = () => {
         const sent = spec.takesSignals && spec.signal ? signalAbortReasonOf(spec.signal) : null;
         if (sent !== null && sent.signal !== 'KILL')

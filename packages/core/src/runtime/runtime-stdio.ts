@@ -12,6 +12,11 @@ const DELIVERED_SIGNALS: readonly ProcessSignalName[] = Object.keys(NIMBUS_SIGNA
   .map(parseProcessSignalName)
   .filter((signal): signal is ProcessSignalName => signal !== null);
 
+/** `pid`'s WASI image takes the signals it is sent (DELIVERED_SIGNALS) until it ends or the release is called. */
+export function takeImageSignals(processes: SessionProcessSupervisor, pid: number): () => void {
+  return processes.takeSignals(pid, DELIVERED_SIGNALS);
+}
+
 /** What one run of a runtime is: its process, and what its fd0/1/2 read and write. */
 export interface InvocationStdioSpec {
   /** Its process, when one was made for it (a broker's); absent, the run makes its own, a child of `parentPid`. */
@@ -52,7 +57,7 @@ export function openInvocationStdio(processes: SessionProcessSupervisor, spec: I
   const pid = entry.pid;
   const controller = new AbortController();
   // Its program's for this run alone: an adopted process runs on after it.
-  const releaseSignals = spec.takesSignals ? processes.takeSignals(pid, DELIVERED_SIGNALS) : null;
+  const releaseSignals = spec.takesSignals ? takeImageSignals(processes, pid) : null;
   const abort = (): void => {
     const sent = spec.takesSignals && spec.signal ? signalAbortReasonOf(spec.signal) : null;
     if (sent !== null && sent.signal !== 'KILL') processes.signalGroup(pid, sent);

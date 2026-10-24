@@ -16,10 +16,12 @@ import { cpythonResidentStart } from '../../packages/worker/src/runtime/cpython-
 
 const refused = 'home/user/state.json: not written (ENOSPC: no space left on device)';
 
-function facetManager(boot) {
+/** A manager whose spawned process booted to `boot`; `ended`, the status it had already ended with as its boot settled. */
+function facetManager(boot, ended = null) {
   const calls = { finished: [], registered: [], killed: [] };
   const manager = {
     async spawnWorker() { return { pid: 1000007, boot }; },
+    processExitCode() { return ended; },
     finishProcess(pid, code, message) { calls.finished.push({ pid, code, message }); },
     async registerPort(pid, port) { calls.registered.push({ pid, port }); },
     async waitForRouteablePorts() { return [8080]; },
@@ -67,6 +69,32 @@ const args = {
   assert.equal(result.port, 8080);
   assert.deepEqual(calls.registered, [{ pid: 1000007, port: 8080 }]);
   console.log('  ok  a server that started cleanly is advertised as before');
+}
+
+// Its program ended unsuccessfully after it registered a server (an
+// uncaught KeyboardInterrupt): it is no server, and ends with its status.
+{
+  const { manager, calls } = facetManager({
+    state: 'listening', port: 8080, stdout: '', stderr: 'KeyboardInterrupt\n',
+    result: { exitCode: 130 },
+  });
+  const result = await cpythonResidentStart(manager)(args);
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.port, undefined, 'no port is reported');
+  assert.deepEqual(calls.registered, [], 'no port is advertised');
+  assert.equal(calls.finished[0]?.code, 130, 'the process ends with its status');
+  console.log('  ok  an interrupted program that registered a server is none, and ends with its status');
+}
+
+// It had already ended as its boot settled (a signal it never took, given its
+// default action as it went to the background): that status is its own.
+{
+  const { manager, calls } = facetManager({ state: 'listening', port: 8080, stdout: 'serving\n', stderr: '', result: { exitCode: 0 } }, 130);
+  const result = await cpythonResidentStart(manager)(args);
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.stdout, 'serving\n', 'with what it printed');
+  assert.deepEqual(calls.registered, [], 'no port is advertised');
+  console.log('  ok  a process that ended as its boot settled reports the status it ended with');
 }
 
 console.log('cpython-resident-boot: all cases passed');

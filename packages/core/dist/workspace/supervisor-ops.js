@@ -84,6 +84,7 @@ export const SUPERVISOR_OP_TABLE = {
     cpWait: null,
     cpNextSignal: null,
     cpCatchSignals: null,
+    cpSignalsTaken: null,
     cpTakeSignal: null,
     cpBlocked: null,
     fsFstat: 'joined',
@@ -153,7 +154,7 @@ export const SUPERVISOR_JOINED_READ_OPS = SUPERVISOR_OPS
 const SUPERVISOR_OPS_WITHIN = new Set([
     ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
     'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
-    'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpNextSignal', 'cpCatchSignals', 'cpTakeSignal', 'cpBlocked', 'hmrNextEvent', 'awaitHostedBoot',
+    'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpNextSignal', 'cpCatchSignals', 'cpSignalsTaken', 'cpTakeSignal', 'cpBlocked', 'hmrNextEvent', 'awaitHostedBoot',
     'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'loaderCodeStore',
     'transform', 'allocatePort', 'getCachedTarball',
 ]);

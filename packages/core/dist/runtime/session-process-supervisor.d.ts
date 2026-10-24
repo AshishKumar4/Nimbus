@@ -45,6 +45,8 @@ export interface ProcessSpawnOptions {
     execId?: string;
     /** The controlling terminal of a process that does not take its parent's (`ProcessEntry.terminal`): a terminal's shell. */
     terminal?: string;
+    /** A shell's background job (`ProcessEntry.backgroundJob`). */
+    backgroundJob?: boolean;
     /** The process this one restarts (`ProcessEntry.restartedFrom`). */
     restartedFrom?: ProcessRestart;
 }
@@ -456,12 +458,24 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * ask past goes back to the front.
      */
     parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
+    /**
+     * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
+     * null: one handed to it that it has not said it took (signalsTaken, or a
+     * wait past it), else the first that waits in its box.
+     */
+    untakenSignal(pid: number): ProcessSignalName | null;
+    /**
+     * `pid`'s program took each of the first `received` signals handed to it:
+     * what it was last handed is taken, unless one was handed since it counted.
+     */
+    signalsTaken(pid: number, received: number): void;
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid: number, signal: ProcessSignalName): boolean;
     /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
-     * took its place (one waits at a time).
+     * took its place (one waits at a time). A program that takes none waits
+     * as long, for none: a guest that asks again at once does not spin.
      */
     nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null>;
     /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */
@@ -479,6 +493,16 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * end where not.
      */
     signalGroup(pid: number, reason: SignalAbortReason): void;
+    /**
+     * `reason`'s signal to the foreground job of the shell `pid`, as a
+     * terminal's key after the first (which the job's command took as its
+     * abort): each running process below the shell whose output is the
+     * terminal's (setForeground), the topmost of each such chain, with its
+     * group ({@link signalGroup}). Nothing inside a background job (`cmd &`,
+     * from any subshell) is the foreground's, nor is a server an earlier
+     * command left running: it gave the terminal back.
+     */
+    signalForeground(pid: number, reason: SignalAbortReason): void;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {

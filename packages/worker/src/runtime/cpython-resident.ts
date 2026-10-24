@@ -108,6 +108,8 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
     const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
       resident: { argv: args.argv, runtime: 'python' },
       foreground: { signal: args.signal, write: args.write },
+      // Its image takes the signals it is sent while it boots (cpython-runner's start args).
+      takesSignals: args.startArgs.takesSignals === true,
       invokerPid: args.invokerPid,
       restart: z.object({ NIMBUS_RESTART: z.literal('on-failure') }).safeParse(args.startArgs.userEnv).success ? 'on-failure' : 'never',
       // By path, not by value: the interpreter is 10.6 MiB, more than a single
@@ -124,6 +126,10 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
       return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };
     }
     const data = boot.data;
+    // Ended as its boot settled (a signal it never took, given its default
+    // action as it went to the background): that is its status, whatever the boot said.
+    const ended = facetMgr.processExitCode(spawned.pid);
+    if (ended !== null) return { exitCode: ended, stdout: data.stdout || '', stderr: data.stderr || '' };
 
     // A start that failed, a refused write included, is a failed process
     // whether or not it left a server listening: it is ended and reported,
@@ -135,7 +141,11 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
       return { exitCode, stdout: data.stdout || '', stderr: `${data.stderr || ''}python: ${failure}\n` };
     }
 
-    if (data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
+    const result = data.result;
+    const exitCode = typeof result?.exitCode === 'number' ? result.exitCode : 0;
+    // A program that ended unsuccessfully (an uncaught KeyboardInterrupt, a
+    // nonzero SystemExit) is no server, whatever it registered.
+    if (exitCode === 0 && data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
       await facetMgr.registerPort(spawned.pid, data.port);
       const routeable = await facetMgr.waitForRouteablePorts(spawned.pid);
       const port = routeable.includes(data.port) ? data.port : routeable[0];
@@ -156,8 +166,6 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
       };
     }
 
-    const result = data.result;
-    const exitCode = typeof result?.exitCode === 'number' ? result.exitCode : 0;
     facetMgr.finishProcess(spawned.pid, exitCode, data.stderr || 'python process exited');
     return { exitCode, stdout: data.stdout || '', stderr: data.stderr || '' };
   };

@@ -19,7 +19,14 @@
 //   - a parent's kill of it (the child broker's) is delivered, not its end,
 //     and a child its group's signal ended is reported killed by it;
 //   - its write to a full pipe waits until a signal, which withdraws it at
-//     once; a signal that comes as the write is made is the next wait's.
+//     once; a signal that comes as the write is made is the next wait's;
+//   - a wait for the next signal of a process that takes none lasts as long
+//     as one that waits for its first, so a guest asking again does not spin;
+//   - the terminal's keys after the first go to the shell's foreground job
+//     (signalForeground): each process below the shell marked foreground,
+//     with its group, and never a background job;
+//   - a signal that waits in the box, never handed to the program, is
+//     untaken (untakenSignal).
 
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -237,6 +244,45 @@ for (let ticks = 0; ticks < 16; ticks++) {
   } else {
     assert.deepEqual([answer, written], [{ ok: false, signal: 'SIGINT' }, 0], `${ticks}: or it answered the signal and wrote nothing`);
   }
+}
+
+// A process that takes none: its wait for a signal lasts, as an empty box's does.
+{
+  const processes = new SessionProcessSupervisor();
+  const { pid } = processes.spawn('python3', ['python3'], '/home/user');
+  const started = Date.now();
+  assert.equal(await processes.nextSignal(pid, 300), null, 'none comes');
+  assert.ok(Date.now() - started >= 290, `and the wait lasted its bound: ${Date.now() - started} ms`);
+}
+
+// The terminal's keys after the first: the shell's foreground job, not a
+// background job's processes (their output is the terminal's too), nor a
+// server an earlier command left running (it gave the terminal back).
+{
+  const processes = new SessionProcessSupervisor();
+  const shell = processes.spawn('sh', ['sh'], '/home/user');
+  const job = processes.spawn('python3', ['python3', 'a.py'], '/home/user', { parentPid: shell.pid });
+  const child = processes.spawn('cat', ['cat'], '/home/user', { parentPid: job.pid });
+  // A background job a subshell started: what marks it is its own spawn, whichever shell's job table holds it.
+  const subshell = processes.spawn('sh', ['sh'], '/home/user', { parentPid: shell.pid });
+  const backgroundJob = processes.spawn('sh', ['sh'], '/home/user', { parentPid: subshell.pid, backgroundJob: true });
+  const background = processes.spawn('python3', ['python3', 'b.py'], '/home/user', { parentPid: backgroundJob.pid });
+  const server = processes.spawn('python3', ['python3', 'server.py'], '/home/user', { parentPid: shell.pid });
+  for (const { pid } of [job, background, server]) processes.takeSignals(pid, CATCHES);
+  for (const { pid } of [job, child, background]) processes.setForeground(pid, true);
+  processes.signalForeground(shell.pid, signalAbortReason('INT'));
+  assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'the foreground job\'s program is sent it, and it waits there untaken');
+  assert.equal(await processes.nextSignal(job.pid, 100), 'SIGINT', 'its program is handed it');
+  assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'and has not taken it until it says so');
+  processes.signalsTaken(job.pid, 0);
+  assert.equal(processes.untakenSignal(job.pid), 'SIGINT', 'a count that missed a handing takes nothing');
+  processes.signalsTaken(job.pid, 1);
+  assert.equal(processes.untakenSignal(job.pid), null, 'the count of every signal it was handed takes them');
+  assert.equal(processes.get(child.pid).state, 'killed', 'a process below it that takes none is ended by it');
+  assert.equal(processes.get(shell.pid).state, 'running', 'the shell is not');
+  assert.equal(processes.untakenSignal(background.pid), null, 'a background job is sent nothing');
+  assert.equal(processes.get(background.pid).state, 'running');
+  assert.equal(processes.untakenSignal(server.pid), null, 'nor a server that gave the terminal back');
 }
 
 console.log('process-takes-signals: ok');
