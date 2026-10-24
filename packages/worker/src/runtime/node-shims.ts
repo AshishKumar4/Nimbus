@@ -4844,6 +4844,8 @@ const __fsMod = (() => {
     _ensureAncestorsTraversable(absPath, "open", p);
     const content = _bundleLookup(absPath);
     if (content === undefined) {
+      // open(2) for reading checks the mode before anything else: a directory it may not read is EACCES, not EISDIR.
+      _ensureReadable(absPath, "open", p);
       throw _notResidentError(absPath, p, "open", "fs.promises.readFile");
     }
     _contentRead(absPath);
