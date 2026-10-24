@@ -1,0 +1,27 @@
+--- a/src/main.c
++++ b/src/main.c
+@@ -1160,11 +1160,13 @@
+     }
+ }
+ 
+-#ifdef MK_OS_ZOS
++/* wasi-libc's start calls a main of two arguments (a third is another
++   function, which nothing calls): the environment is environ, as on z/OS.  */
++#if defined(MK_OS_ZOS) || defined(__wasi__)
+ extern char **environ;
+ #endif
+ 
+-#if defined(_AMIGA) || defined(MK_OS_ZOS)
++#if defined(_AMIGA) || defined(MK_OS_ZOS) || defined(__wasi__)
+ int
+ main (int argc, char **argv)
+ #else
+@@ -1482,7 +1484,7 @@
+      done before $(MAKE) is figured out so its definitions will not be
+      from the environment.  */
+ 
+-#ifdef MK_OS_ZOS
++#if defined(MK_OS_ZOS) || defined(__wasi__)
+   char **envp = environ;
+ #endif
+ 

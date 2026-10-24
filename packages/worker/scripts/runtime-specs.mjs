@@ -256,6 +256,33 @@ export const SPECS = {
     license_text: JQ_MIT_LICENSE_NOTICE(),
   },
 
+  // GNU make 4.4.1 cross-built for wasm32-wasi by
+  // packages/worker/wasm/make/build-make.sh from GNU's release, `source` (its
+  // signature by the maintainer checked when the digest was pinned), with
+  // wasm/make/patches. A plain WASI command (WASI_CLI_RUNNER): the image is
+  // bin/make itself, and its recipes are session processes it starts
+  // through the host. Each file is pinned, as jq's are.
+  'make/4.4.1': {
+    license: 'GPL-3.0-or-later',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/make',
+    source: {
+      url: 'https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz',
+      sha256: 'dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3',
+    },
+    npm: {
+      name: '@nimbus-sh/runtime-make',
+      summary: 'GNU make 4.4.1, cross-compiled to wasm32-wasi',
+      // The first core that registers wasi-cli-runner@1 (core 0.28.0 does not).
+      core: '>=0.28.1',
+    },
+    files: [
+      { src: 'make.wasm', vfs: 'bin/make', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'make', sha256: '35004ff600f76bd6e7e51b9af7d4af4a11e15d18a951ccae53319f50ace75ec3' },
+      { src: 'COPYING', vfs: 'share/make/COPYING', sha256: 'e79e9c8a0c85d735ff98185918ec94ed7d175efc377012787aebcf3b80f0d90b' },
+    ],
+    license_text: MAKE_GPL_3_LICENSE_NOTICE(),
+  },
+
   // CPython 3.13 cross-built for wasm32-wasi by packages/worker/wasm/python/
   // build-python.sh, with the C libraries the published wasm32-wasi artifacts
   // leave out (zlib, bzip2, xz, sqlite, OpenSSL). Unlike the Pyodide entry
@@ -439,6 +466,19 @@ repository: build-jq.sh, jq-wasi-compat.h, and the shared wasm/nimbus-libc/).
 
 Oniguruma 6.9.8 — BSD-2-Clause
 Copyright (c) 2002-2021 K.Kosako. Its license is in share/jq/COPYING.oniguruma.
+`;
+}
+
+function MAKE_GPL_3_LICENSE_NOTICE() {
+  return `GNU make 4.4.1 — GPL-3.0-or-later
+Copyright (C) 1988-2023 Free Software Foundation, Inc.
+
+This runtime bundles GNU make cross-compiled to wasm32-wasi. Its license
+is in share/make/COPYING (https://www.gnu.org/licenses/gpl-3.0.txt).
+Corresponding source: https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz
+plus the Nimbus build overlay (packages/worker/wasm/make/ in the Nimbus
+repository: build-make.sh, make-wasi-compat.{h,c}, patches/, and the
+shared wasm/nimbus-libc/).
 `;
 }
 

@@ -1,0 +1,34 @@
+--- a/src/posixos.c
++++ b/src/posixos.c
+@@ -717,9 +717,23 @@
+     }
+ }
+ 
++#ifdef __wasi__
++/* WASI has no advisory locks: each make writes a job's output whole, and
++   the makes of one build do not take turns between them.  */
+ unsigned int
+ osync_acquire ()
+ {
++  return 1;
++}
++
++void
++osync_release ()
++{
++}
++#else
++unsigned int
++osync_acquire ()
++{
+   if (osync_enabled())
+     {
+       struct flock fl;
+@@ -755,6 +769,7 @@
+         perror ("fcntl()");
+     }
+ }
++#endif
+ 
+ #endif
+ 

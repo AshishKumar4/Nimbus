@@ -1,0 +1,23 @@
+--- a/src/job.c
++++ b/src/job.c
+@@ -2415,6 +2415,12 @@
+     goto cleanup;
+ 
+   /* Look up the program on the child's PATH, if needed.  */
++#ifdef __wasi__
++  /* Under Nimbus the host finds the program, by name or path, as the
++     session's shell does (nimbus_proc.spawn): a command need not be a file
++     on PATH here.  */
++  cmd = xstrdup (argv[0]);
++#else
+   {
+     const char *p = NULL;
+     char **pp;
+@@ -2441,6 +2447,7 @@
+ 
+     cmd = (char *)find_in_given_path (argv[0], p, NULL, 0);
+   }
++#endif
+ 
+   if (!cmd)
+     {

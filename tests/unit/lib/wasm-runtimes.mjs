@@ -1,4 +1,4 @@
-// The in-repo wasm runtimes (bash, CPython, git and jq, built under packages/worker/wasm),
+// The in-repo wasm runtimes (bash, CPython, git, jq and make, built under packages/worker/wasm),
 // written into a workspace as an install writes them. For the tests that run
 // them off Cloudflare (core-wasm-runtime-bun, local-facet-realm).
 
@@ -70,6 +70,16 @@ export const RUNTIMES = [
       ['bin/jq', `${WASM_DIR}jq/jq.wasm`],
       ['share/jq/COPYING', `${WASM_DIR}jq/COPYING`],
       ['share/jq/COPYING.oniguruma', `${WASM_DIR}jq/COPYING.oniguruma`],
+    ],
+  },
+  {
+    name: 'make',
+    version: '4.4.1',
+    license: 'GPL-3.0-or-later',
+    entrypoints: [{ binName: 'make', runner: WASI_CLI_RUNNER, args: [] }],
+    files: [
+      ['bin/make', `${WASM_DIR}make/make.wasm`],
+      ['share/make/COPYING', `${WASM_DIR}make/COPYING`],
     ],
   },
 ];

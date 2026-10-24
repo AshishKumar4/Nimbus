@@ -1,0 +1,15 @@
+--- a/src/dir.c
++++ b/src/dir.c
+@@ -1253,7 +1253,12 @@
+           /* The glob interface wants a 'struct dirent', so mock one up.  */
+           struct dirent *d;
+           size_t len = df->length + 1;
++#ifdef __wasi__
++          /* wasi-libc's d_name is a flexible array, of no size of its own.  */
++          size_t sz = offsetof (struct dirent, d_name) + len;
++#else
+           size_t sz = sizeof (*d) - sizeof (d->d_name) + len;
++#endif
+           if (sz > bufsz)
+             {
+               bufsz *= 2;
