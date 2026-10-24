@@ -244,13 +244,41 @@ async function hashCloneOptions(opts) {
 function phaseErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
+/** A facet just loaded on `end`, the hold its load began. */
+function heldFacet(entrypoint, end, signal) {
+    return { entrypoint, end, closed: false, signal, readmitting: null };
+}
+/**
+ * `held` let in again after `refusal`, its call's first refusal at `since`
+ * (readmitRefused, within REFUSED_CALL_WAIT_MS of it): one readmission at a
+ * time, which every call refused meanwhile waits on, so each hold the ledger
+ * gives is the facet's one hold.
+ */
+function readmitted(held, refusal, since) {
+    if (held.readmitting === null) {
+        const refused = held.end;
+        refused(refusal);
+        held.readmitting = readmitRefused(refused, { since, signal: held.signal }).then((end) => {
+            held.readmitting = null;
+            if (end === undefined)
+                return false;
+            // The operation ended while this waited: its teardown has gone.
+            if (held.closed) {
+                end();
+                return false;
+            }
+            held.end = end;
+            return true;
+        });
+    }
+    return held.readmitting;
+}
 /**
  * `request`'s call to `held`'s facet, sent again for as long as the platform
- * refuses it at the limit and the ledger lets it in again (readmitRefused,
- * within REFUSED_CALL_WAIT_MS of its first refusal). A refusal comes before
- * the facet starts, and the facet answers every failure of its own (pack/
- * network-worker.ts), so nothing ran. `request` builds the call anew each
- * time; `signal` abandons a wait.
+ * refuses it at the limit and the ledger lets the facet in again
+ * (readmitted). A refusal comes before the facet starts, and the facet
+ * answers every failure of its own (pack/network-worker.ts), so nothing ran.
+ * `request` builds the call anew each time; `signal` abandons this call's wait.
  */
 async function sendAdmitted(held, request, signal) {
     let since;
@@ -261,17 +289,9 @@ async function sendAdmitted(held, request, signal) {
         catch (error) {
             if (!refusedStart(error))
                 throw error;
-            held.end(error);
             since ??= Date.now();
-            const readmitted = await readmitRefused(held.end, { since, signal });
-            if (readmitted === undefined)
+            if (!(await unlessCancelled(readmitted(held, error, since), signal)))
                 throw error;
-            // The operation ended while this waited: its teardown has gone.
-            if (held.closed) {
-                readmitted();
-                throw error;
-            }
-            held.end = readmitted;
         }
     }
 }
@@ -764,8 +784,6 @@ export async function execGitNetwork(ctx, env, opts, /**
         const endFetch = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
         // Without a loaded facet, the teardown ends the hold it began with.
         const heldEnd = () => held?.end ?? endFetch;
-        // A call refused at the limit waits for the ledger no longer than the operation does.
-        const callSignal = signal ?? new AbortController().signal;
         const watched = holdThreadWatch(ctx, `git ${opts.op} pid ${opts.pid}`);
         try {
             const gitBundleSource = await unlessCancelled(fetchGitBundleSource(env), signal);
@@ -793,7 +811,7 @@ export async function execGitNetwork(ctx, env, opts, /**
             });
             const loadedWorker = env.LOADER.load(applyFacetLimits('git', facetCode(supervisorBinding)));
             worker = loadedWorker;
-            held = { entrypoint: loadedWorker.getEntrypoint(undefined, { limits: facetLimits('git') }), end: endFetch, closed: false };
+            held = heldFacet(loadedWorker.getEntrypoint(undefined, { limits: facetLimits('git') }), endFetch, signal);
             const facet = held;
             if (opts.op === 'clone') {
                 const jobId = opts.cloneJobId ?? crypto.randomUUID();
@@ -814,8 +832,18 @@ export async function execGitNetwork(ctx, env, opts, /**
                     fence: rotateMutationOwner === undefined ? null : () => {
                         const binding = bindingFor(rotateMutationOwner());
                         const endLoad = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
-                        const loaded = env.LOADER.load(applyFacetLimits('git', facetCode(binding)));
-                        const fresh = { entrypoint: loaded.getEntrypoint(undefined, { limits: facetLimits('git') }), end: endLoad, closed: false };
+                        let loaded;
+                        let fresh;
+                        try {
+                            loaded = env.LOADER.load(applyFacetLimits('git', facetCode(binding)));
+                            fresh = heldFacet(loaded.getEntrypoint(undefined, { limits: facetLimits('git') }), endLoad, signal);
+                        }
+                        catch (error) {
+                            // A load that failed holds nothing: no teardown will see it.
+                            endLoad();
+                            disposeRpcResource(binding);
+                            throw error;
+                        }
                         fencedLoads.push({ binding, worker: loaded, held: fresh });
                         facets.facet = fresh;
                         facets.epoch++;
@@ -988,7 +1016,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                     const call = sendAdmitted(facet, () => new Request('http://git/op', {
                         method: 'POST',
                         body: JSON.stringify({ ...facetOpts, graphFilters: step, invocationId: crypto.randomUUID() }),
-                    }), callSignal).then(async (response) => {
+                    }), signal).then(async (response) => {
                         try {
                             return await response.json();
                         }
@@ -1036,7 +1064,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                     signal,
                 });
                 // A push's pack is a stream its caller made once: a push cannot be sent again.
-                const call = (remotePushPack ? facet.entrypoint.fetch(request()) : sendAdmitted(facet, request, callSignal)).then(async (response) => {
+                const call = (remotePushPack ? facet.entrypoint.fetch(request()) : sendAdmitted(facet, request, signal)).then(async (response) => {
                     try {
                         return await response.json();
                     }

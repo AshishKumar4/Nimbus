@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "ac80aeb97b522f76654b53b6c0774c183deda54ab5a8350553ec4f9b0c24f312",
+  "fingerprint": "26513baeb58097d77820452cd3987fb15bd95ce7a33be12d71246dc603c267f7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.23.4"
@@ -2544,8 +2544,8 @@
     "packages/worker/dist/git/local-git.d.ts.map": "567ca13a79ba88f50d11b7951e9b9c6971280cd887e204bd80162cc9cbed5dea",
     "packages/worker/dist/git/local-git.js": "7c9d159c33956263e32e5407f4e0cda9218585e8ff94826c51837302a8c50f41",
     "packages/worker/dist/git/network-facet.d.ts": "a300491878460c82cab0c12f36eed1a059c3234713b0165491225c0c2a79b052",
-    "packages/worker/dist/git/network-facet.d.ts.map": "b6b7d0cc703adfc614e49b4128871ca63d363c10166f471c4a0dcc3685bec6e3",
-    "packages/worker/dist/git/network-facet.js": "26940c9a7a9c37ca21c1ca2999abf8f96e3d6ebed8ab841921a7a61a64685a94",
+    "packages/worker/dist/git/network-facet.d.ts.map": "36692386445bee8ad5c6d71f5ceaa99b0524ee33faedad8b60f7cbe8d775228e",
+    "packages/worker/dist/git/network-facet.js": "09e460167be72f245b54215825da2fcda8eb23e7284359889bed4377eaf2a77e",
     "packages/worker/dist/git/pack/buffered-fs.d.ts": "84363a171550c7e1efaa2c8c770800f0f21009796563d376368bf1051e02cafb",
     "packages/worker/dist/git/pack/buffered-fs.d.ts.map": "37b05d1fb204c82c8dd499cad447bc2d193cc8753563cd3f7062fd7b9562826a",
     "packages/worker/dist/git/pack/buffered-fs.js": "8f75f0f3eb7f609b714017cf67a6a0c87fc0ae8f56d8dd5e913d8632731af858",
@@ -3408,7 +3408,7 @@
     "packages/worker/src/git/engine.ts": "be4100ab8362b148e451aa94bb7695f4ec391778f9fb098ac37993605a8539e7",
     "packages/worker/src/git/git-fs.ts": "9a9c7958ed70d6cdbcc14c68879108702e70779dd58e2415e7e1fe5732b9bdb5",
     "packages/worker/src/git/local-git.ts": "eadd808aae7bf95e0d15b844129c644cf2b6ba93a47108470d17f769fa638de3",
-    "packages/worker/src/git/network-facet.ts": "4661f2e09c2ef8b87e05e44b37c10c7eea91dc610de3e8b47e31443e11e971ea",
+    "packages/worker/src/git/network-facet.ts": "88f4f274860fb9e3fb85a14b6381a2b93047671694fac8efbf113f7d0a5ca101",
     "packages/worker/src/git/pack/buffered-fs.ts": "22db18e788c8490a7c23bb9e814c3abd6ce8277b72c7cc596b3d5e24cd8bec20",
     "packages/worker/src/git/pack/clone.ts": "cddfca04937d01d9a5b6f82edb3567ca2699a892d73c51cf80add3fdb8ceb7f4",
     "packages/worker/src/git/pack/commit-graph.ts": "fddabe491e0c36efa98510ba5d58082af2ab6fb7a2add485ec3d9a8f9249dafe",
