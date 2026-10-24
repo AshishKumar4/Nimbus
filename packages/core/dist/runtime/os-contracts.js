@@ -201,6 +201,17 @@ export const GIT_RUNNER_CONTRACTS = Object.freeze({
 /** The key this tree's git build names. */
 export const GIT_RUNNER = 'git-runner@2';
 /**
+ * The runner key of a plain WASI command (jq, make): an image built over
+ * wasm/nimbus-libc, installed as the entrypoint's own file (`bin/<name>`),
+ * one WASI process per invocation (runtime/wasi-cli-runner.ts). Its contract
+ * with the host: it imports nimbus_proc.startup_dir and changes to that
+ * directory before main (nimbus-cwd.c), asks again a wait its host gave up
+ * on (nimbus-restart.c), raises the signals its host sends (nimbus-signal.c),
+ * and starts its children through nimbus_proc.spawn (nimbus-proc.c). A build
+ * that asks more of its host takes the next number, as BASH_RUNNER's do.
+ */
+export const WASI_CLI_RUNNER = 'wasi-cli-runner@1';
+/**
  * Set in real git's environment (the git runner): a `git` it starts (a
  * hook's, a subcommand's) carries it, and is real git too, wherever a
  * built-in git routes `git` between itself and real git.

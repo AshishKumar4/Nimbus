@@ -223,6 +223,8 @@ export interface WasiMakeImportsOptions {
      * and nothing more, and the session ends the process instead.
      */
     takesSignals?: boolean;
+    /** The directory the guest starts in (nimbus_proc.startup_dir); '/' when unset. */
+    cwd?: string;
 }
 /**
  * The WASI import table, exhaustively.
