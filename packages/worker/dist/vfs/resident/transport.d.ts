@@ -43,6 +43,8 @@ export interface Fetched {
     bytes: number;
     ranges: number;
     copied: number;
+    /** Files the session refused as stale (ESTALE): it holds a newer revision than the one asked for. */
+    stale: number;
 }
 /** A whole enumeration: its files, every name, what the names cost a one-shot, its cursor, and whether it finished. */
 export interface Listing {

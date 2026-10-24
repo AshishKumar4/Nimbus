@@ -371,9 +371,9 @@ export function createView(
         async fill(k, entry) {
           const cursor = coherence.cursor();
           if (cursor === null) return null;
-          await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
+          const fetched = await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
           const bytes = view.content(k, entry.revision);
-          return bytes === undefined ? null : bytes;
+          return bytes !== undefined ? bytes : fetched.stale > 0 ? 'stale' : null;
         },
         pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
         // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).

@@ -88,8 +88,12 @@ export interface ResidentNamespace {
      * bytes that landed after a barrier admitted the change is not served.
      */
     content(key: string, revision?: number): Uint8Array | undefined;
-    /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
-    fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
+    /**
+     * Fetch file `key`'s bytes (at `entry`'s revision) into the store; null
+     * when they could not be fetched, 'stale' when the session holds a newer
+     * revision of it than `entry`'s (ESTALE: the view is behind).
+     */
+    fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null | 'stale'>;
     /**
      * Pages `first`..`last` (RESIDENT_PAGE_BYTES each) of file `key`, `size`
      * bytes at revision `revision`: held ones from the store, the rest read
