@@ -1,5 +1,7 @@
 /* spawn.h for wasi-libc, which ships none: posix_spawn over the host's
- * nimbus_proc.spawn (nimbus-libc/nimbus-spawn.c). A child gets only fds 0, 1
+ * nimbus_proc.spawn (nimbus-libc/nimbus-spawn.c). In a directory of its own,
+ * for the images that link it (make): bash's and BusyBox's builds search
+ * ../posix, and a spawn.h there would change what their configure finds. A child gets only fds 0, 1
  * and 2, so a file action dup2s one of the parent's descriptors onto one of
  * them, and a close is the child's already; signal attributes are kept and
  * mean nothing to a child that starts with none blocked. */

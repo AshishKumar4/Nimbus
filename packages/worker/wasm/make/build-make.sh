@@ -50,7 +50,7 @@ export PATH="$WASI_SDK/bin:$PATH"
 CFLAGS="-O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
 rm -rf "$BUILD/nimbus" && mkdir -p "$BUILD/nimbus"
 for source in "$LIBC"/nimbus-fs.c "$LIBC"/nimbus-proc.c "$LIBC"/nimbus-spawn.c "$LIBC"/nimbus-cwd.c "$LIBC"/nimbus-restart.c "$LIBC"/nimbus-signal.c "$HERE"/make-wasi-compat.c; do
-  wasm32-wasi-clang $CFLAGS -I"$LIBC/posix" -I"$LIBC" -I"$HERE" -c "$source" -o "$BUILD/nimbus/$(basename "$source" .c).o"
+  wasm32-wasi-clang $CFLAGS -I"$LIBC/spawn" -I"$LIBC/posix" -I"$LIBC" -I"$HERE" -c "$source" -o "$BUILD/nimbus/$(basename "$source" .c).o"
 done
 llvm-ar rcs "$BUILD/nimbus/libnimbus-make.a" "$BUILD"/nimbus/*.o
 WRAP="-Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_write \
@@ -63,13 +63,13 @@ for patch in "$HERE"/patches/*.patch; do patch -p1 --quiet < "$patch"; done
 # umask is the shim's (make-wasi-compat.h maps it); bsd_signal is signal.
 # No job server: -jN runs its jobs in this make, not across sub-makes.
 ac_cv_func_umask=yes ac_cv_have_decl_bsd_signal=no \
-  CC=wasm32-wasi-clang AR=llvm-ar RANLIB=llvm-ranlib CFLAGS="$CFLAGS" CPPFLAGS="-I$LIBC/posix -I$LIBC" \
+  CC=wasm32-wasi-clang AR=llvm-ar RANLIB=llvm-ranlib CFLAGS="$CFLAGS" CPPFLAGS="-I$LIBC/spawn -I$LIBC/posix -I$LIBC" \
   LDFLAGS="$WRAP -Wl,-z,stack-size=8388608" \
   LIBS="-Wl,--whole-archive $BUILD/nimbus/libnimbus-make.a -Wl,--no-whole-archive -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid" \
   ./configure --host=wasm32-wasi --prefix=/usr --disable-nls --disable-load --without-guile --disable-job-server >/dev/null
 # The compat header for make's own sources only: configure's checks declare
 # the functions it would declare.
-make -j"$JOBS" CPPFLAGS="-I$LIBC/posix -I$LIBC -include $HERE/make-wasi-compat.h" >/dev/null
+make -j"$JOBS" CPPFLAGS="-I$LIBC/spawn -I$LIBC/posix -I$LIBC -include $HERE/make-wasi-compat.h" >/dev/null
 "$WASI_SDK/bin/llvm-strip" -o "$HERE/make.wasm" make
 cp COPYING "$HERE/COPYING"
 node "$LIBC/verify-imports.mjs" "$HERE/make.wasm"
