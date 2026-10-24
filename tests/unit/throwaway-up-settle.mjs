@@ -303,21 +303,6 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.equal(record().secret, kept.secret, 'with the secret its uploads carried');
     console.log('  ok  a new Preview that lands late: the next up redeploys it with its secret');
   }
-  // The API errs on whether the parent stands: up refuses, rather than ask
-  // to make a parent that may stand.
-  {
-    mode = 'parent-500';
-    const held = record();
-    const before = uploads();
-    const { code, stdout, stderr } = await up();
-    const output = `${stdout}${stderr}`;
-    assert.ok(code !== 0 && code !== 3, `up refuses\n${output}`);
-    assert.equal(parentCreates, 1, 'asking to make no parent past the one no-parent made');
-    assert.equal(uploads(), before, 'and uploads nothing');
-    assert.deepEqual(record(), held, 'and changes no record');
-    console.log('  ok  parent-500: up refuses, making no parent');
-  }
-
   // A Preview up makes, whose name the API does not resolve yet: up reads
   // its upload back by id, and goes on with it. Before, it read by name,
   // missed, and uploaded again, which asked to make the Preview a second time.
@@ -333,6 +318,21 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.equal(uploads(), 1, 'with its one upload');
     assert.equal(record().versionId, 'deployment-uploaded-1', 'and records it');
     console.log('  ok  a new Preview the API does not resolve by name yet: up reads it back by id');
+  }
+
+  // The API errs on whether the parent stands: up refuses, rather than ask
+  // to make a parent that may stand.
+  {
+    mode = 'parent-500';
+    const held = record();
+    const before = uploads();
+    const { code, stdout, stderr } = await up();
+    const output = `${stdout}${stderr}`;
+    assert.ok(code !== 0 && code !== 3, `up refuses\n${output}`);
+    assert.equal(parentCreates, 1, 'asking to make no parent past the one no-parent made');
+    assert.equal(uploads(), before, 'and uploads nothing');
+    assert.deepEqual(record(), held, 'and changes no record');
+    console.log('  ok  parent-500: up refuses, making no parent');
   }
   assert.deepEqual(unexpected, [], 'up asked the API nothing else');
 } finally {
