@@ -488,16 +488,19 @@ again.
   the verdict records it as `pairedSkipped`. A run that names a paired probe
   (`--only`, `--repeat`) runs it on equal bytes too: an A/A run, or a change
   to the probe or its grader.
+- A red probe row is run once more, alone (a task of its own), on the same
+  deployed target, and that run grades it: a one-off red passes, a real red
+  fails twice. This holds in a train's run and in the release matrix, and
+  lives in one place, `scripts/ci/lib/rerun.mjs`. The verdict keeps the
+  first red's detail and the rerun's task and armada job. A paired perf
+  probe (confirmed on fresh Previews instead), a deferred probe (graded by
+  its deferral), the session ledger and a row that did not grade are not run
+  again, and a rerun is not run a third time.
 - A red row whose session socket closed 1006 (the session ledger records
   it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
   and traces by the exact error on each session's object
   (`scripts/ci/lib/reset-attribution.mjs`, with the observability token in
-  `~/.config/nimbus/cf-observability-token`). It is rerun once, and the
-  rerun grades it, only when the probe reached its summary, every failed
-  check is the driver's 1006 close error naming a dropped session, and each
-  such session shows "Internal error in Durable Object storage caused object
-  to be reset" and nothing else. An isolate memory reset is Nimbus's
-  own memory and stays red.
+  `~/.config/nimbus/cf-observability-token`), and the attribution is printed.
 - `--deploy` builds the bundle in a container (the dist gate, then
   `wrangler deploy --dry-run`) and uploads it from this machine with your
   wrangler login. The upload is not a build. No Cloudflare credential goes
