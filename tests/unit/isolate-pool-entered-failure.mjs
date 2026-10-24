@@ -11,7 +11,8 @@
 //   (2) a call refused before it started is sent again, and its answer is
 //       the caller's.
 // And first, (3): a task that wrote and then threw a clone refusal's words
-// ran once; only a call the platform could not clone into its worker is sent again.
+// ran once; only a call the platform could not clone into its worker is sent
+// again. And (4): a task whose answer could not be serialized back ran once.
 
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
@@ -56,7 +57,11 @@ function loader(words, refuse) {
           async execute(...args) {
             if (calls.refused < refuse) { calls.refused++; throw new Error(words); }
             calls.entered++;
-            return (await built.get(id)).execute(...args);
+            const result = await (await built.get(id)).execute(...args);
+            // The answer crosses back serialized, as RPC sends it: a value V8's
+            // serializer refuses fails the call after the task returned.
+            if (typeof result === 'symbol') throw new Error(`DataCloneError: ${String(result)} could not be cloned.`);
+            return result;
           },
         }),
       };
@@ -70,6 +75,18 @@ const pool = (env) => new IsolatePool(env, { id: { toString: () => `entered-${++
   { tag: 'entered', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 0 });
 
 try {
+  // ── (4) ran, wrote, returned a value its answer cannot carry: once ────────
+  // Its failure comes after it returned, so nothing marks it entered: a value
+  // that cannot be serialized fails the same way every time, and is not a
+  // refusal to start the call.
+  {
+    globalThis.__poolWrites = 0;
+    const { env, calls } = loader('', 0);
+    const task = facetTaskSource(`async () => { globalThis.__poolWrites++; return Symbol('answer'); }`);
+    await assert.rejects(pool(env).submit(task), /could not be cloned/);
+    assert.deepEqual(calls, { refused: 0, entered: 1 }, 'a task whose answer could not be cloned is not sent again');
+    assert.equal(globalThis.__poolWrites, 1, 'its write happened once');
+  }
   // ── (3) ran, wrote, threw a clone refusal's words: once ───────────────────
   {
     globalThis.__poolWrites = 0;

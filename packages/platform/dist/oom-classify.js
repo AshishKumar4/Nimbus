@@ -218,6 +218,18 @@ export function isTransientDoReset(input) {
     return false;
 }
 /**
+ * Whether `input` is a structured-clone refusal of a version the receiving
+ * side cannot read ("Unable to deserialize cloned data due to invalid or
+ * unsupported version"). Its words do not say which side refused: a worker
+ * built before the code that sent its call (a fresh one reads it), or a
+ * caller that cannot read the answer of a call that ran. One that could not
+ * be cloned at all ("… could not be cloned") is the value's own, and fails
+ * the same way however often it is sent.
+ */
+export function isCloneVersionRefusal(input) {
+    return readMessage(input).toLowerCase().includes('deserialize cloned data');
+}
+/**
  * The platform's own word that the actor a call reached was reset or killed:
  * its `durableObjectReset` flag, or one of its termination sentences, whole.
  * Text a program wrote never counts, however it reads: a process whose host
