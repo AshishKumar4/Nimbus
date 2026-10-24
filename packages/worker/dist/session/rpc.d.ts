@@ -352,7 +352,10 @@ export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: n
  * One failing path must not cost the caller the whole batch — with N separate
  * calls it would have learned each outcome — so a read that throws is
  * reported in its own slot and the rest of the batch proceeds. A missing path
- * yields `bytes: null`, exactly as the single read does.
+ * yields `bytes: null`, exactly as the single read does. A read that meets
+ * another holder's delegation is no outcome: it is thrown, so the dispatch
+ * waits for the recall and reads the batch again (withRecall), as it does for
+ * the single read.
  *
  * Bounds are checked before any read and rejected rather than trimmed: a
  * caller that silently got fewer entries than it asked for would read a

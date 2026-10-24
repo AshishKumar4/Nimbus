@@ -45,7 +45,7 @@ import { residentBootSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
 import { readHydrating, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { oneShotHost } from '@nimbus-sh/fabric/one-shot-peer.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-stage-spec.js';
@@ -930,7 +930,10 @@ export async function _rpcStdinFileRead(self: RpcHost, path: string, offset: num
  * One failing path must not cost the caller the whole batch — with N separate
  * calls it would have learned each outcome — so a read that throws is
  * reported in its own slot and the rest of the batch proceeds. A missing path
- * yields `bytes: null`, exactly as the single read does.
+ * yields `bytes: null`, exactly as the single read does. A read that meets
+ * another holder's delegation is no outcome: it is thrown, so the dispatch
+ * waits for the recall and reads the batch again (withRecall), as it does for
+ * the single read.
  *
  * Bounds are checked before any read and rejected rather than trimmed: a
  * caller that silently got fewer entries than it asked for would read a
@@ -991,6 +994,7 @@ export async function _rpcFsReadBatch(
             return path === undefined ? { bytes: read } : { bytes: read, path };
           }));
         } catch (error) {
+          if (recallOf(error) !== null) throw error;
           entries.push({ error: error instanceof Error ? error : new Error(String(error)) });
         }
       }
