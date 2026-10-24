@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier quiet-cpu — asserts the stand-in upload finishes in less than one read's 300 ms
 // The public throwaway `up` command, after `wrangler preview` reports a
 // deployment, reads the Preview's latest deployment until the API serves it,
 // for as long as the upload took and no less than the slowest landing measured
