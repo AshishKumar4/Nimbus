@@ -24,6 +24,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Terminal, stripAnsi } from './_driver.mjs';
 import { VERSION_HEADER, createProbeTarget } from './_session-transport.mjs';
 import { NIMBUS_STATE } from '../../scripts/ci/lib/state-dir.mjs';
@@ -102,6 +103,51 @@ export function activeVersionId(name, { cwd, account }) {
 }
 
 /**
+ * The slowest an upload took to land after wrangler exited: 20 uploads to two
+ * Previews, new and redeployed, landed 273-1488 ms after it (median 330 ms),
+ * each on the first read (2026-10-20). The misses seen before, read 30 s on,
+ * never landed later.
+ */
+export const SLOWEST_LANDING_MS = 1488;
+
+/**
+ * The one settle rule for reading a deploy back (a Worker's active version, a
+ * Preview's latest deployment): `read(signal)` until `landed(answer)`, every
+ * 500 ms, for the longer of the upload's own time (since `uploadStarted`) and
+ * SLOWEST_LANDING_MS. The platform can answer before it switches to the
+ * upload; past that window, uploading again lands sooner than waiting on.
+ * `read` resolves to undefined for a read that gave no answer (an API error);
+ * one the window cuts off is no answer either. Resolves to whether any read
+ * answered, the last answer, and the window in words.
+ *
+ * @template T
+ * @param {{ uploadStarted: number, read: (signal: AbortSignal) => T | undefined | Promise<T | undefined>, landed: (answer: T) => boolean }} options
+ * @returns {Promise<{ answered: boolean, answer: T | undefined, waited: string }>}
+ */
+export async function readBack({ uploadStarted, read, landed }) {
+  const windowMs = Math.max(Date.now() - uploadStarted, SLOWEST_LANDING_MS);
+  const settleBy = Date.now() + windowMs;
+  const signal = AbortSignal.timeout(windowMs);
+  let answered = false;
+  let answer;
+  for (;;) {
+    try {
+      const got = await read(signal);
+      if (got !== undefined) {
+        answered = true;
+        answer = got;
+      }
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      break;
+    }
+    if ((answered && landed(answer)) || Date.now() >= settleBy) break;
+    await delay(Math.min(500, Math.max(1, settleBy - Date.now())));
+  }
+  return { answered, answer, waited: `${(windowMs / 1000).toFixed(1)} s` };
+}
+
+/**
  * Deploy, then prove it. Returns `{ versionId, base }`.
  *
  * Three independent facts have to agree, because each one alone has been
@@ -113,32 +159,40 @@ export function activeVersionId(name, { cwd, account }) {
  *   - the id differs from the one served before (a no-op deploy is a
  *     stale deploy, and the whole point is to probe what was just built).
  */
-export function deployAndVerify({ cwd, account, name, envName = null, args = [], leaseFd = null }) {
+export async function deployAndVerify({ cwd, account, name, envName = null, args = [], secrets = null, leaseFd = null }) {
   const before = activeVersionId(name, { cwd, account });
 
   const deployArgs = ['deploy', ...(envName ? ['-e', envName] : []), ...args];
-  const result = wrangle(WRANGLER, deployArgs, { cwd, account, allowFail: true, leaseFd });
+  const uploadStarted = Date.now();
+  // A secret travels with the upload (withSecretsFile), its file gone once wrangler is.
+  const result = secrets === null
+    ? wrangle(WRANGLER, deployArgs, { cwd, account, allowFail: true, leaseFd })
+    : withSecretsFile(secrets, (path) => wrangle(WRANGLER, [...deployArgs, '--secrets-file', path], { cwd, account, allowFail: true, leaseFd }));
   const output = `${result.stdout || ''}${result.stderr || ''}`;
 
   const printed = output.match(new RegExp(`Current Version ID:\\s*(${UUID_RE.source})`))?.[1] ?? null;
-  const after = activeVersionId(name, { cwd, account });
+  // The platform can answer with the version before for a moment after the upload.
+  const { answer: after = null, waited } = printed === null
+    ? { answer: activeVersionId(name, { cwd, account }), waited: '' }
+    : await readBack({ uploadStarted, read: () => activeVersionId(name, { cwd, account }), landed: (version) => version === printed });
 
   if (!printed || !after || after !== printed || after === before) {
     process.stderr.write(output);
-    throw new Error(deployFailureReason({ name, before, printed, after, status: result.status }));
+    throw new Error(deployFailureReason({ name, before, printed, after, status: result.status, waited }));
   }
 
   return { versionId: after, base: workersDevUrl(output) };
 }
 
-function deployFailureReason({ name, before, printed, after, status }) {
+function deployFailureReason({ name, before, printed, after, status, waited }) {
+  const read = waited ? `, read back for ${waited}` : '';
   const detail = !printed
     ? 'wrangler printed no `Current Version ID` — the upload did not complete'
     : !after
-      ? `Cloudflare does not serve ${name} at all — the script was never activated`
+      ? `Cloudflare does not serve ${name} at all${read} — the script was never activated`
       : after !== printed
-        ? `Cloudflare serves ${after} but the deploy reported ${printed}`
-        : `the active version is still ${after} — nothing was deployed`;
+        ? `Cloudflare serves ${after} but the deploy reported ${printed}${read}`
+        : `the active version is still ${after}${read} — nothing was deployed`;
   return (
     `deploy of ${name} did not land: ${detail}.\n`
     + `wrangler exited ${status}; its exit status is not evidence — a deploy can `
