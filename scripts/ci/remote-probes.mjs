@@ -403,45 +403,53 @@ async function probeRun({ baseline, releases }) {
     }
   }
 
-  // A red row is run once more, alone, on the same target, and that run grades it (lib/rerun.mjs).
-  try {
-    const rerun = await rerunRed(tasks, {
-      paired: PAIRED_PROBES,
-      deferred: DEFERRED.filter((entry) => entry.excluded !== true).map((entry) => entry.probe),
-      run: (items) => runTasks(items, `remote-probes ${sha.slice(0, 12)} rerun`),
-    });
-    problems.push(...rerun.problems);
-    for (const line of rerun.lines) console.log(line);
-  } catch (error) {
-    problems.push(`the reruns could not run: ${scrub(error.message)}`);
-  }
-
   // A paired probe red on one set of Previews is run again on a fresh set,
-  // and is red only if red on both: a set can land slow as a whole, and
-  // where it landed is drawn again; a slower candidate is slower on both.
+  // which grades it: a set can land slow as a whole, and where it landed is
+  // drawn again; a slower candidate is slower on both.
+  /** A fresh set of paired Previews in place of the last, for a confirmation or a rerun. */
+  const freshArms = async () => {
+    await arms.replace({ baseline, candidate: sha, releases });
+    for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
+  };
   const pairedRed = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode === 1 && !row.regraded
     && PAIRED_PROBES.some((probe) => row.name === `tests/behavioral/${probe}.mjs`)));
   if (arms && pairedRed.length > 0) {
     const probes = [...new Set(pairedRed.map((row) => row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')))];
     const confirm = [{ task: 'paired perf on fresh Previews', part: '1/1', only: probes.join(','), skip: '', jobs: 1 }];
     try {
-      await arms.replace({ baseline, candidate: sha, releases });
-      for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
+      await freshArms();
       const again = await runTasks(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
       problems.push(...again.problems);
       const [rerun] = again.tasks;
       tasks.push(rerun);
       for (const row of pairedRed) {
         const second = rerun.rows?.find((other) => other.name === row.name);
-        if (second?.exitCode === 0) {
-          row.regraded = { task: confirm[0].task, evidence: ['red on one set of Previews and green on a fresh set: where they landed, not the code'] };
-          console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
-        } else if (second?.exitCode === 1) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
+        if (second) row.regraded = { task: confirm[0].task, evidence: [`red on one set of Previews, then ${second.exitCode === 0 ? 'green' : `exit ${second.exitCode}`} on a fresh set`] };
+        if (second?.exitCode === 0) console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
+        else if (second?.exitCode === 1) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
         else console.log(`UNCONFIRMED ${row.name}: the fresh set ${second ? `did not grade it (exit ${second.exitCode})` : 'has no row of it'}`);
       }
     } catch (error) {
       problems.push(`the paired confirmation could not run: ${scrub(error.message)}`);
     }
+  }
+
+  // A red row is run once more and that run grades it (lib/rerun.mjs): alone,
+  // on the same target; a paired probe's confirmed red, on one more fresh set.
+  try {
+    const rerun = await rerunRed(tasks, {
+      paired: PAIRED_PROBES,
+      deferred: DEFERRED.filter((entry) => entry.excluded !== true).map((entry) => entry.probe),
+      run: (items) => runTasks(items, `remote-probes ${sha.slice(0, 12)} rerun`),
+      runPaired: async (items) => {
+        await freshArms();
+        return runTasks(items, `remote-probes ${sha.slice(0, 12)} paired rerun`);
+      },
+    });
+    problems.push(...rerun.problems);
+    for (const line of rerun.lines) console.log(line);
+  } catch (error) {
+    problems.push(`the reruns could not run: ${scrub(error.message)}`);
   }
 
   const status = problems.length > 0 ? 2 : gradeTasks(tasks);
