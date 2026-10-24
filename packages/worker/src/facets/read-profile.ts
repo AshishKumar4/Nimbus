@@ -27,8 +27,8 @@
  *     it, so one party alone cannot seed what every other tenant stages.
  *   - A principal's writes to one package's profile are capped per hour,
  *     the count kept in the profile itself.
- *   - What a shared profile adds to one launch is bounded in bytes, a share of
- *     the launch's own plan budget, not in paths.
+ *   - What a shared profile adds to one launch is bounded in bytes, by what
+ *     the launch's module map leaves after its closure, not in paths.
  *   - Entries earn their place, and only the supervisor can raise one: a
  *     launch that staged an entry and was never asked to fault it in raises
  *     its score, once per principal, so a score counts the distinct

@@ -28,7 +28,8 @@ import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.
 import { InterpreterEnvFactsSchema, interpreterProcessEnv } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
 import { launchReadsBytes, readsUnderMounts, recordLaunchReads, staleReason } from './launch-reads.js';
-import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReasonOf } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { takeImageSignals } from '@nimbus-sh/core/runtime/runtime-stdio.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -56,8 +57,6 @@ import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.j
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, STYLESHEET_SOURCE_MAX_FILES } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
-/** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
-const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
@@ -4204,7 +4203,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // Other sessions' misses in the packages this closure can load
     // (read-profile.ts) are evidence of the same kind: a learned module joins
     // the module map with its imports, as this session's own misses do.
-    const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+    const learned = learnedFor ? await learnedFor(Object.keys(bundle), Math.max(0, room)).catch(() => []) : [];
     const own = await addObservedReads(vfs, observedReads ?? new Set(), bundle, observedPaths, budgetState, Math.max(0, room), pacer);
     room -= own.bytes;
     const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
@@ -6393,11 +6392,11 @@ export class FacetManager {
             const stamp = (await vfs.acquire(null)).position;
             const readProfile = this.readProfile;
             const offered = [];
-            const learnedFor = readProfile === null ? undefined : async (closure) => {
+            const learnedFor = readProfile === null ? undefined : async (closure, room) => {
                 const roots = this._profileRoots(closure, spec.cwd);
                 if (roots.length === 0)
                     return [];
-                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), room));
                 return offered.map((entry) => entry.path);
             };
             const learning = await this.learning.forLaunch(key);
@@ -7747,7 +7746,7 @@ export class FacetManager {
             replay: {
                 run: stop.run + 1,
                 tape: stop.tape,
-                ...(read === undefined ? { listen: true } : { read }),
+                boundary: read === undefined ? { kind: 'listen' } : { kind: 'read', path: read },
                 prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
             },
             ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
@@ -7889,7 +7888,7 @@ export class FacetManager {
         const replay = {
             run: stop.run + 1,
             tape: stop.tape,
-            stopAt: stop.stopAt,
+            boundary: { kind: 'stdin', stopAt: stop.stopAt },
             prefix: stopped.prefix ? { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) } : null,
             observations: this.replay.get(pid)?.journal.observations,
         };
@@ -8964,7 +8963,8 @@ export class FacetManager {
         switch (recipe.kind) {
             case 'node': {
                 const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
-                return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
+                const resume = recipe.opts.resume === undefined ? {} : { resume: journaledResume(recipe.opts.resume) };
+                return this._spawnResident(recipe.code, { ...recipe.opts, ...resume, env: withRestartPolicy(env, record.restart) }, attempt, identity);
             }
             case 'worker': {
                 // Which resolver a worker recipe re-drives through is decided by
@@ -9584,6 +9584,12 @@ export class FacetManager {
                             await this._endByStop(entry.pid, stop, true);
                             return;
                         }
+                        // A resident is not promoted (its runs are not promotable): a stop at a
+                        // listen or a miss is not one it can be run again from.
+                        if (stop.kind === 'listen' || stop.kind === 'miss') {
+                            await this._endByStop(entry.pid, stop, opts.resume !== undefined);
+                            return;
+                        }
                         const waiting = new AbortController();
                         this.processes.setTerminator(entry.pid, () => waiting.abort());
                         const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin, { accepted: { stdout: '', stderr: '' }, refused });
@@ -9708,7 +9714,8 @@ export class FacetManager {
         let record;
         let durableFacetName;
         let launchEnv;
-        const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
+        const releaseSignals = opts.takesSignals ? takeImageSignals(this.processes, entry.pid) : null;
+        const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground, opts.takesSignals === true) : null;
         try {
             if (opts.durable) {
                 // A durable spawn on a declared port starts only when a reservation the
@@ -9891,22 +9898,36 @@ export class FacetManager {
                 this.releaseProcessRpcResources(entry.pid);
             else
                 handle?.kill();
-            // An interrupt already killed the process; it did not fail.
-            if (!opts.foreground?.signal.aborted)
+            // An interrupt that killed the process ended it; it did not fail.
+            if (this.processes.get(entry.pid)?.state === 'running')
                 this._end(entry.pid, { code: 1, cause: 'long-running worker boot failed: ' + errorMessage(e) });
             throw e;
         }
         finally {
             foreground?.release();
+            // It runs on in the background, which the terminal's keys no longer
+            // reach: one sent while it booted that its program never took takes its
+            // default action now, as it would have then.
+            const untaken = releaseSignals === null ? null : this.processes.untakenSignal(entry.pid);
+            releaseSignals?.();
+            if (untaken !== null)
+                this.kill(entry.pid, untaken.replace(/^SIG/, ''));
         }
     }
-    _holdForeground(pid, launch) {
+    /**
+     * `pid`, the foreground job of the command `launch` until its boot settles.
+     * The command's interrupt kills it, or, a process whose program takes its
+     * own signals (`takesSignals`), is sent to it, and its program decides.
+     */
+    _holdForeground(pid, launch, takesSignals = false) {
         this.processes.setForeground(pid, true);
         const unsubscribe = this.processes.subscribeOutputBytes(pid, (chunk) => launch.write(chunk.stream, chunk.data));
         let onAbort = () => { };
         const interrupted = new Promise((_, reject) => {
             onAbort = () => {
-                this.kill(pid);
+                this.kill(pid, takesSignals ? signalAbortReasonOf(launch.signal)?.signal : undefined);
+                if (this.processes.get(pid)?.state === 'running')
+                    return;
                 reject(new DOMException('the launching command was interrupted', 'AbortError'));
             };
         });
@@ -10332,6 +10353,24 @@ export class FacetManager {
         return this.portRegistry.has(port);
     }
     get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
+}
+/**
+ * A resident's \`resume\` as its journal row holds it, in today's shape. A
+ * row outlives the release that wrote it (a server runs on across deploys),
+ * and one an earlier release wrote names its replay's boundary by the field
+ * it has.
+ */
+function journaledResume(resume) {
+    const { replay } = resume;
+    if ('boundary' in replay)
+        return { ...resume, replay };
+    const { listen, read, stopAt, ...launch } = replay;
+    const boundary = read !== undefined ? { kind: 'read', path: read }
+        : listen === true ? { kind: 'listen' }
+            : stopAt !== undefined ? { kind: 'stdin', stopAt } : null;
+    if (boundary === null)
+        throw new Error('its journaled replay names no boundary to retrace its run to');
+    return { ...resume, replay: { ...launch, boundary } };
 }
 /**
  * The signals a stopped run's program had said it catches (its stop

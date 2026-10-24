@@ -670,6 +670,11 @@ export function createTransport(coherence, admission, namespace, cells) {
             }
             if (!tree || !arrayIsArray(tree.entries) || !learning.lists(dir))
                 return false;
+            // Listed on the mount table and incarnation the store stands on, or not taken: a listing of another (a mount
+            // made over the directory since the store's cursor, a restart) describes names the view's rows are not of.
+            const at = coherence.cursor();
+            if (at === null || !isFeedPosition(tree.position) || !sameEpochs(tree.position, at))
+                return false;
             const listed = new SafeList();
             listed[listed.length] = dir;
             const written = new SafeSet();

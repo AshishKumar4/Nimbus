@@ -836,6 +836,13 @@ export declare class CompositeVFS implements VFS {
     private backend;
     /** What `mount`'s source gives this view's principal now (the backend itself, before a principal's view of it). */
     private sourceOf;
+    /**
+     * The mode a file or directory `mount`'s backend makes is given, from the
+     * one a call asked for: masked by the caller's umask where the backend
+     * takes no credential (Linux applies the umask above every filesystem). One
+     * that takes a credential applies it itself, or a default ACL instead.
+     */
+    private madeMode;
     /** `found` as this view's principal sees it (its `as`), one view per backend. */
     private backendView;
     /** `files`' synchronous face, or EAGAIN for a caller that cannot wait (an asynchronous mount). */

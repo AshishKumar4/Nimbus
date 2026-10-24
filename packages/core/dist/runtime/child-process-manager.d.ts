@@ -241,6 +241,8 @@ export declare class ChildProcessManager {
     takeSignal(pid: number, waitMs: number): Promise<string | null>;
     /** The signals `pid`'s program catches now (SessionProcessSupervisor.catchSignals). */
     catchSignals(pid: number, catches: readonly string[]): void;
+    /** `pid`'s guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+    signalsTaken(pid: number, received: number): void;
     /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
     nextSignal(pid: number, waitMs: number): Promise<string | null>;
     /** A broker-side text message onto the child's byte ring. */
@@ -350,6 +352,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     cpDrainOutput: (child: number) => Promise<DrainResult>;
     cpNextSignal: (waitMs: number) => Promise<string | null>;
     cpCatchSignals: (catches: readonly string[]) => void;
+    cpSignalsTaken: (received: number) => void;
     cpTakeSignal: (waitMs: number) => Promise<string | null>;
 };
 export {};

@@ -786,7 +786,7 @@ export interface PrefetchBundleOptions {
     /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
     maxBundleBytes?: number;
     /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
-    learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+    learnedFor?: (closure: readonly string[], room: number) => Promise<readonly string[]>;
     /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
     executedModules?: readonly RequiredModuleRoot[];
     /** Where the launch's transform results are kept by content. */
@@ -952,9 +952,16 @@ export interface LongRunningWorkerSpawnOptions {
     /**
      * The command that launched the process, waiting on its boot: until the
      * boot settles the process's output goes there instead of the shell
-     * mirror, and the command's interrupt kills the process.
+     * mirror, and the command's interrupt kills the process (or, one that
+     * takes its signals, is sent to it).
      */
     foreground?: ForegroundLaunch;
+    /**
+     * Its image takes the signals it is sent (takeImageSignals) until its boot
+     * settles: the foreground job's, as on Linux. Once it runs on in the
+     * background, a signal takes its default action, as it ends an idle server.
+     */
+    takesSignals?: boolean;
     restart?: ResidentRestartPolicy;
     port?: number;
     /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
@@ -2371,6 +2378,11 @@ export declare class FacetManager {
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<SpawnedWorker>;
     /** `attempt` is the journal's re-drive budget, and `redriven` who a re-drive runs as, as `_spawnResident` carries them. */
     private _spawnWorker;
+    /**
+     * `pid`, the foreground job of the command `launch` until its boot settles.
+     * The command's interrupt kills it, or, a process whose program takes its
+     * own signals (`takesSignals`), is sent to it, and its program decides.
+     */
     private _holdForeground;
     /**
      * A resident process announcing it bound `port`.

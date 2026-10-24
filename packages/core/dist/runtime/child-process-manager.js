@@ -372,6 +372,10 @@ export class ChildProcessManager {
         }
         this.deps.processes.catchSignals(pid, names);
     }
+    /** `pid`'s guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+    signalsTaken(pid, received) {
+        this.deps.processes.signalsTaken(pid, received);
+    }
     /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
     nextSignal(pid, waitMs) {
         return this.deps.processes.nextSignal(pid, waitMs);
@@ -765,6 +769,7 @@ export function createChildProcessSupervisor(manager, pid) {
         cpDrainOutput: (child) => manager.drainOutput(child),
         cpNextSignal: (waitMs) => manager.nextSignal(pid, waitMs),
         cpCatchSignals: (catches) => manager.catchSignals(pid, catches),
+        cpSignalsTaken: (received) => manager.signalsTaken(pid, received),
         cpTakeSignal: (waitMs) => manager.takeSignal(pid, waitMs),
     };
 }

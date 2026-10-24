@@ -52,7 +52,7 @@ export class JobTable {
         const id = Math.max(0, ...this.jobs.keys()) + 1;
         this.waited.delete(id);
         const processes = this.processes;
-        const { pid } = processes.spawn(options.command, [options.command], options.cwd, { parentPid: options.parent.pid, cred: options.parent.cred });
+        const { pid } = processes.spawn(options.command, [options.command], options.cwd, { parentPid: options.parent.pid, cred: options.parent.cred, backgroundJob: true });
         const held = processes.holdWork(pid);
         let exitCode = null;
         const promise = processes.whenEnded(pid);

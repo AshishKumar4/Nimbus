@@ -46,6 +46,8 @@ export interface ProcessEntry {
   attachedTty?: boolean;
   /** Output is owned by the command that launched it, until its launch returns. */
   foreground?: boolean;
+  /** A shell's background job (`cmd &`): it and what runs below it are not the terminal's foreground job. */
+  backgroundJob?: boolean;
   /**
    * The process this one restarts, when it is one: a resident started again
    * under a new pid because the session object itself restarted while it
@@ -72,6 +74,8 @@ export interface ProcessTableSpawnOptions {
   execId?: string;
   /** The controlling terminal of a process that does not take its parent's: a terminal's own shell. */
   terminal?: string;
+  /** A shell's background job (ProcessEntry.backgroundJob). */
+  backgroundJob?: boolean;
   /** The process this one restarts (ProcessEntry.restartedFrom). */
   restartedFrom?: ProcessRestart;
 }
@@ -192,6 +196,7 @@ export class ProcessTable {
     };
     if (execId !== undefined) entry.execId = execId;
     if (terminal !== undefined) entry.terminal = terminal;
+    if (options.backgroundJob === true) entry.backgroundJob = true;
     if (options.restartedFrom !== undefined) entry.restartedFrom = { ...options.restartedFrom };
     this.processes.set(pid, entry);
     return entry;

@@ -48,7 +48,7 @@ import {
 } from './budgets.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
-import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { classifyError, isCloneVersionRefusal } from '@nimbus-sh/platform/oom-classify.js';
 import {
   BindingError,
   ExecutionError,
@@ -1133,8 +1133,12 @@ export class IsolatePool {
           this.slotGenerations.set(slotIndex, generation);
           throw lastError;
         }
-        // A task that threw those words itself ran: only a refusal to clone its call into the worker is retried.
-        if (cause === 'clone_refused' && !retriedCloneRefusal && !enteredFailure(lastError)) {
+        // Only a refusal of version is tried afresh, for a worker that could not
+        // read its call; its words do not tell that from a caller that could not
+        // read the answer of a call that ran, which this still sends again (see
+        // below). A value that cannot be cloned fails again, after the task ran
+        // when it is its answer; a task that threw those words itself ran.
+        if (isCloneVersionRefusal(lastError) && !retriedCloneRefusal && !enteredFailure(lastError)) {
           retriedCloneRefusal = true;
           const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
           this.slotGenerations.set(slotIndex, generation);

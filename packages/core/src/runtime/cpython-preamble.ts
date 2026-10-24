@@ -73,10 +73,18 @@ async function __nimbusPyBoot(args) {
     stderrBytes: __nimbusPyOutput.stderrBytes,
     // An image whose libc asks again a wait the host gave up on (cpython-runner@3).
     restartsWaits: args.restartsWaits === true,
-    // A one-shot whose process takes its own signals (cpython-runner@4): its
-    // waits end on one, and its interpreter asks for them while it computes.
+    // A process that takes its own signals (cpython-runner@4): its waits end
+    // on one, and its interpreter asks for them while it computes.
     takesSignals: args.takesSignals === true,
   });
+  // An entry into the interpreter; as it returns the guest is idle, and asks
+  // the session for no signals until it next checks (Processes.left).
+  const enter = (fn) => {
+    const entered = __nimbusEnterVm(fn);
+    return async (...input) => {
+      try { return await entered(...input); } finally { await made.procLeft(); }
+    };
+  };
   // A boot that fails ends what its process host started (a signal watch, once init asked).
   try {
     if (typeof __wasiPrepareFilesystem === 'function') {
@@ -109,9 +117,9 @@ async function __nimbusPyBoot(args) {
     // _initialize is static setup only, so it is safe anywhere. Py_Initialize
     // reads entropy through random_get, which workerd refuses in module scope —
     // both run here, at request time.
-    await __nimbusEnterVm(exports._initialize)();
+    await enter(exports._initialize)();
     const initRc = await withCString(args.pythonHome || '/usr/local',
-      (ptr) => __nimbusEnterVm(exports.nimbus_py_init)(ptr));
+      (ptr) => enter(exports.nimbus_py_init)(ptr));
     if (initRc !== 0) {
       // Do the bytes arrive intact? The interpreter, the stdlib and this preamble
       // are all proven by tests/unit/cpython-live-authority.mjs over a local
@@ -150,7 +158,7 @@ async function __nimbusPyBoot(args) {
     // Runtime setup is a separate compilation unit. Appending it to -c or a
     // script changes every user traceback line by the setup's length.
     if (args.bootstrapCode) {
-      const setupRc = await withCString(args.bootstrapCode, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr));
+      const setupRc = await withCString(args.bootstrapCode, (ptr) => enter(exports.nimbus_py_run)(ptr));
       if (setupRc !== 0) throw new Error('Python runtime bootstrap failed (exit ' + setupRc + ')');
     }
 
@@ -158,8 +166,8 @@ async function __nimbusPyBoot(args) {
     // entry that returned needs no flush; flush is for one that trapped.
     return {
       instance,
-      run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),
-      flush: () => __nimbusEnterVm(exports.nimbus_py_flush)(),
+      run: (src) => withCString(src, (ptr) => enter(exports.nimbus_py_run)(ptr)),
+      flush: () => enter(exports.nimbus_py_flush)(),
       // The process host's own waits, its signal watch among them, end with the process.
       dispose: made.procDispose,
     };

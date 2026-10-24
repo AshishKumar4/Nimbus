@@ -2168,6 +2168,7 @@ export function __wasiMakeImports(opts) {
         wasiImport: imports,
         procImport,
         procDispose: () => proc.dispose(),
+        procLeft: () => proc.left(),
         fsImport: fsImport,
         getStdout: () => stdoutBuf,
         getStderr: () => stderrBuf,

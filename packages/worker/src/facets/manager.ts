@@ -44,7 +44,8 @@ import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFa
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { hasOpaqueLoads } from '@nimbus-sh/core/runtime/opaque-loads.js';
 import { launchReadsBytes, type LaunchReads, readsUnderMounts, recordLaunchReads, staleReason } from './launch-reads.js';
-import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReasonOf, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { takeImageSignals } from '@nimbus-sh/core/runtime/runtime-stdio.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -95,8 +96,6 @@ import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
 
-/** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
-const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport, type ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
@@ -148,7 +147,7 @@ import { REAL_NOW_SOURCE, STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
-import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayBoundary, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
 import { ReplaySessions } from '../runtime/replay-session.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
@@ -4629,7 +4628,7 @@ export interface PrefetchBundleOptions {
   /** The closure's raw-byte bound (VFS_BUNDLE_MAX_BYTES). */
   maxBundleBytes?: number;
   /** Other sessions' misses in the packages the closure can load (read-profile.ts). */
-  learnedFor?: (closure: readonly string[]) => Promise<readonly string[]>;
+  learnedFor?: (closure: readonly string[], room: number) => Promise<readonly string[]>;
   /** Modules earlier runs executed, as roots of the required graph; one that arrives with its text is walked from it. */
   executedModules?: readonly RequiredModuleRoot[];
   /** Where the launch's transform results are kept by content. */
@@ -4994,7 +4993,7 @@ async function _buildPrefetchBundle(
   // Other sessions' misses in the packages this closure can load
   // (read-profile.ts) are evidence of the same kind: a learned module joins
   // the module map with its imports, as this session's own misses do.
-  const learned = learnedFor ? await learnedFor(Object.keys(bundle)).catch(() => []) : [];
+  const learned = learnedFor ? await learnedFor(Object.keys(bundle), Math.max(0, room)).catch(() => []) : [];
   const own = await addObservedReads(vfs, observedReads ?? new Set(), bundle, observedPaths, budgetState, Math.max(0, room), pacer);
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
@@ -5517,9 +5516,16 @@ export interface LongRunningWorkerSpawnOptions {
   /**
    * The command that launched the process, waiting on its boot: until the
    * boot settles the process's output goes there instead of the shell
-   * mirror, and the command's interrupt kills the process.
+   * mirror, and the command's interrupt kills the process (or, one that
+   * takes its signals, is sent to it).
    */
   foreground?: ForegroundLaunch;
+  /**
+   * Its image takes the signals it is sent (takeImageSignals) until its boot
+   * settles: the foreground job's, as on Linux. Once it runs on in the
+   * background, a signal takes its default action, as it ends an idle server.
+   */
+  takesSignals?: boolean;
   restart?: ResidentRestartPolicy;
   port?: number;
   /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
@@ -7533,10 +7539,10 @@ export class FacetManager {
       const stamp = (await vfs.acquire(null)).position;
       const readProfile = this.readProfile;
       const offered: StagedProfileEntry[] = [];
-      const learnedFor = readProfile === null ? undefined : async (closure: readonly string[]) => {
+      const learnedFor = readProfile === null ? undefined : async (closure: readonly string[], room: number) => {
         const roots = this._profileRoots(closure, spec.cwd);
         if (roots.length === 0) return [];
-        offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+        offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), room));
         return offered.map((entry) => entry.path);
       };
       const learning = await this.learning.forLaunch(key);
@@ -8848,7 +8854,7 @@ export class FacetManager {
     entry: ProcessEntry,
     code: string,
     opts: Parameters<FacetManager['exec']>[1],
-    stop: StopRecord,
+    stop: Extract<StopRecord, { kind: 'listen' | 'miss' }>,
     /**
      * The run's input channel and read-ahead account, its abort (a kill,
      * Ctrl-C), and the identity its \`< file\` had when it started.
@@ -8915,8 +8921,8 @@ export class FacetManager {
     const resume: StoppedRunNext = {
       replay: {
         run: stop.run + 1,
-        tape: stop.tape!,
-        ...(read === undefined ? { listen: true } : { read }),
+        tape: stop.tape,
+        boundary: read === undefined ? { kind: 'listen' } : { kind: 'read', path: read },
         prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
       },
       ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
@@ -9003,7 +9009,7 @@ export class FacetManager {
    */
   private async _resumeStoppedRun(
     entry: ProcessEntry,
-    stop: StopRecord,
+    stop: Extract<StopRecord, { kind: 'stdin' | 'diverged' }>,
     stops: number,
     inputChannel: number,
     launch: Pick<ExecLaunchOpts, 'captureOutput' | 'stdinFile'>,
@@ -9055,8 +9061,8 @@ export class FacetManager {
     }
     const replay: ReplayLaunch = {
       run: stop.run + 1,
-      tape: stop.tape!,
-      stopAt: stop.stopAt!,
+      tape: stop.tape,
+      boundary: { kind: 'stdin', stopAt: stop.stopAt },
       prefix: stopped.prefix ? { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) } : null,
       observations: this.replay.get(pid)?.journal.observations,
     };
@@ -10172,7 +10178,8 @@ export class FacetManager {
     switch (recipe.kind) {
       case 'node': {
         const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
-        return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
+        const resume = recipe.opts.resume === undefined ? {} : { resume: journaledResume(recipe.opts.resume) };
+        return this._spawnResident(recipe.code, { ...recipe.opts, ...resume, env: withRestartPolicy(env, record.restart) }, attempt, identity);
       }
       case 'worker': {
         // Which resolver a worker recipe re-drives through is decided by
@@ -10821,6 +10828,12 @@ export class FacetManager {
           await this._endByStop(entry.pid, stop, true);
           return;
         }
+        // A resident is not promoted (its runs are not promotable): a stop at a
+        // listen or a miss is not one it can be run again from.
+        if (stop.kind === 'listen' || stop.kind === 'miss') {
+          await this._endByStop(entry.pid, stop, opts.resume !== undefined);
+          return;
+        }
         const waiting = new AbortController();
         this.processes.setTerminator(entry.pid, () => waiting.abort());
         const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin,
@@ -10956,7 +10969,8 @@ export class FacetManager {
     let record: ResidentLaunchRecord | undefined;
     let durableFacetName: string | undefined;
     let launchEnv: Record<string, string> | undefined;
-    const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
+    const releaseSignals = opts.takesSignals ? takeImageSignals(this.processes, entry.pid) : null;
+    const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground, opts.takesSignals === true) : null;
     try {
       if (opts.durable) {
         // A durable spawn on a declared port starts only when a reservation the
@@ -11134,21 +11148,33 @@ export class FacetManager {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
-      // An interrupt already killed the process; it did not fail.
-      if (!opts.foreground?.signal.aborted) this._end(entry.pid, { code: 1, cause: 'long-running worker boot failed: ' + errorMessage(e) });
+      // An interrupt that killed the process ended it; it did not fail.
+      if (this.processes.get(entry.pid)?.state === 'running') this._end(entry.pid, { code: 1, cause: 'long-running worker boot failed: ' + errorMessage(e) });
       throw e;
     } finally {
       foreground?.release();
+      // It runs on in the background, which the terminal's keys no longer
+      // reach: one sent while it booted that its program never took takes its
+      // default action now, as it would have then.
+      const untaken = releaseSignals === null ? null : this.processes.untakenSignal(entry.pid);
+      releaseSignals?.();
+      if (untaken !== null) this.kill(entry.pid, untaken.replace(/^SIG/, ''));
     }
   }
 
-  private _holdForeground(pid: number, launch: ForegroundLaunch): { interrupted: Promise<never>; release(): void } {
+  /**
+   * `pid`, the foreground job of the command `launch` until its boot settles.
+   * The command's interrupt kills it, or, a process whose program takes its
+   * own signals (`takesSignals`), is sent to it, and its program decides.
+   */
+  private _holdForeground(pid: number, launch: ForegroundLaunch, takesSignals = false): { interrupted: Promise<never>; release(): void } {
     this.processes.setForeground(pid, true);
     const unsubscribe = this.processes.subscribeOutputBytes(pid, (chunk) => launch.write(chunk.stream, chunk.data));
     let onAbort = (): void => {};
     const interrupted = new Promise<never>((_, reject) => {
       onAbort = () => {
-        this.kill(pid);
+        this.kill(pid, takesSignals ? signalAbortReasonOf(launch.signal)?.signal : undefined);
+        if (this.processes.get(pid)?.state === 'running') return;
         reject(new DOMException('the launching command was interrupted', 'AbortError'));
       };
     });
@@ -11574,6 +11600,26 @@ export class FacetManager {
   }
 
   get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
+}
+
+/** A replay launch as a release before ReplayBoundary journaled it: what stopped the run before, as a field beside it. */
+type JournaledReplayLaunch = Omit<ReplayLaunch, 'boundary'> & { listen?: true; read?: string; stopAt?: number };
+
+/**
+ * A resident's \`resume\` as its journal row holds it, in today's shape. A
+ * row outlives the release that wrote it (a server runs on across deploys),
+ * and one an earlier release wrote names its replay's boundary by the field
+ * it has.
+ */
+function journaledResume(resume: Omit<StoppedRunNext, 'replay'> & { replay: ReplayLaunch | JournaledReplayLaunch }): StoppedRunNext {
+  const { replay } = resume;
+  if ('boundary' in replay) return { ...resume, replay };
+  const { listen, read, stopAt, ...launch } = replay;
+  const boundary: ReplayBoundary | null = read !== undefined ? { kind: 'read', path: read }
+    : listen === true ? { kind: 'listen' }
+      : stopAt !== undefined ? { kind: 'stdin', stopAt } : null;
+  if (boundary === null) throw new Error('its journaled replay names no boundary to retrace its run to');
+  return { ...resume, replay: { ...launch, boundary } };
 }
 
 /**

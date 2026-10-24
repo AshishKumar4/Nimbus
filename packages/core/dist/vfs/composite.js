@@ -1650,8 +1650,9 @@ export class CompositeVFS {
         create(mode, admit) {
             const { backend, rel } = this.target;
             const empty = new Uint8Array(0);
+            const made = this.host.madeMode(this.target.mount, mode);
             // O_CREAT of a name with nothing at it (openOnMount): the file it makes is told as made.
-            return this.call('open', () => this.host.changingOn(this.target, () => this.target, () => backend.writeFile(rel, empty, mode === undefined ? undefined : { mode }), admit, empty, () => true, undefined, 'add'));
+            return this.call('open', () => this.host.changingOn(this.target, () => this.target, () => backend.writeFile(rel, empty, made === undefined ? undefined : { mode: made }), admit, empty, () => true, undefined, 'add'));
         }
         truncate(size, admit) {
             const { backend, rel } = this.target;
@@ -2147,6 +2148,19 @@ export class CompositeVFS {
     sourceOf(mount) {
         const found = typeof mount.source === 'function' ? mount.source(this.viewer) : mount.source;
         return found ?? null;
+    }
+    /**
+     * The mode a file or directory `mount`'s backend makes is given, from the
+     * one a call asked for: masked by the caller's umask where the backend
+     * takes no credential (Linux applies the umask above every filesystem). One
+     * that takes a credential applies it itself, or a default ACL instead.
+     */
+    madeMode(mount, mode) {
+        const cred = this.viewer.cred;
+        if (mode === undefined || cred === null)
+            return mode;
+        const found = this.sourceOf(mount);
+        return found === null || found.as !== undefined ? mode : mode & ~cred.umask;
     }
     /** `found` as this view's principal sees it (its `as`), one view per backend. */
     backendView(found) {
@@ -2825,7 +2839,7 @@ export class CompositeVFS {
                     ...(what === 'removed' ? { landed: (result) => (isRemoval(result) ? result.removed : [path]) } : {}),
                 }, () => {
                     this.guardMutation([input, path]);
-                    return run(ops, route.rel, path);
+                    return run(ops, route.rel, path, route.mount);
                 }, sync);
             }));
         });
@@ -2870,7 +2884,7 @@ export class CompositeVFS {
                     const ops = this.ops(route, sync);
                     return this.reportWrite({ path, route, ops, follow: false, kind: 'create' }, () => {
                         this.guardMutation([input, path]);
-                        return andThen(ops.mkdir(route.rel, options), () => undefined);
+                        return andThen(ops.mkdir(route.rel, options?.mode === undefined ? options : { ...options, mode: this.madeMode(route.mount, options.mode) }), () => undefined);
                     }, sync);
                 });
             }
@@ -2909,7 +2923,7 @@ export class CompositeVFS {
                 // One call makes it all, and what it made is told as its backend says (VFS.mkdir).
                 return this.reportWrite({ path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, told: null }, () => {
                     this.guardMutation([at, path]);
-                    const made = ops.mkdir(whole.rel, { recursive: true, mode });
+                    const made = ops.mkdir(whole.rel, { recursive: true, mode: this.madeMode(whole.mount, mode) });
                     const tell = (dirs) => {
                         if (this.table.changes === undefined || dirs === undefined || dirs.length === 0)
                             return;
@@ -2931,7 +2945,7 @@ export class CompositeVFS {
                 }
                 return andThen(this.reportWrite({ path: at, route: r, ops, follow: false, kind: 'create' }, () => {
                     this.guardMutation([at]);
-                    return ops.mkdir(r.rel, { mode });
+                    return ops.mkdir(r.rel, { mode: this.madeMode(r.mount, mode) });
                 }, sync), () => make(i + 1));
             });
         };
@@ -3153,7 +3167,8 @@ export class CompositeVFS {
                 // then given the copy's mode (its creation mode is the umask's).
                 // Changes there, not one step.
                 const exact = made.keepMode && mode !== undefined && typeof to.chmod === 'function';
-                const write = () => landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }));
+                const created = this.madeMode(made.mount, mode);
+                const write = () => landed(to.writeFile(toRel, bytes, created === undefined ? undefined : { mode: created }));
                 const there = made.there;
                 const preserved = (copied) => andThen(copied, () => (made.preserve ? andThen(this.preserveMetadata(to, toRel, toAt, made.mount, stat, mode), () => 1) : 1));
                 if (!exact || made.made || there === null || there === undefined || there.mode === undefined) {
@@ -3167,7 +3182,7 @@ export class CompositeVFS {
         this.guardMutation([toAt]);
         // Preserved, its owner may write its entries in until its own mode is set
         // after them (cp -p's), where the backend can set it then.
-        const makeMode = mode !== undefined && made.preserve && typeof to.chmod === 'function' ? mode | 0o700 : mode;
+        const makeMode = mode !== undefined && made.preserve && typeof to.chmod === 'function' ? mode | 0o700 : this.madeMode(made.mount, mode);
         return andThen(landed(to.mkdir(toRel, makeMode === undefined ? undefined : { mode: makeMode })), () => andThen((this.check?.(), from.readdir(fromRel)), (entries) => andThen(entries.reduce((count, entry) => andThen(count, (n) => {
             const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
             const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
@@ -3336,8 +3351,7 @@ export class CompositeVFS {
     }
     /** `parents`: make the missing directories above where the write lands first (mkdir -p), as the write's own lookup resolves it. */
     async writeFile(path, data, options) {
-        const mode = options?.mode === undefined ? undefined : { mode: options.mode };
-        return awaited({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, mode), { parents: options?.parents === true, written: data }));
+        return awaited({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel, _at, mount) => ops.writeFile(rel, data, options?.mode === undefined ? undefined : { mode: this.madeMode(mount, options.mode) }), { parents: options?.parents === true, written: data }));
     }
     /** `parents`: as writeFile's. */
     async writeRange(path, offset, bytes, options) {
@@ -3443,7 +3457,7 @@ export class CompositeVFS {
             landedAt: (path) => syncValue(this.presentAt(normalizePath(path), false)),
             readFile: (path) => syncValue(reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel)))),
             readRange: (path, offset, length) => syncValue(reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)))),
-            writeFile: (path, data, options) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options), { written: data }))),
+            writeFile: (path, data, options) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel, _at, mount) => ops.writeFile(rel, data, options?.mode === undefined ? options : { ...options, mode: this.madeMode(mount, options.mode) }), { written: data }))),
             writeRange: (path, offset, bytes) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes)))),
             truncate: (path, size) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)))),
             readdir: (path) => syncValue(reported({ syscall: 'scandir', path }, () => this.readdirAt(path, true))),

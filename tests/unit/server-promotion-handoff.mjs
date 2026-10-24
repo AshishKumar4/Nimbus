@@ -90,7 +90,7 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   const result = await h.done;
   assert.equal(result.promotedPid, h.entry.pid);
   assert.deepEqual(h.unread.map((p) => new TextDecoder().decode(p.data)), ['hello'], 'what the one-shot took is put back');
-  assert.equal(h.spawned[0].resume.replay.listen, true);
+  assert.deepEqual(h.spawned[0].resume.replay.boundary, { kind: 'listen' });
   assert.equal(h.spawned[0].resume.stdinAtLeast, 5, 'the resident takes it again before it replays');
   assert.deepEqual(h.announced, [h.entry.pid]);
   assert.equal(h.learned.length, 1);

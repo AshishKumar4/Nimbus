@@ -39,10 +39,10 @@ async function lostAfterBoot(authenticated, { stderrRefused = false } = {}) {
   });
   const { pid } = await manager.spawnNode('setInterval(() => {}, 1000);', {
     command: 'node promoted.js', cwd: '/home/user', argv: ['/home/user/promoted.js'],
-    resume: { replay: { run: 2, listen: true, tape, prefix: { stdout: '', stderr: '' } } },
+    resume: { replay: { run: 2, boundary: { kind: 'listen' }, tape, prefix: { stdout: '', stderr: '' } } },
   });
   assert.equal(processes.get(pid)?.state, 'running', 'the resident booted');
-  assert.equal(startedWith.replay.listen, true, 'it keeps retracing its first run up to its listen');
+  assert.deepEqual(startedWith.replay.boundary, { kind: 'listen' }, 'it keeps retracing its first run up to its listen');
   assert.ok(startedWith.stopNonce.length >= 16, 'this launch minted its stop nonce');
   const watching = hostActivity(ctx).acquire();
   try {

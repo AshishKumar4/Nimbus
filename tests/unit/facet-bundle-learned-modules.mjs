@@ -7,6 +7,7 @@
 // launch's module map", nuxt's on-change on the throwaway).
 import assert from 'node:assert/strict';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 
 const APP = 'home/user/app';
@@ -33,11 +34,16 @@ assert.equal(cold.bundle[`${LIB}/dyn/x.js`], undefined, 'no static edge reaches 
 
 // Learned for lib: the module and what it imports are in the map.
 let askedWith = null;
-const warm = await build(async (closure) => {
+let roomGiven = null;
+const warm = await build(async (closure, room) => {
   askedWith = [...closure];
+  roomGiven = room;
   return [`${LIB}/dyn/x.js`];
 });
 assert.ok(askedWith !== null && askedWith.includes(`${LIB}/index.js`), 'the profile is asked with the closure the launch built');
+// What it may offer is what the map leaves after that closure.
+const closureBytes = askedWith.reduce((sum, path) => sum + Buffer.byteLength(files[path] ?? ''), 0);
+assert.equal(roomGiven, VFS_BUNDLE_MAX_BYTES - closureBytes, 'and offered the room the map leaves after it');
 assert.ok(warm.bundle[`${LIB}/dyn/x.js`] !== undefined, 'the learned module is in the module map');
 assert.ok(warm.bundle[`${LIB}/helper.js`] !== undefined, 'and so is the module it imports');
 
