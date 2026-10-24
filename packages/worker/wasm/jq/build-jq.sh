@@ -5,7 +5,8 @@
 # (nimbus-cwd.c), a wait its host gave up on asked again (nimbus-restart.c)
 # and the signals its host sends raised (nimbus-signal.c), as
 # wasi-cli-runner@1 asks (core runtime/os-contracts.ts WASI_CLI_RUNNER).
-# Requires wasi-sdk 27 and network access for the pinned source tarball.
+# Requires wasi-sdk 27, node (the spec's pin), and network access for the
+# pinned source tarball.
 #
 #   WASI_SDK=~/toolchains/wasi-sdk-27.0-x86_64-linux ./build-jq.sh
 #
@@ -24,9 +25,11 @@ if [ "$#" -ne 0 ]; then echo 'usage: build-jq.sh [verify [runtime.wasm ...]]' >&
 grep -qx '27.0' "$WASI_SDK/VERSION" || { echo "build-jq.sh: wasi-sdk 27.0 expected at $WASI_SDK" >&2; exit 64; }
 BUILD="${BUILD:-$HERE/build}"
 JOBS="${JQ_BUILD_JOBS:-8}"
-# jq's release, its digest the one jqlang publishes beside it (sha256sum.txt).
+# jq's release, as its spec pins it (runtime-specs.mjs `source`; the digest
+# the one jqlang publishes beside it, sha256sum.txt).
 JQ_VERSION=1.7.1
-JQ_SHA256=478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703873deeee580c2
+JQ_SOURCE="$(node "$HERE/../../scripts/runtime-source.mjs" "jq/$JQ_VERSION")"
+read -r JQ_URL JQ_SHA256 <<<"$JQ_SOURCE"
 
 fetch() { # url sha256 file
   if [ ! -f "$3" ]; then curl -fsSL "$1" -o "$3.part" && mv "$3.part" "$3"; fi
@@ -35,7 +38,7 @@ fetch() { # url sha256 file
 
 mkdir -p "$BUILD/src" "$BUILD/nimbus"
 cd "$BUILD/src"
-fetch "https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION/jq-$JQ_VERSION.tar.gz" "$JQ_SHA256" "jq-$JQ_VERSION.tar.gz"
+fetch "$JQ_URL" "$JQ_SHA256" "jq-$JQ_VERSION.tar.gz"
 
 # The compiler by name, from PATH, and nothing of this machine in what
 # configure is given: jq prints it (--build-configuration), so a path there

@@ -8,7 +8,8 @@
 // - It starts in the caller's directory (nimbus_proc.startup_dir): a relative
 //   path is the shell's cwd's, an absolute one the session's.
 // - It reads a pipe and writes through a redirection, and exits as jq does:
-//   -e on null 1, bad input 2, a filter that does not compile 3.
+//   -e on null 1, a filter that does not compile 3, input that does not
+//   parse 5 (upstream jq 1.7.1's own statuses and messages).
 // - It reads as the caller: another uid's 0600 file is "Permission denied".
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -64,12 +65,12 @@ try {
 
   assert.deepEqual((await run('echo null | jq -e .')).slice(0, 2), [1, 'null\n'], '-e on null');
   const bad = await run(`echo '{"a":' | jq .`);
-  assert.equal(bad[0], 2, bad[2]);
-  assert.match(bad[2], /^jq: error \(at <stdin>:\d+\): /);
+  assert.equal(bad[0], 5, bad[2]);
+  assert.match(bad[2], /^jq: parse error: Unfinished JSON term at EOF at line 2, column 0\n/);
   const uncompiled = await run('jq -n "{"');
   assert.equal(uncompiled[0], 3, uncompiled[2]);
   assert.match(uncompiled[2], /jq: 1 compile error/);
-  console.log('  ok  it exits as jq does: -e on null 1, bad input 2, a filter that does not compile 3');
+  console.log('  ok  it exits as jq does: -e on null 1, a filter that does not compile 3, bad input 5');
 
   const root = ws.vfs.as(CRED_KERNEL);
   root.writeFile('home/user/proj/secret.json', '{"s":1}\n', { mode: 0o600 });

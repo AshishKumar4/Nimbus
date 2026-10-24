@@ -229,14 +229,25 @@ export const SPECS = {
   },
 
   // jq 1.7.1, with its bundled Oniguruma 6.9.8, cross-built for wasm32-wasi
-  // by packages/worker/wasm/jq/build-jq.sh from jqlang's release (pinned by
-  // its published sha256). A plain WASI command (WASI_CLI_RUNNER): the image
-  // is bin/jq itself. Each file is pinned: a rebuild that changes the bytes
-  // is a new version.
+  // by packages/worker/wasm/jq/build-jq.sh from jqlang's release, `source`
+  // (its sha256 the one jqlang publishes; runtime-source.mjs hands it to the
+  // build). A plain WASI command (WASI_CLI_RUNNER): the image is bin/jq
+  // itself. Each file is pinned: a rebuild that changes the bytes is a new
+  // version.
   'jq/1.7.1': {
     license: 'MIT',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/jq',
+    source: {
+      url: 'https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz',
+      sha256: '478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703873deeee580c2',
+    },
+    npm: {
+      name: '@nimbus-sh/runtime-jq',
+      summary: 'jq 1.7.1, cross-compiled to wasm32-wasi',
+      // The first core that registers wasi-cli-runner@1 (core 0.28.0 does not).
+      core: '>=0.28.1',
+    },
     files: [
       { src: 'jq.wasm', vfs: 'bin/jq', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'jq', sha256: '53040581dea2f20a7ac44fdd9c6bae022f21643cea7ee8531d7537f9737f3b91' },
       { src: 'COPYING', vfs: 'share/jq/COPYING', sha256: '10e974638a41fadfd72357f2f3a4325e20b856c563365128f72feaa406f8c92d' },
