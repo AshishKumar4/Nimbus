@@ -62,7 +62,6 @@ import {
 } from '@nimbus-sh/platform/diag-counters.js';
 import {
   CRED_KERNEL,
-  CRED_SESSION_USER,
   requireVfsCred,
   type RuntimeOpenFlags,
   type VfsAcquireOptions,
@@ -188,7 +187,7 @@ function processPid(pid: unknown): number {
  * refused, so a process can never widen its own identity.
  */
 function callerCred(self: RpcHost, pid: unknown, cred?: VfsCred): VfsCred {
-  if (pid === undefined) return cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'filesystem RPC');
+  if (pid === undefined) return cred === undefined ? self.processes.sessionCred : requireVfsCred(cred, 'filesystem RPC');
   if (cred !== undefined) throw new Error('filesystem RPC: a process acts as its own credential; cred cannot ride a pid');
   return self.processes.cred(processPid(pid));
 }
@@ -313,7 +312,7 @@ export async function _rpcInnerDoCall(self: RpcHost, req: {
 }
 
 /** The session's filesystem, as a `wrangler dev` Worker's KV and R2 bindings reach it. */
-type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>;
+type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs' | 'processes'>;
 
 /**
  * The store a storage binding's props name (fabric bindings.ts
@@ -343,7 +342,7 @@ function retainWriter(self: Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>, 
 function storeFs(self: StorageHost, cred: VfsCred | undefined, op: string, writer?: number): CredentialedVfs {
   self.ensureSqliteFs();
   if (!self.sqliteFs) throw new Error(`${op}: the session filesystem is not open`);
-  return self.sqliteFs.as(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, op), writer === undefined ? undefined : { pid: writer });
+  return self.sqliteFs.as(cred === undefined ? self.processes.sessionCred : requireVfsCred(cred, op), writer === undefined ? undefined : { pid: writer });
 }
 
 /** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */
@@ -1524,7 +1523,7 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
     if (!self.esbuildService) {
       self.ensureSqliteFs();
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
     }
     try {
       const result = await self.esbuildService.transform(code, {

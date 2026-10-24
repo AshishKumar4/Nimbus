@@ -1,4 +1,4 @@
-import { CRED_SESSION_USER, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView, X_OK, type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
@@ -77,6 +77,8 @@ export function installNpmBinFallbackResolver(
   deps: {
     /** The session's namespace: bins are found in it, as the running command when one runs. */
     filesystem: ProcessFiles;
+    /** Who a resolution with no caller of its own sees the namespace as: the session user (SessionProcessSupervisor.sessionCred). */
+    sessionCred: VfsCred;
     getCwd(): string;
     getFacetManager(): FacetManager;
     /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */
@@ -92,7 +94,7 @@ export function installNpmBinFallbackResolver(
   // Bins are probed through the caller's view, the one the command that
   // runs looks its bin up again through; a resolution without a caller sees
   // the namespace as the session user.
-  const ownerView = new ProcessView(deps.filesystem.openHost(CRED_SESSION_USER).fs);
+  const ownerView = new ProcessView(deps.filesystem.openHost(deps.sessionCred).fs);
   // A lookup the namespace cannot answer (a mount that fails under the cwd)
   // finds no bin: the name resolves as it would with none, and only the
   // command it names fails.

@@ -14,11 +14,12 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const {
-  CRED_KERNEL, CRED_SESSION_USER, ProcessFiles, SqliteVFS,
+  CRED_KERNEL, CRED_SESSION_USER, ProcessFiles, SessionProcessSupervisor, SqliteVFS,
   editorViews, serveEditorFs, runTool, handleFetch, rpcDeleteFile,
 } = await importWorkerBundle({
   'packages/core/src/runtime/os-contracts.ts': ['CRED_KERNEL', 'CRED_SESSION_USER'],
   'packages/core/src/runtime/process-files.ts': ['ProcessFiles'],
+  'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
   'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
   'packages/worker/src/session/editor-fs.ts': ['editorViews', 'serveEditorFs'],
   'packages/worker/src/session/agent.ts': ['runTool'],
@@ -42,13 +43,14 @@ kernel.chown('home/user/private/secret.txt', OTHER.uid, OTHER.gid);
 kernel.mkdir('home/user/sticky', { mode: 0o1777 });
 kernel.writeFile('home/user/sticky/provisioned.txt', 'provisioned', { mode: 0o644 });
 const namespace = new ProcessFiles(engine);
+const processes = new SessionProcessSupervisor();
 const text = (path) => kernel.readFileString(path);
 const ownedByUser = (path) => kernel.stat(path).uid === CRED_SESSION_USER.uid;
 const denied = /EACCES|EPERM/;
 
 // ── the editor pane ─────────────────────────────────────────────────────────
 {
-  const views = editorViews(namespace);
+  const views = editorViews(namespace, CRED_SESSION_USER);
   const save = await serveEditorFs(views, { type: 'fs-write', path: '/home/user/protected.txt', content: 'replaced' });
   assert.equal(save.ok, false, `the editor saved over a kernel-owned file: ${JSON.stringify(save)}`);
   assert.match(save.error, denied);
@@ -68,7 +70,7 @@ const denied = /EACCES|EPERM/;
 
 // ── the agent's file tools ──────────────────────────────────────────────────
 {
-  const host = { sqliteFs: engine, getFilesystemAuthority: () => namespace, async ensureRuntimeReady() {} };
+  const host = { sqliteFs: engine, processes, getFilesystemAuthority: () => namespace, async ensureRuntimeReady() {} };
   const write = await runTool(host, 'write_file', { path: '/home/user/protected.txt', content: 'replaced' });
   assert.match(String(write.error), denied, `the agent wrote over a kernel-owned file: ${JSON.stringify(write)}`);
   assert.equal(text('home/user/protected.txt'), 'kept');
@@ -95,6 +97,7 @@ const denied = /EACCES|EPERM/;
     ctx: { storage: { async get(k) { return store.get(k); }, async put(k, v) { store.set(k, v); }, async delete(k) { store.delete(k); } } },
     async hydrateSessionBasePath() {},
     getFilesystemAuthority: () => namespace,
+    processes,
   };
   const post = (path, body) => handleFetch(self, new Request(`https://nimbus.test${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -115,7 +118,7 @@ const denied = /EACCES|EPERM/;
 
 // ── files.delete: the session user, unless the embedder asks for the kernel ─
 {
-  const host = { getFilesystemAuthority: () => namespace, async ensureRuntimeReady() {} };
+  const host = { processes, getFilesystemAuthority: () => namespace, async ensureRuntimeReady() {} };
   await assert.rejects(rpcDeleteFile(host, '/home/user/sticky/provisioned.txt'), denied,
     'files.delete removed a file the kernel provisioned in a sticky directory');
   assert.equal(text('home/user/sticky/provisioned.txt'), 'provisioned');

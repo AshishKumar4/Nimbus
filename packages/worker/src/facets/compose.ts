@@ -41,7 +41,6 @@ import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contr
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { FacetManager, type FacetManagerHooks, type WorkerRecipe } from './manager.js';
@@ -209,9 +208,9 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
   };
   const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });
   manager.setVfs(vfs, deps.filesystem);
-  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_SESSION_USER)));
+  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(deps.processes.sessionCred)));
   // What the session's first `node` needs is read now, not by that launch (FacetManager.prewarm).
-  ctx.waitUntil(manager.prewarm(CRED_SESSION_USER).catch((error: Error) => {
+  ctx.waitUntil(manager.prewarm(deps.processes.sessionCred).catch((error: Error) => {
     console.warn('[facet-manager] the prewarm failed; the first launch reads what it needs itself:', error);
   }));
   const { portRegistry } = deps;

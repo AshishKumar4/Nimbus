@@ -19,7 +19,7 @@
  */
 
 import { RpcTarget } from 'cloudflare:workers';
-import { CRED_SESSION_USER, sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionRunnerOptions, SessionRunnerRunOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
@@ -62,7 +62,7 @@ export class HostedSession extends RpcTarget implements SessionRpc, Pick<Session
    */
   #cred(asked: VfsCred | undefined): VfsCred | undefined {
     if (this.scope === null) return asked;
-    const bound = this.scope.cred ?? CRED_SESSION_USER;
+    const bound = this.scope.cred ?? this.owner.processes.sessionCred;
     if (asked !== undefined && !sameCred(bound, asked)) throw Object.assign(new Error('EPERM: this session is bound to another identity'), { code: 'EPERM' });
     return bound;
   }

@@ -12,7 +12,7 @@ import {
   createNpmBinShim,
   npmBinManifestPath,
 } from '../../packages/worker/src/npm/bin-links.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -54,6 +54,7 @@ const learned = new Set();
 let lookupCwd = `/${project}`;
 installNpmBinFallbackResolver(registry, {
   filesystem: files,
+  sessionCred: CRED_SESSION_USER,
   getCwd: () => lookupCwd,
   getFacetManager() { throw new Error('unexpected staged artifact'); },
   async learnedServer(server) { return learned.has(`${server.package} ${server.bin} ${server.arg0}`); },

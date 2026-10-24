@@ -21,7 +21,7 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import type { RunnerSpec } from '../facets/runners.js';
 import { facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
@@ -632,7 +632,7 @@ export async function rpcRunCode(
 }
 
 /** What running and closing a session's runners asks of it. */
-export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager'>;
+export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager' | 'processes'>;
 
 /**
  * Run `code` in runner `id` of `owner` (FacetManager.runnerRun): a hosted
@@ -659,7 +659,7 @@ export async function rpcRunnerRun(
     throw new TypeError('runner: env must map names to strings');
   }
   if (runner.execId !== undefined) parseExecId(runner.execId);
-  const cred = runner.cred === undefined ? CRED_SESSION_USER : requireVfsCred(runner.cred, 'runner');
+  const cred = runner.cred === undefined ? self.processes.sessionCred : requireVfsCred(runner.cred, 'runner');
   // The most a process facet may use, and the longest a timer can wait (a longer delay fires at once).
   for (const [limit, value, most] of [['timeoutMs', options.timeoutMs, 2 ** 31 - 1], ['cpuMs', options.cpuMs, facetLimits('process').cpuMs]] as const) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > most)) {
@@ -1373,7 +1373,7 @@ export async function rpcDeleteFile(
 ): Promise<void> {
   await ensureProgrammaticReady(self);
   const p = `/${String(path).replace(/^\/+/, '')}`;
-  const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'files.delete'));
+  const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? self.processes.sessionCred : requireVfsCred(cred, 'files.delete'));
   // A delegation it meets is recalled first.
   // The leaf is classified without following it, as unlink(2) resolves it:
   // a symlink is removed, never searched through to its target.
@@ -1583,7 +1583,10 @@ export async function reserveSessionProcesses(ctx: GenerationContext, processes:
  */
 async function installEmptyProcessState(self: ProgrammaticHost): Promise<void> {
   releaseGeneration(self.ctx);
-  self.processes = await reserveSessionProcesses(self.ctx, sessionProcesses(self.ctx));
+  // The session user keeps the groups its host gave it.
+  const processes = sessionProcesses(self.ctx);
+  processes.setSessionGroups(self.processes.sessionCred.groups);
+  self.processes = await reserveSessionProcesses(self.ctx, processes);
   self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
   self._w9PersistWired = false;
 }

@@ -223,7 +223,7 @@ function credFor(deps: SupervisorOpDeps, pid: number | undefined, cred?: VfsCred
   if (pid === undefined) {
     // Validated through the one VfsCred validator; a host that names a
     // credential names a well-formed one or gets nothing.
-    return cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'supervisor op');
+    return cred === undefined ? deps.processes?.sessionCred ?? CRED_SESSION_USER : requireVfsCred(cred, 'supervisor op');
   }
   if (cred !== undefined) {
     throw new Error('supervisor op: a process acts as its own credential; cred cannot ride a pid');

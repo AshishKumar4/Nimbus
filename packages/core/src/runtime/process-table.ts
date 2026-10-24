@@ -140,6 +140,8 @@ export class ProcessTable {
   private base = 0;
   private processes = new Map<number, TableEntry>();
   private onStride: ((stride: number) => void) | null = null;
+  /** Who a process made with no parent is: the session user, with its host's groups (SessionProcessSupervisor.setSessionGroups). */
+  sessionCred: VfsCred = CRED_SESSION_USER;
 
   /**
    * Move the pid space onto this instance generation's range. Called once at
@@ -174,7 +176,7 @@ export class ProcessTable {
     options: ProcessTableSpawnOptions = {},
   ): ProcessEntry {
     const inheritedCred = options.parentPid === undefined
-      ? CRED_SESSION_USER
+      ? this.sessionCred
       : this.credOf(options.parentPid);
     const parent = options.parentPid === undefined ? undefined : this.processes.get(options.parentPid);
     const execId = options.execId ?? parent?.execId;

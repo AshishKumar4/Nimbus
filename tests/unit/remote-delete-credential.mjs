@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 import { issueNimbusToken } from '../../packages/worker/src/auth/token.ts';
-import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
-// A remote token authenticates the session's user, so its deletion names
-// that user, as its write, chmod and rename do (supervisor-op credFor): no
-// default, now or later, can widen it.
+// A remote token authenticates the session's user, so its deletion names no
+// credential and acts as that user, with the groups its host gave it (Kinu
+// ask 73), as its write, chmod and rename do (supervisor-op credFor); the
+// caller can name none.
 const calls = [];
 const stub = { _rpcDeleteFile: async (...args) => { calls.push(args); } };
 const env = { JWT_SECRET: 'unit-remote-delete-secret', NIMBUS_SESSION: { idFromName: (name) => name, get: () => stub } };
@@ -20,8 +21,7 @@ for (const args of [['/home/user/a.txt'], ['/home/user/dir', { recursive: true }
   const [path, options, cred] = calls.at(-1);
   assert.equal(path, args[0]);
   assert.deepEqual(options, args[1] ?? {});
-  assert.deepEqual(cred, CRED_SESSION_USER, 'a remote deletion acts as the session user');
-  assert.notDeepEqual(cred, CRED_KERNEL);
+  assert.equal(cred, undefined, 'a remote deletion acts as the session user, as the session has it');
 }
 
 // A caller still cannot name the identity it deletes as.

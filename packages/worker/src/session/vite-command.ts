@@ -15,7 +15,7 @@
 
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { readViteConfigFile } from '../facets/vite-config-file.js';
@@ -113,7 +113,7 @@ export function createViteCommand(self: ViteHost) {
     // (parseViteConfigTypeScript); a plain one is read as is, so a fresh
     // session's `vite` does not wait on the esbuild facet.
     const configFile = await readViteConfigFile(projectFs, cwd, async (source) => {
-      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
       return (await self.esbuildService.transform(source, { loader: 'ts', format: 'esm' })).code;
     });
     if (configFile.error) ctx.stderr.write(`Warning: ${configFile.error}\n`);
@@ -147,7 +147,7 @@ export function createViteCommand(self: ViteHost) {
         );
       }
 
-      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
       const htmlPath = cwd + '/index.html';
       let entryPoint = cwd + '/src/main.tsx';
       let origHtml = '';
@@ -370,7 +370,7 @@ export function createViteCommand(self: ViteHost) {
         return 1;
       }
       // Start vite on the dist directory
-      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
       stopViteServers(self, { replacing: true });
       const previewBasePath = self.viteBasePath;
       // process metadata support: same long-running treatment as the
@@ -559,7 +559,7 @@ export function createViteCommand(self: ViteHost) {
     }
 
 
-    if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+    if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
     const previewBasePath = self.viteBasePath;
     const viteDefine = viteConfig.define;
 

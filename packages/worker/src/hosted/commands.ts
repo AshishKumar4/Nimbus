@@ -6,7 +6,7 @@ import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/com
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, type CPythonRunnerContract } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, requireVfsCred, type CPythonRunnerContract } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -73,7 +73,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
   const kernelFs = sqliteFs.as(CRED_KERNEL);
   // The build service's default view, for a build that names none: the
   // session's user, never the kernel. A command's own build names its view.
-  const ownerFs = workspace.filesystem.namespaceFs(CRED_SESSION_USER);
+  const ownerFs = workspace.filesystem.namespaceFs(workspace.processes.sessionCred);
   const kernel = workspace.kernel;
   const shell = workspace.shell;
   const registry = workspace.registry;
@@ -1180,6 +1180,7 @@ const tsrs = (binName: string): Command => async (ctx) => {
 const ownPrograms = tsrsPrograms(tsrs);
 installNpmBinFallbackResolver(registry, {
   filesystem: workspace.filesystem,
+  sessionCred: workspace.processes.sessionCred,
   getCwd: () => shell?.getCwd() || '/home/user',
   getFacetManager: () => {
     self.ensureFacetManager();

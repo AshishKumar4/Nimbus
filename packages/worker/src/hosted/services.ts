@@ -10,7 +10,7 @@ import {
   issueProcessNews,
   withLaunchAdmission,
 } from "@nimbus-sh/fabric/budgets.js";
-import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { CRED_KERNEL, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
 import { isRuntimeInstallHint, resolveChildCommand } from '@nimbus-sh/core/shell/exec-dispatch.js';
 
@@ -233,7 +233,7 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     self.ensureSqliteFs();
     if (!self.esbuildService) {
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval

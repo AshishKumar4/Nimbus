@@ -1,7 +1,7 @@
 import { registerHostedCommands } from '../hosted/commands.js';
 import { runtimeCatalogSource } from '../runtime/runtime-catalog.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -122,7 +122,7 @@ async function buildSession(
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
     // The user's project is read as its user, as the user's shell reads it.
-    const userFs = self.sqliteFs!.as(CRED_SESSION_USER);
+    const userFs = self.sqliteFs!.as(self.processes.sessionCred);
     self.ensureFacetManager();
     // Idempotent, so a delegation it meets is waited out and it runs again.
     await withRecall(() => self.seedFilesystem());
@@ -310,7 +310,7 @@ async function buildSession(
     //
     // Answered by serveEditorFs (editor-fs.ts).
     self.terminal.onFs((msg: any, reply: (frame: any) => void) => {
-      void serveEditorFs(editorViews(self.getFilesystemAuthority()), msg).then(reply);
+      void serveEditorFs(editorViews(self.getFilesystemAuthority(), self.processes.sessionCred), msg).then(reply);
     });
 
     // W8: hand the registry to the cp broker so child_process.spawn from

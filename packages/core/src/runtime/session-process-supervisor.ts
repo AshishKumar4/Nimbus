@@ -35,7 +35,7 @@ import {
 import { parseProcessSignalName, type ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition, type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
-import type { VfsCred } from './os-contracts.js';
+import { CRED_SESSION_USER, sameCred, sessionUserCred, type VfsCred } from './os-contracts.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
 
 export interface ProcessWorkObservation {
@@ -228,6 +228,24 @@ export class SessionProcessSupervisor implements ProcessOutput {
   governIdentityChanges(policy: IdentityChangePolicy): void {
     if (this.identityPolicy !== null && this.identityPolicy !== policy) throw new Error('SessionProcessSupervisor: an identity policy is already installed');
     this.identityPolicy = policy;
+  }
+
+  /**
+   * The session user's supplementary groups beyond its own (sessionUserCred):
+   * what a process made with no parent runs with, and what the host acts as
+   * where it acts as the session user (sessionCred). Set once, by the host,
+   * before the processes it is for.
+   */
+  setSessionGroups(groups: readonly number[]): void {
+    const cred = sessionUserCred(groups);
+    if (sameCred(cred, this.table.sessionCred)) return;
+    if (this.table.sessionCred !== CRED_SESSION_USER) throw new Error('SessionProcessSupervisor: the session groups are already set');
+    this.table.sessionCred = cred;
+  }
+
+  /** The session user as this session has it: CRED_SESSION_USER with its host's groups (setSessionGroups). */
+  get sessionCred(): VfsCred {
+    return this.table.sessionCred;
   }
 
   /**

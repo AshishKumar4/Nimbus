@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { installNpmBinFallbackResolver } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
 import { createNpmBinShim, createNpmBinManifest, npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
@@ -30,6 +30,7 @@ const vfs = ws.vfs.as(CRED_KERNEL);
 registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.shell.execute(cmd, options) });
 installNpmBinFallbackResolver(ws.registry, {
   filesystem: ws.filesystem,
+  sessionCred: CRED_SESSION_USER,
   getCwd: () => '/home/user',
   getFacetManager() { throw new Error('unexpected staged artifact'); },
   async learnedServer() { return false; },

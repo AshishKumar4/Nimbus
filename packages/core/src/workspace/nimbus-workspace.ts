@@ -273,6 +273,14 @@ export interface NimbusWorkspaceOptions {
    * and not asked. Absent: every change is allowed.
    */
   readonly mayChangeIdentity?: IdentityChangePolicy;
+  /**
+   * Supplementary groups the session user (uid 1000) is in beyond its own,
+   * say a project group the host made (Kinu ask 73): its shell, an exec with
+   * no identity of its own and what the host does as the session user act in
+   * them, and `id` shows them. The host's own groups, never 0; set on
+   * `processes` (setSessionGroups) before the shell starts.
+   */
+  readonly sessionGroups?: readonly number[];
 }
 
 /** Where a named terminal's history is kept unless it names a file of its own. */
@@ -408,6 +416,7 @@ export class NimbusWorkspace {
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
     if (options.mayChangeIdentity !== undefined) processes.governIdentityChanges(options.mayChangeIdentity);
+    if (options.sessionGroups !== undefined) processes.setSessionGroups(options.sessionGroups);
     if (options.egressFor !== undefined && options.egress === undefined) {
       throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
     }
@@ -522,7 +531,7 @@ export class NimbusWorkspace {
       // they installed globally, are read as they would read them.
       const runtimeLease = filesystem.openHost(CRED_KERNEL);
       hostLeases.push(runtimeLease);
-      const ownerLease = filesystem.openHost(CRED_SESSION_USER);
+      const ownerLease = filesystem.openHost(processes.sessionCred);
       hostLeases.push(ownerLease);
       // A lookup without a caller's view INSPECTS a file to decide how to run
       // it as the session user, and the caller's own execute permission is

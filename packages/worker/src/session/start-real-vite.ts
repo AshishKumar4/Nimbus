@@ -7,7 +7,6 @@
  * again by running the `vite` command again (dev-servers.ts).
  */
 
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
@@ -93,7 +92,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       .find((p) => callerFs.exists(p)) ?? null);
     if (cfgPath) {
       try {
-        if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+        if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
         const bundleResult = await self.esbuildService.build([cfgPath], {
           bundle: true,
           format: 'esm',

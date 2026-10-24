@@ -10,7 +10,7 @@ import { installNpmBinFallbackResolver } from '../../packages/worker/src/shell/n
 import { tsrsPrograms } from '../../packages/worker/src/runtime/tsrs.ts';
 import { TSRS_TYPESCRIPT_VERSION, TSRS_VERSION } from '../../packages/worker/src/tsrs-wasm-artifact.generated.ts';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -52,6 +52,7 @@ let cwd = '/home/user/bare';
 const ran = [];
 installNpmBinFallbackResolver(registry, {
   filesystem,
+  sessionCred: CRED_SESSION_USER,
   getCwd: () => cwd,
   getFacetManager() { throw new Error('unexpected staged artifact'); },
   async learnedServer() { return false; },
