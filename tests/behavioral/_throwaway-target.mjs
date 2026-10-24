@@ -96,7 +96,6 @@ const {
   createSession,
   parseFlags,
   randomSecret,
-  READINESS_BUDGET_MS,
   readBack,
   readState,
   requireAccountPin,
@@ -230,22 +229,13 @@ async function up() {
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
   let deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
-  if (!deployed.landed && created && deployed.reported) {
+  if (!deployed.landed) {
     // A Preview this run created holds nothing but its uploads, each with
     // this secret: one wrangler reported a deployment for carried it, however
     // late it lands, so a retry, here or by a later `up`, keeps the secret
     // instead of refusing a name it cannot vouch for. An upload with no id
     // may have failed before its deployment, and proves nothing.
-    writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
-    // That deployment's Preview stands, but the API may not read it back yet,
-    // and `wrangler preview` creates a Preview its read does not find: the API
-    // refuses a second of the name (100338). So upload again only once it
-    // reads back, and not at all when its latest is this upload, late.
-    await untilPreviewReads({ preview, account, token, deploymentId: deployed.deploymentId });
-    const late = await latestDeployment({ account, token, preview });
-    if (late?.id === deployed.deploymentId) deployed = { ...deployed, landed: true, startupMs: late.startup_time_ms };
-  }
-  if (!deployed.landed) {
+    if (created && deployed.reported) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
     log(`WARNING: Preview ${preview} of ${PREVIEW_PARENT} did not land: ${deployed.detail}; wrangler exited ${deployed.status}. Uploading it once more.`);
     // Against the latest before either upload: a first one that lands late has an id of its own, not the second's.
     deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
@@ -425,6 +415,9 @@ async function latestDeployment({ account, token, preview, signal = undefined })
 async function ensurePreviewParent({ account, token }) {
   const subdomain = { enabled: true, previews_enabled: true };
   const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}`, { account, token });
+  if (!got.ok && !(got.status === 404 && got.errors.some((error) => error?.code === 10007))) {
+    throw new Error(`cannot tell whether the Preview parent ${PREVIEW_PARENT} stands: HTTP ${got.status}, errors ${JSON.stringify(got.errors)}`);
+  }
   if (!got.ok) {
     log(`creating the Preview parent Worker ${PREVIEW_PARENT}`);
     const created = await cfApi('/workers/workers', { account, token, method: 'POST', body: { name: PREVIEW_PARENT, subdomain } });
@@ -460,52 +453,40 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  const base = workersDevUrlOf(printed?.preview?.urls);
-  if (deploymentId && !base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
-  // A read the API failed is no answer: the next may give one, within the window.
-  const { answered, answer: latest, waited } = await readBack({
+  if (!deploymentId) {
+    process.stderr.write(`${stdout}${result.stderr || ''}`);
+    return { landed: false, reported: false, detail: '`wrangler preview` reported no deployment id', status: result.status };
+  }
+  // Read by the id the upload printed, as wrangler itself goes on once it
+  // has made a Preview: on 2026-10-24 the API answered two new Previews'
+  // names 404 13 s after it made them, and served their deployments by id.
+  const { answer: latest, waited } = await readBack({
     uploadStarted,
-    read: async (signal) => {
+    read: async (deadline) => {
+      const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
       try {
-        return await latestDeployment({ account, token, preview, signal });
+        return await latestDeployment({ account, token, preview: printed.preview.id, signal });
       } catch (error) {
-        if (error instanceof PreviewReadError) return undefined;
+        // A read the API failed, or one the window cut off, is no answer.
+        if (error instanceof PreviewReadError || signal.aborted) return undefined;
         throw error;
       }
     },
-    landed: (found) => !deploymentId || found?.id === deploymentId,
+    landed: (found) => found?.id === deploymentId,
   });
   const after = latest?.id ?? null;
-  if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
+  if (after !== deploymentId || after === (before?.id ?? null)) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);
-    const detail = !deploymentId
-      ? '`wrangler preview` reported no deployment id'
-      : !answered
-        ? `the API answered no read of its latest deployment within ${waited}`
-        : after !== deploymentId
-          ? `${waited} after it, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
-          : `the latest deployment is still ${after} — nothing was deployed`;
-    return { landed: false, reported: Boolean(deploymentId), deploymentId, base, detail, status: result.status };
+    const detail = latest === undefined
+      ? `the API answered no read of its latest deployment within ${waited}`
+      : after !== deploymentId
+        ? `${waited} after it, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+        : `the latest deployment is still ${after} — nothing was deployed`;
+    return { landed: false, reported: true, detail, status: result.status };
   }
-  return { landed: true, reported: true, deploymentId, base, startupMs: latest.startup_time_ms };
-}
-
-/**
- * Until the API reads back the Preview whose upload reported `deploymentId`,
- * so the Preview stands: every 500 ms, for as long as `up` allows a fresh
- * deployment to come to serve (READINESS_BUDGET_MS). A read the API failed
- * is no answer.
- */
-async function untilPreviewReads({ preview, account, token, deploymentId }) {
-  const by = Date.now() + READINESS_BUDGET_MS;
-  for (;;) {
-    const presence = await previewPresence({ preview, account, token });
-    if (presence.kind === 'exists') return;
-    if (Date.now() >= by) {
-      throw new Error(`Preview ${preview} of ${PREVIEW_PARENT}: its upload reported deployment ${deploymentId}, and the API did not read the Preview back within ${READINESS_BUDGET_MS / 1000} s (last: ${presence.kind === 'unknown' ? presence.reason : 'not found'}); uploading again would ask to create it a second time`);
-    }
-    await delay(500);
-  }
+  const base = workersDevUrlOf(printed.preview.urls);
+  if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview.urls)})`);
+  return { landed: true, base, deploymentId, startupMs: latest.startup_time_ms };
 }
 
 /** The workers.dev URL among a Preview's URLs, without a trailing slash. */
