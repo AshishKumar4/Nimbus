@@ -7746,7 +7746,7 @@ export class FacetManager {
             replay: {
                 run: stop.run + 1,
                 tape: stop.tape,
-                ...(read === undefined ? { listen: true } : { read }),
+                boundary: read === undefined ? { kind: 'listen' } : { kind: 'read', path: read },
                 prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
             },
             ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
@@ -7888,7 +7888,7 @@ export class FacetManager {
         const replay = {
             run: stop.run + 1,
             tape: stop.tape,
-            stopAt: stop.stopAt,
+            boundary: { kind: 'stdin', stopAt: stop.stopAt },
             prefix: stopped.prefix ? { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) } : null,
             observations: this.replay.get(pid)?.journal.observations,
         };
@@ -8963,7 +8963,8 @@ export class FacetManager {
         switch (recipe.kind) {
             case 'node': {
                 const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
-                return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
+                const resume = recipe.opts.resume === undefined ? {} : { resume: journaledResume(recipe.opts.resume) };
+                return this._spawnResident(recipe.code, { ...recipe.opts, ...resume, env: withRestartPolicy(env, record.restart) }, attempt, identity);
             }
             case 'worker': {
                 // Which resolver a worker recipe re-drives through is decided by
@@ -9581,6 +9582,12 @@ export class FacetManager {
                         this.portRegistry.unregisterByPid(entry.pid);
                         if (opts.resume && stop.kind === 'diverged') {
                             await this._endByStop(entry.pid, stop, true);
+                            return;
+                        }
+                        // A resident is not promoted (its runs are not promotable): a stop at a
+                        // listen or a miss is not one it can be run again from.
+                        if (stop.kind === 'listen' || stop.kind === 'miss') {
+                            await this._endByStop(entry.pid, stop, opts.resume !== undefined);
                             return;
                         }
                         const waiting = new AbortController();
@@ -10346,6 +10353,24 @@ export class FacetManager {
         return this.portRegistry.has(port);
     }
     get stats() { return { ...this.processes.stats, readProfileConflicts: this.readProfileConflicts }; }
+}
+/**
+ * A resident's \`resume\` as its journal row holds it, in today's shape. A
+ * row outlives the release that wrote it (a server runs on across deploys),
+ * and one an earlier release wrote names its replay's boundary by the field
+ * it has.
+ */
+function journaledResume(resume) {
+    const { replay } = resume;
+    if ('boundary' in replay)
+        return { ...resume, replay };
+    const { listen, read, stopAt, ...launch } = replay;
+    const boundary = read !== undefined ? { kind: 'read', path: read }
+        : listen === true ? { kind: 'listen' }
+            : stopAt !== undefined ? { kind: 'stdin', stopAt } : null;
+    if (boundary === null)
+        throw new Error('its journaled replay names no boundary to retrace its run to');
+    return { ...resume, replay: { ...launch, boundary } };
 }
 /**
  * The signals a stopped run's program had said it catches (its stop

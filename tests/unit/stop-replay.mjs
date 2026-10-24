@@ -376,7 +376,7 @@ assert.equal(hostile.stopped.tape.reads[0], 2);
 assert.equal(Buffer.from(hostile.stopped.tape.random, 'base64').length, 7);
 
 const prefix = { stdout: b64('before ' + JSON.stringify(first.draws) + '\n'), stderr: b64('warn\n') };
-const replay = { run: 2, tape: first.stopped.tape, stopAt: 1, prefix };
+const replay = { run: 2, tape: first.stopped.tape, boundary: { kind: 'stdin', stopAt: 1 }, prefix };
 const replayed = (script, launch = replay) => guest(`
   const replay = JSON.parse(input);
   let boundaries = 0;
@@ -421,7 +421,7 @@ assert.match(unfinished.booted, /finished starting before the read of stdin it s
 // A deterministic floating-read race: merely reissuing the read is not a
 // delivery. fd 0 must expose none of its new bytes while its answer is held.
 const floatingRace = guest(`
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null, observations: { stat: 1 } }, abort, nonce: NONCE });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, boundary: { kind: 'stdin', stopAt: 0 }, prefix: null, observations: { stat: 1 } }, abort, nonce: NONCE });
   sr.arm(false);
   const supervisor = sr.ledger({ stat: () => new Promise(() => {}) });
   supervisor.stat('/floating-config');
@@ -445,7 +445,7 @@ const postBoundary = guest(`
     fsAcquire: async () => { events.push('fsAcquire'); return passed; },
     writeFile: async () => { events.push('writeFile'); return passed; },
   });
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, boundary: { kind: 'stdin', stopAt: 0 }, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
   sr.arm(false);
   sr.readAll(1);
   const read = supervisor.fsAcquire({ table: '', feeds: { '/': { epoch: 'epoch', cursor: 0 } } });
@@ -465,7 +465,7 @@ const refusedBoundary = guest(`
   const notice = new Promise((resolve, reject) => { refused = reject; });
   let calls = 0;
   const supervisor = sr.ledger({ replayBoundary: () => notice, fsAcquire: async () => { calls++; } });
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, boundary: { kind: 'stdin', stopAt: 0 }, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
   sr.arm(false);
   sr.readAll(1);
   const read = supervisor.fsAcquire({ table: '', feeds: { '/': { epoch: 'epoch', cursor: 0 } } });
@@ -574,7 +574,7 @@ assert.deepEqual(guest(`
 // Its run again, from what the run started from: its changes are its own,
 // then the listen is its boundary, past which it serves.
 const listenReplay = (changes) => guest(`
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: ${JSON.stringify(b64('starting\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, boundary: { kind: 'listen' }, prefix: { stdout: ${JSON.stringify(b64('starting\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
   sr.arm(false);
   let echoed = null, early = null, after = null;
   aborts(() => {
@@ -602,7 +602,7 @@ const rewritten = listenReplay(`sr.mutation({ type: 'call', call: { call: 'write
 assert.equal(rewritten.stopped, null, 'a change otherwise: it passes its listen');
 // Run again, it ends without reaching its listen: said at its end.
 assert.match(guest(`
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, boundary: { kind: 'listen' }, prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
   sr.arm(false);
   console.log(JSON.stringify({ ended: sr.finish() }));
 `).ended, /ended before it listened, where the run before it listened/);
@@ -636,7 +636,7 @@ for (const [why, setup] of [['an effect', "sr.begin({ replay: null, abort, captu
 }
 // Its run again: the read of that file is its boundary, past which its output is its own.
 const missReplay = guest(`
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(missed.stopped.tape)}, read: 'home/user/data/x.txt', prefix: { stdout: ${JSON.stringify(b64('before\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(missed.stopped.tape)}, boundary: { kind: 'read', path: 'home/user/data/x.txt' }, prefix: { stdout: ${JSON.stringify(b64('before\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
   sr.arm(false);
   let echoed = null, early = null, after = null;
   aborts(() => {
@@ -652,7 +652,7 @@ const missReplay = guest(`
 `);
 assert.deepEqual(missReplay, { stopped: null, echoed: null, early: '', after: 7, ended: '' }, 'it retraces to the read, which passes its boundary');
 assert.match(guest(`
-  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(missed.stopped.tape)}, read: 'home/user/data/x.txt', prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(missed.stopped.tape)}, boundary: { kind: 'read', path: 'home/user/data/x.txt' }, prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
   sr.arm(false);
   console.log(JSON.stringify({ ended: sr.finish() }));
 `).ended, /read \/home\/user\/data\/x\.txt synchronously, which its process did not hold, so Nimbus ran it again as a resident process, and it ended before that read/);
