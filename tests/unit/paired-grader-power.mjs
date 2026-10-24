@@ -41,8 +41,11 @@ for (const shape of SHAPES) {
     console.log(`  ${shape.name} x${factor}: red on one set ${Math.round(once / TRIALS * 100)}%, confirmed on a fresh set ${Math.round(confirmed / TRIALS * 100)}%, red again on one more ${Math.round(rerun / TRIALS * 100)}%`);
   }
 }
-for (const shape of SHAPES) assert.ok(rates[`${shape.name} x1`].confirmed <= 0.06, `${shape.name}: unchanged code confirmed slower too often`);
-assert.ok(rates['cold start x1.46'].confirmed >= 0.85, 'a real +46% cold start is found');
-assert.ok(rates['cold start x1.3'].confirmed >= 0.55, 'a real +30% cold start is found more often than not');
-assert.ok(rates['ruby launch x1.46'].confirmed >= 0.55, 'a real +46% ruby launch is found more often than not');
+// The grade is the third set's. The rerun costs power for a little more
+// trust: measured here (2026-10-24), +30% cold start 62% confirmed and 50%
+// after the rerun, +46% ruby launch 64% and 54%, +46% cold start 94% and 89%.
+for (const shape of SHAPES) assert.ok(rates[`${shape.name} x1`].rerun <= 0.06, `${shape.name}: unchanged code graded slower too often`);
+assert.ok(rates['cold start x1.46'].rerun >= 0.85, 'a real +46% cold start is found');
+assert.ok(rates['cold start x1.3'].rerun >= 0.45, 'a real +30% cold start is found about half the time');
+assert.ok(rates['ruby launch x1.46'].rerun >= 0.5, 'a real +46% ruby launch is found about half the time');
 console.log('paired-grader-power: ok');

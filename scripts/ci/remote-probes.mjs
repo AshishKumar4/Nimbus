@@ -47,7 +47,9 @@
 // four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends. A paired probe red
-// there is run again on a fresh set of four, and is red only if red on both.
+// there is run again on a fresh set of four, which grades it; red there too
+// (confirmed), it is run once more on one more fresh set under the rerun
+// rule (lib/rerun.mjs), and that set grades it.
 // When the baseline's release and the candidate's deploy the same bytes
 // (lib/release.mjs deployedDigest), the timing would measure nothing: a
 // selection that took the paired probes by default skips them, and the

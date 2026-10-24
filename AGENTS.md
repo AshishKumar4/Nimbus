@@ -477,8 +477,9 @@ again.
   candidate throwaway is graded against the mean of the two baseline ones,
   and a probe is red on a set only when both are slower: one Preview can
   run slower than another of the same code for a whole run. A red set is
-  confirmed on four fresh throwaways, and the probe is red only when that
-  set is red too. Run by hand without them, a paired probe exits 2.
+  confirmed on four fresh throwaways, which grade it; a confirmed red is a
+  red row under the rule below, run once more on one more fresh set. Run by
+  hand without them, a paired probe exits 2.
   When the baseline's release and the candidate's deploy the same bytes
   (`deployedDigest` in `scripts/ci/lib/release.mjs`: the module, the app's
   config, its probe target vars and `packages/worker/public`), the timing
@@ -493,9 +494,10 @@ again.
   fails twice. This holds in a train's run and in the release matrix, and
   lives in one place, `scripts/ci/lib/rerun.mjs`. The verdict keeps the
   first red's detail and the rerun's task and armada job. A paired perf
-  probe (confirmed on fresh Previews instead), a deferred probe (graded by
-  its deferral), the session ledger and a row that did not grade are not run
-  again, and a rerun is not run a third time.
+  probe's red is first confirmed on fresh Previews; its confirmed red runs
+  once more on one more fresh set of Previews, not on the same target. A
+  deferred probe (graded by its deferral), the session ledger and a row that
+  did not grade are not run again, and a rerun is not run again.
 - A red row whose session socket closed 1006 (the session ledger records
   it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
   and traces by the exact error on each session's object
