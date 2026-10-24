@@ -494,6 +494,8 @@ export class NimbusSession extends CloudflareDurableObject {
         // read+write per instance boot; fail-soft (replicas cannot put).
         ctx.blockConcurrencyWhile(async () => {
             await _programmatic.reserveSessionProcesses(ctx, this.processes);
+            // Past the constructors, a subclass's own included, and before any process.
+            this.processes.setSessionGroups(this.sessionGroups());
             try {
                 this._w1SessionDestroyed =
                     (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
@@ -715,6 +717,18 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     workspaceEgress() {
         return this.env.NIMBUS_EGRESS;
+    }
+    /**
+     * Supplementary groups the session user (uid 1000) is in beyond its own
+     * (NimbusWorkspaceOptions.sessionGroups), say a project group the embedder
+     * made: its shell and every process with no identity of its own run in
+     * them, and the session's own surfaces that act as its user (the SDK's and
+     * `/rpc`'s file calls, the editor, the agent's file tools, a dev server)
+     * act in them. None by default. Asked once per instance, as it boots;
+     * never group 0.
+     */
+    sessionGroups() {
+        return [];
     }
     /** This instance's {@link workspaceEgress} and {@link egressFor}, asked for once. */
     #egress;
@@ -1222,7 +1236,7 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     seedFilesystem() {
         seedBaseFilesystem(this.sqliteFs);
-        const fs = this.sqliteFs.as(CRED_SESSION_USER);
+        const fs = this.sqliteFs.as(this.processes.sessionCred);
         const rootFs = this.sqliteFs.as(CRED_KERNEL);
         {
             // [BANNER ALIGNMENT FIX] Always re-render the motd so existing

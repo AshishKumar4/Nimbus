@@ -6,7 +6,6 @@
  * session's resident processes. A new incarnation of the session boots it
  * again by running the `vite` command again (dev-servers.ts).
  */
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
@@ -47,7 +46,7 @@ export async function startRealVite(self, opts) {
         if (cfgPath) {
             try {
                 if (!self.esbuildService)
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
                 const bundleResult = await self.esbuildService.build([cfgPath], {
                     bundle: true,
                     format: 'esm',

@@ -80,7 +80,7 @@ export declare function _rpcInnerDoCall(self: RpcHost, req: {
     args: unknown[] | null;
 }): Promise<unknown>;
 /** The session's filesystem, as a `wrangler dev` Worker's KV and R2 bindings reach it. */
-type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>;
+type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs' | 'processes'>;
 /**
  * The store a storage binding's props name (fabric bindings.ts
  * NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket): the project, and its

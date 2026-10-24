@@ -315,6 +315,20 @@ export class RuntimeManager {
     resolvable(spec) {
         return this.source.resolve(spec);
     }
+    /**
+     * Whether `spec` names a runtime this workspace could install and run: a
+     * version of it the source offers has every runner registered here
+     * (resolveRunnable). Catalog reads only.
+     */
+    async runnable(spec) {
+        try {
+            await this.resolveRunnable(spec);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
     async list() {
         return (await listInstalledManifestsView(this.vfs)).map(({ root, manifest }) => runtimeSummary(root, manifest));
     }

@@ -185,7 +185,7 @@ export async function runRemoteHelper(io, engine, local) {
     let zero = '0'.repeat(40);
     const fail = async (what, error) => {
         await io.stderr(error instanceof RemoteEngineError && error.remoteFailure
-            ? remoteFailureText(url, error.remoteFailure, { username: credentials.username, password: Boolean(credentials.password) }, secrets)
+            ? remoteFailureText(url, error.remoteFailure, { username: credentials.username, password: Boolean(credentials.password) }, secrets, io.env.NIMBUS_GIT_CREDENTIAL_HINT)
             : redactCredentials(`fatal: ${what}: ${errorMessage(error)}\n`, secrets));
         return 128;
     };

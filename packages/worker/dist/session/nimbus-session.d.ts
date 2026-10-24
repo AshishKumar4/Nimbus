@@ -350,6 +350,16 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      * Undefined keeps the workspace's egress for that process.
      */
     protected egressFor?(process: EgressProcess): WorkspaceEgress | undefined;
+    /**
+     * Supplementary groups the session user (uid 1000) is in beyond its own
+     * (NimbusWorkspaceOptions.sessionGroups), say a project group the embedder
+     * made: its shell and every process with no identity of its own run in
+     * them, and the session's own surfaces that act as its user (the SDK's and
+     * `/rpc`'s file calls, the editor, the agent's file tools, a dev server)
+     * act in them. None by default. Asked once per instance, as it boots;
+     * never group 0.
+     */
+    protected sessionGroups(): readonly number[];
     /** {@link workspaceEgress} and {@link egressFor}, for the session's workspace (not part of the embedder surface). */
     egressForWorkspace(): {
         egress?: WorkspaceEgress;

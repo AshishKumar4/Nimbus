@@ -187,6 +187,8 @@ export class NimbusWorkspace {
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
         if (options.mayChangeIdentity !== undefined)
             processes.governIdentityChanges(options.mayChangeIdentity);
+        if (options.sessionGroups !== undefined)
+            processes.setSessionGroups(options.sessionGroups);
         if (options.egressFor !== undefined && options.egress === undefined) {
             throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
         }
@@ -299,7 +301,7 @@ export class NimbusWorkspace {
             // they installed globally, are read as they would read them.
             const runtimeLease = filesystem.openHost(CRED_KERNEL);
             hostLeases.push(runtimeLease);
-            const ownerLease = filesystem.openHost(CRED_SESSION_USER);
+            const ownerLease = filesystem.openHost(processes.sessionCred);
             hostLeases.push(ownerLease);
             // A lookup without a caller's view INSPECTS a file to decide how to run
             // it as the session user, and the caller's own execute permission is
@@ -363,8 +365,10 @@ export class NimbusWorkspace {
                 }
                 // Beyond the supplied packages: a name the registry cannot answer is
                 // offered to the source — catalog reads only, no payload — and gets a
-                // stub when something could satisfy it. Registered last so every real
-                // command and the PATH resolver still win.
+                // stub when something could satisfy it here: a runtime none of whose
+                // versions this build can run gets none, and its name is left to what
+                // resolves after (the hosted session's own `tsc`). Registered last so
+                // every real command and the PATH resolver still win.
                 const baseResolve = registry.resolve.bind(registry);
                 registry.resolve = async (name, from) => {
                     const found = await baseResolve(name, from);
@@ -373,7 +377,7 @@ export class NimbusWorkspace {
                     if (!name || name.includes('/'))
                         return undefined;
                     try {
-                        if (!await runtimes.resolvable(name))
+                        if (!await runtimes.runnable(name))
                             return undefined;
                     }
                     catch {

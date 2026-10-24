@@ -10,6 +10,7 @@
  */
 import { EventEmitter } from 'node:events';
 import { Buffer } from 'node:buffer';
+import { Writable } from 'node:stream';
 import type { NodeFaces } from './faces.js';
 export interface FSWatcher extends EventEmitter {
     close(): void;
@@ -202,7 +203,7 @@ export declare function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStream
             eventNames(): (string | symbol)[];
             setMaxListeners(n: number): /*elided*/ any;
             getMaxListeners(): number;
-            pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
+            pipe(destination: Writable, options?: import("node:stream").PipeOptions): Writable;
             readonly readable: boolean;
             readonly readableEnded: boolean;
             readonly readableFlowing: boolean | null;
@@ -253,7 +254,7 @@ export declare function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStream
         eventNames(): (string | symbol)[];
         setMaxListeners(n: number): any;
         getMaxListeners(): number;
-        pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
+        pipe(destination: Writable, options?: import("node:stream").PipeOptions): Writable;
         readonly readable: boolean;
         readonly readableEnded: boolean;
         readonly readableFlowing: boolean | null;

@@ -1,3 +1,4 @@
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
@@ -44,6 +45,8 @@ export interface OwnPrograms {
 export declare function installNpmBinFallbackResolver(registry: RegistryLike, deps: {
     /** The session's namespace: bins are found in it, as the running command when one runs. */
     filesystem: ProcessFiles;
+    /** Who a resolution with no caller of its own sees the namespace as: the session user (SessionProcessSupervisor.sessionCred). */
+    sessionCred: VfsCred;
     getCwd(): string;
     getFacetManager(): FacetManager;
     /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */

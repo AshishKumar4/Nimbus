@@ -241,6 +241,14 @@ export interface NimbusWorkspaceOptions {
      * and not asked. Absent: every change is allowed.
      */
     readonly mayChangeIdentity?: IdentityChangePolicy;
+    /**
+     * Supplementary groups the session user (uid 1000) is in beyond its own,
+     * say a project group the host made (Kinu ask 73): its shell, an exec with
+     * no identity of its own and what the host does as the session user act in
+     * them, and `id` shows them. The host's own groups, never 0; set on
+     * `processes` (setSessionGroups) before the shell starts.
+     */
+    readonly sessionGroups?: readonly number[];
 }
 /**
  * A durable filesystem and a shell over it.

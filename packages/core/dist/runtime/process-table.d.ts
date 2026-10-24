@@ -96,6 +96,8 @@ export declare class ProcessTable {
     private base;
     private processes;
     private onStride;
+    /** Who a process made with no parent is: the session user, with its host's groups (SessionProcessSupervisor.setSessionGroups). */
+    sessionCred: VfsCred;
     /**
      * Move the pid space onto this instance generation's range. Called once at
      * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.

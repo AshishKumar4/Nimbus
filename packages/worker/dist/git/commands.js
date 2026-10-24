@@ -3495,7 +3495,7 @@ function networkFailureText(ctx, what, result, url) {
             password ? base64Utf8(`${username}:${password}`) : '',
             inUrl.password ? base64Utf8(`${inUrl.username}:${inUrl.password}`) : '']
             .filter((secret) => Boolean(secret));
-        const text = remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets);
+        const text = remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets, ctx.env.NIMBUS_GIT_CREDENTIAL_HINT);
         return { text, code: what === 'push' && result.remoteFailure.kind === 'rpc' ? 1 : 128 };
     }
     return { text: `\n[git] ${what} failed: ${result.error}\n`, code: 1 };

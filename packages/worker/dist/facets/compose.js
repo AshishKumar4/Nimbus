@@ -33,7 +33,6 @@
  *     content store answers `resolveWorkerLaunch` and this is never reached
  *     for its recipes (see `WorkerRecipe.resident`).
  */
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { FacetManager } from './manager.js';
@@ -66,9 +65,9 @@ export function composeFacetManager(deps) {
     };
     const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });
     manager.setVfs(vfs, deps.filesystem);
-    manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_SESSION_USER)));
+    manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(deps.processes.sessionCred)));
     // What the session's first `node` needs is read now, not by that launch (FacetManager.prewarm).
-    ctx.waitUntil(manager.prewarm(CRED_SESSION_USER).catch((error) => {
+    ctx.waitUntil(manager.prewarm(deps.processes.sessionCred).catch((error) => {
         console.warn('[facet-manager] the prewarm failed; the first launch reads what it needs itself:', error);
     }));
     const { portRegistry } = deps;

@@ -13,14 +13,13 @@
  */
 import { parentVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * The editor pane's views of the session's namespace: `files`, which it
  * reads and saves, and `tree`, which it lists. The tree reads what has
  * landed, so listing a directory a process holds asks the process for nothing.
  */
-export function editorViews(namespace) {
-    return { files: namespace.namespaceFs(CRED_SESSION_USER), tree: namespace.namespaceFs(CRED_SESSION_USER, { landed: true }) };
+export function editorViews(namespace, cred) {
+    return { files: namespace.namespaceFs(cred), tree: namespace.namespaceFs(cred, { landed: true }) };
 }
 /** A message's path, as the namespace names it. */
 const absolute = (path) => `/${stripLeadingSlashes(String(path || ''))}`;

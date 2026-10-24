@@ -1,4 +1,3 @@
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView, X_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { resolveNpmBin, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
@@ -27,7 +26,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
     // Bins are probed through the caller's view, the one the command that
     // runs looks its bin up again through; a resolution without a caller sees
     // the namespace as the session user.
-    const ownerView = new ProcessView(deps.filesystem.openHost(CRED_SESSION_USER).fs);
+    const ownerView = new ProcessView(deps.filesystem.openHost(deps.sessionCred).fs);
     // A lookup the namespace cannot answer (a mount that fails under the cwd)
     // finds no bin: the name resolves as it would with none, and only the
     // command it names fails.

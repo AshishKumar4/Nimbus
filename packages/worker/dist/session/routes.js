@@ -64,7 +64,7 @@ import { PREVIEW_CAPABILITY_HEADER, CALLER_SCOPES_HEADER } from '../_shared/sess
 import { devServerRestoreFailedResponse, renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
-import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { seedBaseFilesystem, TerminalNameSchema } from '@nimbus-sh/core/workspace';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
@@ -1066,7 +1066,7 @@ async function routeFetch(self, request) {
     if (url.pathname === '/api/write-file' && request.method === 'POST') {
         try {
             // An owner surface: it acts as the session's user, never the kernel.
-            const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
+            const fs = self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred);
             const body = await parseJsonBody(request, WriteFileBodySchema);
             const path = body.path.replace(/^\/+/, '');
             // A delegation it meets is recalled first; the whole write is repeatable.
@@ -1086,7 +1086,7 @@ async function routeFetch(self, request) {
         try {
             const body = await parseJsonBody(request, MkdirBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            await withRecall(() => self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER).mkdir(`/${path}`, { recursive: true }));
+            await withRecall(() => self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred).mkdir(`/${path}`, { recursive: true }));
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1106,7 +1106,7 @@ async function routeFetch(self, request) {
             if (!self.esbuildService) {
                 if (!self.sqliteFs)
                     throw new Error('Session VFS is not initialized');
-                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred));
             }
             const basePath = self.viteBasePath;
             // process metadata support: allocate a PID + port even on the
@@ -1119,7 +1119,7 @@ async function routeFetch(self, request) {
             // starts the same server, which is what a restore runs again: it reads
             // the project's vite.config, not this request's options.
             const apiViteArgv = ['vite', '--port', String(apiVitePort), '--no-install-check'];
-            const apiViteEntry = self.processes.spawn(apiViteArgv.join(' '), apiViteArgv, '/' + root, { longRunning: true, cred: CRED_SESSION_USER });
+            const apiViteEntry = self.processes.spawn(apiViteArgv.join(' '), apiViteArgv, '/' + root, { longRunning: true, cred: self.processes.sessionCred });
             const shim = { server: null, pid: apiViteEntry.pid };
             bindDevServer(self.processes, apiViteEntry.pid, viteShimTeardown(self, shim));
             self.viteDevServer = shim.server = new ViteDevServer({
@@ -1241,7 +1241,7 @@ async function routeFetch(self, request) {
         // Polished placeholder — auto-reloads when vite starts.
         // Checks the VFS for the starter app so we can offer a context-aware hint.
         const hasSeed = await withRecall(() => {
-            const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
+            const fs = self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred);
             return fs.exists(`/${SEED_PROJECT_DIR}`) && fs.exists(`/${SEED_PROJECT_DIR}/package.json`);
         }).catch(() => false);
         const hint = hasSeed
@@ -1278,7 +1278,7 @@ async function routeFetch(self, request) {
             // names so users coming from either `wrangler dev` or
             // `nimbus-wrangler dev` see a familiar hint.
             const hasWranglerConfig = await withRecall(() => {
-                const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
+                const fs = self.getFilesystemAuthority().namespaceFs(self.processes.sessionCred);
                 return fs.exists('/home/user/wrangler.jsonc') ||
                     fs.exists('/home/user/wrangler.json') ||
                     fs.exists('/home/user/wrangler.toml');

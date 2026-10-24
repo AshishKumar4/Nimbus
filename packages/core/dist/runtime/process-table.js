@@ -53,6 +53,8 @@ export class ProcessTable {
     base = 0;
     processes = new Map();
     onStride = null;
+    /** Who a process made with no parent is: the session user, with its host's groups (SessionProcessSupervisor.setSessionGroups). */
+    sessionCred = CRED_SESSION_USER;
     /**
      * Move the pid space onto this instance generation's range. Called once at
      * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.
@@ -79,7 +81,7 @@ export class ProcessTable {
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, options = {}) {
         const inheritedCred = options.parentPid === undefined
-            ? CRED_SESSION_USER
+            ? this.sessionCred
             : this.credOf(options.parentPid);
         const parent = options.parentPid === undefined ? undefined : this.processes.get(options.parentPid);
         const execId = options.execId ?? parent?.execId;

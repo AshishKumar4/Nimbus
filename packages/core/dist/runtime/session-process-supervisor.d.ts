@@ -25,7 +25,7 @@ import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type
 import { type ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
-import type { VfsCred } from './os-contracts.js';
+import { type VfsCred } from './os-contracts.js';
 export interface ProcessWorkObservation {
     release(): void;
 }
@@ -137,6 +137,15 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * one process table cannot disagree on it.
      */
     governIdentityChanges(policy: IdentityChangePolicy): void;
+    /**
+     * The session user's supplementary groups beyond its own (sessionUserCred):
+     * what a process made with no parent runs with, and what the host acts as
+     * where it acts as the session user (sessionCred). Set once, by the host,
+     * before the processes it is for.
+     */
+    setSessionGroups(groups: readonly number[]): void;
+    /** The session user as this session has it: CRED_SESSION_USER with its host's groups (setSessionGroups). */
+    get sessionCred(): VfsCred;
     /**
      * Admit no process from now on: each spawn throws `reason`. A destroy's,
      * before it takes the processes it stops, so none starts behind it.

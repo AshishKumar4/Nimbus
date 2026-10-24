@@ -142,7 +142,7 @@ export declare function rpcExecStream(self: ProgrammaticHost, command: string, o
 export declare function rpcStartProcess(self: ProgrammaticHost, command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
 export declare function rpcRunCode(self: ProgrammaticHost, code: string, options?: SessionRunCodeOptions): Promise<ExecOutput>;
 /** What running and closing a session's runners asks of it. */
-export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager'>;
+export type RunnersHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'facetManager' | 'processes'>;
 /**
  * Run `code` in runner `id` of `owner` (FacetManager.runnerRun): a hosted
  * session's scope has runners of its own; every other caller, the

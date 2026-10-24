@@ -11,6 +11,7 @@
 import { EventEmitter } from 'node:events';
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
+import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { operandPath, basename } from '../substrate/lifo/utils/path.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
@@ -61,6 +62,12 @@ function toNodeStat(stat) {
 /** A failure a callback is given: the filesystem's, or one this module made, either with its code. */
 function codedError(error) {
     return isVfsError(error) || (error instanceof Error && Reflect.get(error, 'code') !== undefined);
+}
+/** Node's names for UTF-8, which readFile answers as text. */
+const UTF8 = /^utf-?8$/i;
+/** `bytes` in `encoding`, as Node's `buffer.toString(encoding)` gives them. */
+function encoded(bytes, encoding) {
+    return UTF8.test(encoding) ? new TextDecoder().decode(bytes) : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(encoding);
 }
 /**
  * A path argument as Node takes one: a string, a Buffer's text, or a file:
@@ -216,7 +223,7 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
         const encoding = typeof options === 'string' ? options : options?.encoding;
         if (path === 0 || (typeof path === 'string' && Object.hasOwn(STDIN_PATHS, path))) {
             const bytes = readStdin();
-            return encoding ? new TextDecoder().decode(bytes) : Buffer.from(bytes);
+            return encoding ? encoded(bytes, encoding) : Buffer.from(bytes);
         }
         if (typeof path === 'number') {
             // From the descriptor's offset to the end, as Node reads a descriptor.
@@ -224,13 +231,18 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
             for (let part = yield* readDescriptor(path, null, 65536); part.byteLength > 0; part = yield* readDescriptor(path, null, 65536))
                 parts.push(part);
             const bytes = Buffer.concat(parts);
-            return encoding ? new TextDecoder().decode(bytes) : bytes;
+            return encoding ? encoded(bytes, encoding) : bytes;
         }
         const at = namedPath(cwd, path);
         const abs = at.abs;
         try {
-            if (encoding) {
+            // Text is read as text; any other encoding is the bytes in it (base64, hex, latin1, …), as Node's buffer.toString.
+            if (encoding && UTF8.test(encoding)) {
                 return yield* step('open', at, (f) => f.readFileString(abs));
+            }
+            if (encoding) {
+                const bytes = yield* step('open', at, (f) => f.readFile(abs));
+                return encoded(bytes, encoding);
             }
             // Return Buffer (not raw Uint8Array) so .toString() yields UTF-8 text.
             // Many packages do JSON.parse(fs.readFileSync('package.json')) without
@@ -406,10 +418,17 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
         const at = namedPath(cwd, path);
         yield* chownAt(at, nodeOwnerId(uid, 'uid'), nodeOwnerId(gid, 'gid'), follow);
     }
+    /** access(2): the stat's own errno (ENOENT, EACCES, EIO, …), access's. */
     function* accessOp(path) {
         const at = namedPath(cwd, path);
-        if (!(yield* step('access', at, (f) => f.exists(at.abs)))) {
-            throw fsError('ENOENT', 'access', at.given);
+        try {
+            yield* step('access', at, (f) => f.stat(at.abs));
+        }
+        catch (error) {
+            const code = errnoCodeOf(error);
+            if (code === undefined)
+                throw error;
+            throw fsError(code, 'access', at.given);
         }
     }
     /** realpath(3); a missing path is `missing`'s ENOENT (Node's realpathSync lstats the path's components: a missing one is lstat's). */
@@ -768,8 +787,22 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
     // ─── Stream API ───
     // The engine's own read and write streams, over this filesystem: Node's
     // ReadStream and WriteStream read and write through the `fs` they are given.
-    // A face without descriptors has none to give them (ENOSYS).
+    // A face without descriptors has none to give them (ENOSYS), nor has an
+    // engine without a `node:fs` of its own (a Worker at an early compatibility
+    // date): there, as there, a stream is ENOSYS.
     const engineFs = realm.getBuiltinModule('node:fs');
+    const ReadBase = engineFs?.ReadStream ?? class extends Readable {
+        constructor(path) {
+            super();
+            throw lacks('open', path);
+        }
+    };
+    const WriteBase = engineFs?.WriteStream ?? class extends Writable {
+        constructor(path) {
+            super();
+            throw lacks('open', path);
+        }
+    };
     const streamFs = { open, read, write, close, fsync };
     const streamPath = (path) => (path === null || path === undefined ? undefined : resolvePath(cwd, path));
     // A stream given no fs of its own (none, undefined or null, which Node's
@@ -783,14 +816,14 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
         if ((faces.sync ?? faces.async).open === undefined)
             throw lacks('open', streamPath(path));
     };
-    class ReadStream extends engineFs.ReadStream {
+    class ReadStream extends ReadBase {
         constructor(path, options) {
             streamsOpen(path);
             reachStreams?.();
             super(streamPath(path), streamOptions(options));
         }
     }
-    class WriteStream extends engineFs.WriteStream {
+    class WriteStream extends WriteBase {
         constructor(path, options) {
             streamsOpen(path);
             reachStreams?.();

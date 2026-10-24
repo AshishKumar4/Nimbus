@@ -140,6 +140,12 @@ export declare class RuntimeManager {
      *  whether an unregistered command name could be satisfied before
      *  registering a stub for it — catalog reads only, no payload write. */
     resolvable(spec: string): Promise<RuntimePackage | null>;
+    /**
+     * Whether `spec` names a runtime this workspace could install and run: a
+     * version of it the source offers has every runner registered here
+     * (resolveRunnable). Catalog reads only.
+     */
+    runnable(spec: string): Promise<boolean>;
     list(): Promise<RuntimeSummary[]>;
     available(): Promise<RuntimeAvailability[]>;
 }

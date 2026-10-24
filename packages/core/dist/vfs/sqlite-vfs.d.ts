@@ -927,7 +927,10 @@ export declare class SqliteVFS {
     /**
      * Permission bits a new inode is created with. umask never masks 07000, so
      * a confined principal's creation drops setuid/setgid here, the one grant
-     * its umask cannot refuse. Sticky only restricts others and is kept.
+     * its umask cannot refuse. Its process sets its own umask, to 000 as
+     * readily as to 077, so its creation drops other-write here too: nothing
+     * it makes is others' to write (Kinu ask 74). Sticky only restricts others
+     * and is kept.
      */
     private creationMode;
     /**

@@ -64,9 +64,11 @@ export declare function redactCredentials(text: string, secrets: readonly string
  * git's lines for `failure` of the repository at `url` (as configured or
  * given), `credentials` what the request offered: the server's plain-text
  * message as `remote:` lines (credentials and `secrets` taken out), then
- * git's own.
+ * git's own. `hint`, a host's word on where a credential comes from
+ * (NIMBUS_GIT_CREDENTIAL_HINT), on its own line before the `fatal:` of a 401
+ * that offered none, and only then.
  */
-export declare function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets?: readonly string[]): string;
+export declare function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets?: readonly string[], hint?: string): string;
 /** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
 export declare function noSuchRemoteText(remote: string): string;
 /**

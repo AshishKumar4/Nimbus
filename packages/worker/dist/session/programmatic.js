@@ -13,7 +13,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { endResidentKeepalive } from './hibernation.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
-import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { parseRunnerId, SessionProcessLogsOptionsSchema } from '@nimbus-sh/core/runtime/session-protocol.js';
@@ -476,7 +476,7 @@ export async function rpcRunnerRun(self, owner, id, code, runner = {}, options =
     }
     if (runner.execId !== undefined)
         parseExecId(runner.execId);
-    const cred = runner.cred === undefined ? CRED_SESSION_USER : requireVfsCred(runner.cred, 'runner');
+    const cred = runner.cred === undefined ? self.processes.sessionCred : requireVfsCred(runner.cred, 'runner');
     // The most a process facet may use, and the longest a timer can wait (a longer delay fires at once).
     for (const [limit, value, most] of [['timeoutMs', options.timeoutMs, 2 ** 31 - 1], ['cpuMs', options.cpuMs, facetLimits('process').cpuMs]]) {
         if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0 || value > most)) {
@@ -1115,7 +1115,7 @@ export async function rpcSpawnWorker(self, workerCode, command, cwd, opts = {}) 
 export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
     const p = `/${String(path).replace(/^\/+/, '')}`;
-    const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'files.delete'));
+    const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? self.processes.sessionCred : requireVfsCred(cred, 'files.delete'));
     // A delegation it meets is recalled first.
     // The leaf is classified without following it, as unlink(2) resolves it:
     // a symlink is removed, never searched through to its target.
@@ -1353,7 +1353,10 @@ export async function reserveSessionProcesses(ctx, processes) {
  */
 async function installEmptyProcessState(self) {
     releaseGeneration(self.ctx);
-    self.processes = await reserveSessionProcesses(self.ctx, sessionProcesses(self.ctx));
+    // The session user keeps the groups its host gave it.
+    const processes = sessionProcesses(self.ctx);
+    processes.setSessionGroups(self.processes.sessionCred.groups);
+    self.processes = await reserveSessionProcesses(self.ctx, processes);
     self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
     self._w9PersistWired = false;
 }

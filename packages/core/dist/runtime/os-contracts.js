@@ -14,7 +14,9 @@ export const CRED_KERNEL = Object.freeze({
  * filesystem API, the remote `/rpc` file ops, and the static asset server are
  * host callers, not processes, and files they create must be owned by the same
  * identity `exec` runs as. Never CRED_KERNEL — a pid-less caller must never
- * gain more authority than the shell it is writing files for.
+ * gain more authority than the shell it is writing files for. A session acts
+ * as its own (SessionProcessSupervisor.sessionCred): this, with the groups
+ * its host gave it.
  */
 export const CRED_SESSION_USER = Object.freeze({
     uid: 1000,
@@ -22,6 +24,21 @@ export const CRED_SESSION_USER = Object.freeze({
     groups: Object.freeze([1000]),
     umask: 0o022,
 });
+/**
+ * The session user with `groups` among its supplementary groups (Kinu ask
+ * 73): a project group its host made, say. They are the host's to give, and
+ * never the root group.
+ */
+export function sessionUserCred(groups) {
+    for (const gid of groups) {
+        if (!isCredId(gid) || gid === 0)
+            throw new TypeError(`session groups: ${String(gid)} is not a group the session user may be given`);
+    }
+    const all = [...new Set([...CRED_SESSION_USER.groups, ...groups])];
+    if (all.length === CRED_SESSION_USER.groups.length)
+        return CRED_SESSION_USER;
+    return Object.freeze({ ...CRED_SESSION_USER, groups: Object.freeze(all) });
+}
 /** A POSIX id (or mask): an unsigned integer. */
 function isCredId(value) {
     return typeof value === 'number' && Number.isInteger(value) && value >= 0;

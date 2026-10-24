@@ -67,9 +67,17 @@ export declare const CRED_KERNEL: VfsCred;
  * filesystem API, the remote `/rpc` file ops, and the static asset server are
  * host callers, not processes, and files they create must be owned by the same
  * identity `exec` runs as. Never CRED_KERNEL — a pid-less caller must never
- * gain more authority than the shell it is writing files for.
+ * gain more authority than the shell it is writing files for. A session acts
+ * as its own (SessionProcessSupervisor.sessionCred): this, with the groups
+ * its host gave it.
  */
 export declare const CRED_SESSION_USER: VfsCred;
+/**
+ * The session user with `groups` among its supplementary groups (Kinu ask
+ * 73): a project group its host made, say. They are the host's to give, and
+ * never the root group.
+ */
+export declare function sessionUserCred(groups: readonly number[]): VfsCred;
 /** Whether `value` is a credential: unsigned integer uid, gid, umask and supplementary groups. The one shape check. */
 export declare function isVfsCred(value: unknown): value is VfsCred;
 /** `value` as a credential of its own (its groups copied), or the refusal `source` makes without one. */

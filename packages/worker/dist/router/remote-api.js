@@ -4,7 +4,6 @@ import { SessionRequestSchema, } from '@nimbus-sh/core/runtime/session-protocol.
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
-import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { errnoOf } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { z } from 'zod/v4';
 import { NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
@@ -319,10 +318,10 @@ async function dispatchRemoteRpc(ctx) {
         case 'chown':
             return ctx.stub._rpcChown(stringArg(args[0], 'path'), nullableNumberArg(args[1], 'uid'), nullableNumberArg(args[2], 'gid'), undefined, undefined, optionsArg(FollowOptions, fileOptions(args[3]), 'chown options'));
         case 'deleteFile':
-            // A remote token is the session's user: its deletion acts as that user,
-            // as every file operation does. Named here so that no default, now or
-            // later, can widen it.
-            return ctx.stub._rpcDeleteFile(stringArg(args[0], 'path'), fileOptions(args[1]), CRED_SESSION_USER);
+            // A remote token is the session's user: its deletion names no
+            // credential, so it acts as that user, with the groups its host gave
+            // it, as every other file operation here does.
+            return ctx.stub._rpcDeleteFile(stringArg(args[0], 'path'), fileOptions(args[1]));
         case 'installRuntime': {
             const spec = stringArg(args[0], 'spec');
             assertRuntimeAllowed(ctx, spec, 'onDemand');

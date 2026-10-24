@@ -18,7 +18,7 @@
  * are to the shell's own `ps`, `kill`, `logs` and `nimbus expose`/`app`.
  */
 import { RpcTarget } from 'cloudflare:workers';
-import { CRED_SESSION_USER, sameCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { sameCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
@@ -47,7 +47,7 @@ export class HostedSession extends RpcTarget {
     #cred(asked) {
         if (this.scope === null)
             return asked;
-        const bound = this.scope.cred ?? CRED_SESSION_USER;
+        const bound = this.scope.cred ?? this.owner.processes.sessionCred;
         if (asked !== undefined && !sameCred(bound, asked))
             throw Object.assign(new Error('EPERM: this session is bound to another identity'), { code: 'EPERM' });
         return bound;
