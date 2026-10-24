@@ -27,6 +27,7 @@ const outputs = [
       ['BASH_STEP_TASK', './facet-tasks.js', 'bashFacetStep'],
       ['BASH_REQUEST_TASK', './facet-tasks.js', 'bashRequestStep'],
       ['GIT_CALL_TASK', './git-facet-task.js', 'gitFacetCall'],
+      ['WASI_CLI_CALL_TASK', './wasi-cli-facet-task.js', 'wasiCliFacetCall'],
     ],
     bodies: [
       ['ESBUILD_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['buildWithEsbuild']],

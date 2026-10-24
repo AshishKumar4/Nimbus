@@ -991,6 +991,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     inbound: () => { __wasiResident?.fs.inbound(); },
     news: __wasiChildNews(),
     cred: () => __wasiFS.cred ?? null,
+    cwd: opts.cwd ?? '/',
     parks: procParks,
     park: __wasiThreadPark,
     gaveUp: opts.restartsWaits === true ? NIMBUS_ERESTART : __WASI_EINTR,

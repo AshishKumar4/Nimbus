@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, WASI_CLI_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -228,6 +228,23 @@ export const SPECS = {
     license_text: GIT_GPL_2_LICENSE_NOTICE(),
   },
 
+  // jq 1.7.1, with its bundled Oniguruma 6.9.8, cross-built for wasm32-wasi
+  // by packages/worker/wasm/jq/build-jq.sh from jqlang's release (pinned by
+  // its published sha256). A plain WASI command (WASI_CLI_RUNNER): the image
+  // is bin/jq itself. Each file is pinned: a rebuild that changes the bytes
+  // is a new version.
+  'jq/1.7.1': {
+    license: 'MIT',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/jq',
+    files: [
+      { src: 'jq.wasm', vfs: 'bin/jq', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'jq', sha256: '53040581dea2f20a7ac44fdd9c6bae022f21643cea7ee8531d7537f9737f3b91' },
+      { src: 'COPYING', vfs: 'share/jq/COPYING', sha256: '10e974638a41fadfd72357f2f3a4325e20b856c563365128f72feaa406f8c92d' },
+      { src: 'COPYING.oniguruma', vfs: 'share/jq/COPYING.oniguruma', sha256: '70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f' },
+    ],
+    license_text: JQ_MIT_LICENSE_NOTICE(),
+  },
+
   // CPython 3.13 cross-built for wasm32-wasi by packages/worker/wasm/python/
   // build-python.sh, with the C libraries the published wasm32-wasi artifacts
   // leave out (zlib, bzip2, xz, sqlite, OpenSSL). Unlike the Pyodide entry
@@ -395,6 +412,22 @@ git-mmap-paged.c, include/, patches/, and the shared wasm/nimbus-libc/).
 
 zlib 1.3.1 — Zlib
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+`;
+}
+
+function JQ_MIT_LICENSE_NOTICE() {
+  return `jq 1.7.1 — MIT
+Copyright (C) 2012 Stephen Dolan, and the jq contributors.
+
+This runtime bundles jq cross-compiled to wasm32-wasi. Its license, and
+the notices of the code it incorporates (David M. Gay's dtoa.c and
+g_fmt.c, decNumber), are in share/jq/COPYING.
+Corresponding source: https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz
+plus the Nimbus build overlay (packages/worker/wasm/jq/ in the Nimbus
+repository: build-jq.sh, jq-wasi-compat.h, and the shared wasm/nimbus-libc/).
+
+Oniguruma 6.9.8 — BSD-2-Clause
+Copyright (c) 2002-2021 K.Kosako. Its license is in share/jq/COPYING.oniguruma.
 `;
 }
 
