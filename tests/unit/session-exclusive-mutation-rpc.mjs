@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -132,7 +132,7 @@ for (const delivered of [false, true]) {
         },
       };
     },
-    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],
@@ -165,7 +165,7 @@ for (const delivered of [false, true]) {
         releases++;
       },
     },
-    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
     portRegistry: {},
     ctx: {
       getWebSockets: () => [],
@@ -194,7 +194,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -235,7 +235,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -272,7 +272,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };
@@ -331,7 +331,7 @@ for (const delivered of [false, true]) {
     const self = {
       sqliteFs,
       ensureSqliteFs() {},
-      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+      processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
       portRegistry: {},
       ctx: { getWebSockets: () => [], storage: { async deleteAll() {}, async deleteAlarm() {}, async put() {} } },
     };

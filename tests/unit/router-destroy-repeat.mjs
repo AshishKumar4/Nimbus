@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
 import { issueNimbusToken } from '../../packages/worker/src/auth/token.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 /** The error the session's destroy throws when its storage wipe fails with `failure`. */
 async function destroyFailure(failure) {
@@ -26,7 +27,7 @@ async function destroyFailure(failure) {
       seizeGlobalExclusiveMutation: () => ({ root: '', owner: 'destroy-owner' }),
       releaseExclusiveMutation() {},
     },
-    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {} },
+    processes: { getAll: () => [], flushLogs() {}, closeAdmission() {}, sessionCred: CRED_SESSION_USER },
     portRegistry: {},
     ctx: { getWebSockets: () => [], storage: { async deleteAll() { throw failure; } } },
   };

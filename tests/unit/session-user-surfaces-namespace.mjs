@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { serveEditorFs } from '../../packages/worker/src/session/editor-fs.ts';
@@ -43,7 +44,7 @@ assert.deepEqual(
 console.log('  the editor reads, saves and lists a mounted path');
 
 // ── files.delete removes what is on the mount ───────────────────────────────
-const host = { getFilesystemAuthority: () => namespace, async ensureRuntimeReady() {} };
+const host = { processes: new SessionProcessSupervisor(), getFilesystemAuthority: () => namespace, async ensureRuntimeReady() {} };
 await rpcDeleteFile(host, '/mnt/data/stored.txt');
 assert.equal(data.stat('/stored.txt'), null, 'a file on the mount is removed');
 await rpcDeleteFile(host, '/mnt/data/notes', { recursive: true });

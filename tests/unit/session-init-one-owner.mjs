@@ -11,6 +11,7 @@
 // Object). Red before: each caller started its own build.
 import assert from 'node:assert/strict';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 const { initSession } = await importWorkerBundle({ 'packages/worker/src/session/init.ts': ['initSession'] });
 
@@ -29,6 +30,7 @@ function heldHost() {
     terminal: null,
     kernel: null,
     sqliteFs: { as: () => ({}) },
+    processes: new SessionProcessSupervisor(),
     ensureSqliteFs() { this.builds++; },
     ensureFacetManager() {},
     async seedFilesystem() {

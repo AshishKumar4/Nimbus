@@ -10,6 +10,7 @@ import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts'
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
@@ -40,6 +41,7 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
 
   const session = Object.create(NimbusSession.prototype);
   session.filesystem = new SessionFilesystem(rawVfs, session);
+  session.processes = new SessionProcessSupervisor();
   session.seedFilesystem();
 
   const rootVfs = rawVfs.as(CRED_KERNEL);
