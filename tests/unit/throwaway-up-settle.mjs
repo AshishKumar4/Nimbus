@@ -15,7 +15,12 @@
 // uploads, and the command's Cloudflare API requests reach the fixture server.
 // Under no parent Worker at all, `up` makes the parent before it asks
 // whether the Preview stands, as the API answers that read with the
-// Worker's absence (10007) until there is one.
+// Worker's absence (10007) until there is one. A Preview `up` creates may
+// not read back for a while (2026-10-24: over 7 s), and `wrangler preview`
+// creates a Preview its read does not find, which the API refuses as a
+// second of the name (100338): `up` uploads again only once the Preview
+// reads back, so it updates it, and not at all when its first upload landed
+// late.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -43,9 +48,14 @@ const ok = (result) => ({ success: true, result, errors: [] });
  * `new` (no Preview: 404), `landed` (the last upload), `presence-500` (the
  * Preview read fails), `latest-500` (it stands, and its latest read fails),
  * or `no-parent` (no parent Worker until `up` makes one, then no Preview
- * until the upload lands).
+ * until the upload lands). In `new` the Preview its first upload made reads
+ * back at once; in `created-lags` it reads back, with its latest deployment,
+ * only LAG_MS after that upload, and in `created-lost` its first deployment
+ * is never served and the next upload's is.
  */
 let mode = 'stale';
+/** How long a Preview created by an upload does not read back, in `created-lags` and `created-lost`. */
+const LAG_MS = 3_000;
 /**
  * How long the API takes to answer a read of the latest deployment: longer
  * than the stand-in `wrangler preview` (a shell script, done in milliseconds)
@@ -61,6 +71,11 @@ const NO_WORKER = { success: false, result: null, errors: [{ code: 10007, messag
 let latestReads = 0;
 let checkout = null;
 const uploads = () => { try { return Number(readFileSync(join(checkout, 'uploads'), 'utf8')); } catch { return 0; } };
+/** When the stand-in's first upload created the Preview (ms), in the lagging modes; null before. */
+const createdAt = () => { try { return Number(readFileSync(join(checkout, 'created-at'), 'utf8')); } catch { return null; } };
+const lagging = () => mode === 'created-lags' || mode === 'created-lost';
+/** Whether the Preview reads back: made by an upload, and, in the lagging modes, LAG_MS ago. */
+const readsBack = () => (lagging() ? createdAt() !== null && Date.now() - createdAt() >= LAG_MS : uploads() > 0);
 const unexpected = [];
 const server = createServer((request, response) => {
   const json = (status, body) => response.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
@@ -76,7 +91,8 @@ const server = createServer((request, response) => {
     if (!parent) return json(404, NO_WORKER);
     if (mode === 'no-parent') return json(404, ABSENT);
     if (mode === 'presence-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
-    return mode === 'new' ? json(404, ABSENT) : json(200, ok({ id: 'preview-id' }));
+    if (mode === 'new' || lagging()) return readsBack() ? json(200, ok({ id: 'preview-id' })) : json(404, ABSENT);
+    return json(200, ok({ id: 'preview-id' }));
   }
   if (request.method === 'GET' && request.url === LATEST_PATH) {
     latestReads++;
@@ -86,8 +102,9 @@ const server = createServer((request, response) => {
     // Each answer takes READ_MS, longer than the stand-in's upload takes.
     const answer = (status, body) => setTimeout(() => { reads.answered.push(Date.now()); json(status, body); }, READ_MS);
     if (mode === 'latest-500') return answer(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
-    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return answer(404, ABSENT);
-    if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
+    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0) || (lagging() && !readsBack())) return answer(404, ABSENT);
+    if (mode === 'created-lost' && uploads() < 2) return answer(404, ABSENT);
+    if (mode === 'landed' || mode === 'no-parent' || lagging() || (mode === 'second-lands' && uploads() >= 2)) return answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
     return answer(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
   }
   unexpected.push(`${request.method} ${request.url}`);
@@ -133,12 +150,22 @@ try {
 [ "$1" = preview ] || exit 1
 # Failing before its deployment, as wrangler does when it cannot assemble one: no id, no secret sent.
 [ -f '${join(checkout, 'noid')}' ] && { echo 'wrangler failed before its deployment' >&2; exit 1; }
+# A Preview it made that does not read back yet: wrangler's read does not find it, so it asks to create
+# it, and the API refuses a second of the name.
+if [ -f '${join(checkout, 'lag')}' ]; then
+  now=$(date +%s%3N)
+  created=$(cat '${join(checkout, 'created-at')}' 2>/dev/null)
+  if [ -n "$created" ] && [ $(( now - created )) -lt $(cat '${join(checkout, 'lag')}') ]; then
+    echo "A preview with name '${PREVIEW}' already exists. [code: 100338]" >&2; exit 1
+  fi
+  [ -n "$created" ] || echo $now > '${join(checkout, 'created-at')}'
+fi
 n=$(( $(cat '${join(checkout, 'uploads')}' 2>/dev/null || echo 0) + 1 ))
 echo $n > '${join(checkout, 'uploads')}'
 echo '{"deployment":{"id":"deployment-uploaded-'$n'"},"preview":{"urls":["https://${PREVIEW}-nimbus-probe-previews.proof.workers.dev"]}}'
 `);
   chmodSync(join(checkout, 'node_modules/.bin/wrangler'), 0o755);
-  writeFileSync(join(checkout, '.gitignore'), 'node_modules\n.wrangler\ntmp\nstate\ndrive.mjs\nuploads\n');
+  writeFileSync(join(checkout, '.gitignore'), 'node_modules\n.wrangler\ntmp\nstate\ndrive.mjs\nuploads\nlag\ncreated-at\n');
   git('init', '-q');
   git('add', '-A');
   git('-c', 'user.name=proof', '-c', 'user.email=proof@proof', 'commit', '-qm', 'the checkout up uploads from');
@@ -285,6 +312,23 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.match(output, /deployment deployment-uploaded-3 is live/, `it redeploys it\n${output}`);
     assert.equal(record().secret, kept.secret, 'with the secret its uploads carried');
     console.log('  ok  a new Preview that lands late: the next up redeploys it with its secret');
+  }
+  // A Preview this run creates that does not read back for LAG_MS: up waits
+  // for it to read back, and then finds its first upload landed, late.
+  // Before, it uploaded again at once, which asked to create it a second time.
+  for (const [lagMode, expected] of [['created-lags', 1], ['created-lost', 2]]) {
+    mode = lagMode;
+    rmSync(recordPath, { force: true });
+    for (const file of ['uploads', 'created-at']) rmSync(join(checkout, file), { force: true });
+    writeFileSync(join(checkout, 'lag'), String(LAG_MS));
+    const { code, stdout, stderr } = await up();
+    rmSync(join(checkout, 'lag'));
+    const output = `${stdout}${stderr}`;
+    assert.equal(code, 3, `${lagMode}: up reaches readiness\n${output}`);
+    assert.doesNotMatch(output, /100338/, `${lagMode}: it never asks to create the Preview a second time\n${output}`);
+    assert.equal(uploads(), expected, `${lagMode}: ${expected === 1 ? 'its first upload, landed late, is the one' : 'it uploads once more, to the Preview that stands'}`);
+    assert.equal(record().versionId, `deployment-uploaded-${expected}`, `${lagMode}: and records it`);
+    console.log(`  ok  ${lagMode}: a Preview that reads back late is not created twice`);
   }
   assert.deepEqual(unexpected, [], 'up asked the API nothing else');
 } finally {
