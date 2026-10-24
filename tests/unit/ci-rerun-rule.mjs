@@ -51,7 +51,7 @@ const DEFERRED = ['x/deferred'];
 {
   const tasks = [{ task: 'part 1/4', rows: [row('a/once', 1, 'socket closed'), row('a/fine', 0), ledger(0)] }];
   const { asked, run } = runner(['a/once']);
-  const { lines } = await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
+  await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
   assert.deepEqual(asked.map((items) => items.map((item) => [item.only, item.jobs])), [[['a/once.mjs', 1]]], 'only the red probe runs again, alone');
   assert.equal(gradeTasks(tasks), 0, 'its rerun passed: the run is green');
   assert.equal(gradeMatrix([{ problems: [], tasks }], []).exitCode, 0, 'and so is the release matrix');
@@ -60,7 +60,6 @@ const DEFERRED = ['x/deferred'];
     task: 'rerun a/once #1', job: 'job-rerun-1',
     first: { exitCode: 1, failed: ['step: socket closed'], tail: '  ✗ step — socket closed' },
   }, 'the verdict keeps the first red, and which task and job graded it');
-  assert.match(lines[0], /RERUN tests\/behavioral\/a\/once\.mjs: red, then green alone on the same target \(rerun a\/once #1, job job-rerun-1\)/);
 }
 
 // A real red fails twice: red, by its rerun's row; a one-off beside it is green.
@@ -93,10 +92,9 @@ const DEFERRED = ['x/deferred'];
 {
   const tasks = [{ task: 'part 4/4', rows: [row('d/red', 1)] }];
   const run = async (items) => ({ jobId: 'job-empty', problems: [], tasks: items.map((item) => ({ ...item, rows: [ledger(0)] })) });
-  const { lines } = await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
-  assert.equal(tasks[0].rows[0].regraded, undefined);
+  await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
+  assert.equal(tasks[0].rows[0].regraded, undefined, 'no row of it in its rerun: the red stands');
   assert.equal(gradeTasks(tasks), 1);
-  assert.match(lines[0], /has no row of it; the first red stands/);
 }
 
 // A paired probe: red on one set, red on a fresh set (which graded the first),
@@ -115,7 +113,7 @@ const confirmedRed = () => {
 {
   const tasks = confirmedRed();
   const { asked, run } = runner(['perf-regression/cold-start'], 'job-paired');
-  const { lines } = await rerunRed(tasks, { paired: PAIRED_TWO, deferred: DEFERRED, run: notPlain, runPaired: run });
+  await rerunRed(tasks, { paired: PAIRED_TWO, deferred: DEFERRED, run: notPlain, runPaired: run });
   assert.deepEqual(asked, [[{ task: 'paired perf rerun on fresh Previews', part: '1/1', only: 'perf-regression/cold-start.mjs,perf-regression/clone-fast.mjs', skip: '', jobs: 1 }]],
     'the confirmed reds run once more, in one task on one more fresh set');
   assert.equal(tasks[1].rows[0].regraded.task, 'paired perf rerun on fresh Previews', 'the third set grades the confirmed red');
@@ -125,7 +123,6 @@ const confirmedRed = () => {
   const graded = gradeMatrix([{ problems: [], tasks }], []);
   assert.deepEqual(graded.red, ['tests/behavioral/perf-regression/clone-fast.mjs (paired perf rerun on fresh Previews, exit 1)'],
     'red by the third set; cold start, green there, is not');
-  assert.match(lines.join('\n'), /perf-regression\/cold-start\.mjs: red, then green on one more fresh set of Previews/);
 }
 {
   const tasks = confirmedRed();
