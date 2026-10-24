@@ -433,10 +433,6 @@ const GAPS = {
     lacks: 'S answers a file of the session\'s own that a fed mount then covered, at rest (closed by the cutover: RF follows the mount\'s feed)',
     shows: 'at rest, sync stat d/e/g answered',
   },
-  'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [holder]': {
-    lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
-    shows: 'sync stat x answered null',
-  },
   'a subtree listed after a mount was made over its directory is not the view\'s (6489) [node]': {
     lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (7696\'s class; closed by the cutover)',
     shows: 'at rest, sync readFile x/e answered {"code":"EAGAIN"}',
@@ -448,10 +444,6 @@ const GAPS = {
   'a name beneath a mount with no feed made over directories the process read is the session\'s (8474) [node]': {
     lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (the nested-mount gap\'s class; closed by the cutover)',
     shows: 'at rest, sync readFile d/e answered {"code":"EAGAIN"}',
-  },
-  'a name beneath a mount with no feed made over directories the process read is the session\'s (8474) [holder]': {
-    lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over directories it had read, absent (7696\'s class, open)',
-    shows: 'sync stat x/h answered null',
   },
   'a directory the process made again lists no name before its write is made (8576) [node]': {
     lacks: 'S lists, in a directory the process removed and made again, a name its own write in flight has not made yet (5891\'s class; closed by the cutover: one own state, RF\'s)',
