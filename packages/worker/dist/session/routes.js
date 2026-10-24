@@ -787,7 +787,7 @@ async function routeFetch(self, request) {
                 // the home the base seed makes in a session no terminal has set up.
                 const root = `home/user/w7-bench-${Date.now()}`;
                 const cred = self.processes.cred(entry.pid);
-                await withRecall(() => seedBaseFilesystem(self.ensureSqliteFs()));
+                await withRecall(() => seedBaseFilesystem(self.ensureSqliteFs(), undefined, self.processes.sessionCred));
                 const writer = self.ensureSqliteFs().as(cred);
                 writer.mkdir(root, { recursive: true, mode: 0o755 });
                 const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {

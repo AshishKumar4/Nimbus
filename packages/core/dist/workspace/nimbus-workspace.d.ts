@@ -30,6 +30,7 @@ import { type EgressFor, type WorkspaceEgress, type WorkspaceNetwork } from '../
 import { type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type VfsCred } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
@@ -445,6 +446,6 @@ export declare class NimbusWorkspace {
  * `home` is the session user's home directory: it is made and owned by the
  * user, and /etc/passwd names it.
  */
-export declare function seedBaseFilesystem(vfs: SqliteVFS, home?: string): void;
-export declare function seedBaseFilesystem(filesystem: ProcessFiles, home?: string): Promise<void>;
+export declare function seedBaseFilesystem(vfs: SqliteVFS, home?: string, user?: VfsCred): void;
+export declare function seedBaseFilesystem(filesystem: ProcessFiles, home?: string, user?: VfsCred): Promise<void>;
 //# sourceMappingURL=nimbus-workspace.d.ts.map

@@ -48,7 +48,7 @@ import { installedPath } from './runtime-manifest.js';
 import { hostImage, withHostView } from './process-files.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
-import { CRED_SESSION_USER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
+import { gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -241,7 +241,7 @@ export function makeRubyRunnerFactory(deps) {
         };
         // The owner's gems, read as the owner.
         if (deps.registry)
-            await withHostView(deps.filesystem, CRED_SESSION_USER, (vfs) => registerGemBins(vfs, deps.getHome()));
+            await withHostView(deps.filesystem, deps.processes.sessionCred, (vfs) => registerGemBins(vfs, deps.getHome()));
         return rubyBinHandler;
     };
 }
