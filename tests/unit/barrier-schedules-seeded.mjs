@@ -4,13 +4,17 @@
  * barrier-schedules-seeded — the barrier schedules (lib/barrier-schedule.mjs)
  * drawn from seeds, each reply parked at random once the process is up, on
  * each engine: NIMBUS_BARRIER_SEEDS=n runs n seeds (default 24), from
- * NIMBUS_BARRIER_SEED_FROM. By default the window advances each UTC day, so
- * every day's runs (each train's gate among them) draw seeds no run drew
- * before; the window is printed, and a failing seed's name says how to run
- * it again. A seed that fails is shrunk, one child per try within a budget
- * (none with NIMBUS_BARRIER_SHRINK=0), and printed as a schedule to add to
- * lib/barrier-found.mjs, where the seeds found stay; a seed that hangs is
- * reported as it is.
+ * NIMBUS_BARRIER_SEED_FROM. The unit gate runs a fixed window (FIXED_FROM),
+ * so a train's verdict is its commit's, whatever the day; the seeds a run
+ * ever found failing stay in lib/barrier-found.mjs, which the gate runs too.
+ * NIMBUS_BARRIER_SEED_WINDOW=daily advances the window each UTC day instead,
+ * drawing seeds no run drew before: the daily job
+ * (.github/workflows/barrier-seeds.yml) runs it, and reports what it finds
+ * rather than reddening a train. The window is printed, and a failing seed's
+ * name says how to run it again. A seed that fails is shrunk, one child per
+ * try within a budget (none with NIMBUS_BARRIER_SHRINK=0), and printed as a
+ * schedule to add to lib/barrier-found.mjs; a seed that hangs is reported as
+ * it is.
  */
 
 import { runScenarios } from './lib/resident-body.mjs';
@@ -19,9 +23,11 @@ import { generate, KNOWN_GAPS, runSchedule } from './lib/barrier-schedule.mjs';
 
 const realProcess = globalThis.process;
 const SEEDS = Number(realProcess.env.NIMBUS_BARRIER_SEEDS ?? 24);
-/** Windows a day: the day's, after every earlier day's (4096 days before it starts over). */
+/** The gate's window: the one that found seed 6489, every other seed of it green. */
+const FIXED_FROM = 6481;
+/** The daily window: the day's, after every earlier day's (4096 days before it starts over). */
 const DAY = Math.floor(Date.now() / 86_400_000) % 4096;
-const FROM = Number(realProcess.env.NIMBUS_BARRIER_SEED_FROM ?? 1 + DAY * SEEDS);
+const FROM = Number(realProcess.env.NIMBUS_BARRIER_SEED_FROM ?? (realProcess.env.NIMBUS_BARRIER_SEED_WINDOW === 'daily' ? 1 + DAY * SEEDS : FIXED_FROM));
 // Each scenario's child draws the same window, whatever the day is when it starts.
 realProcess.env.NIMBUS_BARRIER_SEED_FROM = String(FROM);
 
