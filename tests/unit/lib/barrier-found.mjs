@@ -400,10 +400,6 @@ const GAPS = {
       + 'meanwhile readdirSync can leave out a directory the program made after a mount appeared',
     shows: 'parked by seed 7078',
   },
-  'a directory root shut and took is refused to a read that cannot wait (7451) [node]': {
-    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (main does too; closed by the cutover: RF answers it as the session does)',
-    shows: 'sync readFile d/e answered EISDIR',
-  },
   'a fed mount made over a directory a peer and the process wrote in shows the mount\'s files at rest (8134) [node]': {
     lacks: 'S answers a file of the session\'s own that a fed mount then covered, at rest (closed by the cutover: RF follows the mount\'s feed)',
     shows: 'at rest, sync stat d/e/g answered',
@@ -423,10 +419,6 @@ const GAPS = {
   'a directory the process made again lists no name before its write is made (8576) [node]': {
     lacks: 'S lists, in a directory the process removed and made again, a name its own write in flight has not made yet (5891\'s class; closed by the cutover: one own state, RF\'s)',
     shows: 'sync readdir z answered ["g"]',
-  },
-  'a directory root shut and took is refused to a read that cannot wait (8354) [node]': {
-    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (7451\'s class, which main has; closed by the cutover)',
-    shows: 'sync readFile x answered EISDIR',
   },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
