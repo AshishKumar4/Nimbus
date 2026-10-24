@@ -109,6 +109,8 @@ export interface ProcessHostOptions {
         uid: number;
         gid: number;
     } | null;
+    /** The directory the guest starts in, its process's (startup_dir). */
+    cwd: string;
     /** Whether the guest can be suspended in an import (JSPI), so that an import may answer by promise. */
     parks: boolean;
     /**

@@ -36,7 +36,7 @@ import { nameDec } from '../../_shared/bytes.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 import { NIMBUS_ESIGNAL, NIMBUS_SIGNAL_ERRNOS } from './types.js';
 /** WASI errno values these imports answer with. */
-const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 };
+const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NAMETOOLONG: 37, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 };
 const FDFLAGS_NONBLOCK = 4;
 /** Signal numbers as wasi-libc's emulated signals number them, and their names: those a host delivers (NIMBUS_SIGNAL_ERRNOS), and SIGKILL. */
 const SIGNALS = {
@@ -361,6 +361,23 @@ export function processHost(opts) {
         return ((exit.exitCode ?? 0) & 0xff) << 8;
     };
     const imports = {
+        /**
+         * The directory the guest starts in, as exec leaves a process in its
+         * parent's (nimbus-libc's nimbus-cwd.c changes to it before main): its
+         * length in bytes at `lengthPtr`, and the path, NUL-terminated, at
+         * `bufPtr` when `capacity` holds both; a smaller one is NAMETOOLONG.
+         */
+        startup_dir(bufPtr, capacity, lengthPtr) {
+            const bytes = encoder.encode(opts.cwd);
+            view().setUint32(lengthPtr, bytes.length, true);
+            if (capacity === 0)
+                return E.SUCCESS;
+            if (capacity <= bytes.length)
+                return E.NAMETOOLONG;
+            bytesAt().set(bytes, bufPtr);
+            bytesAt()[bufPtr + bytes.length] = 0;
+            return E.SUCCESS;
+        },
         /** getuid(2) and getgid(2): the credential the session runs the guest as (uid, gid as u32). */
         ids(outPtr) {
             const cred = opts.cred();

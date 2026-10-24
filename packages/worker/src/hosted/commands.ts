@@ -6,7 +6,7 @@ import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/com
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, requireVfsCred, type CPythonRunnerContract } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, WASI_CLI_RUNNER, CRED_KERNEL, requireVfsCred, type CPythonRunnerContract } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -33,6 +33,7 @@ import { createRuntimeCommandHintResolver } from '../runtime/package-manager.js'
 import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../session/programmatic.js';
 import { listInstalledRuntimes, type RunnerFactory } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import type { ClangRunnerFactory } from '@nimbus-sh/core/runtime/clang-runner.js';
+import type { WasiCliRunnerFactory } from '@nimbus-sh/core/runtime/wasi-cli-runner.js';
 import type { CPythonRunnerFactory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import type { RubyRunnerFactory } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -209,6 +210,22 @@ workspace.runtimes.registerRunner(
     return await (await clangFactory)(manifest, installRoot, binName, binKind)(ctx);
   },
 );
+// Plain WASI commands (jq, make), one WASI process per invocation: core
+// runtime/wasi-cli-runner.ts. One factory per session; each installed
+// command's handler keeps its own warm workers.
+let wasiCliFactory: Promise<WasiCliRunnerFactory> | null = null;
+workspace.runtimes.registerRunner(WASI_CLI_RUNNER, (manifest, installRoot, binName) => {
+  let handler: Promise<Command> | null = null;
+  return async (ctx: CommandContext) => {
+    wasiCliFactory ??= (async () => {
+      const { makeWasiCliRunnerFactory } = await import('@nimbus-sh/core/runtime/wasi-cli-runner.js');
+      const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+      return makeWasiCliRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes, session: self.ctx.id.toString() });
+    })().catch((error) => { wasiCliFactory = null; throw error; });
+    handler ??= wasiCliFactory.then((factory) => factory(manifest, installRoot, binName)).catch((error) => { handler = null; throw error; });
+    return await (await handler)(ctx);
+  };
+});
 // Pyodide v1 — Python 3.13 via the same R2-package-manager
 // substrate that ships clang. Manifest entrypoints `python` and
 // `python3` both bind to this factory; the runner ferries

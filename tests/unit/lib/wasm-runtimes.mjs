@@ -1,4 +1,4 @@
-// The in-repo wasm runtimes (bash, CPython and git, built under packages/worker/wasm),
+// The in-repo wasm runtimes (bash, CPython, git, jq and make, built under packages/worker/wasm),
 // written into a workspace as an install writes them. For the tests that run
 // them off Cloudflare (core-wasm-runtime-bun, local-facet-realm).
 
@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 
 // The source under Bun, the built package under Node.
-const { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } = await import(typeof process.versions.bun === 'string'
+const { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, WASI_CLI_RUNNER } = await import(typeof process.versions.bun === 'string'
   ? '../../../packages/core/src/runtime/os-contracts.ts'
   : '../../../packages/core/dist/runtime/os-contracts.js');
 
@@ -59,6 +59,27 @@ export const RUNTIMES = [
       ['share/git/gitconfig', `${WASM_DIR}git/gitconfig`],
       ['bin/git', null, '# Nimbus git-runner launcher marker.\n'],
       ['bin/git-fsmonitor-nimbus', null, '# Nimbus git fsmonitor v2 launcher marker.\n'],
+    ],
+  },
+  {
+    name: 'jq',
+    version: '1.7.1',
+    license: 'MIT',
+    entrypoints: [{ binName: 'jq', runner: WASI_CLI_RUNNER, args: [] }],
+    files: [
+      ['bin/jq', `${WASM_DIR}jq/jq.wasm`],
+      ['share/jq/COPYING', `${WASM_DIR}jq/COPYING`],
+      ['share/jq/COPYING.oniguruma', `${WASM_DIR}jq/COPYING.oniguruma`],
+    ],
+  },
+  {
+    name: 'make',
+    version: '4.4.1',
+    license: 'GPL-3.0-or-later',
+    entrypoints: [{ binName: 'make', runner: WASI_CLI_RUNNER, args: [] }],
+    files: [
+      ['bin/make', `${WASM_DIR}make/make.wasm`],
+      ['share/make/COPYING', `${WASM_DIR}make/COPYING`],
     ],
   },
 ];

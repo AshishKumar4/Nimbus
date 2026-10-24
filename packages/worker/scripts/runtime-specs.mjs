@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, WASI_CLI_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -228,6 +228,61 @@ export const SPECS = {
     license_text: GIT_GPL_2_LICENSE_NOTICE(),
   },
 
+  // jq 1.7.1, with its bundled Oniguruma 6.9.8, cross-built for wasm32-wasi
+  // by packages/worker/wasm/jq/build-jq.sh from jqlang's release, `source`
+  // (its sha256 the one jqlang publishes; runtime-source.mjs hands it to the
+  // build). A plain WASI command (WASI_CLI_RUNNER): the image is bin/jq
+  // itself. Each file is pinned: a rebuild that changes the bytes is a new
+  // version.
+  'jq/1.7.1': {
+    license: 'MIT',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/jq',
+    source: {
+      url: 'https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz',
+      sha256: '478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703873deeee580c2',
+    },
+    npm: {
+      name: '@nimbus-sh/runtime-jq',
+      summary: 'jq 1.7.1, cross-compiled to wasm32-wasi',
+      // The first core that registers wasi-cli-runner@1 (core 0.28.0 does not).
+      core: '>=0.28.1',
+    },
+    files: [
+      { src: 'jq.wasm', vfs: 'bin/jq', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'jq', sha256: '35aa244c9729faafad2f7e42ef5bc44a505acd6f8abdf6fc3d9e9cd3f66e429f' },
+      { src: 'COPYING', vfs: 'share/jq/COPYING', sha256: '10e974638a41fadfd72357f2f3a4325e20b856c563365128f72feaa406f8c92d' },
+      { src: 'COPYING.oniguruma', vfs: 'share/jq/COPYING.oniguruma', sha256: '70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f' },
+    ],
+    license_text: JQ_MIT_LICENSE_NOTICE(),
+  },
+
+  // GNU make 4.4.1 cross-built for wasm32-wasi by
+  // packages/worker/wasm/make/build-make.sh from GNU's release, `source` (its
+  // signature by the maintainer checked when the digest was pinned), with
+  // wasm/make/patches. A plain WASI command (WASI_CLI_RUNNER): the image is
+  // bin/make itself, and its recipes are session processes it starts
+  // through the host. Each file is pinned, as jq's are.
+  'make/4.4.1': {
+    license: 'GPL-3.0-or-later',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/make',
+    source: {
+      url: 'https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz',
+      sha256: 'dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3',
+    },
+    npm: {
+      name: '@nimbus-sh/runtime-make',
+      summary: 'GNU make 4.4.1, cross-compiled to wasm32-wasi',
+      // The first core that registers wasi-cli-runner@1 (core 0.28.0 does not).
+      core: '>=0.28.1',
+    },
+    files: [
+      { src: 'make.wasm', vfs: 'bin/make', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'make', sha256: '00dbd469705d7b302f06e6801a566b46d95aa20315d3e4d40c6a2c29a0ed579c' },
+      { src: 'COPYING', vfs: 'share/make/COPYING', sha256: 'e79e9c8a0c85d735ff98185918ec94ed7d175efc377012787aebcf3b80f0d90b' },
+    ],
+    license_text: MAKE_GPL_3_LICENSE_NOTICE(),
+  },
+
   // CPython 3.13 cross-built for wasm32-wasi by packages/worker/wasm/python/
   // build-python.sh, with the C libraries the published wasm32-wasi artifacts
   // leave out (zlib, bzip2, xz, sqlite, OpenSSL). Unlike the Pyodide entry
@@ -395,6 +450,35 @@ git-mmap-paged.c, include/, patches/, and the shared wasm/nimbus-libc/).
 
 zlib 1.3.1 — Zlib
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+`;
+}
+
+function JQ_MIT_LICENSE_NOTICE() {
+  return `jq 1.7.1 — MIT
+Copyright (C) 2012 Stephen Dolan, and the jq contributors.
+
+This runtime bundles jq cross-compiled to wasm32-wasi. Its license, and
+the notices of the code it incorporates (David M. Gay's dtoa.c and
+g_fmt.c, decNumber), are in share/jq/COPYING.
+Corresponding source: https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz
+plus the Nimbus build overlay (packages/worker/wasm/jq/ in the Nimbus
+repository: build-jq.sh, jq-wasi-compat.h, and the shared wasm/nimbus-libc/).
+
+Oniguruma 6.9.8 — BSD-2-Clause
+Copyright (c) 2002-2021 K.Kosako. Its license is in share/jq/COPYING.oniguruma.
+`;
+}
+
+function MAKE_GPL_3_LICENSE_NOTICE() {
+  return `GNU make 4.4.1 — GPL-3.0-or-later
+Copyright (C) 1988-2023 Free Software Foundation, Inc.
+
+This runtime bundles GNU make cross-compiled to wasm32-wasi. Its license
+is in share/make/COPYING (https://www.gnu.org/licenses/gpl-3.0.txt).
+Corresponding source: https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz
+plus the Nimbus build overlay (packages/worker/wasm/make/ in the Nimbus
+repository: build-make.sh, make-wasi-compat.{h,c}, patches/, and the
+shared wasm/nimbus-libc/).
 `;
 }
 

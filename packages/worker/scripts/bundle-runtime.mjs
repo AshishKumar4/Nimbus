@@ -295,6 +295,8 @@ for (const f of spec.files) {
       }
       mkdirSync(dirname(local), { recursive: true });
       writeFileSync(local, readFileSync(from));
+      // A file the spec pins is published as those bytes or not at all.
+      if (f.sha256) assertPinned(local, f.sha256, from.pathname);
       console.log(`[bundle-runtime] local ${f.src} ← ${from.pathname}`);
     } else if (!existsSync(local)) {
       const url = `${spec.upstream_base}/${f.src}`;
