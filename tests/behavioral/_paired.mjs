@@ -101,9 +101,6 @@ export function gradePaired(rounds) {
   const [low, high] = medianInterval(shift);
   const aa = medianInterval(rounds.map((round) => ln(round, 'a1') - ln(round, 'a2')));
   const bb = medianInterval(rounds.map((round) => ln(round, 'b1') - ln(round, 'b2')));
-  // How far apart two Previews of the same code landed in this set: a
-  // candidate Preview no farther from the baselines is where it landed.
-  const spread = Math.max(Math.abs(aa[0]), Math.abs(aa[1]));
   const arms = CANDIDATE_ARMS.map((b) => ({ arm: b, interval: medianInterval(rounds.map((round) => ln(round, b) - mean(round, BASELINE_ARMS))) }));
   const weakest = arms.reduce((low, arm) => (arm.interval[0] < low.interval[0] ? arm : low));
   return {
@@ -114,7 +111,7 @@ export function gradePaired(rounds) {
     weakest: { arm: weakest.arm, interval: weakest.interval.map(Math.exp) },
     aa: aa.map(Math.exp),
     bb: bb.map(Math.exp),
-    slower: weakest.interval[0] > spread,
+    slower: weakest.interval[0] > 0,
   };
 }
 
