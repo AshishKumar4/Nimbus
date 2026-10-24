@@ -3146,6 +3146,8 @@ var __nimbusResidentModule = (() => {
           return false;
         }
         if (!tree || !arrayIsArray(tree.entries) || !learning.lists(dir)) return false;
+        const at = coherence.cursor();
+        if (at === null || !isFeedPosition(tree.position) || !sameEpochs(tree.position, at)) return false;
         const listed = new SafeList();
         listed[listed.length] = dir;
         const written = new SafeSet();
