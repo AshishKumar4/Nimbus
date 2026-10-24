@@ -15,7 +15,11 @@
 // uploads, and the command's Cloudflare API requests reach the fixture server.
 // Under no parent Worker at all, `up` makes the parent before it asks
 // whether the Preview stands, as the API answers that read with the
-// Worker's absence (10007) until there is one.
+// Worker's absence (10007) until there is one. The API can answer a new
+// Preview's name 404 while it serves the Preview by id (2026-10-24: 13 s
+// after it was made), and `wrangler preview` makes a Preview its read by
+// name does not find, which the API refuses as a second of the name
+// (100338): `up` reads an upload back by the Preview id it printed.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -33,6 +37,8 @@ const NAME = 'nimbus-' + PREVIEW;
 const PARENT_PATH = `/client/v4/accounts/${ACCOUNT}/workers/workers/nimbus-probe-previews`;
 const PRESENCE_PATH = `${PARENT_PATH}/previews/${PREVIEW}`;
 const LATEST_PATH = `${PRESENCE_PATH}/deployments/latest`;
+const PREVIEW_ID = 'preview-id';
+const LATEST_BY_ID_PATH = `${PARENT_PATH}/previews/${PREVIEW_ID}/deployments/latest`;
 const ABSENT = { success: false, result: null, errors: [{ code: 10025, message: 'no such Preview' }] };
 const ok = (result) => ({ success: true, result, errors: [] });
 
@@ -42,8 +48,10 @@ const ok = (result) => ({ success: true, result, errors: [] });
  * `second-lands` (the deployment before until the second upload, then that),
  * `new` (no Preview: 404), `landed` (the last upload), `presence-500` (the
  * Preview read fails), `latest-500` (it stands, and its latest read fails),
- * or `no-parent` (no parent Worker until `up` makes one, then no Preview
- * until the upload lands).
+ * `no-parent` (no parent Worker until `up` makes one, then no Preview
+ * until the upload lands), `parent-500` (the parent's read fails), or
+ * `name-lags` (no Preview by name, and by id the last upload). Read by id,
+ * it answers as by name, but in `name-lags`.
  */
 let mode = 'stale';
 /**
@@ -57,6 +65,7 @@ const READ_MS = 300;
 /** When each read of the latest deployment arrived, and when each was answered (ms). */
 const reads = { arrived: [], answered: [] };
 let parentMade = false;
+let parentCreates = 0;
 const NO_WORKER = { success: false, result: null, errors: [{ code: 10007, message: 'This Worker does not exist on your account.' }] };
 let latestReads = 0;
 let checkout = null;
@@ -66,8 +75,10 @@ const server = createServer((request, response) => {
   const json = (status, body) => response.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
   const parent = mode !== 'no-parent' || parentMade;
   if (request.method === 'GET' && request.url === PARENT_PATH) {
+    if (mode === 'parent-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
     return parent ? json(200, ok({ subdomain: { enabled: true, previews_enabled: true } })) : json(404, NO_WORKER);
   }
+  if (request.method === 'POST' && request.url === `/client/v4/accounts/${ACCOUNT}/workers/workers`) parentCreates++;
   if (request.method === 'POST' && request.url === `/client/v4/accounts/${ACCOUNT}/workers/workers` && mode === 'no-parent') {
     parentMade = true;
     return json(200, ok({ id: 'nimbus-probe-previews' }));
@@ -76,9 +87,9 @@ const server = createServer((request, response) => {
     if (!parent) return json(404, NO_WORKER);
     if (mode === 'no-parent') return json(404, ABSENT);
     if (mode === 'presence-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
-    return mode === 'new' ? json(404, ABSENT) : json(200, ok({ id: 'preview-id' }));
+    return mode === 'new' || mode === 'name-lags' ? json(404, ABSENT) : json(200, ok({ id: PREVIEW_ID }));
   }
-  if (request.method === 'GET' && request.url === LATEST_PATH) {
+  if (request.method === 'GET' && (request.url === LATEST_PATH || request.url === LATEST_BY_ID_PATH)) {
     latestReads++;
     reads.arrived.push(Date.now());
     // The first read is the one before the upload; it always answers.
@@ -86,6 +97,7 @@ const server = createServer((request, response) => {
     // Each answer takes READ_MS, longer than the stand-in's upload takes.
     const answer = (status, body) => setTimeout(() => { reads.answered.push(Date.now()); json(status, body); }, READ_MS);
     if (mode === 'latest-500') return answer(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
+    if (mode === 'name-lags') return request.url === LATEST_BY_ID_PATH ? answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 })) : answer(404, ABSENT);
     if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return answer(404, ABSENT);
     if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return answer(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
     return answer(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
@@ -133,12 +145,17 @@ try {
 [ "$1" = preview ] || exit 1
 # Failing before its deployment, as wrangler does when it cannot assemble one: no id, no secret sent.
 [ -f '${join(checkout, 'noid')}' ] && { echo 'wrangler failed before its deployment' >&2; exit 1; }
+# While the API does not resolve the name, wrangler asks to make again the Preview an upload made, and the API refuses.
+if [ -f '${join(checkout, 'name-lags')}' ]; then
+  [ -f '${join(checkout, 'made')}' ] && { echo "A preview with name '${PREVIEW}' already exists. [code: 100338]" >&2; exit 1; }
+  touch '${join(checkout, 'made')}'
+fi
 n=$(( $(cat '${join(checkout, 'uploads')}' 2>/dev/null || echo 0) + 1 ))
 echo $n > '${join(checkout, 'uploads')}'
-echo '{"deployment":{"id":"deployment-uploaded-'$n'"},"preview":{"urls":["https://${PREVIEW}-nimbus-probe-previews.proof.workers.dev"]}}'
+echo '{"deployment":{"id":"deployment-uploaded-'$n'"},"preview":{"id":"${PREVIEW_ID}","urls":["https://${PREVIEW}-nimbus-probe-previews.proof.workers.dev"]}}'
 `);
   chmodSync(join(checkout, 'node_modules/.bin/wrangler'), 0o755);
-  writeFileSync(join(checkout, '.gitignore'), 'node_modules\n.wrangler\ntmp\nstate\ndrive.mjs\nuploads\n');
+  writeFileSync(join(checkout, '.gitignore'), 'node_modules\n.wrangler\ntmp\nstate\ndrive.mjs\nuploads\nname-lags\nmade\n');
   git('init', '-q');
   git('add', '-A');
   git('-c', 'user.name=proof', '-c', 'user.email=proof@proof', 'commit', '-qm', 'the checkout up uploads from');
@@ -285,6 +302,37 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.match(output, /deployment deployment-uploaded-3 is live/, `it redeploys it\n${output}`);
     assert.equal(record().secret, kept.secret, 'with the secret its uploads carried');
     console.log('  ok  a new Preview that lands late: the next up redeploys it with its secret');
+  }
+  // A Preview up makes, whose name the API does not resolve yet: up reads
+  // its upload back by id, and goes on with it. Before, it read by name,
+  // missed, and uploaded again, which asked to make the Preview a second time.
+  {
+    mode = 'name-lags';
+    rmSync(recordPath, { force: true });
+    for (const file of ['uploads', 'made']) rmSync(join(checkout, file), { force: true });
+    writeFileSync(join(checkout, 'name-lags'), '');
+    const { code, stdout, stderr } = await up();
+    rmSync(join(checkout, 'name-lags'));
+    const output = `${stdout}${stderr}`;
+    assert.equal(code, 3, `up reaches readiness\n${output}`);
+    assert.equal(uploads(), 1, 'with its one upload');
+    assert.equal(record().versionId, 'deployment-uploaded-1', 'and records it');
+    console.log('  ok  a new Preview the API does not resolve by name yet: up reads it back by id');
+  }
+
+  // The API errs on whether the parent stands: up refuses, rather than ask
+  // to make a parent that may stand.
+  {
+    mode = 'parent-500';
+    const held = record();
+    const before = uploads();
+    const { code, stdout, stderr } = await up();
+    const output = `${stdout}${stderr}`;
+    assert.ok(code !== 0 && code !== 3, `up refuses\n${output}`);
+    assert.equal(parentCreates, 1, 'asking to make no parent past the one no-parent made');
+    assert.equal(uploads(), before, 'and uploads nothing');
+    assert.deepEqual(record(), held, 'and changes no record');
+    console.log('  ok  parent-500: up refuses, making no parent');
   }
   assert.deepEqual(unexpected, [], 'up asked the API nothing else');
 } finally {
