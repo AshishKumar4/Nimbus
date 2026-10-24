@@ -2,8 +2,10 @@
 // @tier slow — grades 4,800 simulated sets of paired rounds
 //
 // How often gradePaired (tests/behavioral/_paired.mjs) calls a candidate
-// slower, the way remote-probes uses it: red on one set of Previews, then
-// confirmed on a fresh set. The noise shapes are the probes' own: cold start
+// slower, the way remote-probes uses it: red on one set of Previews,
+// confirmed on a fresh set, then red again on one more fresh set
+// (scripts/ci/lib/rerun.mjs, which reruns a confirmed red once). The noise
+// shapes are the probes' own: cold start
 // (40 rounds, a 0.3 log-spread, a Preview slow 1.3x for where it landed
 // about 3 times in 10) and ruby launch (20 rounds, 0.12, a Preview slow 1.5x
 // about half the time). A rule change is judged here: it must keep false reds
@@ -27,16 +29,19 @@ const set = ({ count, sigma, pSlow, slowBy }, factor) => pairedRounds({
 const rates = {};
 for (const shape of SHAPES) {
   for (const factor of [1, 1.3, 1.46]) {
-    let once = 0, confirmed = 0;
+    let once = 0, confirmed = 0, rerun = 0;
     for (let i = 0; i < TRIALS; i++) {
       if (!gradePaired(set(shape, factor)).slower) continue;
       once++;
-      if (gradePaired(set(shape, factor)).slower) confirmed++;
+      if (!gradePaired(set(shape, factor)).slower) continue;
+      confirmed++;
+      if (gradePaired(set(shape, factor)).slower) rerun++;
     }
-    rates[`${shape.name} x${factor}`] = { once: once / TRIALS, confirmed: confirmed / TRIALS };
-    console.log(`  ${shape.name} x${factor}: red on one set ${Math.round(once / TRIALS * 100)}%, confirmed on a fresh set ${Math.round(confirmed / TRIALS * 100)}%`);
+    rates[`${shape.name} x${factor}`] = { once: once / TRIALS, confirmed: confirmed / TRIALS, rerun: rerun / TRIALS };
+    console.log(`  ${shape.name} x${factor}: red on one set ${Math.round(once / TRIALS * 100)}%, confirmed on a fresh set ${Math.round(confirmed / TRIALS * 100)}%, red again on one more ${Math.round(rerun / TRIALS * 100)}%`);
   }
 }
+assert.fail('measure: ' + JSON.stringify(rates));
 for (const shape of SHAPES) assert.ok(rates[`${shape.name} x1`].confirmed <= 0.06, `${shape.name}: unchanged code confirmed slower too often`);
 assert.ok(rates['cold start x1.46'].confirmed >= 0.85, 'a real +46% cold start is found');
 assert.ok(rates['cold start x1.3'].confirmed >= 0.55, 'a real +30% cold start is found more often than not');
