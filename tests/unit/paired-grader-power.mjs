@@ -41,6 +41,7 @@ for (const shape of SHAPES) {
     console.log(`  ${shape.name} x${factor}: red on one set ${Math.round(once / TRIALS * 100)}%, confirmed on a fresh set ${Math.round(confirmed / TRIALS * 100)}%, red again on one more ${Math.round(rerun / TRIALS * 100)}%`);
   }
 }
+assert.fail('measure: ' + JSON.stringify(rates));
 for (const shape of SHAPES) assert.ok(rates[`${shape.name} x1`].confirmed <= 0.06, `${shape.name}: unchanged code confirmed slower too often`);
 assert.ok(rates['cold start x1.46'].confirmed >= 0.85, 'a real +46% cold start is found');
 assert.ok(rates['cold start x1.3'].confirmed >= 0.55, 'a real +30% cold start is found more often than not');
