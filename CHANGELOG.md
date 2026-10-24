@@ -5,6 +5,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-24: platform 0.15.1, core 0.28.0, fabric 0.23.0, worker 0.26.0, sdk 0.22.0, react 0.4.4, config 0.3.3, cli 0.2.13, loom 0.3.6, create-nimbus-app 0.2.9; runtime cpython 3.13.14-4 (the other runtimes unchanged)
+
 - Changed: `nimbus install python` (and `cpython`) installs cpython 3.13.14-4 by default, which takes Ctrl-C as CPython does on Linux (a `KeyboardInterrupt`). The catalog's default was 3.13.14-1. A deployment whose core cannot run -4 (0.27.0 and before) installs the newest build it can run, 3.13.14-3. A session keeps the build it has until it reinstalls.
 - Changed (CI): a red probe row is run once more, alone, on the same deployed target, and that run grades it, in train runs and in the release matrix alike. Before, only a red row whose sessions the platform's storage reset had dropped was run again. The verdict keeps the first red's detail and the rerun's task and job. A paired perf probe's red is still confirmed on a fresh set of Previews; a confirmed red now runs once more, on one more fresh set, which grades it. Deferred probes are graded as before.
 - Changed: other tenants' reads in the shared read profile may fill what a node launch's module map leaves after the program's closure; they were held to an eighth of the map (2.25 MiB).
