@@ -3194,10 +3194,13 @@ export class SqliteVFS {
   /**
    * Permission bits a new inode is created with. umask never masks 07000, so
    * a confined principal's creation drops setuid/setgid here, the one grant
-   * its umask cannot refuse. Sticky only restricts others and is kept.
+   * its umask cannot refuse. Its process sets its own umask, to 000 as
+   * readily as to 077, so its creation drops other-write here too: nothing
+   * it makes is others' to write (Kinu ask 74). Sticky only restricts others
+   * and is kept.
    */
   private creationMode(requested: number, cred: Pick<VfsCred, 'uid' | 'umask'>): number {
-    return requested & ~cred.umask & (this.isConfined(cred) ? 0o1777 : 0o7777);
+    return requested & ~cred.umask & (this.isConfined(cred) ? 0o1775 : 0o7777);
   }
 
   /**
@@ -6027,6 +6030,12 @@ export class SqliteVFS {
     if (cred.uid !== 0 && cred.uid !== inode.uid) throw vfsKeyError('EPERM', resolved.path);
     if (perms !== null && (!Number.isSafeInteger(perms) || perms < 0 || perms > 0o777)) {
       throw vfsError('EINVAL', `default ACL ${String(perms)}`);
+    }
+    // A default ACL is the mode of what is made beneath: a confined principal's widens its group and other
+    // entries no further than they are now (none: no bits), as its chmod (assertConfinedModeChange). Refused,
+    // never clamped; narrowing it, removing it and its owner entry stay free (Kinu ask 74).
+    if (perms !== null && this.isConfined(cred) && (perms & 0o077 & ~(inode.defaultAcl ?? 0)) !== 0) {
+      throw vfsError('EPERM', path, 'default ACL would grant permission outside your own principal; narrow its group and other entries');
     }
     this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
     this.publishMetadata(inode, { defaultAcl: perms });
