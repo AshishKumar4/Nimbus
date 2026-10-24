@@ -72,7 +72,8 @@ declare module 'node:process' {
     getBuiltinModule(id: 'node:console'): typeof NodeConsole;
     getBuiltinModule(id: 'node:crypto'): typeof NodeCrypto;
     getBuiltinModule(id: 'node:events'): typeof EventEmitter;
-    getBuiltinModule(id: 'node:fs'): typeof NodeFs;
+    /** None in a Worker at an early compatibility date (a Worker Loader isolate at 2025-06-01): its nodejs_compat has no fs. */
+    getBuiltinModule(id: 'node:fs'): typeof NodeFs | undefined;
     getBuiltinModule(id: 'node:path'): typeof NodePath;
     getBuiltinModule(id: 'node:url'): typeof NodeUrl;
     getBuiltinModule(id: 'node:stream'): typeof NodeStream;
