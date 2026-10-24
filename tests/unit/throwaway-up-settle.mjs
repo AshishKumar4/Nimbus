@@ -285,6 +285,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   {
     mode = 'new';
     rmSync(recordPath, { force: true });
+    rmSync(join(checkout, 'uploads'), { force: true });
     writeFileSync(join(checkout, 'noid'), '');
     const { stdout, stderr } = await up();
     rmSync(join(checkout, 'noid'));
