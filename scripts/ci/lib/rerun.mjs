@@ -5,11 +5,12 @@
 // are graded: a train's run and the release matrix are both remote-probes
 // runs, and lib/matrix.mjs grades a rerun row by its rerun.
 //
-// A paired perf probe's red is first confirmed on a fresh set of Previews
-// (remote-probes), which grades its first row. A confirmed red is then run
-// once more under this rule, on one more fresh set, which grades it: a
-// real +50-60% fails all three sets, and a slower set by where it landed
-// rarely lands twice more (2026-10-24: a false CONFIRMED in train 1024a).
+// A paired perf probe runs on Previews of its own, which a run again replaces
+// with a fresh set: its red is confirmed on a fresh set, which grades its
+// first row, and a confirmed red is run once more on one more fresh set,
+// which grades it. A real +50-60% fails all three sets; a set slower by where
+// it landed rarely lands so twice more (2026-10-24: a false CONFIRMED in
+// train 1024a).
 //
 // Not rerun:
 // - a probe the release record defers: its deferral grades its red
@@ -47,53 +48,73 @@ function firstRed(row) {
 }
 
 /**
- * `reruns` run again by `runner`, which maps `items` on armada and resolves
- * to `{ tasks, jobId, problems }` in their order; `taskOf(i)` is the index in
- * `items` of the task that reruns `reruns[i]`. Each first row whose rerun task
- * holds that probe's row is marked `regraded` with the rerun's task, its job
- * and the first red's detail.
+ * `reds` run again by `runner`, which maps `items` on armada and resolves to
+ * `{ tasks, problems }`, each task as it read it: with its rows and the
+ * armada `job` that produced them. `taskOf(i)` is the index in `items` of the
+ * task that runs `reds[i]` again. Each row whose task holds that probe's row
+ * is marked `regraded` with the task, its job and the first red's detail;
+ * one that holds none is a problem: the run is not graded. Resolves to the
+ * rows the second runs gave, in the order of `reds`, the problems and one
+ * line per row.
  */
-async function runAgain(tasks, reruns, items, taskOf, runner, where) {
+async function runAgain(tasks, reds, items, taskOf, runner, said) {
   const again = await runner(items);
   tasks.push(...again.tasks);
-  const lines = reruns.map(({ row }, i) => {
-    const item = items[taskOf(i)];
-    const second = again.tasks[taskOf(i)]?.rows?.find((other) => other.name === row.name);
-    if (!second) return `RERUN ${row.name}: its rerun (${item.task}) has no row of it; the red stands`;
-    row.regraded = { task: item.task, job: again.jobId, first: firstRed(row) };
-    return `RERUN ${row.name}: red, then ${second.exitCode === 0 ? 'green' : `red again (exit ${second.exitCode})`} ${where} (${item.task}, job ${again.jobId})`;
+  const problems = [...again.problems];
+  const seconds = [];
+  const lines = reds.map(({ row }, i) => {
+    const task = again.tasks[taskOf(i)];
+    const second = task?.rows?.find((other) => other.name === row.name);
+    if (!second) {
+      problems.push(`${items[taskOf(i)].task} has no row of ${row.name}`);
+      return `RERUN ${row.name}: ${items[taskOf(i)].task} has no row of it; not graded`;
+    }
+    row.regraded = { task: task.task, job: task.job, first: firstRed(row) };
+    seconds.push({ task, row: second });
+    return `RERUN ${row.name}: red, then ${second.exitCode === 0 ? 'green' : `red again (exit ${second.exitCode})`} ${said} (${task.task}, job ${task.job})`;
   });
-  return { problems: again.problems, lines };
+  return { seconds, problems, lines };
 }
 
+/** `outcome`'s problems and lines added to `result`. */
+const merge = (result, outcome) => {
+  result.problems.push(...outcome.problems);
+  result.lines.push(...outcome.lines);
+};
+
+/** The paired probes of `reds` in one task, to run on a fresh set of Previews. */
+const pairedTask = (reds, task) => [{ task, part: '1/1', only: [...new Set(reds.map(({ row }) => `${probeOf(row)}.mjs`))].join(','), skip: '', jobs: 1 }];
+
 /**
- * The rule on a run's `tasks`, once the paired probes' confirmation has run:
- * each red row it reruns is run again and that run grades it. A probe that is
- * not paired runs alone in a task of its own, by `run`, on the same target; a
- * paired probe's confirmed red runs on one more fresh set of Previews, the
- * paired probes in one task, by `runPaired`. Each resolves to
- * `{ tasks, jobId, problems }` for the items it is given, in their order. The
- * rerun tasks join `tasks`. `paired` names the paired probes and `deferred` the
- * probes whose deferral grades them. Resolves to the problems and one line per rerun.
+ * The rule on a run's first `tasks`: each red row is run again, and that run
+ * grades it. A probe that is not paired runs alone in a task of its own, by
+ * `run`, on the same target. A paired probe's reds run in one task on a fresh
+ * set of Previews, by `runPaired`, which confirms them; each red there (a
+ * confirmed red) runs once more on one more fresh set, which grades it. `run`
+ * and `runPaired` resolve to `{ tasks, problems }` for the items they are
+ * given, in their order, each task with its armada `job`. The tasks they ran
+ * join `tasks`. `paired` names the paired probes and `deferred` the probes
+ * whose deferral grades them. Resolves to the problems (a run that left a red
+ * ungraded) and one line per row run again.
  */
 export async function rerunRed(tasks, { paired, deferred, run, runPaired }) {
   const reds = redRows(tasks, new Set(deferred));
   const pairedProbes = new Set(paired);
   const plain = reds.filter(({ row }) => !pairedProbes.has(probeOf(row)));
-  const confirmed = reds.filter(({ row }) => pairedProbes.has(probeOf(row)));
+  const pairedReds = reds.filter(({ row }) => pairedProbes.has(probeOf(row)));
   const result = { problems: [], lines: [] };
   if (plain.length > 0) {
     const items = plain.map(({ row }, i) => ({ task: `rerun ${probeOf(row)} #${i + 1}`, part: '1/1', only: `${probeOf(row)}.mjs`, skip: '', jobs: 1 }));
-    const outcome = await runAgain(tasks, plain, items, (i) => i, run, 'alone on the same target');
-    result.problems.push(...outcome.problems);
-    result.lines.push(...outcome.lines);
+    merge(result, await runAgain(tasks, plain, items, (i) => i, run, 'alone on the same target'));
   }
-  if (confirmed.length > 0) {
-    const probes = [...new Set(confirmed.map(({ row }) => probeOf(row)))];
-    const items = [{ task: 'paired perf rerun on fresh Previews', part: '1/1', only: probes.map((probe) => `${probe}.mjs`).join(','), skip: '', jobs: 1 }];
-    const outcome = await runAgain(tasks, confirmed, items, () => 0, runPaired, 'on one more fresh set of Previews');
-    result.problems.push(...outcome.problems);
-    result.lines.push(...outcome.lines);
+  if (pairedReds.length > 0) {
+    const items = pairedTask(pairedReds, 'paired perf on fresh Previews');
+    const confirmation = await runAgain(tasks, pairedReds, items, () => 0, runPaired, 'on a fresh set of Previews');
+    merge(result, confirmation);
+    const confirmed = confirmation.seconds.filter(({ row }) => row.exitCode !== 0 && row.exitCode !== 2);
+    if (confirmed.length > 0) {
+      merge(result, await runAgain(tasks, confirmed, pairedTask(confirmed, 'paired perf rerun on fresh Previews'), () => 0, runPaired, 'on one more fresh set of Previews'));
+    }
   }
   return result;
 }

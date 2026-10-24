@@ -405,47 +405,20 @@ async function probeRun({ baseline, releases }) {
     }
   }
 
-  // A paired probe red on one set of Previews is run again on a fresh set,
-  // which grades it: a set can land slow as a whole, and where it landed is
-  // drawn again; a slower candidate is slower on both.
-  /** A fresh set of paired Previews in place of the last, for a confirmation or a rerun. */
-  const freshArms = async () => {
-    await arms.replace({ baseline, candidate: sha, releases });
-    for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
-  };
-  const pairedRed = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode === 1 && !row.regraded
-    && PAIRED_PROBES.some((probe) => row.name === `tests/behavioral/${probe}.mjs`)));
-  if (arms && pairedRed.length > 0) {
-    const probes = [...new Set(pairedRed.map((row) => row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')))];
-    const confirm = [{ task: 'paired perf on fresh Previews', part: '1/1', only: probes.join(','), skip: '', jobs: 1 }];
-    try {
-      await freshArms();
-      const again = await runTasks(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
-      problems.push(...again.problems);
-      const [rerun] = again.tasks;
-      tasks.push(rerun);
-      for (const row of pairedRed) {
-        const second = rerun.rows?.find((other) => other.name === row.name);
-        if (second) row.regraded = { task: confirm[0].task, evidence: [`red on one set of Previews, then ${second.exitCode === 0 ? 'green' : `exit ${second.exitCode}`} on a fresh set`] };
-        if (second?.exitCode === 0) console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
-        else if (second?.exitCode === 1) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
-        else console.log(`UNCONFIRMED ${row.name}: the fresh set ${second ? `did not grade it (exit ${second.exitCode})` : 'has no row of it'}`);
-      }
-    } catch (error) {
-      problems.push(`the paired confirmation could not run: ${scrub(error.message)}`);
-    }
-  }
-
-  // A red row is run once more and that run grades it (lib/rerun.mjs): alone,
-  // on the same target; a paired probe's confirmed red, on one more fresh set.
+  // A red row is run again and that run grades it (lib/rerun.mjs): alone, on
+  // the same target; a paired probe on a fresh set of Previews, which confirms
+  // it, and a confirmed red on one more fresh set. A set can land slow as a
+  // whole, and where it landed is drawn again.
   try {
     const rerun = await rerunRed(tasks, {
       paired: PAIRED_PROBES,
       deferred: DEFERRED.filter((entry) => entry.excluded !== true).map((entry) => entry.probe),
       run: (items) => runTasks(items, `remote-probes ${sha.slice(0, 12)} rerun`),
       runPaired: async (items) => {
-        await freshArms();
-        return runTasks(items, `remote-probes ${sha.slice(0, 12)} paired rerun`);
+        if (!arms) throw new Error('a paired probe is red with no paired Previews to run it again on');
+        await arms.replace({ baseline, candidate: sha, releases });
+        for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
+        return runTasks(items, `remote-probes ${sha.slice(0, 12)} ${items[0].task}`);
       },
     });
     problems.push(...rerun.problems);
@@ -481,11 +454,11 @@ function readTasks(items, mapped, scrub, mintedAt) {
     if (typeof verdict?.startedAt === 'number') outcome.startDelayS = (verdict.startedAt - mintedAt) / 1000;
     if (outcome.kind !== 'exited' || verdict === null) {
       console.log(`NOT GRADED ${item.task}: ${outcome.kind === 'exited' ? `exit ${outcome.exitCode}, no verdict` : 'armada could not run it'}\n${scrub(outcome.tail ?? '')}`);
-      return { ...item, outcome, rows: null };
+      return { ...item, job: mapped.jobId, outcome, rows: null };
     }
     if (verdict.lateStart === true) {
       console.log(`NOT GRADED ${item.task}: it started after its token's start-by (attempt ${outcome.attempt ?? 1})\n${scrub(outcome.tail ?? '')}`);
-      return { ...item, outcome, rows: null, lateStart: true };
+      return { ...item, job: mapped.jobId, outcome, rows: null, lateStart: true };
     }
     const red = verdict.rows.filter((row) => row.exitCode !== 0);
     console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s`);
@@ -497,10 +470,10 @@ function readTasks(items, mapped, scrub, mintedAt) {
         for (const path of screenshots) console.log(`screenshot: ${path}`);
       } catch (error) {
         console.error(`NOT GRADED ${item.task} screenshots: ${error.message}`);
-        return { ...item, outcome, rows: verdict.rows, screenshotError: error.message };
+        return { ...item, job: mapped.jobId, outcome, rows: verdict.rows, screenshotError: error.message };
       }
     }
-    return { ...item, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
+    return { ...item, job: mapped.jobId, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
   });
   const delays = tasks.flatMap((task) => (task.outcome.startDelayS === undefined ? [] : [task.outcome.startDelayS]));
   if (delays.length > 0) console.log(`remote-probes: its tasks started ${Math.min(...delays).toFixed(1)}-${Math.max(...delays).toFixed(1)} s after their tokens were minted (allowed ${PREPARE_S} s)`);

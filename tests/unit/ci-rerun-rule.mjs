@@ -4,9 +4,12 @@
 // release matrix (lib/matrix.mjs grades a remote-probes verdict).
 // - A one-off red that passes on its rerun is green.
 // - A real red fails twice and is red, by its rerun's row.
-// - A paired probe's confirmed red (red on two sets of Previews, the second
-//   grading the first) is run once more on one more fresh set, which grades
-//   it; the paired probes go in one task there.
+// - A paired probe's red runs on a fresh set of Previews, which grades it; a
+//   confirmed red runs once more on one more fresh set, which grades it.
+//   The paired probes go in one task on each set.
+// - Each link records the armada job that produced its grading row (a task
+//   that started late ran in a job of its own), and a run again that holds
+//   no row of its probe leaves the run not graded.
 // - A deferred probe (graded by its deferral), the session ledger and a row
 //   that did not grade are not run again, and a rerun's own red is not run
 //   again.
@@ -31,10 +34,13 @@ function runner(passes, job = 'job-rerun') {
   const asked = [];
   const run = async (items) => {
     asked.push(items);
+    const call = asked.length;
+    const pass = typeof passes === 'function' ? passes(call) : passes;
     return {
-      jobId: `${job}-${asked.length}`,
       problems: [],
-      tasks: items.map((item) => ({ ...item, rows: [...item.only.split(',').map((only) => row(only.replace(/\.mjs$/, ''), passes.includes(only.replace(/\.mjs$/, '')) ? 0 : 1, 'still 4')), ledger(0)] })),
+      // Each task as it was read, with the job that produced it: the last one started late, in a job of its own.
+      tasks: items.map((item, i) => ({ ...item, job: i > 0 && i === items.length - 1 ? `${job}-${call}-late` : `${job}-${call}`,
+        rows: [...item.only.split(',').map((only) => row(only.replace(/\.mjs$/, ''), pass.includes(only.replace(/\.mjs$/, '')) ? 0 : 1, 'still 4')), ledger(0)] })),
     };
   };
   return { asked, run };
@@ -68,6 +74,7 @@ const DEFERRED = ['x/deferred'];
   const { asked, run } = runner(['b/once']);
   await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
   assert.equal(asked.length, 1, 'one rerun job');
+  assert.deepEqual(tasks[0].rows.slice(0, 2).map((red) => red.regraded.job), ['job-rerun-1', 'job-rerun-1-late'], 'each link names the job that produced its row');
   assert.equal(gradeTasks(tasks), 1, 'a red that fails twice is red');
   const graded = gradeMatrix([{ problems: [], tasks }], []);
   assert.equal(graded.exitCode, 1);
@@ -91,45 +98,66 @@ const DEFERRED = ['x/deferred'];
 // A rerun task that holds no row of its probe leaves the first red standing.
 {
   const tasks = [{ task: 'part 4/4', rows: [row('d/red', 1)] }];
-  const run = async (items) => ({ jobId: 'job-empty', problems: [], tasks: items.map((item) => ({ ...item, rows: [ledger(0)] })) });
-  await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
+  const run = async (items) => ({ problems: [], tasks: items.map((item) => ({ ...item, job: 'job-empty', rows: [ledger(0)] })) });
+  const { problems } = await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
   assert.equal(tasks[0].rows[0].regraded, undefined, 'no row of it in its rerun: the red stands');
-  assert.equal(gradeTasks(tasks), 1);
+  assert.equal(problems.length, 1, 'and the run is not graded');
 }
 
-// A paired probe: red on one set, red on a fresh set (which graded the first),
-// then one more fresh set grades it. A real slowdown fails all three; a set
-// that landed slow by chance passes the third.
+// A paired probe: red on its set, then on a fresh set (which grades the first
+// row), then once more on one more fresh set, which grades the confirmed red.
 const PAIRED_TWO = ['perf-regression/cold-start', 'perf-regression/clone-fast'];
-/** A run whose paired probes were red on their first set and confirmed red on a fresh one. */
-const confirmedRed = () => {
-  const first = [row('perf-regression/cold-start', 1, 'slower'), row('perf-regression/clone-fast', 1, 'slower')];
-  for (const red of first) red.regraded = { task: 'paired perf on fresh Previews', evidence: ['red on one set of Previews, then exit 1 on a fresh set'] };
-  return [
-    { task: 'paired perf', rows: [...first, ledger(0)] },
-    { task: 'paired perf on fresh Previews', rows: [row('perf-regression/cold-start', 1, 'slower again'), row('perf-regression/clone-fast', 1, 'slower again'), ledger(0)] },
-  ];
-};
+/** A run whose paired probes were red on their first set. */
+const pairedRed = () => [{ task: 'paired perf', rows: [row('perf-regression/cold-start', 1, 'slower'), row('perf-regression/clone-fast', 1, 'slower'), ledger(0)] }];
+const BOTH = PAIRED_TWO.map((probe) => `${probe}.mjs`).join(',');
 {
-  const tasks = confirmedRed();
-  const { asked, run } = runner(['perf-regression/cold-start'], 'job-paired');
+  const tasks = pairedRed();
+  // The fresh set: both red again. One more: cold start green, clone red.
+  const { asked, run } = runner((call) => (call === 1 ? [] : ['perf-regression/cold-start']), 'job-paired');
   await rerunRed(tasks, { paired: PAIRED_TWO, deferred: DEFERRED, run: notPlain, runPaired: run });
-  assert.deepEqual(asked, [[{ task: 'paired perf rerun on fresh Previews', part: '1/1', only: 'perf-regression/cold-start.mjs,perf-regression/clone-fast.mjs', skip: '', jobs: 1 }]],
-    'the confirmed reds run once more, in one task on one more fresh set');
-  assert.equal(tasks[1].rows[0].regraded.task, 'paired perf rerun on fresh Previews', 'the third set grades the confirmed red');
-  assert.equal(tasks[1].rows[0].regraded.job, 'job-paired-1');
-  assert.deepEqual(tasks[1].rows[0].regraded.first.failed, ['step: slower again']);
+  assert.deepEqual(asked.map((items) => items.map((item) => [item.task, item.only])), [
+    [['paired perf on fresh Previews', BOTH]],
+    [['paired perf rerun on fresh Previews', BOTH]],
+  ], 'confirmed on a fresh set, then once more on one more, the paired probes in one task each');
+  assert.deepEqual(tasks[0].rows.slice(0, 2).map((red) => [red.regraded.task, red.regraded.job]),
+    [['paired perf on fresh Previews', 'job-paired-1'], ['paired perf on fresh Previews', 'job-paired-1']], 'the fresh set grades the first rows');
+  assert.deepEqual(tasks[1].rows.slice(0, 2).map((red) => [red.regraded.task, red.regraded.job, red.regraded.first.failed]),
+    [['paired perf rerun on fresh Previews', 'job-paired-2', ['step: still 4']], ['paired perf rerun on fresh Previews', 'job-paired-2', ['step: still 4']]],
+    'one more fresh set grades the confirmed reds');
   assert.equal(gradeTasks(tasks), 1, 'a slowdown red on all three sets is red');
   const graded = gradeMatrix([{ problems: [], tasks }], []);
   assert.deepEqual(graded.red, ['tests/behavioral/perf-regression/clone-fast.mjs (paired perf rerun on fresh Previews, exit 1)'],
     'red by the third set; cold start, green there, is not');
 }
 {
-  const tasks = confirmedRed();
-  const { run } = runner(PAIRED_TWO, 'job-paired');
+  // Green on the fresh set: no third set.
+  const tasks = pairedRed();
+  const { asked, run } = runner(PAIRED_TWO, 'job-paired');
+  await rerunRed(tasks, { paired: PAIRED_TWO, deferred: DEFERRED, run: notPlain, runPaired: run });
+  assert.equal(asked.length, 1, 'a red the fresh set does not confirm runs no third set');
+  assert.equal(gradeTasks(tasks), 0);
+  assert.equal(gradeMatrix([{ problems: [], tasks }], []).exitCode, 0);
+}
+{
+  // Confirmed, then green on one more set: green.
+  const tasks = pairedRed();
+  const { run } = runner((call) => (call === 1 ? [] : PAIRED_TWO), 'job-paired');
   await rerunRed(tasks, { paired: PAIRED_TWO, deferred: DEFERRED, run: notPlain, runPaired: run });
   assert.equal(gradeTasks(tasks), 0, 'confirmed reds that pass on the third set are green');
   assert.equal(gradeMatrix([{ problems: [], tasks }], []).exitCode, 0);
+}
+{
+  // A fresh set that holds no row of a probe confirms nothing: the run is not graded, and no third set runs for it.
+  const tasks = pairedRed();
+  const asked = [];
+  const runPaired = async (items) => {
+    asked.push(items);
+    return { problems: [], tasks: items.map((item) => ({ ...item, job: 'job-paired-1', rows: [row('perf-regression/cold-start', 0), ledger(0)] })) };
+  };
+  const { problems } = await rerunRed(tasks, { paired: PAIRED_TWO, deferred: DEFERRED, run: notPlain, runPaired });
+  assert.equal(asked.length, 1, 'no third set');
+  assert.equal(problems.length, 1, 'the missing row leaves the run not graded');
+  assert.equal(tasks[0].rows[1].regraded, undefined, 'and clone-fast\'s first red is not graded by a set that has no row of it');
 }
 
 console.log('ci-rerun-rule: ok');
