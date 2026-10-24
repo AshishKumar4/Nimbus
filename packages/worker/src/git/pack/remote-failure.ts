@@ -179,9 +179,11 @@ function redactDestination(url: string, secrets: readonly string[], credentialPr
  * git's lines for `failure` of the repository at `url` (as configured or
  * given), `credentials` what the request offered: the server's plain-text
  * message as `remote:` lines (credentials and `secrets` taken out), then
- * git's own.
+ * git's own. `hint`, a host's word on where a credential comes from
+ * (NIMBUS_GIT_CREDENTIAL_HINT), on its own line before the `fatal:` of a 401
+ * that offered none, and only then.
  */
-export function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets: readonly string[] = []): string {
+export function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets: readonly string[] = [], hint?: string): string {
   // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
   const shown = redactDestination(url.endsWith('/') ? url : url + '/', secrets);
   if (failure.kind === 'transport') return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
@@ -190,7 +192,8 @@ export function remoteFailureText(url: string, failure: RemoteFailure, credentia
     const what = credentials.username ? 'Password' : 'Username';
     const prompt = credentialDescription(url, credentials.username);
     const safePrompt = redactDestination(prompt, secrets, true);
-    return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
+    const told = hint === undefined || hint.trim() === '' ? '' : `${hint.replace(/\n+$/, '')}\n`;
+    return `${told}fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
   if (failure.kind === 'rpc') {
     // run_slot's report, and fetch-pack's on finding nothing to read.

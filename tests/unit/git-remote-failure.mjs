@@ -17,6 +17,9 @@
 //   - A remote that is not configured: git's "does not appear to be a git
 //     repository" (fetch and push 128, pull 1).
 // And remoteFailureText's lines, on their own, for each kind.
+// A host's NIMBUS_GIT_CREDENTIAL_HINT (Kinu ask 75) is printed on its own
+// line before git's `fatal:` on a 401 that offered no credential, and only
+// then: not on a 401 with credentials offered, nor any other failure.
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -164,6 +167,20 @@ try {
       assert.deepEqual([o.code, fatal(o.stderr, transport)], [h.code, fatal(h.stderr, transport).replace(url, anonymizeUrl(url))], `${name}: ${args[0]} (git's: ${h.stderr}; ours: ${o.stderr})`);
     }
     console.log(`  ok  ${name}: clone, fetch, pull and push exit as git does, with git's message`);
+  }
+
+  // A host's hint for a 401 that offered no credential, and only that.
+  {
+    const hint = { NIMBUS_GIT_CREDENTIAL_HINT: 'Kinu: this command holds no GitHub credential. Connect GitHub in Settings > Connections; then run git again.' };
+    const bare = await session.git('/home/user', ['clone', `${base}/auth.git`, '/home/user/hinted'], hint);
+    assert.equal(bare.code, 128, bare.stderr);
+    assert.match(bare.stderr, /^Kinu: this command holds no GitHub credential\. Connect GitHub in Settings > Connections; then run git again\.\nfatal: could not read Username for '[^']*': terminal prompts disabled\n$/m, bare.stderr);
+    const offered = await session.git('/home/user', ['clone', `${base}/auth.git`, '/home/user/hinted-2'], { ...hint, GIT_USERNAME: 'u', GIT_PASSWORD: 'p' });
+    assert.doesNotMatch(offered.stderr, /Kinu:/, `a credential was offered: ${offered.stderr}`);
+    const missing = await session.git('/home/user', ['clone', `${base}/missing.git`, '/home/user/hinted-3'], hint);
+    assert.notEqual(missing.code, 0);
+    assert.doesNotMatch(missing.stderr, /Kinu:/, `not a 401: ${missing.stderr}`);
+    console.log('  ok  a host\'s credential hint: on its own line before a 401 that offered none, and only then');
   }
 
   // A remote that is not configured.
