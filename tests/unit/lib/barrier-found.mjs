@@ -416,10 +416,6 @@ const GAPS = {
       + 'meanwhile readdirSync can leave out a directory the program made after a mount appeared',
     shows: 'parked by seed 7078',
   },
-  'a directory root shut and took is refused to a read that cannot wait (7451) [node]': {
-    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (main does too; closed by the cutover: RF answers it as the session does)',
-    shows: 'sync readFile d/e answered EISDIR',
-  },
   'a file read after the session\'s database restarted is held for a call that cannot wait (7519) [eager]': {
     lacks: 'after the session\'s database restarts, the eager engine does not hold the bytes of a file its process then read awaited (main does the same; found by the mount sweep, its schedule has no mount)',
     shows: 'sync readFile d/f answered EAGAIN',
@@ -447,10 +443,6 @@ const GAPS = {
   'a directory the process made again lists no name before its write is made (8576) [node]': {
     lacks: 'S lists, in a directory the process removed and made again, a name its own write in flight has not made yet (5891\'s class; closed by the cutover: one own state, RF\'s)',
     shows: 'sync readdir z answered ["g"]',
-  },
-  'a directory root shut and took is refused to a read that cannot wait (8354) [node]': {
-    lacks: 'S answers readFileSync of a directory the process may not read EISDIR where open(2) refuses it EACCES (7451\'s class, which main has; closed by the cutover)',
-    shows: 'sync readFile x answered EISDIR',
   },
   'a file read after a peer changed its mode is held for a call that cannot wait (7896) [eager]': {
     lacks: 'the eager engine reads a file a peer just changed the mode of by its old revision (ESTALE) and holds no bytes for the next call that cannot wait (main does the same; found by the mount sweep, its schedule has no mount)',
