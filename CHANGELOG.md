@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed (CI): a red probe row is run once more, alone, on the same deployed target, and that run grades it, in train runs and in the release matrix alike. Before, only a red row whose sessions the platform's storage reset had dropped was run again. The verdict keeps the first red's detail and the rerun's task and job. A paired perf probe's red is still confirmed on a fresh set of Previews; a confirmed red now runs once more, on one more fresh set, which grades it. Deferred probes are graded as before.
 - Changed: other tenants' reads in the shared read profile may fill what a node launch's module map leaves after the program's closure; they were held to an eighth of the map (2.25 MiB).
 - Fixed: Ctrl-C ends a python script (`python3 file.py`, `python3 -m mod`) as it ends CPython on Linux: a `KeyboardInterrupt`, which the program may catch, and exit 130 with a traceback if it does not. Before, the script was killed, with no `KeyboardInterrupt`, and the terminal said `python process boot failed`. A script takes the terminal's signals while it runs in the foreground; once it listens as a server and runs on in the background, a signal takes its default action, as `kill` on an idle server ends it. Needs cpython 3.13.14-4.
 - Fixed: a build or package task that ran and then returned a value its answer could not carry ("… could not be cloned") ran a second time; it now fails once with that error. A call whose worker refused its version is still tried again on a fresh worker.

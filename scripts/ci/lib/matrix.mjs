@@ -68,7 +68,7 @@ function beyondDeferral(row, entry) {
 }
 
 /**
- * @param {Array<{ problems?: string[], tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null, regraded?: { task: string, evidence: string[] } }> | null }> } | null>} verdicts
+ * @param {Array<{ problems?: string[], tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null, regraded?: { task: string, job?: string, first?: object, evidence?: string[] } }> | null }> } | null>} verdicts
  *   the matrix's remote-probes verdicts (null for one that wrote none)
  * @param {import('../../../tests/behavioral/_deferred.mjs').ReleaseException[]} deferred
  * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<import('../../../tests/behavioral/_deferred.mjs').ReleaseException & { rows?: object[] }>, problems: string[] }}
@@ -80,8 +80,9 @@ export function gradeMatrix(verdicts, deferred) {
   const problems = [];
   let notGraded = false;
   const rows = [];
-  // A row remote-probes regraded (only the platform storage reset turned it
-  // red) is graded by its rerun's task, when that task holds the same probe's row.
+  // A row remote-probes ran again (a red row, lib/rerun.mjs; a paired probe
+  // red on one set of Previews and green on a fresh one) is graded by that
+  // run's task, when that task holds the same probe's row.
   const reruns = new Set(verdicts.flatMap((verdict) => verdict?.tasks ?? [])
     .flatMap((task) => (task.rows ?? []).map((row) => `${task.task}\0${row.name}`)));
   for (const verdict of verdicts) {

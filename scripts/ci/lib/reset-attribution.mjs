@@ -145,26 +145,6 @@ export async function attributeRow(reader, row, { base, until }) {
   return { sessions };
 }
 
-/**
- * Whether only the platform turned `row` red, so one rerun may grade it.
- * The probe reached its summary (a probe that died says nothing about what
- * killed it); every check it failed is a socket that closed 1006, naming a
- * session whose socket the ledger saw drop (the driver's close error names
- * its session); every such session shows the platform storage reset; and
- * every session's record was read whole and shows no other class.
- */
-export function regradable(row, { sessions }) {
-  const results = row.assertions ?? [];
-  if (results.length === 0 || results.some((result) => !result.complete)) return false;
-  const dropped = (row.sessions ?? []).filter((session) => session.abnormalCloses.length > 0).map((session) => session.sid);
-  const failed = results.flatMap((result) => result.checks).filter((check) => !check.ok);
-  const attributed = new Map(sessions.map((session) => [session.sid, session]));
-  return failed.length > 0
-    && failed.every((check) => /close code 1006\b/.test(check.detail) && dropped.some((sid) => check.detail.includes(`session ${sid};`)))
-    && dropped.every((sid) => attributed.get(sid)?.classes.some((entry) => entry.platform))
-    && sessions.every((session) => session.complete && session.classes.every((entry) => entry.platform));
-}
-
 /** One line per session for a row's report. */
 export function describeAttribution({ sessions }) {
   return sessions.map((session) => `${session.sid}: ${session.object === null ? 'no log names this session yet'
