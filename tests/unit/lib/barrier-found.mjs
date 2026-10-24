@@ -319,6 +319,11 @@ const FOUND = {
     park: 8576,
     schedule: [['sync', 'chmod', 'd', 0o750], ['own', 'mkdir', 'z'], ['own', 'chmod', 'z', 0o700], ['sync', 'rmdir', 'z'], ['own', 'mkdir', 'z'], ['own', 'write', 'z/g', 'c8576.3'], ['sync', 'readdir', 'z']],
   },
+  'a subtree listed after a mount was made over its directory is not the view\'s (6489)': {
+    park: 6489,
+    schedule: [['own', 'stat', 'z'], ['own', 'opendir', 'd/e/g'], ['root', 'chmod', 'x', 0o755], ['input'], ['release'], ['own', 'stat', 'd/f'],
+      ['peer', 'mount', '', 'unfed', { d: null, x: null, z: null, 'd/e': null, top: 'm6489.5', new: 'm6489.6', 'd/f': 'm6489.7', 'd/e/g': 'm6489.8', 'x/h': 'm6489.9', 'x/f': 'm6489.10', 'z/k': 'm6489.11', 'z/g': 'm6489.12' }]],
+  },
   'a directory root shut and took is refused to a read that cannot wait (8354)': {
     park: 8354,
     schedule: [['root', 'chmod', 'x', 0o700], ['own', 'readdir', 'd/n'], ['release'], ['root', 'chown', 'x', 0], ['input'], ['input'], ['own', 'pread', 'big', 8400000], ['sync', 'readFile', 'x']],
@@ -428,9 +433,9 @@ const GAPS = {
     lacks: 'S answers a file of the session\'s own that a fed mount then covered, at rest (closed by the cutover: RF follows the mount\'s feed)',
     shows: 'at rest, sync stat d/e/g answered',
   },
-  'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [holder]': {
-    lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over a directory it had listed, absent after a subtree listing of the mount point (open: the mount point\'s row or the subtree listing\'s completeness; main\'s harness draws no mounts)',
-    shows: 'sync stat x answered null',
+  'a subtree listed after a mount was made over its directory is not the view\'s (6489) [node]': {
+    lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (7696\'s class; closed by the cutover)',
+    shows: 'at rest, sync readFile x/e answered {"code":"EAGAIN"}',
   },
   'a name beneath a mount with no feed made over a directory the process listed is the session\'s (7696) [node]': {
     lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (the nested-mount gap\'s class; closed by the cutover)',
@@ -439,10 +444,6 @@ const GAPS = {
   'a name beneath a mount with no feed made over directories the process read is the session\'s (8474) [node]': {
     lacks: 'S answers a name absent beneath a mount with no change feed EAGAIN where it is ENOENT (the nested-mount gap\'s class; closed by the cutover)',
     shows: 'at rest, sync readFile d/e answered {"code":"EAGAIN"}',
-  },
-  'a name beneath a mount with no feed made over directories the process read is the session\'s (8474) [holder]': {
-    lacks: 'the holder\'s view answers a name beneath a mount with no feed, made over directories it had read, absent (7696\'s class, open)',
-    shows: 'sync stat x/h answered null',
   },
   'a directory the process made again lists no name before its write is made (8576) [node]': {
     lacks: 'S lists, in a directory the process removed and made again, a name its own write in flight has not made yet (5891\'s class; closed by the cutover: one own state, RF\'s)',

@@ -1,0 +1,38 @@
+# The daily barrier schedules (tests/unit/barrier-schedules-seeded.mjs): a
+# window of seeds no run drew before, on each engine. The unit gate runs a
+# fixed window and every seed ever found (tests/unit/lib/barrier-found.mjs),
+# so a train's verdict is its commit's; this job draws new ones. A red run
+# fails the workflow, and GitHub notifies the user who created it (or last
+# changed its schedule): its log names each failing seed, shrunk to a
+# schedule to add to barrier-found.mjs. It needs no secret, and its log holds
+# none (schedules and the calls they make).
+name: barrier-seeds
+
+on:
+  schedule:
+    # 11:30 UTC: beside the upstream canary.
+    - cron: '30 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seeds:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: barrier-seeds
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: versions
+        run: sed -n 's/^BUN_VERSION=/bun=/p' scripts/ci/recipe/setup.sh >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.versions.outputs.bun }}
+      - run: bun scripts/install-deps.mjs
+      - run: bun tests/unit/barrier-schedules-seeded.mjs
+        env:
+          NIMBUS_BARRIER_SEED_WINDOW: daily
