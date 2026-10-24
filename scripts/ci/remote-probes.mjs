@@ -47,22 +47,23 @@
 // four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends. A paired probe red
-// there is run again on a fresh set of four, and is red only if red on both.
+// there is run again on a fresh set of four, which grades it; red there too
+// (confirmed), it is run once more on one more fresh set under the rerun
+// rule (lib/rerun.mjs), and that set grades it.
 // When the baseline's release and the candidate's deploy the same bytes
 // (lib/release.mjs deployedDigest), the timing would measure nothing: a
 // selection that took the paired probes by default skips them, and the
 // verdict says so (`pairedSkipped`). A run that names one (--only, --repeat)
 // runs it whatever the bytes, as a check of the probe or of the grader does.
 //
-// A red row whose session socket closed 1006 (the run's session ledger) or
-// that shows E_NIMBUS_DO_OVERLOADED is attributed from the platform's own
-// record (lib/reset-attribution.mjs: Workers Logs and traces, read here with
-// the observability token). A row whose only failures are those closes, on
-// sessions that show the platform storage reset and nothing else, is rerun
-// once, alone, against the same target; the rerun's task grades it, and the
-// verdict keeps both. Every other class stays red, with its attribution
-// printed. A throwaway (target or paired arm) redeployed under a job makes
-// the run not graded. Each job gets tokens minted for it.
+// A red row is run once more, alone, against the same target, and that run
+// grades it (lib/rerun.mjs, which names the rows whose grading is their own);
+// the verdict keeps both. A red row whose session socket closed 1006 (the
+// run's session ledger) or that shows E_NIMBUS_DO_OVERLOADED is attributed
+// from the platform's own record first (lib/reset-attribution.mjs: Workers
+// Logs and traces, read here with the observability token), and its
+// attribution printed. A throwaway (target or paired arm) redeployed under a
+// job makes the run not graded. Each job gets tokens minted for it.
 //
 // It prints one line per task and every red row with its output tail, and
 // keeps the whole verdict under ~/.local/state/nimbus/remote-probes/.
@@ -70,6 +71,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DEFERRED } from '../../tests/behavioral/_deferred.mjs';
 import { PAIRED_ENV, PAIRED_PROBES } from '../../tests/behavioral/_paired.mjs';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { namesProbe, selectionNames, selects } from '../../tests/behavioral/_selection.mjs';
@@ -77,7 +79,8 @@ import { mapOnArmada } from './lib/armada.mjs';
 import { causeOf } from './lib/cli-failure.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 import { defaultBaseline, pairedPreviews } from './lib/paired-previews.mjs';
-import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, regradable, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
+import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
+import { gradeTasks, rerunRed } from './lib/rerun.mjs';
 import { openRunDir } from './lib/run-dir.mjs';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { writeScreenshots } from './lib/probe-screenshots.mjs';
@@ -349,7 +352,7 @@ async function probeRun({ baseline, releases }) {
     const problems = [...run.moved];
     const late = tasks.flatMap((task, at) => (task.lateStart ? [{ at, item: list[task.outcome.index] }] : []));
     if (late.length > 0) {
-      // The same tasks, by the same names: what a regrade or a confirmation names them by.
+      // The same tasks, by the same names: what a rerun or a confirmation names them by.
       const again = late.map(({ item }) => item);
       try {
         const rerun = await mapItems(again, `${label} late start`);
@@ -402,66 +405,30 @@ async function probeRun({ baseline, releases }) {
     }
   }
 
-  // A row only the platform storage reset turned red is rerun once, alone.
-  // The rerun's task grades it, and only once that task has rows.
-  const regrade = symptomatic.filter(({ row }) => row.attribution && !row.attribution.error && regradable(row, row.attribution));
-  if (regrade.length > 0) {
-    const reruns = regrade.map(({ row }, i) => ({ task: `regrade ${row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')} #${i + 1}`, part: '1/1',
-      only: row.name.replace(/^tests\/behavioral\//, ''), skip: '', jobs: 1 }));
-    try {
-      const again = await runTasks(reruns, `remote-probes ${sha.slice(0, 12)} regrade`);
-      problems.push(...again.problems);
-      const rerun = again.tasks;
-      tasks.push(...rerun);
-      regrade.forEach(({ row }, i) => {
-        if (!rerun[i]?.rows?.some((other) => other.name === row.name)) return;
-        row.regraded = { task: reruns[i].task, evidence: describeAttribution(row.attribution) };
-        console.log(`REGRADED ${row.name}: only the platform storage reset turned it red; ${reruns[i].task} grades it`);
-      });
-    } catch (error) {
-      problems.push(`the regrade could not run: ${scrub(error.message)}`);
-    }
+  // A red row is run again and that run grades it (lib/rerun.mjs): alone, on
+  // the same target; a paired probe on a fresh set of Previews, which confirms
+  // it, and a confirmed red on one more fresh set. A set can land slow as a
+  // whole, and where it landed is drawn again.
+  try {
+    const rerun = await rerunRed(tasks, {
+      paired: PAIRED_PROBES,
+      deferred: DEFERRED.filter((entry) => entry.excluded !== true).map((entry) => entry.probe),
+      run: (items) => runTasks(items, `remote-probes ${sha.slice(0, 12)} rerun`),
+      runPaired: async (items) => {
+        if (!arms) throw new Error('a paired probe is red with no paired Previews to run it again on');
+        await arms.replace({ baseline, candidate: sha, releases });
+        for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
+        return runTasks(items, `remote-probes ${sha.slice(0, 12)} ${items[0].task}`);
+      },
+    });
+    problems.push(...rerun.problems);
+    for (const line of rerun.lines) console.log(line);
+  } catch (error) {
+    problems.push(`the reruns could not run: ${scrub(error.message)}`);
   }
 
-  // A paired probe red on one set of Previews is run again on a fresh set,
-  // and is red only if red on both: a set can land slow as a whole, and
-  // where it landed is drawn again; a slower candidate is slower on both.
-  const pairedRed = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode === 1 && !row.regraded
-    && PAIRED_PROBES.some((probe) => row.name === `tests/behavioral/${probe}.mjs`)));
-  if (arms && pairedRed.length > 0) {
-    const probes = [...new Set(pairedRed.map((row) => row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')))];
-    const confirm = [{ task: 'paired perf on fresh Previews', part: '1/1', only: probes.join(','), skip: '', jobs: 1 }];
-    try {
-      await arms.replace({ baseline, candidate: sha, releases });
-      for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
-      const again = await runTasks(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
-      problems.push(...again.problems);
-      const [rerun] = again.tasks;
-      tasks.push(rerun);
-      for (const row of pairedRed) {
-        const second = rerun.rows?.find((other) => other.name === row.name);
-        if (second?.exitCode === 0) {
-          row.regraded = { task: confirm[0].task, evidence: ['red on one set of Previews and green on a fresh set: where they landed, not the code'] };
-          console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
-        } else if (second?.exitCode === 1) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
-        else console.log(`UNCONFIRMED ${row.name}: the fresh set ${second ? `did not grade it (exit ${second.exitCode})` : 'has no row of it'}`);
-      }
-    } catch (error) {
-      problems.push(`the paired confirmation could not run: ${scrub(error.message)}`);
-    }
-  }
-
-  let status = problems.length > 0 ? 2 : 0;
+  const status = problems.length > 0 ? 2 : gradeTasks(tasks);
   for (const problem of problems) console.log(`remote-probes: NOT GRADED — ${problem}`);
-  for (const task of tasks) {
-    if (!task.rows || task.screenshotError) {
-      status = 2;
-      continue;
-    }
-    const red = task.rows.filter((row) => row.exitCode !== 0 && !row.regraded);
-    if (red.some((row) => row.exitCode === 2)) status = 2;
-    else if (red.length > 0 && status === 0) status = 1;
-  }
 
   const state = join(NIMBUS_STATE, 'remote-probes');
   try {
@@ -487,11 +454,11 @@ function readTasks(items, mapped, scrub, mintedAt) {
     if (typeof verdict?.startedAt === 'number') outcome.startDelayS = (verdict.startedAt - mintedAt) / 1000;
     if (outcome.kind !== 'exited' || verdict === null) {
       console.log(`NOT GRADED ${item.task}: ${outcome.kind === 'exited' ? `exit ${outcome.exitCode}, no verdict` : 'armada could not run it'}\n${scrub(outcome.tail ?? '')}`);
-      return { ...item, outcome, rows: null };
+      return { ...item, job: mapped.jobId, outcome, rows: null };
     }
     if (verdict.lateStart === true) {
       console.log(`NOT GRADED ${item.task}: it started after its token's start-by (attempt ${outcome.attempt ?? 1})\n${scrub(outcome.tail ?? '')}`);
-      return { ...item, outcome, rows: null, lateStart: true };
+      return { ...item, job: mapped.jobId, outcome, rows: null, lateStart: true };
     }
     const red = verdict.rows.filter((row) => row.exitCode !== 0);
     console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s`);
@@ -503,10 +470,10 @@ function readTasks(items, mapped, scrub, mintedAt) {
         for (const path of screenshots) console.log(`screenshot: ${path}`);
       } catch (error) {
         console.error(`NOT GRADED ${item.task} screenshots: ${error.message}`);
-        return { ...item, outcome, rows: verdict.rows, screenshotError: error.message };
+        return { ...item, job: mapped.jobId, outcome, rows: verdict.rows, screenshotError: error.message };
       }
     }
-    return { ...item, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
+    return { ...item, job: mapped.jobId, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
   });
   const delays = tasks.flatMap((task) => (task.outcome.startDelayS === undefined ? [] : [task.outcome.startDelayS]));
   if (delays.length > 0) console.log(`remote-probes: its tasks started ${Math.min(...delays).toFixed(1)}-${Math.max(...delays).toFixed(1)} s after their tokens were minted (allowed ${PREPARE_S} s)`);

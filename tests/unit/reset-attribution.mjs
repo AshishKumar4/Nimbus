@@ -5,14 +5,14 @@
 // API is a fixture holding a Preview's events, and every query the reader
 // makes is answered from it by its filters, as the API filters. The class
 // must come from the exact error on the session's own object, never from
-// the probe's symptom, and only a platform storage reset alone, on the
-// sessions whose sockets dropped, with no other failure, regrades.
+// the probe's symptom. (Whether a red row is run again is lib/rerun.mjs's
+// rule, whatever its attribution.)
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { attributeRow, describeAttribution, regradable, showsResetSymptom, telemetry } from '../../scripts/ci/lib/reset-attribution.mjs';
+import { attributeRow, describeAttribution, showsResetSymptom, telemetry } from '../../scripts/ci/lib/reset-attribution.mjs';
 
 const BASE = 'https://tw-pp-abc123-b-nimbus-probe-previews.example.workers.dev';
 const SLUG = 'tw-pp-abc123-b';
@@ -68,7 +68,7 @@ try {
     const { request, queries } = api(events);
     const reader = telemetry({ account: 'acct', tokenFile, request });
     const result = await attributeRow(reader, red, { base: 'https://tw-suite-nimbus-probe-previews.example.workers.dev', until: at(600) });
-    return { result, regrade: regradable(red, result), queries };
+    return { result, queries };
   };
 
   assert.equal(telemetry({ account: 'acct', tokenFile: join(dir, 'missing') }), null, 'no token, no reader');
@@ -86,16 +86,15 @@ try {
       // Another Preview's object with the same error is not this session's.
       event({ object: 'obj-9', sid: 'quiet-fox-0001', seconds: 5, level: 'error', message: MEMORY, slug: 'tw-other' }),
     ];
-    const { result, regrade, queries } = await attribute(events, row({ sids: ['quiet-fox-0001'] }));
-    assert.equal(regrade, true, JSON.stringify(result));
+    const { result, queries } = await attribute(events, row({ sids: ['quiet-fox-0001'] }));
     assert.deepEqual(result.sessions.map((s) => [s.sid, s.object, s.classes.map((c) => c.kind), s.complete]), [['quiet-fox-0001', 'obj-1', ['platform storage reset'], true]]);
     assert.ok(queries.every((q) => q.parameters.filters.some(({ key, value }) => (key === '$workers.preview.slug' && value === SLUG) || key === '$workers.durableObjectId' || key === '$metadata.traceId')),
       'every query is scoped to the session\'s own Preview, object or trace');
     assert.match(describeAttribution(result)[0], /quiet-fox-0001: object obj-1…: platform storage reset at 2026-10-16T15:00:20.000Z/);
   }
 
-  // The isolate memory reset is Nimbus's own memory: attributed, never regraded,
-  // and it holds a row red even beside a storage reset on another session.
+  // The isolate memory reset is Nimbus's own memory, attributed as such,
+  // beside a storage reset on another session.
   {
     const events = [
       event({ object: 'obj-1', sid: 'quiet-fox-0001', seconds: 1, message: 'GET /ws' }),
@@ -104,34 +103,20 @@ try {
       event({ object: 'obj-2', seconds: 31, level: 'warn', message: `[sqlite-vfs] writeBatch failed: ${STORAGE}` }),
     ];
     const alone = await attribute(events, row({ sids: ['quiet-fox-0001'] }));
-    assert.equal(alone.regrade, false);
     assert.deepEqual(alone.result.sessions[0].classes.map((c) => c.kind), ['isolate memory reset']);
     const both = await attribute(events, row({ sids: ['quiet-fox-0001', 'calm-owl-0002'] }));
-    assert.equal(both.regrade, false, 'a storage reset regrades only when nothing else reset');
-    const storageOnly = await attribute(events, row({ sids: ['calm-owl-0002'] }));
-    assert.equal(storageOnly.regrade, true);
-    // A check that failed on its own keeps the row red, whatever reset beside it.
-    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], failed: [drop('calm-owl-0002'), 'expected 3, got 4'] }))).regrade, false);
-    // A probe that died before its summary says nothing about what killed it.
-    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], complete: false }))).regrade, false);
-    // A close the check names must be a session whose socket the ledger saw drop.
-    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], failed: [drop('other-0009')] }))).regrade, false);
-    // The storage reset must be on the session whose socket dropped: one on
-    // another session (a baseline arm, say) does not excuse a drop no log explains.
-    const elsewhere = [...events, event({ object: 'obj-5', sid: 'lone-elk-0005', seconds: 3, message: 'GET /ws' })];
-    assert.equal((await attribute(elsewhere, row({ sids: ['calm-owl-0002', 'lone-elk-0005'], dropped: ['lone-elk-0005'] }))).regrade, false);
+    assert.deepEqual(both.result.sessions.map((s) => s.classes.map((c) => c.kind)), [['isolate memory reset'], ['platform storage reset']], 'each session by its own object');
   }
 
   // The router's refusal names the session too: an overload is attributed from
-  // the router's own line, and stays red.
+  // the router's own line.
   {
     const events = [
       event({ object: 'obj-3', sid: 'ripe-elm-0003', seconds: 1, message: 'GET /port/3000/' }),
       event({ sid: 'ripe-elm-0003', seconds: 40, level: 'error', message: 'GET https://x/s/ripe-elm-0003/port/3000/', error: 'Durable Object is overloaded. Requests queued for too long.' }),
     ];
-    const { result, regrade } = await attribute(events, row({ sids: ['ripe-elm-0003'], dropped: [], failed: ['status=503 body={"code":"E_NIMBUS_DO_OVERLOADED"}'] }));
+    const { result } = await attribute(events, row({ sids: ['ripe-elm-0003'], dropped: [], failed: ['status=503 body={"code":"E_NIMBUS_DO_OVERLOADED"}'] }));
     assert.deepEqual(result.sessions[0].classes.map((c) => c.kind), ['overloaded']);
-    assert.equal(regrade, false);
   }
 
   // A record that fills a query is read again in halves of its span, so a
@@ -149,16 +134,15 @@ try {
   }
 
   // A record that fills a query within one millisecond cannot be paged by
-  // time: it may hold a product class past what was read, so no regrade.
+  // time: it may hold a product class past what was read, so it reads as incomplete.
   {
     const burst = [
       event({ object: 'obj-7', sid: 'warm-bay-0007', seconds: 1, message: 'GET /ws' }),
       event({ object: 'obj-7', seconds: 30, level: 'warn', message: `[sqlite-vfs] writeBatch failed: ${STORAGE}` }),
       ...Array.from({ length: 2000 }, () => event({ object: 'obj-7', seconds: 31, level: 'warn', message: 'noise' })),
     ];
-    const { result, regrade } = await attribute(burst, row({ sids: ['warm-bay-0007'] }));
+    const { result } = await attribute(burst, row({ sids: ['warm-bay-0007'] }));
     assert.equal(result.sessions[0].complete, false);
-    assert.equal(regrade, false);
     assert.match(describeAttribution(result)[0], /a query came back full/);
   }
 
@@ -178,9 +162,8 @@ try {
   // is unattributed, and one no log names yet has no object.
   {
     const events = [event({ object: 'obj-4', sid: 'bold-ash-0004', seconds: 1, message: 'GET /ws' })];
-    const { result, regrade } = await attribute(events, row({ sids: ['bold-ash-0004', 'not-logged-0005'] }));
+    const { result } = await attribute(events, row({ sids: ['bold-ash-0004', 'not-logged-0005'] }));
     assert.deepEqual(result.sessions.map((s) => [s.sid, s.object, s.classes.length]), [['bold-ash-0004', 'obj-4', 0], ['not-logged-0005', null, 0]]);
-    assert.equal(regrade, false);
     assert.deepEqual(describeAttribution(result), ['bold-ash-0004: object obj-4…: no reset or overload error logged', 'not-logged-0005: no log names this session yet']);
   }
 } finally {
