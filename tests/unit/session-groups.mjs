@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -74,6 +75,31 @@ async function sharedProject(options) {
     await ws.close();
   }
 }
+
+// A home the host made another's and the project group's (2770): the seed
+// makes what it puts in it as the session user, in its groups.
+for (const sessionGroups of [[1001], undefined]) {
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  root.mkdir('home/main', { recursive: true, mode: 0o2770 });
+  root.chown('home/main', 2000, 1001);
+  root.chmod('home/main', 0o2770);
+  const opened = NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, env: { HOME: '/home/main' }, ...(sessionGroups ? { sessionGroups } : {}) });
+  if (!sessionGroups) {
+    await assert.rejects(opened, /EACCES/, 'outside the group, the seed is refused as the user is');
+    continue;
+  }
+  const ws = await opened;
+  try {
+    const config = root.stat('home/main/.config');
+    assert.deepEqual([config.uid, config.gid], [1000, 1001], 'the seed\'s .config is the session user\'s, in the home\'s group');
+    assert.equal((await ws.exec('touch /home/main/projects/x && echo ok')).stdout, 'ok\n');
+  } finally {
+    await ws.close();
+  }
+}
+console.log('  ok  a home the session user reaches by its groups alone is seeded as the user');
 
 for (const groups of [[0], [1.5], [-1], [Number.NaN]]) {
   assert.throws(() => new SessionProcessSupervisor().setSessionGroups(groups), TypeError, `refused: ${groups}`);

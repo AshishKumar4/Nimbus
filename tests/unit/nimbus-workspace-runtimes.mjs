@@ -143,24 +143,44 @@ for (const runtimeInstall of ['eager', 'on-demand']) {
 // ── A source's runtime this build cannot run gets no stub ─────────────────
 // Every version names a runner this workspace lacks: the name is left to what
 // resolves after the stub would have (the hosted session's own tsc), not
-// answered with an install that can only fail.
+// answered with an install that can only fail. One version it can run, the
+// most recent such, gets the stub, though the source offers another first.
 {
-  const offered = (version) => fakePackage({ 'bin/tsc': '# t\n' }, { name: 'typescript', version, runner: 'typescript-runner', bins: ['tsc'] });
-  const ws = await openWorkspace({
-    runtimeInstall: 'on-demand',
-    facets: localFacetHost(ISOLATE_NETWORK),
-    runtimeSource: {
-      list: async () => [{ name: 'typescript', versions: ['7.0.2', '7.0.2-opt1'] }],
-      resolve: async (spec) => (spec === 'tsc' || spec === 'typescript' ? offered('7.0.2') : spec === 'typescript@7.0.2-opt1' ? offered('7.0.2-opt1') : null),
+  const offered = (version, runner) => fakePackage({ 'bin/tsc': '# t\n' }, { name: 'typescript', version, runner, bins: ['tsc'] });
+  const runtimeSource = {
+    list: async () => [{ name: 'typescript', versions: [
+      { version: '7.0.1', sizeBytes: 1, license: 'Apache-2.0' },
+      { version: '7.0.2-opt1', sizeBytes: 1, license: 'Apache-2.0' },
+      { version: '7.0.2', sizeBytes: 1, license: 'Apache-2.0' },
+    ] }],
+    resolve: async (spec) => {
+      if (spec === 'tsc' || spec === 'typescript' || spec === 'typescript@7.0.2') return offered('7.0.2', 'typescript-runner');
+      if (spec === 'typescript@7.0.2-opt1') return offered('7.0.2-opt1', 'typescript-runner-opt');
+      if (spec === 'typescript@7.0.1') return offered('7.0.1', 'typescript-runner-old');
+      return null;
     },
-  });
-  // What a later resolver (the hosted session's own programs) answers, when nothing before it did.
-  const resolve = ws.registry.resolve.bind(ws.registry);
-  ws.registry.resolve = async (name, from) => (await resolve(name, from)) ?? (name === 'tsc' ? async (ctx) => { ctx.stdout.write('Version own\n'); return 0; } : undefined);
-  const ran = await ws.exec('tsc --version');
-  assert.equal(ran.exitCode, 0, ran.stderr);
-  assert.equal(ran.stdout, 'Version own\n', 'the session\'s own program answers, not an install stub');
-  assert.equal(ran.stderr, '');
+  };
+  const ownTsc = (ws) => {
+    // What a later resolver (the hosted session's own programs) answers, when nothing before it did.
+    const resolve = ws.registry.resolve.bind(ws.registry);
+    ws.registry.resolve = async (name, from) => (await resolve(name, from)) ?? (name === 'tsc' ? async (ctx) => { ctx.stdout.write('Version own\n'); return 0; } : undefined);
+  };
+
+  const none = await openWorkspace({ runtimeInstall: 'on-demand', facets: localFacetHost(ISOLATE_NETWORK), runtimeSource });
+  ownTsc(none);
+  const own = await none.exec('tsc --version');
+  assert.equal(own.exitCode, 0, own.stderr);
+  assert.equal(own.stdout, 'Version own\n', 'the session\'s own program answers, not an install stub');
+  assert.equal(own.stderr, '');
+
+  const some = await openWorkspace({ runtimeInstall: 'on-demand', facets: localFacetHost(ISOLATE_NETWORK), runtimeSource });
+  ownTsc(some);
+  for (const [runner, version] of [['typescript-runner-opt', 'opt1'], ['typescript-runner-old', 'old']]) {
+    some.runtimes.registerRunner(runner, () => async (ctx) => { ctx.stdout.write(`Version ${version}\n`); return 0; });
+  }
+  const alternate = await some.exec('tsc --version');
+  assert.equal(alternate.exitCode, 0, alternate.stderr);
+  assert.equal(alternate.stdout, 'Version opt1\n', 'the most recent version it can run is installed and runs');
 }
 
 // ── A preexisting host command is never shadowed by a stub ────────────────

@@ -1412,7 +1412,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
    * checks and changes nothing.
    */
   seedFilesystem() {
-    seedBaseFilesystem(this.sqliteFs!);
+    seedBaseFilesystem(this.sqliteFs!, undefined, this.processes.sessionCred);
 
     const fs = this.sqliteFs!.as(this.processes.sessionCred);
     const rootFs = this.sqliteFs!.as(CRED_KERNEL);

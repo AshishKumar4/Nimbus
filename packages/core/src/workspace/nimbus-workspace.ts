@@ -44,7 +44,7 @@ import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
-import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, type CPythonRunnerContract, type NimbusHostFilesystemLease } from '../runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, type CPythonRunnerContract, type NimbusHostFilesystemLease, type VfsCred } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
@@ -402,7 +402,13 @@ export class NimbusWorkspace {
     // mount over /home or /etc gets what a program writing there would.
     const filesystem = options.filesystem ?? new ProcessFiles(vfs);
     if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
-    await seedBaseFilesystem(filesystem, home);
+    const processes = options.processes ?? new SessionProcessSupervisor();
+    // Only a supervisor this workspace created gets its pid base set here; a
+    // host-supplied one keeps the base its owner configured.
+    if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+    if (options.mayChangeIdentity !== undefined) processes.governIdentityChanges(options.mayChangeIdentity);
+    if (options.sessionGroups !== undefined) processes.setSessionGroups(options.sessionGroups);
+    await seedBaseFilesystem(filesystem, home, processes.sessionCred);
     const kernel = new Kernel();
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
@@ -411,12 +417,6 @@ export class NimbusWorkspace {
     // df, mount and /proc/mounts all read the selected authority's listing.
     registerMountCommands(registry, filesystem);
 
-    const processes = options.processes ?? new SessionProcessSupervisor();
-    // Only a supervisor this workspace created gets its pid base set here; a
-    // host-supplied one keeps the base its owner configured.
-    if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
-    if (options.mayChangeIdentity !== undefined) processes.governIdentityChanges(options.mayChangeIdentity);
-    if (options.sessionGroups !== undefined) processes.setSessionGroups(options.sessionGroups);
     if (options.egressFor !== undefined && options.egress === undefined) {
       throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
     }
@@ -1172,10 +1172,10 @@ interface SeedStat { uid: number; gid: number; mode: number }
 /** What an `lstat` step answers: the entry itself, not followed; null when there is none. */
 type SeedEntry = (SeedStat & { type: string }) | null;
 
-/** Whether the session's user may make a name in the directory `entry` is (its write bit for the user). */
-function userMayWrite(entry: SeedEntry): boolean {
+/** Whether the session's user, `user`, may make a name in the directory `entry` is (its write bit for the user). */
+function userMayWrite(entry: SeedEntry, user: VfsCred): boolean {
   if (entry === null) return false;
-  const { uid, gid, groups } = CRED_SESSION_USER;
+  const { uid, gid, groups } = user;
   if (entry.uid === uid) return (entry.mode & 0o200) !== 0;
   if (entry.gid === gid || groups.includes(entry.gid)) return (entry.mode & 0o020) !== 0;
   return (entry.mode & 0o002) !== 0;
@@ -1195,7 +1195,7 @@ const USR_ROOT_DIRS = ['usr', 'usr/bin', 'usr/lib', 'usr/share', 'usr/lib/node_m
  * engine directly, or on a namespace, where each step lands where a
  * program's call would (a mount over /home or /etc included).
  */
-function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
+function* baseSeed(home: string, sessionUser: VfsCred): Generator<SeedStep, void, unknown> {
   const exists = function* (as: 'kernel' | 'user', path: string): Generator<SeedStep, boolean, unknown> {
     return (yield { op: 'exists', as, path }) as boolean;
   };
@@ -1269,7 +1269,7 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
           // Its parents stay root's; the home itself is the user's.
           yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, ...(leaf ? { handTo: user } : {}) };
           parent = { type: 'directory', ...(leaf ? user : { uid: 0, gid: 0 }), mode: 0o755 };
-        } else if (userMayWrite(parent)) {
+        } else if (userMayWrite(parent, sessionUser)) {
           yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
           parent = { type: 'directory', ...user, mode: 0o755 };
         } else {
@@ -1371,12 +1371,12 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
  * `home` is the session user's home directory: it is made and owned by the
  * user, and /etc/passwd names it.
  */
-export function seedBaseFilesystem(vfs: SqliteVFS, home?: string): void;
-export function seedBaseFilesystem(filesystem: ProcessFiles, home?: string): Promise<void>;
-export function seedBaseFilesystem(target: SqliteVFS | ProcessFiles, home: string = DEFAULT_HOME): void | Promise<void> {
-  const steps = baseSeed(home);
-  if (target instanceof ProcessFiles) return seedOnNamespace(steps, target);
-  const views = { kernel: target.as(CRED_KERNEL), user: target.as(CRED_SESSION_USER) };
+export function seedBaseFilesystem(vfs: SqliteVFS, home?: string, user?: VfsCred): void;
+export function seedBaseFilesystem(filesystem: ProcessFiles, home?: string, user?: VfsCred): Promise<void>;
+export function seedBaseFilesystem(target: SqliteVFS | ProcessFiles, home: string = DEFAULT_HOME, user: VfsCred = CRED_SESSION_USER): void | Promise<void> {
+  const steps = baseSeed(home, user);
+  if (target instanceof ProcessFiles) return seedOnNamespace(steps, target, user);
+  const views = { kernel: target.as(CRED_KERNEL), user: target.as(user) };
   for (let step = steps.next(); !step.done; ) step = steps.next(engineStep(views[step.value.as], step.value));
 }
 
@@ -1386,14 +1386,14 @@ export function seedBaseFilesystem(target: SqliteVFS | ProcessFiles, home: strin
  * the session's filesystem is the engine's, as the session's own seed makes
  * it; any other is the call a program would make on the namespace.
  */
-async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesystem: ProcessFiles): Promise<void> {
-  const mounted = { kernel: filesystem.vfs.as(CRED_KERNEL), user: filesystem.vfs.as(CRED_SESSION_USER) };
-  const engine = { kernel: filesystem.engine.as(CRED_KERNEL), user: filesystem.engine.as(CRED_SESSION_USER) };
+async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesystem: ProcessFiles, user: VfsCred): Promise<void> {
+  const mounted = { kernel: filesystem.vfs.as(CRED_KERNEL), user: filesystem.vfs.as(user) };
+  const engine = { kernel: filesystem.engine.as(CRED_KERNEL), user: filesystem.engine.as(user) };
   const text = new TextEncoder();
   for (let step = steps.next(); !step.done; ) {
     const call = step.value;
     let answer: unknown;
-    const cred = call.as === 'kernel' ? CRED_KERNEL : CRED_SESSION_USER;
+    const cred = call.as === 'kernel' ? CRED_KERNEL : user;
     // A directory above a mount point is the root's, as a wave's directory
     // record there is. A step is placed as its call looks its name up: every
     // one follows a link at it but an lstat and a lone mkdir (mkdir -p stats
