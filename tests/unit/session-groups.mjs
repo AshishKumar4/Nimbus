@@ -82,7 +82,8 @@ for (const sessionGroups of [[1001], undefined]) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
-  root.mkdir('home/main', { recursive: true, mode: 0o2770 });
+  root.mkdir('home', { mode: 0o755 });
+  root.mkdir('home/main', { mode: 0o2770 });
   root.chown('home/main', 2000, 1001);
   root.chmod('home/main', 0o2770);
   const opened = NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, env: { HOME: '/home/main' }, ...(sessionGroups ? { sessionGroups } : {}) });
