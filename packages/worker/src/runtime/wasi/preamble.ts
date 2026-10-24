@@ -2123,6 +2123,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     wasiImport: imports,
     procImport,
     procDispose: () => proc.dispose(),
+    procLeft: () => proc.left(),
     fsImport: fsImport as NimbusFsImports,
     getStdout: () => stdoutBuf,
     getStderr: () => stderrBuf,

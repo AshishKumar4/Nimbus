@@ -105,6 +105,8 @@ export const REPLAY_OPERATION_POLICY = {
   cpTakeSignal: control,
   // A statement of what the program catches, made again by a run after a stop: its answer is nothing.
   cpCatchSignals: control,
+  // A statement of how many signals the guest took: its answer is nothing.
+  cpSignalsTaken: control,
   cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
   fsFstat: read, fsDup: read, fsSeek: read,
   fsSetStatus: effect, fsReaddirHandle: read, fsFtruncate: effect,

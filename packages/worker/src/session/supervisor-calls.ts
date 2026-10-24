@@ -185,7 +185,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       const run = this[RUN_ID]();
       if (props?.bindingKind === 'infrastructure') {
         if (run !== undefined) throw new Error('infrastructure supervisor cannot carry a process run');
-        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpNextSignal', 'cpCatchSignals', 'cpTakeSignal', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpNextSignal', 'cpCatchSignals', 'cpSignalsTaken', 'cpTakeSignal', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
           throw new Error('infrastructure supervisor refuses guest-originated operations');
         }
       } else if (run === undefined) throw new Error('process supervisor binding requires a run');
@@ -1103,6 +1103,19 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     /** The signals this process's program catches now: each one sent to it is its own to take (cpNextSignal), any other its default. */
     async cpCatchSignals(catches: readonly string[]): Promise<void> {
       return this[CALL](this[OP]('cpCatchSignals', [catches], { pid: this[REPORTING_PID]() }));
+    }
+
+    /**
+     * This process's guest took each of the first `received` signals handed to
+     * it (SessionProcessSupervisor.signalsTaken). Harmless to repeat (it
+     * clears only what that count covers), so a lost call is re-sent.
+     */
+    async cpSignalsTaken(received: number): Promise<void> {
+      return this[CALL](this[RESENT]<void>(
+        { op: 'cpSignalsTaken', args: [received], pid: this[REPORTING_PID]() },
+        { kind: 'open' },
+        { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
+      ));
     }
 
     /**

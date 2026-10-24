@@ -329,6 +329,9 @@ export function makeCPythonRunnerFactory(deps) {
                 // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
                 cred,
                 restartsWaits: deps.contract.restartsWaits,
+                // Its process takes its own signals: a one-shot's for its run (its
+                // stdio's takesSignals), a resident's while it boots in the foreground.
+                takesSignals,
             };
             // A script or `-m` can bind a port and keep serving, and such a program
             // is not finished when it stops producing output — it is finished when it
@@ -343,6 +346,9 @@ export function makeCPythonRunnerFactory(deps) {
                     return 1;
                 }
                 const command = [binName, ...argv].map((part) => (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
+                // Its program decides what the terminal's keys do while it boots: its status is its own.
+                if (takesSignals)
+                    ctx.takesSignals?.();
                 const output = runtimeOutput(ctx);
                 let spawnResult;
                 try {
@@ -391,9 +397,7 @@ export function makeCPythonRunnerFactory(deps) {
                 });
                 // Killed while its image was read: it never starts.
                 stdio.signal.throwIfAborted();
-                // A one-shot's process takes its own signals (its stdio's takesSignals); a
-                // resident's is ended by the session, and its image asks for none.
-                const result = await facet.submit(CPYTHON_RUN_TASK, { ...facetArgs, takesSignals }, {
+                const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
                     signal: stdio.signal,
                 });
                 keys.give(warm, { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted });

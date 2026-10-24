@@ -1471,6 +1471,12 @@ export async function _rpcCpTakeSignal(self, pid, waitMs) {
     return self.processes.nextSignal(pid, Number(waitMs) || 0);
 }
 /** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
+/** `pid`'s guest took each of the first `received` signals handed to it (SessionProcessSupervisor.signalsTaken). */
+export async function _rpcCpSignalsTaken(self, pid, received) {
+    if (pid === undefined || isPriorGenerationPid(self, pid) || typeof received !== 'number' || !Number.isInteger(received) || received < 0)
+        return;
+    self.processes.signalsTaken(pid, received);
+}
 export async function _rpcCpCatchSignals(self, pid, catches) {
     if (pid === undefined || isPriorGenerationPid(self, pid) || !Array.isArray(catches))
         return;

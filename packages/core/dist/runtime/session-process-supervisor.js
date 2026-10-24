@@ -34,6 +34,23 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
  */
 const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 const ONCE = { once: true };
+/** `signal` handed to `box`'s program: what it has until it says it took it (signalsTaken) or waits past it. */
+function hand(box, signal) {
+    const handed = { signal };
+    box.handed = handed;
+    box.handings++;
+    return handed;
+}
+/** `handed`, given to a wait that answered otherwise, back at the front of `box`'s queue, unseen by its program. */
+function unhand(box, handed) {
+    if (box.handed === handed)
+        box.handed = null;
+    box.queued.unshift(handed.signal);
+    box.handings--;
+}
+/** The longest one wait for a signal lasts (nextSignal): a guest's long poll asks again after it. */
+const SIGNAL_WAIT_MAX_MS = 5000;
+const signalWaitMs = (waitMs) => Math.max(0, Math.min(waitMs, SIGNAL_WAIT_MAX_MS));
 const NOTHING_REAPED = Promise.resolve(0);
 /** Whether `a` and `b` are one identity: uid, gid and supplementary groups (as a set); a umask is not one. */
 function sameIdentity(a, b) {
@@ -798,14 +815,15 @@ export class SessionProcessSupervisor {
         const writing = this.input.writeBytesWait(pid, data, withdraw.signal);
         // Its waits for a signal end at their bound, or when its program lets go of its signals: the write is then waited for alone.
         while (this.signalBoxes.get(writer) === box) {
-            const wait = this.waitSignal(box, 5000);
+            const wait = this.waitSignal(box, SIGNAL_WAIT_MAX_MS);
             const first = await Promise.race([writing.then((result) => ({ result })), wait.signal.then((signal) => ({ signal }))]);
             if ('result' in first) {
                 // A signal it took as the write was made is the next wait's.
                 wait.cancel();
                 const late = await wait.signal;
-                if (late !== null)
-                    box.queued.unshift(late);
+                const given = wait.given();
+                if (late !== null && given !== null)
+                    unhand(box, given);
                 return first.result;
             }
             if (first.signal === null)
@@ -814,7 +832,9 @@ export class SessionProcessSupervisor {
             const result = await writing;
             // Made before it could be withdrawn: the signal is the next wait's.
             if (result.ok) {
-                box.queued.unshift(first.signal);
+                const given = wait.given();
+                if (given !== null)
+                    unhand(box, given);
                 return result;
             }
             return { ok: false, signal: first.signal };
@@ -847,7 +867,7 @@ export class SessionProcessSupervisor {
         box.handed = null;
         const queued = box.queued.shift();
         if (queued !== undefined) {
-            box.handed = { signal: queued };
+            hand(box, queued);
             return { data: '', ended: false, signal: queued };
         }
         const withdraw = new AbortController();
@@ -860,10 +880,8 @@ export class SessionProcessSupervisor {
             const late = await wait.signal;
             // Back to the queue, unless a park has given it back already.
             const given = wait.given();
-            if (late !== null && given !== null && box.handed === given) {
-                box.handed = null;
-                box.queued.unshift(late);
-            }
+            if (late !== null && given !== null && box.handed === given)
+                unhand(box, given);
             return first.packet;
         }
         withdraw.abort();
@@ -887,7 +905,7 @@ export class SessionProcessSupervisor {
     takeSignals(pid, catches) {
         if (this.table.get(pid)?.state !== 'running' || this.signalBoxes.has(pid))
             return () => { };
-        const box = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null, parked: false, handed: null };
+        const box = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null, parked: false, handed: null, handings: 0 };
         this.signalBoxes.set(pid, box);
         // What was sent and not taken goes with its program.
         const release = () => {
@@ -948,11 +966,27 @@ export class SessionProcessSupervisor {
         if (box === undefined)
             return;
         box.parked = true;
-        if (box.handed !== null) {
-            box.queued.unshift(box.handed.signal);
-            box.handed = null;
-        }
+        if (box.handed !== null)
+            unhand(box, box.handed);
         box.taker?.(null);
+    }
+    /**
+     * A signal sent to `pid`'s program (takeSignals) that it has not taken, or
+     * null: one handed to it that it has not said it took (signalsTaken, or a
+     * wait past it), else the first that waits in its box.
+     */
+    untakenSignal(pid) {
+        const box = this.signalBoxes.get(pid);
+        return box?.handed?.signal ?? box?.queued[0] ?? null;
+    }
+    /**
+     * `pid`'s program took each of the first `received` signals handed to it:
+     * what it was last handed is taken, unless one was handed since it counted.
+     */
+    signalsTaken(pid, received) {
+        const box = this.signalBoxes.get(pid);
+        if (box !== undefined && box.handings === received)
+            box.handed = null;
     }
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid, signal) {
@@ -961,12 +995,13 @@ export class SessionProcessSupervisor {
     /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
-     * took its place (one waits at a time).
+     * took its place (one waits at a time). A program that takes none waits
+     * as long, for none: a guest that asks again at once does not spin.
      */
     nextSignal(pid, waitMs) {
         const box = this.signalBoxes.get(pid);
         if (box === undefined)
-            return Promise.resolve(null);
+            return new Promise((resolve) => setTimeout(() => resolve(null), signalWaitMs(waitMs)));
         // It asks again: what it was given it has.
         box.handed = null;
         return this.waitSignal(box, waitMs).signal;
@@ -975,23 +1010,20 @@ export class SessionProcessSupervisor {
     waitSignal(box, waitMs) {
         const queued = box.queued.shift();
         if (queued !== undefined) {
-            const handed = { signal: queued };
-            box.handed = handed;
+            const handed = hand(box, queued);
             return { signal: Promise.resolve(queued), cancel: () => { }, given: () => handed };
         }
         box.taker?.(null);
         let take = () => { };
         let handed = null;
         const signal = new Promise((resolve) => {
-            const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
+            const timer = setTimeout(() => take(null), signalWaitMs(waitMs));
             take = (sent) => {
                 clearTimeout(timer);
                 if (box.taker === take)
                     box.taker = null;
-                if (sent !== null) {
-                    handed = { signal: sent };
-                    box.handed = handed;
-                }
+                if (sent !== null)
+                    handed = hand(box, sent);
                 resolve(sent);
             };
             box.taker = take;
@@ -1026,6 +1058,30 @@ export class SessionProcessSupervisor {
             .map((entry) => entry.pid);
         for (const member of group)
             this.kill(member, exitCodeForSignal(reason.signal), reason);
+    }
+    /**
+     * `reason`'s signal to the foreground job of the shell `pid`, as a
+     * terminal's key after the first (which the job's command took as its
+     * abort): each running process below the shell whose output is the
+     * terminal's (setForeground), the topmost of each such chain, with its
+     * group ({@link signalGroup}). Nothing inside a background job (`cmd &`,
+     * from any subshell) is the foreground's, nor is a server an earlier
+     * command left running: it gave the terminal back.
+     */
+    signalForeground(pid, reason) {
+        const ownsTerminal = (entry) => entry !== undefined && entry.state === 'running' && entry.foreground === true;
+        const leaders = this.getAll().filter((entry) => {
+            if (!ownsTerminal(entry) || entry.backgroundJob === true)
+                return false;
+            const above = this.lineage(entry.pid).slice(1);
+            const shell = above.indexOf(pid);
+            return shell >= 0 && above.slice(0, shell).every((ancestor) => {
+                const between = this.table.get(ancestor);
+                return between?.backgroundJob !== true && !ownsTerminal(between);
+            });
+        });
+        for (const leader of leaders)
+            this.signalGroup(leader.pid, reason);
     }
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid, packets) {

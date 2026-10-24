@@ -175,6 +175,16 @@ export interface ProcessHost {
     };
     /** The guest exited: its children's output and ends are no longer followed. */
     dispose(): void;
+    /**
+     * The guest returned to its host (an entry into it ended): a check it made
+     * while it ran no longer has its signals watched, so an idle guest asks
+     * the session nothing; its next check watches them again. Unless it holds
+     * one it has not raised, it tells the session it took every signal handed
+     * to it (cpSignalsTaken), which then counts none of them as untaken; it
+     * settles once the session has heard, and fails if it could not tell it:
+     * the entry then fails rather than end as if it had.
+     */
+    left(): Promise<void>;
 }
 export declare function processHost(opts: ProcessHostOptions): ProcessHost;
 //# sourceMappingURL=processes.d.ts.map
