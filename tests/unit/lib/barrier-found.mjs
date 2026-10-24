@@ -319,6 +319,11 @@ const FOUND = {
     park: 8576,
     schedule: [['sync', 'chmod', 'd', 0o750], ['own', 'mkdir', 'z'], ['own', 'chmod', 'z', 0o700], ['sync', 'rmdir', 'z'], ['own', 'mkdir', 'z'], ['own', 'write', 'z/g', 'c8576.3'], ['sync', 'readdir', 'z']],
   },
+  'a subtree listed after a mount was made over its directory is not the view\'s (6489)': {
+    park: 6489,
+    schedule: [['own', 'stat', 'z'], ['own', 'opendir', 'd/e/g'], ['root', 'chmod', 'x', 0o755], ['input'], ['release'], ['own', 'stat', 'd/f'],
+      ['peer', 'mount', '', 'unfed', { d: null, x: null, z: null, 'd/e': null, top: 'm6489.5', new: 'm6489.6', 'd/f': 'm6489.7', 'd/e/g': 'm6489.8', 'x/h': 'm6489.9', 'x/f': 'm6489.10', 'z/k': 'm6489.11', 'z/g': 'm6489.12' }]],
+  },
   'a directory root shut and took is refused to a read that cannot wait (8354)': {
     park: 8354,
     schedule: [['root', 'chmod', 'x', 0o700], ['own', 'readdir', 'd/n'], ['release'], ['root', 'chown', 'x', 0], ['input'], ['input'], ['own', 'pread', 'big', 8400000], ['sync', 'readFile', 'x']],
