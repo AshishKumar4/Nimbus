@@ -3,9 +3,10 @@
 // output is diagnostic, never evidence that a deferred probe completed.
 import assert from 'node:assert/strict';
 import { makeAsserter } from '../behavioral/_assertions.mjs';
-import { describeReleaseException, gradeMatrix, matrixProbeArgs } from '../../scripts/ci/lib/matrix.mjs';
+import { describeReleaseException, gradeMatrix, matrixProbeArgs, probeSkips } from '../../scripts/ci/lib/matrix.mjs';
 import { validateDeferrals, NEVER_DEFERRED } from '../behavioral/_deferred.mjs';
 import { PROBE_TARGET_SKIPS } from '../behavioral/_probe-target-skips.mjs';
+import { selects } from '../behavioral/_selection.mjs';
 
 const probe = 'frameworks/nuxt-real';
 const pinned = 'the app serves';
@@ -105,8 +106,21 @@ for (const failure of [{ detail: [] }, { detail: [''] }, { detail: ['okay', 7] }
   assert.throws(() => validateDeferrals([{ ...detail, failure }]), /failure/);
 }
 
-assert.deepEqual(matrixProbeArgs([exclusion], { repeat: `${probe},nuxt-real.mjs,tests/behavioral/${probe}.mjs,git-local`, times: '3' }),
-  ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, probe].join(','), '--repeat', 'git-local', '--times', '3']);
+// Every probe run, a train's as the release matrix's, runs an excluded probe
+// only where it names it; --skip adds to the skips, and a hosted demo's own
+// checks run only against it.
+const runs = (options, relPath) => selects({ only: options.only, skip: probeSkips([exclusion], options) }, relPath);
+const hostedCheck = `${PROBE_TARGET_SKIPS[0]}.mjs`;
+assert.equal(runs({}, `${probe}.mjs`), false, 'a run that does not name an excluded probe skips it');
+assert.equal(runs({ only: 'nuxt-real' }, `${probe}.mjs`), true, 'a run that names an excluded probe runs it');
+assert.equal(runs({ repeat: probe }, `${probe}.mjs`), true, 'a run that repeats an excluded probe runs it');
+assert.equal(runs({}, 'git-local.mjs'), true);
+assert.equal(runs({ skip: 'git-local' }, 'git-local.mjs'), false);
+assert.equal(runs({ skip: 'git-local' }, `${probe}.mjs`) || runs({ skip: 'git-local' }, hostedCheck), false, '--skip adds to the skips');
+assert.equal(runs({}, hostedCheck), false, 'apps/probe does not run the hosted demo checks');
+assert.equal(runs({ hosted: true, only: hostedCheck }, hostedCheck), true);
+assert.deepEqual(matrixProbeArgs([exclusion], { repeat: `${probe},nuxt-real.mjs,tests/behavioral/${probe}.mjs,./${probe}.mjs,./tests/behavioral/nuxt-real,git-local`, times: '3' }),
+  ['--target', 'staging', '--repeat', 'git-local', '--times', '3'], 'the release matrix never repeats an excluded probe');
 const excluded = gradeMatrix([verdict([row('legacy-probe', 0), ledger])], [exclusion]);
 assert.equal(excluded.exitCode, 0);
 assert.deepEqual(excluded.applied, [exclusion]);

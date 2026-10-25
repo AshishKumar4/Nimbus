@@ -12,6 +12,7 @@
 // Excluded probes must not run; they are recorded and printed, not graded.
 import { PROBE_TARGET_SKIPS } from '../../../tests/behavioral/_probe-target-skips.mjs';
 import { completedAssertions } from '../../../tests/behavioral/_assertions.mjs';
+import { namesProbe, selectionNames } from '../../../tests/behavioral/_selection.mjs';
 import { readFileSync } from 'node:fs';
 
 /** A row's probe, as _deferred.mjs names it: `tests/behavioral/a/b.mjs` → `a/b`. */
@@ -25,13 +26,24 @@ export function gradeVerdictFiles(paths, deferred) {
   }), deferred);
 }
 
-/** The release suite's selection: target-capability skips plus exclusions, including in requested repeats. */
+/**
+ * What every probe run skips (remote-probes, a train's run and the release
+ * matrix alike): `skip`, each probe `entries` excludes unless the run names
+ * it (`only`, `repeat`), and, against apps/probe, the hosted demo's own
+ * checks. An excluded probe is one the user accepted as unsupported; each
+ * resets its isolate, which the suite's other sessions on the target share.
+ */
+export function probeSkips(entries, { hosted = false, only = '', repeat = '', skip = '' } = {}) {
+  const named = [...selectionNames(only), ...selectionNames(repeat)];
+  const excluded = entries.filter((entry) => entry.excluded === true && !namesProbe(named, `${entry.probe}.mjs`)).map((entry) => entry.probe);
+  return [...(hosted ? [] : PROBE_TARGET_SKIPS), ...excluded, ...selectionNames(skip)].join(',');
+}
+
+/** The release suite's selection: staging, and requested repeats less the exclusions. */
 export function matrixProbeArgs(entries, { repeat = '', times = '5' } = {}) {
-  const excluded = entries.filter((entry) => entry.excluded === true).map((entry) => entry.probe);
-  const excludedSelectors = new Set(excluded.flatMap((probe) => [probe, probe.split('/').at(-1)]));
-  const repeated = repeat.split(',').filter((probe) => probe && !excludedSelectors.has(probeOf(probe))).join(',');
-  return ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, ...excluded].join(','),
-    ...(repeated ? ['--repeat', repeated, '--times', times] : [])];
+  const excluded = entries.filter((entry) => entry.excluded === true).map((entry) => `${entry.probe}.mjs`);
+  const repeated = repeat.split(',').filter((name) => name && !excluded.some((probe) => namesProbe(selectionNames(name), probe))).join(',');
+  return ['--target', 'staging', ...(repeated ? ['--repeat', repeated, '--times', times] : [])];
 }
 
 /** The approved exception staging records, printed with the same information at release and promotion. */

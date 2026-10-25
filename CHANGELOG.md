@@ -20,6 +20,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Fixed (CI): the publish workflow's first publish of a runtime failed with E404. npm expires a trust link whose first publish does not come within 2 days of its making, and every runtime's link was older than that and unused. `bun scripts/npm-trust.mjs` now makes again each link no version on npm was published through, and a refused publish prints npm's reason from its debug log.
 
+- Fixed (CI): a train's probe run ran the probes the release record excludes (nuxt, vinext and remix dev), which the release matrix skips. Each one exceeds its isolate's memory, and an isolate's reset takes every session the platform placed in it. Every probe run now skips them unless it names them, and `--skip` adds to the skips a target needs instead of replacing them.
+
 ## 2026-10-24: platform 0.15.1, core 0.28.0, fabric 0.23.0, worker 0.26.0, sdk 0.22.0, react 0.4.4, config 0.3.3, cli 0.2.13, loom 0.3.6, create-nimbus-app 0.2.9; runtime cpython 3.13.14-4 (the other runtimes unchanged)
 
 - Changed: `nimbus install python` (and `cpython`) installs cpython 3.13.14-4 by default, which takes Ctrl-C as CPython does on Linux (a `KeyboardInterrupt`). The catalog's default was 3.13.14-1. A deployment whose core cannot run -4 (0.27.0 and before) installs the newest build it can run, 3.13.14-3. A session keeps the build it has until it reinstalls.
