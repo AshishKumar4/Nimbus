@@ -749,9 +749,14 @@ pack runs every publish gate:
 `release.mjs staging` runs the same pack on CI and refuses a release npm would
 refuse, so it never reaches production. A tag `npm-dry-run/<sha12>` runs the
 pack and `npm publish --dry-run` on GitHub's runner, outside the `npm`
-environment and with no OIDC token. `bun scripts/npm-trust.mjs`, run once by
-hand, links every package to the workflow and lets only `npm/*` tags deploy
-from the `npm` environment.
+environment and with no OIDC token. `bun scripts/npm-trust.mjs`, run by hand,
+links every package to the workflow and lets only `npm/*` tags deploy from
+the `npm` environment. npm expires a link whose first publish does not come
+within 2 days of its making, and `npm trust list` does not say so. The script
+remakes each link nothing was published through yet, so run it within 2 days
+before a release that first publishes a package through the workflow: each
+runtime, the first time its version changes after the link was made. A
+publish that npm refuses names npm's reason in the workflow's log.
 
 **Production is `wrangler deploy -e production`, and nothing else.**
 `apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own
