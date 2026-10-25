@@ -489,10 +489,11 @@ again.
   the verdict records it as `pairedSkipped`. A run that names a paired probe
   (`--only`, `--repeat`) runs it on equal bytes too: an A/A run, or a change
   to the probe or its grader.
-- A red probe row is run once more, alone (a task of its own), on the same
-  deployed target, and that run grades it: a one-off red passes, a real red
-  fails twice. This holds in a train's run and in the release matrix, and
-  lives in one place, `scripts/ci/lib/rerun.mjs`. The verdict keeps the
+- A red probe row is run once more, alone (a job of its own, after the
+  rerun before it ends), on the same deployed target, and that run grades
+  it: a one-off red passes, a real red fails twice. This holds in a train's
+  run and in the release matrix, and lives in one place,
+  `scripts/ci/lib/rerun.mjs`. The verdict keeps the
   first red's detail and the rerun's task and armada job. A paired perf
   probe's red is first confirmed on fresh Previews; its confirmed red runs
   once more on one more fresh set of Previews, not on the same target. A

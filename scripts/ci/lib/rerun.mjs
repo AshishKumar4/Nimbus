@@ -1,9 +1,9 @@
 // The rerun rule (the user's decision, 2026-10-24): a red probe row is run
-// once more, alone (a task of its own, the probe alone in it), on the same
-// deployed target, and that run grades it. A one-off red, where a session or
-// a Preview landed, passes; a real red fails twice. It holds wherever probes
-// are graded: a train's run and the release matrix are both remote-probes
-// runs, and lib/matrix.mjs grades a rerun row by its rerun.
+// once more, alone (a job of its own, one after another, the probe alone in
+// it), on the same deployed target, and that run grades it. A one-off red,
+// where a session or a Preview landed, passes; a real red fails twice. It
+// holds wherever probes are graded: a train's run and the release matrix are
+// both remote-probes runs, and lib/matrix.mjs grades a rerun row by its rerun.
 //
 // A paired perf probe runs on Previews of its own, which a run again replaces
 // with a fresh set: its red is confirmed on a fresh set, which grades its
@@ -87,8 +87,10 @@ const pairedTask = (reds, task) => [{ task, part: '1/1', only: [...new Set(reds.
 
 /**
  * The rule on a run's first `tasks`: each red row is run again, and that run
- * grades it. A probe that is not paired runs alone in a task of its own, by
- * `run`, on the same target. A paired probe's reds run in one task on a fresh
+ * grades it. A probe that is not paired runs alone, by a `run` of its own once
+ * the one before it has ended, on the same target: run together, reruns of
+ * load-sensitive probes failed each other (2026-10-25, large-install beside
+ * eleven others, green alone). A paired probe's reds run in one task on a fresh
  * set of Previews, by `runPaired`, which confirms them; each red there (a
  * confirmed red) runs once more on one more fresh set, which grades it. `run`
  * and `runPaired` resolve to `{ tasks, problems }` for the items they are
@@ -103,9 +105,9 @@ export async function rerunRed(tasks, { paired, deferred, run, runPaired }) {
   const plain = reds.filter(({ row }) => !pairedProbes.has(probeOf(row)));
   const pairedReds = reds.filter(({ row }) => pairedProbes.has(probeOf(row)));
   const result = { problems: [], lines: [] };
-  if (plain.length > 0) {
-    const items = plain.map(({ row }, i) => ({ task: `rerun ${probeOf(row)} #${i + 1}`, part: '1/1', only: `${probeOf(row)}.mjs`, skip: '', jobs: 1 }));
-    merge(result, await runAgain(tasks, plain, items, (i) => i, run, 'alone on the same target'));
+  for (const [i, red] of plain.entries()) {
+    const items = [{ task: `rerun ${probeOf(red.row)} #${i + 1}`, part: '1/1', only: `${probeOf(red.row)}.mjs`, skip: '', jobs: 1 }];
+    merge(result, await runAgain(tasks, [red], items, () => 0, run, 'alone on the same target'));
   }
   if (pairedReds.length > 0) {
     const items = pairedTask(pairedReds, 'paired perf on fresh Previews');
