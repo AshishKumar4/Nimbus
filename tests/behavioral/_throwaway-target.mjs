@@ -96,6 +96,7 @@ const {
   createSession,
   parseFlags,
   randomSecret,
+  readBack,
   readState,
   requireAccountPin,
   TargetNotReadyError,
@@ -127,8 +128,6 @@ const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
  * production Worker.
  */
 const PREVIEW_PARENT = 'nimbus-probe-previews';
-/** The slowest an upload took to land after wrangler exited, of 20 measured on 2026-10-20 (deployPreview). */
-const SLOWEST_LANDING_MS = 1488;
 
 /** An API read of a Preview that failed: not an answer that it has no deployment. */
 class PreviewReadError extends Error {}
@@ -416,6 +415,9 @@ async function latestDeployment({ account, token, preview, signal = undefined })
 async function ensurePreviewParent({ account, token }) {
   const subdomain = { enabled: true, previews_enabled: true };
   const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}`, { account, token });
+  if (!got.ok && !(got.status === 404 && got.errors.some((error) => error?.code === 10007))) {
+    throw new Error(`cannot tell whether the Preview parent ${PREVIEW_PARENT} stands: HTTP ${got.status}, errors ${JSON.stringify(got.errors)}`);
+  }
   if (!got.ok) {
     log(`creating the Preview parent Worker ${PREVIEW_PARENT}`);
     const created = await cfApi('/workers/workers', { account, token, method: 'POST', body: { name: PREVIEW_PARENT, subdomain } });
@@ -451,44 +453,39 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  // Read until the API serves the upload, for the longer of the upload's own
-  // time and the slowest an upload was seen to take to land.
-  // Measured 2026-10-20: 20 uploads to two Previews, new and redeployed,
-  // landed 273–1488 ms after wrangler exited (median 330 ms), each on the
-  // first read; the misses seen before (no deployment, or the one before,
-  // 30 s on) never landed later. So an upload not served within that window
-  // is uploaded again, which lands sooner than waiting on. A read the
-  // deadline cuts off is no answer: the wait ends with what was last read.
-  const landingMs = Math.max(Date.now() - uploadStarted, SLOWEST_LANDING_MS);
-  const settleBy = Date.now() + landingMs;
-  const waited = `${(landingMs / 1000).toFixed(1)} s`;
-  const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
-  let latest;
-  for (;;) {
-    try {
-      latest = await latestDeployment({ account, token, preview, signal });
-    } catch (error) {
-      if (signal.aborted) break;
-      // One read the API failed is no answer: the next may give one, before the deadline.
-      if (!(error instanceof PreviewReadError)) throw error;
-    }
-    if (!deploymentId || latest?.id === deploymentId || Date.now() >= settleBy) break;
-    await delay(Math.min(500, Math.max(1, settleBy - Date.now())));
-  }
-  const after = latest?.id ?? null;
-  if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
+  if (!deploymentId) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);
-    const detail = !deploymentId
-      ? '`wrangler preview` reported no deployment id'
-      : latest === undefined
-        ? `the API answered no read of its latest deployment within ${waited}`
-        : after !== deploymentId
-          ? `${waited} after it, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
-          : `the latest deployment is still ${after} — nothing was deployed`;
-    return { landed: false, reported: Boolean(deploymentId), detail, status: result.status };
+    return { landed: false, reported: false, detail: '`wrangler preview` reported no deployment id', status: result.status };
   }
-  const base = workersDevUrlOf(printed.preview?.urls);
-  if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
+  // Read by the id the upload printed, as wrangler itself goes on once it
+  // has made a Preview: on 2026-10-24 the API answered two new Previews'
+  // names 404 13 s after it made them, and served their deployments by id.
+  const { answer: latest, waited } = await readBack({
+    uploadStarted,
+    read: async (deadline) => {
+      const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+      try {
+        return await latestDeployment({ account, token, preview: printed.preview.id, signal });
+      } catch (error) {
+        // A read the API failed, or one the window cut off, is no answer.
+        if (error instanceof PreviewReadError || signal.aborted) return undefined;
+        throw error;
+      }
+    },
+    landed: (found) => found?.id === deploymentId,
+  });
+  const after = latest?.id ?? null;
+  if (after !== deploymentId || after === (before?.id ?? null)) {
+    process.stderr.write(`${stdout}${result.stderr || ''}`);
+    const detail = latest === undefined
+      ? `the API answered no read of its latest deployment within ${waited}`
+      : after !== deploymentId
+        ? `${waited} after it, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+        : `the latest deployment is still ${after} — nothing was deployed`;
+    return { landed: false, reported: true, detail, status: result.status };
+  }
+  const base = workersDevUrlOf(printed.preview.urls);
+  if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview.urls)})`);
   return { landed: true, base, deploymentId, startupMs: latest.startup_time_ms };
 }
 

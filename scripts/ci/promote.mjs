@@ -141,7 +141,7 @@ if (flags['dry-run']) {
 let versionId;
 try {
   // wrangler holds the lease too (its fd 3): killed, this process frees nothing while the upload still writes.
-  ({ versionId } = deployAndVerify({ cwd, account, name: productionName, envName: PRODUCTION.env, args: ['--config', config], leaseFd }));
+  ({ versionId } = await deployAndVerify({ cwd, account, name: productionName, envName: PRODUCTION.env, args: ['--config', config], leaseFd }));
 } catch (error) {
   console.log(`promote: the upload failed — ${error.message}\n  production may still serve ${before}; to be sure: ${rollback}`);
   process.exit(1);
