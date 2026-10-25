@@ -7,9 +7,9 @@
 // - A paired probe's red runs on a fresh set of Previews, which grades it; a
 //   confirmed red runs once more on one more fresh set, which grades it.
 //   The paired probes go in one task on each set.
-// - Each link records the armada job that produced its grading row (a task
-//   that started late ran in a job of its own), and a run again that holds
-//   no row of its probe leaves the run not graded.
+// - Reruns on the same target run one after another, each in a job of its
+//   own, and each link records the job that produced its grading row; a run
+//   again that holds no row of its probe leaves the run not graded.
 // - A deferred probe (graded by its deferral), the session ledger and a row
 //   that did not grade are not run again, and a rerun's own red is not run
 //   again.
@@ -27,23 +27,28 @@ const ledger = (exitCode) => ({ name: 'session-ledger', exitCode, seconds: 0, ou
 
 /**
  * A rerun runner: each item's task holds a row of each probe it names, green
- * when the probe is in `passes`, and a green ledger. It records what it was
- * asked to run.
+ * when the probe is in `passes`, and a green ledger, from a job of the call's
+ * own. It records what it was asked to run, and the most calls it had in
+ * flight at once; each call takes a timer turn, as a job takes time.
  */
 function runner(passes, job = 'job-rerun') {
   const asked = [];
+  let running = 0;
+  const seen = { most: 0 };
   const run = async (items) => {
     asked.push(items);
     const call = asked.length;
+    seen.most = Math.max(seen.most, ++running);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    running--;
     const pass = typeof passes === 'function' ? passes(call) : passes;
     return {
       problems: [],
-      // Each task as it was read, with the job that produced it: the last one started late, in a job of its own.
-      tasks: items.map((item, i) => ({ ...item, job: i > 0 && i === items.length - 1 ? `${job}-${call}-late` : `${job}-${call}`,
+      tasks: items.map((item) => ({ ...item, job: `${job}-${call}`,
         rows: [...item.only.split(',').map((only) => row(only.replace(/\.mjs$/, ''), pass.includes(only.replace(/\.mjs$/, '')) ? 0 : 1, 'still 4')), ledger(0)] })),
     };
   };
-  return { asked, run };
+  return { asked, run, seen };
 }
 /** No paired rerun is asked for in a case without a confirmed paired red. */
 const noPaired = async () => assert.fail('no paired probe should run again');
@@ -71,10 +76,11 @@ const DEFERRED = ['x/deferred'];
 // A real red fails twice: red, by its rerun's row; a one-off beside it is green.
 {
   const tasks = [{ task: 'part 2/4', rows: [row('b/real', 1), row('b/once', 1), ledger(0)] }];
-  const { asked, run } = runner(['b/once']);
+  const { asked, run, seen } = runner(['b/once']);
   await rerunRed(tasks, { paired: PAIRED, deferred: DEFERRED, run, runPaired: noPaired });
-  assert.equal(asked.length, 1, 'one rerun job');
-  assert.deepEqual(tasks[0].rows.slice(0, 2).map((red) => red.regraded.job), ['job-rerun-1', 'job-rerun-1-late'], 'each link names the job that produced its row');
+  assert.deepEqual(asked.map((items) => items.map((item) => item.only)), [['b/real.mjs'], ['b/once.mjs']], 'each red runs again in a run of its own');
+  assert.equal(seen.most, 1, 'one after another: never two reruns on the target at once');
+  assert.deepEqual(tasks[0].rows.slice(0, 2).map((red) => red.regraded.job), ['job-rerun-1', 'job-rerun-2'], 'each link names the job that produced its row');
   assert.equal(gradeTasks(tasks), 1, 'a red that fails twice is red');
   const graded = gradeMatrix([{ problems: [], tasks }], []);
   assert.equal(graded.exitCode, 1);
