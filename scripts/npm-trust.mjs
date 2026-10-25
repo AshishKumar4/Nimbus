@@ -5,11 +5,18 @@
 // environment, and from nowhere else that holds no token. First it makes
 // that GitHub environment one only npm/* tags may deploy from (gh, as a
 // repository admin), so no other ref can publish even with the workflow
-// edited. Run it once, by hand, in a terminal: `npm trust` asks for the
-// account's 2FA (npm's page offers five minutes without it, which lets the
-// rest through). It needs npm 11.15.0 or later. What is already set up as
+// edited. Run it by hand, in a terminal: `npm trust` asks for the account's
+// 2FA (npm's page offers five minutes without it, which lets the rest
+// through). It needs npm 11.15.0 or later. What is already set up as
 // described is left as it is, so it is safe to run again; anything set up
 // otherwise (another deploy rule, another trust) is named, with its fix.
+//
+// npm expires a trust whose first publish does not come within 2 days of its
+// making, and `npm trust list` does not say so: the workflow's sign-in is
+// refused and its publish answers E404. So a trust no version on npm was
+// published through is made again here, and the release that first publishes
+// its package through the workflow must follow within 2 days. A package that
+// changes rarely (each runtime) meets this on its first such release.
 //
 //   bun scripts/npm-trust.mjs
 //
@@ -79,11 +86,17 @@ const names = [...npmRuntimeSpecs().map(({ name }) => name), ...publishPackages(
 const missing = [];
 let failed = 0;
 for (const name of names) {
-  const held = await fetch(`https://registry.npmjs.org/${name.replace('/', '%2f')}`, { method: 'HEAD' });
+  const held = await fetch(`https://registry.npmjs.org/${name.replace('/', '%2f')}`);
   if (held.status === 404) {
     missing.push(name);
     continue;
   }
+  if (!held.ok) {
+    console.error(`FAILED   ${name}: the registry answered ${held.status}`);
+    failed++;
+    continue;
+  }
+  const trustPublished = Object.values((await held.json()).versions).some((version) => version._npmUser?.trustedPublisher !== undefined);
   let trust;
   try {
     trust = trustOf(name);
@@ -95,16 +108,25 @@ for (const name of names) {
   if (trust !== null) {
     const ours = trust.type === 'github' && trust.repository === REPO && trust.file === WORKFLOW && trust.environment === ENVIRONMENT
       && Array.isArray(trust.permissions) && trust.permissions.includes('createPackage');
-    if (ours) {
-      console.log(`linked   ${name}`);
-    } else {
+    if (!ours) {
       console.error(`OTHER    ${name}: npm trusts ${JSON.stringify(trust)}, not ${REPO}'s ${WORKFLOW} in ${ENVIRONMENT} with publish. `
         + `npm keeps one per package: npm trust revoke ${name} --id=${trust.id}, then run this again`);
       failed++;
+      continue;
     }
-    continue;
+    if (trustPublished) {
+      console.log(`linked   ${name}`);
+      continue;
+    }
+    console.log(`remaking ${name}: nothing was published through its trust, which expires 2 days after it is made`);
+    const revoked = spawnSync('npm', ['trust', 'revoke', name, `--id=${trust.id}`], { stdio: 'inherit' });
+    if (revoked.status !== 0) {
+      failed++;
+      continue;
+    }
+  } else {
+    console.log(`linking  ${name}`);
   }
-  console.log(`linking  ${name}`);
   const linked = spawnSync('npm', ['trust', 'github', name, '--file', WORKFLOW, '--repo', REPO, '--env', ENVIRONMENT, '--allow-publish', '--yes'], { stdio: 'inherit' });
   if (linked.status !== 0) failed++;
 }

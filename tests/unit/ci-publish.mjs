@@ -3,7 +3,7 @@
 // packages so each follows the published packages it needs; npm-publish
 // publishes what publish-pack packed, in that order, each version npm lacks,
 // and refuses a set holding an archive that is not the one packed, and stops
-// at the first publish that fails.
+// at the first publish that fails, naming why npm refused its sign-in.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -26,11 +26,13 @@ try {
   }
   console.log('  ✓ the packages are ordered after the published packages they need');
 
-  // A fake npm that records each call and fails a publish of an archive named *fail*.
+  // A fake npm that records each call and fails a publish of an archive named
+  // *fail*, its sign-in refused in its debug log as npm logs one.
   const bin = join(root, 'bin');
   const calls = join(root, 'calls');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$*" >> '${calls}'\ncase "$2" in *fail*) exit 1;; esac\n`);
+  writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "$*" >> '${calls}'\ncase "$2" in *fail*)\n`
+    + `  echo '41 verbose oidc Failed token exchange request with body message: trust expired' > "$npm_config_logs_dir/t-debug-0.log"\n  exit 1;;\nesac\n`);
   chmodSync(join(bin, 'npm'), 0o700);
   const dir = join(root, 'tarballs');
   mkdirSync(dir);
@@ -67,9 +69,13 @@ try {
   console.log('  ✓ an archive that is not the one packed stops the whole set');
 
   const failing = [receipt('@nimbus-sh/fail', '1.0.0'), receipt('@nimbus-sh/after', '1.0.0')];
-  await assert.rejects(publishPacked({ tarballs: failing, dir, registry: 'https://registry.test', fetch, npm: join(bin, 'npm'), log() {} }), /npm publish @nimbus-sh\/fail@1\.0\.0 exited 1; nothing after it was published/);
+  await assert.rejects(publishPacked({ tarballs: failing, dir, registry: 'https://registry.test', fetch, npm: join(bin, 'npm'), log() {} }), (error) => {
+    assert.match(error.message, /npm publish @nimbus-sh\/fail@1\.0\.0 exited 1; nothing after it was published/);
+    assert.ok(error.message.includes('Failed token exchange request with body message: trust expired'), error.message);
+    return true;
+  });
   assert.deepEqual(npmCalls(), [`publish ${join(dir, failing[0].file)} --tag latest --access public`]);
-  console.log('  ✓ a publish that fails stops the ones after it');
+  console.log('  ✓ a publish that fails stops the ones after it, and names why npm refused its sign-in');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

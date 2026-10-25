@@ -15,7 +15,8 @@
 // be); 1, a publish failed; 2, usage, or a pack that is not a green one.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const USAGE = 'usage: bun scripts/ci/npm-publish.mjs --pack <file> --tarballs <dir> [--dry-run]';
@@ -45,11 +46,27 @@ export async function publishPacked({ tarballs, dir, dryRun = false, registry = 
       continue;
     }
     log(`${dryRun ? 'dry-run' : 'publish'}   ${name}@${version}`);
-    const run = spawnSync(npm, ['publish', path, '--tag', 'latest', '--access', 'public', ...(dryRun ? ['--dry-run'] : [])], { stdio: 'inherit' });
-    if (run.status !== 0) throw new Error(`npm publish ${name}@${version} exited ${run.status ?? run.signal}; nothing after it was published`);
+    const logs = mkdtempSync(join(tmpdir(), 'npm-publish-'));
+    try {
+      const run = spawnSync(npm, ['publish', path, '--tag', 'latest', '--access', 'public', ...(dryRun ? ['--dry-run'] : [])], { stdio: 'inherit', env: { ...process.env, npm_config_logs_dir: logs } });
+      if (run.status !== 0) {
+        const failed = `npm publish ${name}@${version} exited ${run.status ?? run.signal}; nothing after it was published`;
+        throw new Error(dryRun ? failed : `${failed}. npm's OIDC sign-in: ${oidcLog(logs).join('; ') || 'not logged'}. `
+          + 'If npm refused it, bun scripts/npm-trust.mjs checks the package\'s trust and remakes one that expired');
+      }
+    } finally {
+      rmSync(logs, { recursive: true, force: true });
+    }
     done.push({ name, version, published: !dryRun });
   }
   return done;
+}
+
+// npm answers a refused trusted-publisher sign-in only with the publish's
+// E404; why it was refused is in its debug log alone, at level verbose.
+function oidcLog(dir) {
+  return readdirSync(dir).flatMap((file) => readFileSync(join(dir, file), 'utf8').split('\n'))
+    .flatMap((line) => /^\d+ \w+ oidc (.+)$/.exec(line)?.[1] ?? []);
 }
 
 if (import.meta.main) {
