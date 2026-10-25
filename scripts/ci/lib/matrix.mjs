@@ -41,9 +41,8 @@ export function probeSkips(entries, { hosted = false, only = '', repeat = '', sk
 
 /** The release suite's selection: staging, and requested repeats less the exclusions. */
 export function matrixProbeArgs(entries, { repeat = '', times = '5' } = {}) {
-  const excluded = entries.filter((entry) => entry.excluded === true).map((entry) => entry.probe);
-  const excludedSelectors = new Set(excluded.flatMap((probe) => [probe, probe.split('/').at(-1)]));
-  const repeated = repeat.split(',').filter((probe) => probe && !excludedSelectors.has(probeOf(probe))).join(',');
+  const excluded = entries.filter((entry) => entry.excluded === true).map((entry) => `${entry.probe}.mjs`);
+  const repeated = repeat.split(',').filter((name) => name && !excluded.some((probe) => namesProbe(selectionNames(name), probe))).join(',');
   return ['--target', 'staging', ...(repeated ? ['--repeat', repeated, '--times', times] : [])];
 }
 

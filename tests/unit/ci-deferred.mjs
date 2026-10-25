@@ -119,7 +119,7 @@ assert.equal(runs({ skip: 'git-local' }, 'git-local.mjs'), false);
 assert.equal(runs({ skip: 'git-local' }, `${probe}.mjs`) || runs({ skip: 'git-local' }, hostedCheck), false, '--skip adds to the skips');
 assert.equal(runs({}, hostedCheck), false, 'apps/probe does not run the hosted demo checks');
 assert.equal(runs({ hosted: true, only: hostedCheck }, hostedCheck), true);
-assert.deepEqual(matrixProbeArgs([exclusion], { repeat: `${probe},nuxt-real.mjs,tests/behavioral/${probe}.mjs,git-local`, times: '3' }),
+assert.deepEqual(matrixProbeArgs([exclusion], { repeat: `${probe},nuxt-real.mjs,tests/behavioral/${probe}.mjs,./${probe}.mjs,./tests/behavioral/nuxt-real,git-local`, times: '3' }),
   ['--target', 'staging', '--repeat', 'git-local', '--times', '3'], 'the release matrix never repeats an excluded probe');
 const excluded = gradeMatrix([verdict([row('legacy-probe', 0), ledger])], [exclusion]);
 assert.equal(excluded.exitCode, 0);
