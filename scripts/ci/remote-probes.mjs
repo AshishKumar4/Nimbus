@@ -31,9 +31,10 @@
 //
 // --parts N splits the selection N ways, each run --jobs J at a time
 // (default 4 × 4: the 16 probes at once the suite has always run, so the
-// target sees the same load). --only/--skip select as run-all does; against
-// either target (both are apps/probe) the skips default to
-// PROBE_TARGET_SKIPS. --repeat runs each named probe --times more times
+// target sees the same load). --only/--skip select as run-all does. Every
+// run also skips the probes the release record excludes, unless it names
+// them, and against either target (both are apps/probe) PROBE_TARGET_SKIPS
+// (lib/matrix.mjs probeSkips). --repeat runs each named probe --times more times
 // (default 5), each alone and beside the suite, as the release matrix does
 // with write-heavy probes whose failure is intermittent.
 // --screenshots saves the existing capture hooks' PNGs under <dir>/<job>/<task>.
@@ -73,11 +74,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFERRED } from '../../tests/behavioral/_deferred.mjs';
 import { PAIRED_ENV, PAIRED_PROBES } from '../../tests/behavioral/_paired.mjs';
-import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { namesProbe, selectionNames, selects } from '../../tests/behavioral/_selection.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 import { causeOf } from './lib/cli-failure.mjs';
 import { assertInstalled } from './lib/installed.mjs';
+import { probeSkips } from './lib/matrix.mjs';
 import { defaultBaseline, pairedPreviews } from './lib/paired-previews.mjs';
 import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
 import { gradeTasks, rerunRed } from './lib/rerun.mjs';
@@ -162,12 +163,12 @@ try {
   process.exit(2);
 }
 
-// A hosted demo is probed as its visitors use it, anonymously: no token, and
-// no probe-target skips.
-const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
 const throwaway = flags.deploy ?? target[2];
 const repeats = (flags.repeat ?? '').split(',').filter(Boolean);
 const repeated = (probe) => repeats.some((name) => namesProbe(selectionNames(name), `${probe}.mjs`));
+// A hosted demo is probed as its visitors use it, anonymously: no token, and
+// no probe-target skips.
+const skip = probeSkips(DEFERRED, { hosted: Boolean(hosted), only: flags.only, repeat: flags.repeat, skip: flags.skip });
 // The paired probes the suite selects, and those it repeats, need the arms;
 // a hosted demo's checks are named, and none is paired.
 const pairedInSuite = hosted ? [] : PAIRED_PROBES.filter((probe) => selects({ only: flags.only, skip }, `${probe}.mjs`));
