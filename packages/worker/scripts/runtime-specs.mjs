@@ -261,7 +261,6 @@ export const SPECS = {
   'lua/5.4.8': {
     license: 'MIT',
     license_sha256: '05980eef8a3ee9b12778219e987a47120501b02481ff344643e2d8bd40ae878e',
-    license_sha256: '05980eef8a3ee9b12778219e987a47120501b02481ff344643e2d8bd40ae878e',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/lua',
     source: {
