@@ -46,6 +46,7 @@ import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
+import { isProvisionalAdmissionRefusal } from './provisional.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
@@ -1454,7 +1455,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           if (walk === DELEGATE) return DELEGATE;
           const there = ownEntryAt(walk.key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
-          const opened = holder!.provisional.open(walk.key, pathOf(path), flags, there, true);
+          let opened: RuntimeFileHandle | undefined;
+          try { opened = holder!.provisional.open(walk.key, pathOf(path), flags, there, true); }
+          catch (error) {
+            if (isProvisionalAdmissionRefusal(error)) return DELEGATE;
+            throw error;
+          }
           if (opened === undefined) return DELEGATE;
           counts.local++;
           // Its access is the session's to judge at the open, as open(2) judges it: answered before it returns.
@@ -1552,7 +1558,25 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes); }
+    if (holder?.owns(handleId)) {
+      counts.local++;
+      try { return holder.write(handleId, offset, bytes); }
+      catch (error) {
+        const desc = holder.provisional.descriptor(handleId);
+        if (now || !isProvisionalAdmissionRefusal(error) || desc?.description === undefined || desc.append) throw error;
+        // The failed admission logged no write. Deliver prior records first,
+        // then write through this open description, never through the name.
+        const position = offset ?? desc.position;
+        return holder.flush().then(() => {
+          const session = holder!.provisional.sessionOf(handleId);
+          if (session === undefined) throw error;
+          return shown(changing('write', () => authority.write(session, position, bytes)));
+        }).then(count => {
+          if (offset === null) desc.position = position + count;
+          return count;
+        });
+      }
+    }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));

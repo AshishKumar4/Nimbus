@@ -34,6 +34,12 @@ import { applyOp, copyState, foldOps, owned } from './inode-fold.js';
 const LOCAL_INOS = 2 ** 50;
 /** What one record of a name or an inode costs the process's budget, besides the bytes it keeps. */
 const RECORD_COST = 160;
+// This is a refusal to buffer a decision, not a refusal by session storage.
+// Only a caller that can wait may ask the session to perform it instead.
+const admissionRefusals = new WeakSet();
+export function isProvisionalAdmissionRefusal(error) {
+    return error instanceof Error && admissionRefusals.has(error);
+}
 /** What an Inode object keeps beside its names, buffers and records. */
 const INODE_COST = 320;
 /** What a string keeps: two bytes a code unit. */
@@ -131,8 +137,11 @@ export function provisional(host) {
     };
     /** `bytes` of the budget, before anything is published: ENOSPC where it has no room. */
     const admit = (bytes, syscall, path) => {
-        if (bytes > 0 && !host.reserve(bytes))
-            throw fsError('ENOSPC', syscall, path);
+        if (bytes > 0 && !host.reserve(bytes)) {
+            const error = fsError('ENOSPC', syscall, path);
+            admissionRefusals.add(error);
+            throw error;
+        }
     };
     /** The row a name leads to now, this process's own first. */
     const rowAt = (key) => {

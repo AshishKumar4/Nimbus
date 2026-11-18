@@ -1105,4 +1105,24 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   assert.equal(s.kernel.stat('home/user/proj/dec/kept').mode & 0o777, 0o644);
 }
 
+// Async admission pressure is not a storage refusal. Earlier buffered bytes
+// must land first, and the session write must use the guest's open offset.
+{
+  const budget = { used: 0, limit: 1 << 20 };
+  const s = session({ budget, view: {} });
+  const path = '/home/user/archive'; // the home root is never delegated
+  const file = await s.fs.open(path, { create: true, exclusive: true, write: true, read: true });
+  assert.equal(await s.fs.write(file.id, null, enc.encode('abcdefgh')), 8);
+  budget.limit = 0;
+  assert.equal(await s.fs.write(file.id, null, enc.encode('ij')), 2);
+  assert.equal(await s.fs.write(file.id, 2, enc.encode('XY')), 2);
+  assert.equal(await s.fs.seek(file.id, 0, 'current'), 10);
+  assert.equal(dec.decode(await s.fs.read(file.id, 0, 20)), 'abXYefghij');
+  await s.fs.close(file.id);
+  await create(s.fs, '/home/user/next-archive', 'next');
+  assert.deepEqual(await s.fs.settle(), []);
+  assert.equal(dec.decode(s.kernel.readFile('home/user/archive')), 'abXYefghij');
+  assert.equal(dec.decode(s.kernel.readFile('home/user/next-archive')), 'next');
+}
+
 console.log('wasi delegation holder: ok');

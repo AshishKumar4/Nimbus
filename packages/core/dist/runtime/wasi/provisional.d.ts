@@ -30,6 +30,7 @@ import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
 import { type InodeOp, type InodeState } from './inode-fold.js';
+export declare function isProvisionalAdmissionRefusal(error: unknown): boolean;
 /** What the provisional decisions read and log through: the holder's. */
 export interface ProvisionalHost {
     readonly device: number;
