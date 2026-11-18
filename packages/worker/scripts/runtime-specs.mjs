@@ -268,7 +268,7 @@ export const SPECS = {
       sha256: '4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae',
     },
     files: [
-      { src: 'lua.wasm', vfs: 'bin/lua', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'lua', sha256: 'bf03a37b1ff66fc958a38e1265e3515457cea3565cf330309d76caf14d4bd6bc' },
+      { src: 'lua.wasm', vfs: 'bin/lua', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'lua', sha256: 'b4f1fbf1ea2c9b3b241f3cef81fe5af2d73feed411bbb647953120d215c266fd' },
     ],
     get license_text() { return readFileSync(new URL('../wasm/lua/LICENSE', import.meta.url), 'utf8'); },
   },

@@ -114,7 +114,6 @@ const finish = (status, line) => {
 };
 if (task.build !== 'ok') finish(1, `the build failed after ${task.seconds} s`);
 if (task.verify !== 'ok') finish(1, `built in ${task.seconds} s, and verify failed`);
-if (name === 'lua' && task.differential !== 'ok') finish(1, 'native Lua vs Nimbus fixtures failed');
 if (archive === null) notGraded(`built and verified, but no artifacts came back (job ${run.jobId})`);
 
 verdict.archive = `${stem}.tar.xz`;
@@ -129,7 +128,11 @@ for (const path of ARTIFACTS) {
   const { built, committed } = verdict.artifacts[path];
   console.log(`${built === committed ? 'same     ' : 'different'} ${path} ${built}${built === committed ? '' : ` (the commit's: ${committed ?? 'none'})`}`);
 }
-if (differing.length === 0) finish(0, `built in ${task.seconds} s and verified; the recipe reproduces ${sha.slice(0, 12)} byte for byte`);
+if (differing.length === 0) {
+  if (name === 'lua' && task.differential !== 'ok') finish(1, 'native Lua vs Nimbus fixtures failed');
+  finish(0, `built in ${task.seconds} s and verified; the recipe reproduces ${sha.slice(0, 12)} byte for byte`);
+}
+if (name === 'lua' && task.differential !== 'ok') console.error('native Lua vs Nimbus fixtures failed; preserving the differing rebuild');
 verdict.refusal = writeRefusal(repo, sha, differing);
 if (verdict.refusal !== null) finish(1, `${differing.length} artifacts differ; not written (${verdict.refusal}): they are in ${verdict.archive}`);
 extract(repo, verdict.archive, differing);

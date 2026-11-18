@@ -9,9 +9,13 @@ import { afterReset, resetInstance } from '../durable/_reset-window.mjs';
 import { files, successCommand, failureCommand, success, failure, version } from '../../fixtures/lua-cli.mjs';
 
 const local = process.argv.includes('--local');
-const host = new URL(BASE).hostname;
+const target = new URL(BASE);
+const host = target.hostname;
 if (local) assert.equal(host, '127.0.0.1');
-else assert.match(host, /^tw-.+-nimbus-probe-previews\..+\.workers\.dev$/);
+else {
+  assert.equal(target.protocol, 'https:', 'remote Lua probe requires HTTPS');
+  assert.match(host, /^tw-.+-nimbus-probe-previews\..+\.workers\.dev$/);
+}
 assert.ok(AUTH_TOKEN, 'a throwaway probe token is required');
 const nimbus = Nimbus.connect({ endpoint: BASE, token: AUTH_TOKEN });
 const cwd = '/home/user/lua-project';
@@ -51,25 +55,30 @@ for (const runtime of ['lua', `lua@${version}`]) {
 
     // Send SIGINT to the guest, not to the pipeline shell. Lua's own handler
     // throws "interrupted!"; a supervisor-only kill cannot print that error.
-    const waiting = await box.execStream("(sleep 10; printf 'late input\\n') | lua -E wait.lua", { cwd, timeoutMs: 30_000 });
-    let out = '';
-    let err = '';
-    let sent = false;
-    for await (const { stream, data } of waiting.output) {
-      if (stream === 'stdout') out += Buffer.from(data).toString();
-      else err += Buffer.from(data).toString();
-      if (!sent && out.includes('LUA_READY\n')) {
-        const guests = (await box.processes.list()).filter((p) => p.command === 'lua -E wait.lua' && p.state === 'running');
-        assert.equal(guests.length, 1, JSON.stringify(guests));
-        assert.equal((await box.processes.signal(guests[0].pid, 'SIGINT')).ok, true);
-        sent = true;
+    for (const [script, command] of [
+      ['wait.lua', "(sleep 10; printf 'late input\\n') | lua -E wait.lua"],
+      ['spin.lua', ':; lua -E spin.lua'],
+    ]) {
+      const waiting = await box.execStream(command, { cwd, timeoutMs: 30_000 });
+      let out = '';
+      let err = '';
+      let sent = false;
+      for await (const { stream, data } of waiting.output) {
+        if (stream === 'stdout') out += Buffer.from(data).toString();
+        else err += Buffer.from(data).toString();
+        if (!sent && out.includes('LUA_READY\n')) {
+          const guests = (await box.processes.list()).filter((p) => p.command === `lua -E ${script}` && p.state === 'running');
+          assert.equal(guests.length, 1, JSON.stringify(guests));
+          assert.equal((await box.processes.signal(guests[0].pid, 'SIGINT')).ok, true);
+          sent = true;
+        }
       }
+      assert.ok(sent, `never signaled the Lua guest: ${out} ${err}`);
+      assert.equal((await waiting.exit).exitCode, 1, err);
+      assert.equal(out, 'LUA_READY\n');
+      assert.match(err, /interrupted!/);
+      console.log(`ok: Lua handled SIGINT in ${script}`);
     }
-    assert.ok(sent, `never signaled the Lua guest: ${out} ${err}`);
-    assert.equal((await waiting.exit).exitCode, 1, err);
-    assert.equal(out, 'LUA_READY\n');
-    assert.match(err, /interrupted!/);
-    console.log('ok: Lua handled SIGINT during a guest read');
 
     const reset = await resetInstance(sid);
     assert.ok(reset.ok, reset.detail);

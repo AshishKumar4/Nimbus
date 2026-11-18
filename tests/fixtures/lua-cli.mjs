@@ -24,6 +24,10 @@ io.stdout:flush()
 local line = assert(io.read('*l'))
 print(line)
 `,
+  'spin.lua': `io.stdout:write('LUA_READY\\n')
+io.stdout:flush()
+while true do end
+`,
 };
 
 export const successCommand = `printf 'piped input\\n' | lua script.lua 'two words' second && cat output.txt`;

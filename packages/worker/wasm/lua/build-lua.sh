@@ -40,6 +40,7 @@ if [ "$MODE" = native ]; then
   exec make -C src -j4 lua
 fi
 patch -p1 --quiet < "$HERE/no-repl.patch"
+patch -p1 --quiet < "$HERE/vm-signal.patch"
 
 # The ISO C build leaves dynamic loading and popen disabled. Wasm-native
 # exceptions implement setjmp/longjmp without introducing host imports.

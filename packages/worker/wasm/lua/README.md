@@ -30,7 +30,8 @@ bun tests/behavioral/_throwaway-target.mjs down --name lua-cli
 
 The probe runs both install forms in separate fresh sessions and reruns
 the pinned install's fixtures after a confirmed Durable Object reset. It also
-checks a restarted input wait and delivery of SIGINT to Lua. After the probe,
+checks a restarted input wait and delivery of SIGINT during a blocked read
+and a compute-only Lua loop. After the probe,
 delete the dedicated bucket and its objects. Keep the production catalog and
 its deployment pin unchanged.
 
