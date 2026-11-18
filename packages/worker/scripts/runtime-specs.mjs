@@ -7,6 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
+import { readFileSync } from 'node:fs';
 import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, WASI_CLI_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
@@ -254,6 +255,23 @@ export const SPECS = {
       { src: 'COPYING.oniguruma', vfs: 'share/jq/COPYING.oniguruma', sha256: '70ba5469ea0bab6e18a32d7009068f996503168d27be57747e08da34337ff26f' },
     ],
     license_text: JQ_MIT_LICENSE_NOTICE(),
+  },
+
+  // Shell-only Lua, built by wasm/lua/build-lua.sh for the same runner as jq.
+  'lua/5.4.8': {
+    license: 'MIT',
+    license_sha256: '05980eef8a3ee9b12778219e987a47120501b02481ff344643e2d8bd40ae878e',
+    license_sha256: '05980eef8a3ee9b12778219e987a47120501b02481ff344643e2d8bd40ae878e',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/lua',
+    source: {
+      url: 'https://www.lua.org/ftp/lua-5.4.8.tar.gz',
+      sha256: '4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae',
+    },
+    files: [
+      { src: 'lua.wasm', vfs: 'bin/lua', mode: 'exec', runner: WASI_CLI_RUNNER, binName: 'lua', sha256: 'bf03a37b1ff66fc958a38e1265e3515457cea3565cf330309d76caf14d4bd6bc' },
+    ],
+    get license_text() { return readFileSync(new URL('../wasm/lua/LICENSE', import.meta.url), 'utf8'); },
   },
 
   // GNU make 4.4.1 cross-built for wasm32-wasi by

@@ -47,6 +47,7 @@
 //
 // COMMANDS
 //   up      --bundle <release dir> [--name <n>] [--ttl-ms <ms>] [--rotate-secrets]
+//           [--runtime-bucket <dedicated bucket> --runtime-catalog-sha256 <digest>]
 //           [--var KEY:VALUE ...]  override a config var for this deploy —
 //           how one build is stood up twice to compare two settings of it.
 //           Every throwaway is deployed with the suite's target vars
@@ -73,8 +74,8 @@
 //   session, which is how the shared anon pool got exhausted. Self-minted
 //   tokens make that failure mode structurally impossible.
 
-import { readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
@@ -168,6 +169,26 @@ async function up() {
     throw new Error('up requires --bundle <release dir>: run `bun scripts/ci/remote-probes.mjs --deploy <name>` to build on armada and upload from here');
   }
   const bundle = uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log });
+  const bucket = flags['runtime-bucket'];
+  const catalogSha = flags['runtime-catalog-sha256'];
+  if (bucket !== undefined || catalogSha !== undefined) {
+    if (typeof bucket !== 'string' || !/^nimbus-probe-[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(bucket)
+      || typeof catalogSha !== 'string' || !/^[a-f0-9]{64}$/.test(catalogSha)) {
+      throw new Error('--runtime-bucket and --runtime-catalog-sha256 require a dedicated nimbus-probe-* bucket and a SHA-256 digest');
+    }
+    if (varOverrides.some((arg) => arg.startsWith('NIMBUS_RUNTIME_CATALOG_SHA256:'))) {
+      throw new Error('--runtime-catalog-sha256 cannot be combined with --var NIMBUS_RUNTIME_CATALOG_SHA256');
+    }
+    const config = JSON.parse(readFileSync(bundle, 'utf8'));
+    const binding = config.previews.r2_buckets.find((entry) => entry.binding === 'NIMBUS_RUNTIME_CACHE');
+    if (!binding) throw new Error('the Preview has no NIMBUS_RUNTIME_CACHE binding');
+    if ([...(config.r2_buckets ?? []), ...config.previews.r2_buckets].some((entry) => entry.bucket_name === bucket)) {
+      throw new Error(`runtime bucket ${bucket} is already used by the probe app; use a dedicated bucket`);
+    }
+    binding.bucket_name = bucket;
+    config.previews.vars.NIMBUS_RUNTIME_CATALOG_SHA256 = catalogSha;
+    writeFileSync(bundle, JSON.stringify(config, null, 2));
+  }
   const account = requireAccountPin();
   const name = throwawayName(flags.name || randomSuffix());
   const preview = previewName(name);
@@ -188,7 +209,7 @@ async function up() {
   // Worker, rather than remembering that it does not — a probe that skipped
   // the Worker version of this check wrote rows into the live demo D1.
   const isolation = assertDeployIsolated({
-    configPath: 'apps/probe/wrangler.jsonc',
+    configPath: relative(ROOT, bundle),
     workerName: PREVIEW_PARENT,
     preview: true,
     root: ROOT,
@@ -196,6 +217,7 @@ async function up() {
   for (const note of isolation.shared) log(`shared with production — ${note}`);
   for (const gap of isolation.missing) log(`WARNING: ${gap}`);
   log(`bindings verified: Preview ${preview} of ${PREVIEW_PARENT} resolves no production resource`);
+  if (bucket) log(`isolated runtime catalog: r2://${bucket}/catalog/sha256/${catalogSha}.json`);
 
   // Also before the build: a Preview already standing that this checkout
   // holds no secret for belongs to somebody else's run, and taking it

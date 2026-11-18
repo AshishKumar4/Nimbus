@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// A plain WASI command's image (wasi-cli-runner@1: jq, make) and the files
+// A plain WASI command's image (wasi-cli-runner@1: jq, lua, make) and the files
 // its spec ships beside it, built on armada by its one recipe,
 // packages/worker/wasm/<name>/build-<name>.sh, with the pinned wasi-sdk 27.0
 // and the upstream source its spec pins (runtime-specs.mjs `source`), then
@@ -27,6 +27,7 @@ const git = (args) => {
 /** What each recipe leaves beside itself: the files its spec ships (runtime-specs.mjs `files`). */
 const OUTPUTS = {
   jq: ['jq.wasm', 'COPYING', 'COPYING.oniguruma'],
+  lua: ['lua.wasm', 'LICENSE'],
   make: ['make.wasm', 'COPYING'],
 };
 
@@ -57,14 +58,24 @@ const script = String.raw`
   ' ${name}-build "$W" > "$W/build.log" 2>&1; then build=ok; else build=failed; fi
   seconds=$(( $(date +%s) - start ))
   verify=skipped
+  differential=skipped
   if [ $build = ok ]; then
     if ${DIR}/build-${name}.sh verify > "$W/verify.log" 2>&1; then verify=ok; else verify=failed; fi
   fi
-  printf '{"build":"%s","seconds":%d,"verify":"%s"}\n' $build $seconds $verify
+  if [ ${name} = lua ] && [ $verify = ok ]; then
+    if BUILD="$W/build" ${DIR}/build-${name}.sh native > "$W/diff.log" 2>&1 &&
+      NIMBUS_NATIVE_LUA=$(find "$W/build" -path '*/src/lua' -type f) bun tests/unit/lua-runtime.mjs >> "$W/diff.log" 2>&1; then
+      differential=ok
+    else
+      differential=failed
+    fi
+  fi
+  printf '{"build":"%s","seconds":%d,"verify":"%s","differential":"%s"}\n' $build $seconds $verify $differential
   if [ $build != ok ]; then tail -80 "$W/build.log"
   elif [ $verify != ok ]; then tail -80 "$W/verify.log"
   else
     cat "$W/verify.log"
+    if [ $differential != skipped ]; then tail -80 "$W/diff.log"; fi
     echo ${FILES_MARK}
     tar cf - ${ARTIFACTS.join(' ')} | xz -6 | base64 -w0
     echo
@@ -103,6 +114,7 @@ const finish = (status, line) => {
 };
 if (task.build !== 'ok') finish(1, `the build failed after ${task.seconds} s`);
 if (task.verify !== 'ok') finish(1, `built in ${task.seconds} s, and verify failed`);
+if (name === 'lua' && task.differential !== 'ok') finish(1, 'native Lua vs Nimbus fixtures failed');
 if (archive === null) notGraded(`built and verified, but no artifacts came back (job ${run.jobId})`);
 
 verdict.archive = `${stem}.tar.xz`;
