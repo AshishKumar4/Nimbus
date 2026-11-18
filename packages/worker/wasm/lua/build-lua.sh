@@ -61,6 +61,7 @@ done
   -Wl,--wrap=system -Wl,--wrap=tmpnam -Wl,--wrap=tmpfile -o lua.wasm
 
 "$WASI_SDK/bin/llvm-strip" -o "$HERE/lua.wasm" lua.wasm
+chmod 644 "$HERE/lua.wasm"
 sed -n '/^\* Copyright (C)/,/^\*\*\*\*/{ /^\*\*\*\*/d; s/^\* \?//; p; }' src/lua.h > "$HERE/LICENSE"
 node "$LIBC/verify-imports.mjs" "$HERE/lua.wasm"
 echo "built $HERE/lua.wasm ($(wc -c < "$HERE/lua.wasm") bytes)"
