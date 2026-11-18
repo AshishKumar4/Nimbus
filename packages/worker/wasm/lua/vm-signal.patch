@@ -1,0 +1,14 @@
+--- a/src/lvm.c
++++ b/src/lvm.c
+@@ -1132,3 +1132,11 @@
+ /* fetch an instruction and prepare its execution */
++extern void nimbus_lua_poll_signal(void);
++static unsigned int nimbus_lua_instructions;
++
+ #define vmfetch()	{ \
++  if (l_unlikely(++nimbus_lua_instructions == 65536)) { \
++    nimbus_lua_instructions = 0; \
++    nimbus_lua_poll_signal(); \
++    updatetrap(ci);  /* a signal handler can install Lua's interrupt hook */ \
++  } \
+   if (l_unlikely(trap)) {  /* stack reallocation or hooks? */ \

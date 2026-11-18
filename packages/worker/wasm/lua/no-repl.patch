@@ -1,0 +1,23 @@
+--- a/src/lua.c
++++ b/src/lua.c
+@@ -634,4 +634,8 @@ static int pmain (lua_State *L) {
+     return 0;
+   }
++  if (args & has_i) {
++    l_message(progname, "interactive mode is not supported");
++    return 0;
++  }
+   if (args & has_v)  /* option '-v'? */
+     print_version();
+@@ -656,9 +660,3 @@ static int pmain (lua_State *L) {
+-  if (args & has_i)  /* -i option? */
+-    doREPL(L);  /* do read-eval-print loop */
+-  else if (script < 1 && !(args & (has_e | has_v))) { /* no active option? */
+-    if (lua_stdin_is_tty()) {  /* running in interactive mode? */
+-      print_version();
+-      doREPL(L);  /* do read-eval-print loop */
+-    }
+-    else dofile(L, NULL);  /* executes stdin as a file */
++  if (script < 1 && !(args & (has_e | has_v))) { /* no active option? */
++    dofile(L, NULL);  /* executes stdin as a file */
+   }

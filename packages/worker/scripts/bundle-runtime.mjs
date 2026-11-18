@@ -325,6 +325,7 @@ const packageRuntimeArtifacts = stagePythonPackages(spec, workDir, downloaded);
 if (!spec.ingest_only) {
   const licenseLocal = join(workDir, 'LICENSE');
   writeFileSync(licenseLocal, spec.license_text);
+  if (spec.license_sha256 !== undefined) assertPinned(licenseLocal, spec.license_sha256, `${key} LICENSE`);
   const licenseBytes = readFileSync(licenseLocal);
   const licenseSha256 = createHash('sha256').update(licenseBytes).digest('hex');
   downloaded.push({

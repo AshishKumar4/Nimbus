@@ -6,6 +6,7 @@
 //   bun scripts/ci/remote-probes.mjs --target staging|throwaway:<name> [<commit>]
 //       [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T] [--baseline <commit>]
 //   bun scripts/ci/remote-probes.mjs --deploy <name> [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--baseline <commit>]
+//       [--runtime-bucket <dedicated bucket> --runtime-catalog-sha256 <digest>]
 //   bun scripts/ci/remote-probes.mjs --target hosted:<https origin> [<commit>] --only a,b
 //       [--screenshots <local-dir>]
 //
@@ -123,7 +124,7 @@ const ATTRIBUTION_WAIT_MS = 45_000;
 const ATTRIBUTION_TRIES = 4;
 
 const argv = process.argv.slice(2);
-const VALUED = ['--target', '--deploy', '--only', '--skip', '--parts', '--jobs', '--repeat', '--times', '--screenshots', '--baseline'];
+const VALUED = ['--target', '--deploy', '--only', '--skip', '--parts', '--jobs', '--repeat', '--times', '--screenshots', '--baseline', '--runtime-bucket', '--runtime-catalog-sha256'];
 const flags = {};
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -133,6 +134,12 @@ for (let i = 0; i < argv.length; i++) {
 }
 const target = /^(staging|throwaway:(.+)|hosted:(https:\/\/[^/]+))$/.exec(flags.target ?? '');
 if (!target === !flags.deploy || positional.length > 1) usage('one of --target staging, throwaway:<name> or hosted:<https origin>, and --deploy <name>, is required');
+const runtimeBucket = flags['runtime-bucket'];
+const runtimeCatalog = flags['runtime-catalog-sha256'];
+const isolatedRuntime = runtimeBucket !== undefined || runtimeCatalog !== undefined;
+if (isolatedRuntime && (!flags.deploy || !runtimeBucket || !/^[a-f0-9]{64}$/.test(runtimeCatalog ?? '') || !flags.only || flags.baseline)) {
+  usage('an isolated runtime catalog needs --deploy, --only, --runtime-bucket and --runtime-catalog-sha256, without --baseline');
+}
 const hosted = target?.[3];
 if (hosted && !flags.only) usage('--target hosted:<origin> runs the hosted-demo checks it is given (--only)');
 const count = (name, fallback) => {
@@ -258,7 +265,9 @@ try {
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
-    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: runDir.stdio(['ignore', 'ignore', 'inherit']) });
+    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha],
+      ...(isolatedRuntime ? ['--runtime-bucket', runtimeBucket, '--runtime-catalog-sha256', runtimeCatalog] : []),
+    ], { cwd: repo, stdio: runDir.stdio(['ignore', 'ignore', 'inherit']) });
     if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status})`);
   }
   // A target this run uploaded must serve that upload (its record's versionId); one it did not, what it serves now.

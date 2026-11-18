@@ -46,6 +46,7 @@
 //     `_keys.mjs`, `_recipe.mjs`, `_diag.mjs`)
 //   - this runner, `run-all.mjs`
 //   - non-`.mjs` files
+//   - `_manual/` probes unless explicitly named by NIMBUS_PROBE_ONLY
 //
 // Retry-on-banner:
 //   When a probe spawn exits non-zero AND stderr contains a known
@@ -315,7 +316,8 @@ const PROBES = walk(__dirname, isProbeFile)
   .map((abs) => relative(__dirname, abs));
 
 const only = selectionNames(process.env.NIMBUS_PROBE_ONLY);
-const selected = PROBES.filter((p) => selects({ only: process.env.NIMBUS_PROBE_ONLY, skip: process.env.NIMBUS_PROBE_SKIP }, p));
+const selected = PROBES.filter((p) => (!p.startsWith('_manual/') || namesProbe(only, p))
+  && selects({ only: process.env.NIMBUS_PROBE_ONLY, skip: process.env.NIMBUS_PROBE_SKIP }, p));
 // A selection that names probes and finds none ran nothing: never a pass.
 const unmatched = only.filter((name) => !PROBES.some((p) => namesProbe([name], p)));
 if (unmatched.length > 0) {
