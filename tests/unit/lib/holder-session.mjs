@@ -22,10 +22,11 @@ export const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
  * `view.contentless()` true as it reads a row: the row without its bytes.
  * `acquired`: what the session's grant waits for. `grantBytes`: the storage a
  * grant reserves. `answering(result)`: what a wave's answer waits for once
- * the session applied it.
- * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean, admitted?: () => void, contentless?: () => boolean }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number }, answering?: (result: any) => PromiseLike<unknown> | undefined }} [options]
+ * the session applied it. `beforeDirectWrite` observes or refuses a write
+ * through the session bridge, not writes delivered in a wave.
+ * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean, admitted?: () => void, contentless?: () => boolean }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number }, answering?: (result: any) => PromiseLike<unknown> | undefined, beforeDirectWrite?: () => void }} [options]
  */
-export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget, answering } = {}) {
+export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget, answering, beforeDirectWrite } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -40,6 +41,10 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
   }
   const filesystem = new ProcessFiles(engine);
   const bridge = /** @type {any} */ (filesystem.bind({ pid: 7, cred: user }));
+  if (beforeDirectWrite) {
+    const write = bridge.write.bind(bridge);
+    bridge.write = (...args) => { beforeDirectWrite(); return write(...args); };
+  }
   // The process's store, coherent with the session at every call: reads as the process does.
   const entryOf = (stat, target = null) => ({
     type: stat.type, dev: stat.dev, ino: stat.ino, nlink: stat.nlink, size: stat.size, atime: stat.atime, mtime: stat.mtime,
