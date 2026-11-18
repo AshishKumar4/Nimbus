@@ -1552,7 +1552,16 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.seek = (handleId, offset, whence) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.seek(handleId, offset, whence); }
+    if (holder?.owns(handleId)) {
+      // A session-backed inode can grow through the authority without a
+      // provisional record. Ask by description even if its name is gone.
+      if (!now && whence === 'end' && holder.provisional.descriptor(handleId)!.inode.cell === undefined
+        && holder.provisional.sessionOf(handleId) !== undefined) {
+        return statByAnchor(handleId).then(({ size }) => holder!.seek(handleId, size + offset, 'set'));
+      }
+      counts.local++;
+      return holder.seek(handleId, offset, whence);
+    }
     delegated('seek');
     return authority.seek(handleId, offset, whence);
   };

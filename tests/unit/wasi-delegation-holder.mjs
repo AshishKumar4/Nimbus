@@ -1109,19 +1109,33 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
 // must land first, and the session write must use the guest's open offset.
 {
   const budget = { used: 0, limit: 1 << 20 };
-  const s = session({ budget, view: {} });
+  let directWrites = 0;
+  let full = false;
+  const s = session({ budget, view: {}, beforeDirectWrite: () => {
+    directWrites++;
+    if (full) throw Object.assign(new Error('session storage full'), { code: 'ENOSPC' });
+  } });
   const path = '/home/user/archive'; // the home root is never delegated
   const file = await s.fs.open(path, { create: true, exclusive: true, write: true, read: true });
   assert.equal(await s.fs.write(file.id, null, enc.encode('abcdefgh')), 8);
+  await s.fs.unlink(path);
   budget.limit = 0;
+  assert.throws(() => s.fs.synchronous.write(file.id, null, enc.encode('ij')), { code: 'ENOSPC' });
+  assert.equal(directWrites, 0);
+  full = true;
+  await assert.rejects(() => s.fs.write(file.id, null, enc.encode('ij')), { code: 'ENOSPC', message: 'session storage full' });
+  assert.equal(directWrites, 1);
+  assert.equal(await s.fs.seek(file.id, 0, 'current'), 8);
+  full = false;
   assert.equal(await s.fs.write(file.id, null, enc.encode('ij')), 2);
   assert.equal(await s.fs.write(file.id, 2, enc.encode('XY')), 2);
   assert.equal(await s.fs.seek(file.id, 0, 'current'), 10);
+  assert.equal(await s.fs.seek(file.id, 0, 'end'), 10);
   assert.equal(dec.decode(await s.fs.read(file.id, 0, 20)), 'abXYefghij');
   await s.fs.close(file.id);
   await create(s.fs, '/home/user/next-archive', 'next');
   assert.deepEqual(await s.fs.settle(), []);
-  assert.equal(dec.decode(s.kernel.readFile('home/user/archive')), 'abXYefghij');
+  assert.equal(s.kernel.exists('home/user/archive'), false);
   assert.equal(dec.decode(s.kernel.readFile('home/user/next-archive')), 'next');
 }
 
