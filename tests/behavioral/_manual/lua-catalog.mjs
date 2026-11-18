@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-// Run only against a throwaway Preview bound to the isolated Lua catalog.
+// Run against a throwaway Preview bound to the isolated Lua catalog, or
+// explicitly with --local against a loopback workerd with the same catalog.
 // The SDK drives shell commands and reads their streams; Lua is a CLI only.
 import assert from 'node:assert/strict';
 import { Nimbus } from '../../../packages/sdk/src/index.ts';
@@ -7,7 +8,10 @@ import { AUTH_TOKEN, BASE, Terminal, deleteSession, mintSession } from '../_driv
 import { afterReset, resetInstance } from '../durable/_reset-window.mjs';
 import { files, successCommand, failureCommand, success, failure, version } from '../../fixtures/lua-cli.mjs';
 
-assert.match(new URL(BASE).hostname, /^tw-.+-nimbus-probe-previews\..+\.workers\.dev$/);
+const local = process.argv.includes('--local');
+const host = new URL(BASE).hostname;
+if (local) assert.equal(host, '127.0.0.1');
+else assert.match(host, /^tw-.+-nimbus-probe-previews\..+\.workers\.dev$/);
 assert.ok(AUTH_TOKEN, 'a throwaway probe token is required');
 const nimbus = Nimbus.connect({ endpoint: BASE, token: AUTH_TOKEN });
 const cwd = '/home/user/lua-project';

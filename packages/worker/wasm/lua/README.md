@@ -33,3 +33,12 @@ the pinned install's fixtures after a confirmed Durable Object reset. It also
 checks a restarted input wait and delivery of SIGINT to Lua. After the probe,
 delete the dedicated bucket and its objects. Keep the production catalog and
 its deployment pin unchanged.
+
+The same probe accepts `--local` for a loopback `workerd`. Seed the published
+manifest, blobs and digest-addressed catalog into local R2, boot `apps/probe`
+with that catalog digest and `NIMBUS_DEBUG=1`, then run:
+
+```sh
+BASE=http://127.0.0.1:<port> NIMBUS_PROBE_TOKEN="$token" \
+  bun tests/behavioral/_manual/lua-catalog.mjs --local
+```
