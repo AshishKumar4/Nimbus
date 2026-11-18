@@ -26,6 +26,11 @@ private restart errno on stream I/O and takes signals at that boundary and at
 cooperative scanner, AST, and printer checkpoints. Those checkpoints are not
 general Go/Wasm preemption or a latency guarantee for arbitrary Go code.
 
+Closed stdout is a known parity gap: upstream Go/WASI does not take the
+native Go runtime's SIGPIPE action on EPIPE. Formatting can report a write
+error and exit 2, and list mode can ignore the failed write. The fixture
+does not claim native parity for a downstream reader that closes early.
+
 Release work is separate: pin the compiler distribution and artifacts, ship
 the licenses, prove the build lane reproduces the bytes, and verify the
 install and rehydration from an isolated release catalog.
